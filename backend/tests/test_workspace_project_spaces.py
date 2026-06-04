@@ -216,3 +216,41 @@ def test_workspace_activity_records_include_actor_resource_and_metadata():
     assert activity.action == "resource_linked"
     assert activity.resource_type == "papers"
     assert activity.metadata_json["title"] == "Grounded Video Reasoning"
+
+
+def test_workspace_dashboard_stage_progress_and_status_cards():
+    service = WorkspaceService(SimpleNamespace())
+
+    empty_dashboard = service.build_dashboard({
+        "counts": {
+            "linked_papers": 0,
+            "linked_research_projects": 0,
+            "linked_writing_projects": 0,
+            "recent_activities": 0,
+        }
+    })
+
+    assert empty_dashboard["stage"] == "setup"
+    assert empty_dashboard["stage_label"] == "待搭建"
+    assert empty_dashboard["progress_score"] == 0
+    assert empty_dashboard["status_cards"][0]["status"] == "empty"
+
+    active_dashboard = service.build_dashboard({
+        "counts": {
+            "linked_papers": 2,
+            "linked_research_projects": 1,
+            "linked_writing_projects": 1,
+            "recent_activities": 3,
+        }
+    })
+
+    assert active_dashboard["stage"] == "drafting"
+    assert active_dashboard["stage_label"] == "写作推进中"
+    assert active_dashboard["progress_score"] == 92
+    assert active_dashboard["resource_balance"] == {
+        "papers": 2,
+        "research_projects": 1,
+        "writing_projects": 1,
+        "activity": 3,
+    }
+    assert [card["status"] for card in active_dashboard["status_cards"]] == ["ready", "ready", "ready", "ready"]

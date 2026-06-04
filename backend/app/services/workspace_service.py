@@ -405,6 +405,7 @@ class WorkspaceService:
         }
         if include_summary:
             data["summary"] = await self.build_summary(space)
+            data["dashboard"] = self.build_dashboard(data["summary"])
             data["next_actions"] = self._next_actions(data["summary"])
             data["activities"] = await self.recent_activities_for_space(space, limit=20)
         return data
@@ -413,6 +414,7 @@ class WorkspaceService:
         links = self._resource_links_from_space(space)
         linked = await self._linked_resources(links)
         recent = await self._recent_resources(space.owner_id)
+        recent_activity_count = await self._recent_activity_count(space)
         return {
             "linked_resources": linked,
             "recent_resources": recent,
@@ -423,7 +425,79 @@ class WorkspaceService:
                 "recent_papers": len(recent["papers"]),
                 "recent_research_projects": len(recent["research_projects"]),
                 "recent_writing_projects": len(recent["writing_projects"]),
+                "recent_activities": recent_activity_count,
             },
+        }
+
+    async def _recent_activity_count(self, space: ProjectSpace) -> int:
+        result = await self.session.execute(
+            select(ProjectSpaceActivity.id)
+            .where(ProjectSpaceActivity.space_id == space.id)
+            .order_by(desc(ProjectSpaceActivity.created_at))
+            .limit(20)
+        )
+        return len(result.scalars().all())
+
+    def build_dashboard(self, summary: dict) -> dict:
+        counts = summary.get("counts") or {}
+        linked_papers = int(counts.get("linked_papers") or 0)
+        linked_research = int(counts.get("linked_research_projects") or 0)
+        linked_writing = int(counts.get("linked_writing_projects") or 0)
+        activity_count = int(counts.get("recent_activities") or 0)
+        progress_score = min(
+            100,
+            (25 if linked_papers else 0)
+            + (25 if linked_research else 0)
+            + (30 if linked_writing else 0)
+            + min(linked_papers, 4) * 3
+            + min(activity_count, 5) * 2,
+        )
+        if linked_writing:
+            stage = "drafting"
+            stage_label = "写作推进中"
+        elif linked_research:
+            stage = "researching"
+            stage_label = "研究方向探索中"
+        elif linked_papers:
+            stage = "reading"
+            stage_label = "论文积累中"
+        else:
+            stage = "setup"
+            stage_label = "待搭建"
+        status_cards = [
+            self._dashboard_status_card("papers", "论文线索", linked_papers, "先积累核心论文和背景论文", "/papers"),
+            self._dashboard_status_card("research_projects", "研究方向", linked_research, "把论文证据收敛成可验证 Idea", "/research"),
+            self._dashboard_status_card("writing_projects", "写作草稿", linked_writing, "沉淀综述、Related Work 或实验报告", "/writing"),
+            self._dashboard_status_card("activity", "最近活动", activity_count, "空间协作和资源变更会在这里留下记录", None),
+        ]
+        return {
+            "progress_score": progress_score,
+            "stage": stage,
+            "stage_label": stage_label,
+            "resource_balance": {
+                "papers": linked_papers,
+                "research_projects": linked_research,
+                "writing_projects": linked_writing,
+                "activity": activity_count,
+            },
+            "status_cards": status_cards,
+        }
+
+    def _dashboard_status_card(self, key: str, label: str, count: int, hint: str, path: Optional[str]) -> dict:
+        if count > 0:
+            status = "ready"
+            status_label = "已就绪"
+        else:
+            status = "empty"
+            status_label = "待补充"
+        return {
+            "key": key,
+            "label": label,
+            "count": count,
+            "status": status,
+            "status_label": status_label,
+            "hint": hint,
+            "path": path,
         }
 
     async def _members_to_dict(self, space: ProjectSpace) -> list[dict]:
