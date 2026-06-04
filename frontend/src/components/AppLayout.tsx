@@ -5,7 +5,7 @@ import {
   CommentOutlined, BookOutlined, ExperimentOutlined, EditOutlined,
   SettingOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UserOutlined,
   LogoutOutlined, LoginOutlined, BellOutlined, BgColorsOutlined,
-  RocketOutlined, AppstoreOutlined,
+  RocketOutlined, AppstoreOutlined, SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useThemeStore, THEME_PRESETS } from '../stores/useThemeStore';
@@ -20,6 +20,7 @@ const menuItems = [
   { key: '/papers', icon: <BookOutlined />, label: '论文库', color: '#00d2ff' },
   { key: '/research', icon: <ExperimentOutlined />, label: '研究方向', color: '#f5576c' },
   { key: '/writing', icon: <EditOutlined />, label: '写作助手', color: '#4facfe' },
+  { key: '/admin', icon: <SafetyCertificateOutlined />, label: '管理员', color: '#fa8c16', adminOnly: true },
   { key: '/settings', icon: <SettingOutlined />, label: '设置', color: '#a18cd1' },
 ];
 
@@ -37,8 +38,9 @@ const AppLayout: React.FC = () => {
   const [unreadCount, setUnreadCount] = useState(0);
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifications, setNotifications] = useState<any[]>([]);
+  const visibleMenuItems = menuItems.filter(item => !item.adminOnly || user?.role === 'admin');
 
-  const selectedMenuKey = menuItems.find(item =>
+  const selectedMenuKey = visibleMenuItems.find(item =>
     location.pathname === item.key || location.pathname.startsWith(`${item.key}/`)
   )?.key;
 
@@ -120,7 +122,7 @@ const AppLayout: React.FC = () => {
       selectedKeys={selectedMenuKey ? [selectedMenuKey] : []}
       onClick={({ key }) => navigate(key)}
       style={{ borderRight: 0, background: 'transparent' }}
-      items={menuItems.map(m => ({
+      items={visibleMenuItems.map(m => ({
         key: m.key,
         icon: (
           <span style={{
@@ -190,7 +192,7 @@ const AppLayout: React.FC = () => {
             {collapsed ? (
               // 折叠态：图标 + Tooltip
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                {menuItems.map(m => {
+                {visibleMenuItems.map(m => {
                   const isActive = selectedMenuKey === m.key;
                   return (
                     <Tooltip key={m.key} title={m.label} placement="right">

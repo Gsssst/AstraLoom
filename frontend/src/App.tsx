@@ -16,6 +16,7 @@ import PaperDetailPage from './pages/PaperDetailPage';
 import PaperDigestInboxPage from './pages/PaperDigestInboxPage';
 import WorkspacesPage from './pages/WorkspacesPage';
 import WorkspaceDetailPage from './pages/WorkspaceDetailPage';
+import AdminPage from './pages/AdminPage';
 import { useAuthStore } from './stores/useAuthStore';
 import { useThemeStore } from './stores/useThemeStore';
 
@@ -62,6 +63,7 @@ const App: React.FC = () => {
               <Route path="/writing" element={<WritingPage />} />
               <Route path="/workspaces" element={<WorkspacesPage />} />
               <Route path="/workspaces/:spaceId" element={<WorkspaceDetailPage />} />
+              <Route path="/admin" element={<AdminPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Route>
           </Routes>
