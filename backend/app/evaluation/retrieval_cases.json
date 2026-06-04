@@ -1,0 +1,31 @@
+{
+  "version": "2026-06-01",
+  "description": "Initial local paper retrieval regression benchmark.",
+  "cases": [
+    {
+      "id": "transformer-architecture",
+      "query": "transformer self attention architecture",
+      "relevant_ids": ["arxiv:1706.03762"]
+    },
+    {
+      "id": "bert-language-model",
+      "query": "bert bidirectional language model",
+      "relevant_ids": ["arxiv:1810.04805"]
+    },
+    {
+      "id": "lora-adaptation",
+      "query": "lora low rank adaptation",
+      "relevant_ids": ["arxiv:2106.09685"]
+    },
+    {
+      "id": "adaptive-attention-sparsity",
+      "query": "adaptive attention sparsity top-p pruning",
+      "relevant_ids": ["arxiv:2502.02770"]
+    },
+    {
+      "id": "verifiable-fhe",
+      "query": "verifiable fully homomorphic encryption integrity",
+      "relevant_ids": ["arxiv:2301.07041"]
+    }
+  ]
+}

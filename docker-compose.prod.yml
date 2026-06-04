@@ -1,0 +1,48 @@
+# 生产环境覆盖配置
+# 使用方式: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  backend:
+    environment:
+      DEBUG: "false"
+      APP_ENV: "production"
+      LOG_LEVEL: "WARNING"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+    # 生产环境不挂载源码（使用镜像中的代码）
+    volumes:
+      - uploads_data:/app/uploads
+    # 不暴露后端端口到宿主机（仅通过 Nginx 访问）
+    ports: []
+
+  celery-worker:
+    environment:
+      DEBUG: "false"
+      LOG_LEVEL: "WARNING"
+    command: celery -A app.tasks.celery_app worker --loglevel=warning --concurrency=4
+    volumes:
+      - uploads_data:/app/uploads
+
+  celery-beat:
+    environment:
+      DEBUG: "false"
+      LOG_LEVEL: "WARNING"
+    command: celery -A app.tasks.celery_app beat --loglevel=warning
+    volumes: []
+
+  frontend:
+    # 生产环境使用多阶段构建的静态文件镜像
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    volumes: []
+    environment: []
+
+  nginx:
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro  # SSL 证书目录

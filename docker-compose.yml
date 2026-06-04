@@ -1,0 +1,202 @@
+services:
+  # ========== 数据库 ==========
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ars-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-auto_research}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-auto_research_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-auto_research}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ars-network
+
+  # ========== 缓存/消息队列 ==========
+  redis:
+    image: redis:7-alpine
+    container_name: ars-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ars-network
+
+  # ========== 后端 API ==========
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ars-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-auto_research}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-auto_research_db}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_URL: redis://redis:6379/0
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DEEPSEEK_API_BASE: ${DEEPSEEK_API_BASE:-https://api.deepseek.com/v1}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      SEARXNG_API_URL: ${SEARXNG_API_URL:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      EXA_API_KEY: ${EXA_API_KEY:-}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      ARXIV_API_BASE: ${ARXIV_API_BASE:-https://arxiv.org/api/query}
+      ARXIV_API_FALLBACK_BASE: ${ARXIV_API_FALLBACK_BASE:-https://export.arxiv.org/api/query}
+      ARXIV_SEARCH_TIMEOUT_SECONDS: ${ARXIV_SEARCH_TIMEOUT_SECONDS:-6}
+      ARXIV_REQUEST_DELAY_SECONDS: ${ARXIV_REQUEST_DELAY_SECONDS:-3}
+      ARXIV_CACHE_TTL_SECONDS: ${ARXIV_CACHE_TTL_SECONDS:-300}
+      ARXIV_PDF_MIRROR_BASE_URLS: ${ARXIV_PDF_MIRROR_BASE_URLS:-}
+      ARXIV_PDF_OFFICIAL_BASE_URL: ${ARXIV_PDF_OFFICIAL_BASE_URL:-https://arxiv.org/pdf}
+      ARXIV_PDF_CACHE_DIR: ${ARXIV_PDF_CACHE_DIR:-/app/uploads/arxiv-pdfs}
+      ARXIV_PDF_TIMEOUT_SECONDS: ${ARXIV_PDF_TIMEOUT_SECONDS:-30}
+      SEMANTIC_SCHOLAR_API_KEY: ${SEMANTIC_SCHOLAR_API_KEY:-}
+      OPENALEX_MAILTO: ${OPENALEX_MAILTO:-}
+      SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      DEBUG: ${DEBUG:-true}
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - uploads_data:/app/uploads
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --reload --timeout-keep-alive 30
+    networks:
+      - ars-network
+
+  # ========== Celery Worker ==========
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ars-celery-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-auto_research}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-auto_research_db}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_URL: redis://redis:6379/0
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DEEPSEEK_API_BASE: ${DEEPSEEK_API_BASE:-https://api.deepseek.com/v1}
+      SEARXNG_API_URL: ${SEARXNG_API_URL:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      EXA_API_KEY: ${EXA_API_KEY:-}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      ARXIV_API_BASE: ${ARXIV_API_BASE:-https://arxiv.org/api/query}
+      ARXIV_API_FALLBACK_BASE: ${ARXIV_API_FALLBACK_BASE:-https://export.arxiv.org/api/query}
+      ARXIV_SEARCH_TIMEOUT_SECONDS: ${ARXIV_SEARCH_TIMEOUT_SECONDS:-6}
+      ARXIV_REQUEST_DELAY_SECONDS: ${ARXIV_REQUEST_DELAY_SECONDS:-3}
+      ARXIV_CACHE_TTL_SECONDS: ${ARXIV_CACHE_TTL_SECONDS:-300}
+      ARXIV_PDF_MIRROR_BASE_URLS: ${ARXIV_PDF_MIRROR_BASE_URLS:-}
+      ARXIV_PDF_OFFICIAL_BASE_URL: ${ARXIV_PDF_OFFICIAL_BASE_URL:-https://arxiv.org/pdf}
+      ARXIV_PDF_CACHE_DIR: ${ARXIV_PDF_CACHE_DIR:-/app/uploads/arxiv-pdfs}
+      ARXIV_PDF_TIMEOUT_SECONDS: ${ARXIV_PDF_TIMEOUT_SECONDS:-30}
+      SEMANTIC_SCHOLAR_API_KEY: ${SEMANTIC_SCHOLAR_API_KEY:-}
+      OPENALEX_MAILTO: ${OPENALEX_MAILTO:-}
+      SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
+      DEBUG: ${DEBUG:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./backend:/app
+      - uploads_data:/app/uploads
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    networks:
+      - ars-network
+
+  # ========== Celery 定时调度 ==========
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ars-celery-beat
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DEBUG: ${DEBUG:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./backend:/app
+    command: celery -A app.tasks.celery_app beat --loglevel=info
+    networks:
+      - ars-network
+
+  # ========== 前端开发服务器 ==========
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: ars-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      VITE_API_BASE_URL: http://backend:8000
+    networks:
+      - ars-network
+
+  # ========== Nginx 反向代理 ==========
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: ars-nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - ars-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  uploads_data:
+    driver: local
+
+networks:
+  ars-network:
+    driver: bridge

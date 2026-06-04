@@ -1,0 +1,834 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import {
+  Card, Button, Tag, Typography, Space, Spin, message,
+  Empty, Row, Col, Divider, Input, Avatar, Grid, Select, Tooltip, Modal,
+} from 'antd';
+import {
+  ArrowLeftOutlined, StarFilled, TagOutlined, SendOutlined,
+  LinkOutlined, BulbOutlined,
+  RobotOutlined, UserOutlined,
+  MenuFoldOutlined, MenuUnfoldOutlined,
+  CopyOutlined, RedoOutlined,
+  DatabaseOutlined, GlobalOutlined,
+  DeleteOutlined, CloseOutlined,
+  PlayCircleOutlined, CheckCircleOutlined, RollbackOutlined,
+  BookOutlined,
+} from '@ant-design/icons';
+import api from '../services/api';
+import Markdown from '../components/Markdown';
+import PDFViewer from '../components/PDFViewer';
+import ThinkingPanel from '../components/ThinkingPanel';
+import { useAuthStore } from '../stores/useAuthStore';
+import { useThemeStore } from '../stores/useThemeStore';
+
+const { Title, Text, Paragraph } = Typography;
+const { TextArea } = Input;
+
+interface PaperData {
+  id: string; title: string; authors: string[]; year: number | null;
+  abstract: string | null; arxiv_id: string | null; doi: string | null;
+  source: string; source_url: string | null; citation_count: number;
+  pdf_url?: string | null;
+  full_text_preview: string | null; tags: any;
+  categories: { id: string; name: string }[];
+  similar_papers: { id: string; title: string; year: number | null; arxiv_id: string | null; tags: any }[];
+  created_at: string;
+}
+
+interface PaperChatReference {
+  title: string;
+  arxiv_id?: string | null;
+  year?: number | null;
+  similarity?: number;
+  url?: string;
+  source?: string;
+  provider?: string;
+  type?: string;
+  id?: string;
+  section?: string | null;
+  page?: number | null;
+  page_start?: number | null;
+  page_end?: number | null;
+  score?: number;
+  snippet?: string;
+}
+
+interface PaperPdfQuote {
+  text: string;
+  pageNumber: number;
+}
+
+interface PaperAnnotation {
+  id: string;
+  text: string;
+  page: number;
+  kind: string;
+  note?: string | null;
+  created_at: string;
+}
+
+interface PaperChatMessage {
+  role: string;
+  content: string;
+  displayContent?: string;
+  quote?: PaperPdfQuote;
+  references?: PaperChatReference[];
+  evidence?: PaperChatEvidenceMeta;
+  _streaming?: boolean;
+  reasoning?: string;
+  thinkingStartedAt?: number;
+  _reasoningStreaming?: boolean;
+}
+
+interface PaperChatEvidenceMeta {
+  evidence_count: number;
+  evidence_coverage: number;
+  evidence_insufficient: boolean;
+}
+
+interface PaperReadingTemplate {
+  key: string;
+  title: string;
+  description: string;
+  icon: React.ReactNode;
+  question: string;
+}
+
+const readingStatusMeta = {
+  unread: { label: '待读', icon: <RollbackOutlined /> },
+  reading: { label: '阅读中', icon: <PlayCircleOutlined /> },
+  completed: { label: '已完成', icon: <CheckCircleOutlined /> },
+};
+
+const groundingInstruction = '请严格基于这篇论文的标题、摘要、全文片段和可检索内容回答；如果论文内容不足以支持结论，请明确说明“当前论文内容不足”，不要编造。';
+
+const paperReadingTemplates: PaperReadingTemplate[] = [
+  {
+    key: 'overview',
+    title: '全篇速读',
+    description: '贡献、方法、实验和局限一屏看懂',
+    icon: <RobotOutlined />,
+    question: `${groundingInstruction}\n请用结构化方式速读这篇论文，包含：1. 研究问题；2. 核心贡献；3. 方法思路；4. 实验结论；5. 局限与可追问点。`,
+  },
+  {
+    key: 'introduction',
+    title: '精读 Introduction',
+    description: '背景、动机、问题定义和贡献',
+    icon: <BookOutlined />,
+    question: `${groundingInstruction}\n请重点检索并讲解这篇论文的 Introduction / 引言部分，按“研究背景、已有方法问题、作者动机、本文贡献、读者需要带着什么问题继续读”组织回答。`,
+  },
+  {
+    key: 'method',
+    title: '拆解 Method',
+    description: '模块、流程、关键公式和设计动机',
+    icon: <DatabaseOutlined />,
+    question: `${groundingInstruction}\n请重点检索 Method / Approach / Methodology 相关章节，拆解这篇论文的方法：整体流程、核心模块、关键公式或算法、每个设计解决了什么问题，以及实现时最容易误解的点。`,
+  },
+  {
+    key: 'experiments',
+    title: '分析 Experiments',
+    description: '数据集、指标、对比和消融结论',
+    icon: <CheckCircleOutlined />,
+    question: `${groundingInstruction}\n请重点检索 Experiments / Evaluation / Results 相关章节，总结实验设置、数据集、评价指标、主要对比结果、消融实验，以及实验是否足以支撑论文结论。`,
+  },
+  {
+    key: 'gap',
+    title: '找 Research Gap',
+    description: '从局限中提炼后续研究方向',
+    icon: <BulbOutlined />,
+    question: `${groundingInstruction}\n请基于论文内容找出可以继续研究的 gap：包括论文承认的局限、实验未覆盖的场景、方法假设、可能失败案例，并给出 3 个可执行的后续研究问题。`,
+  },
+  {
+    key: 'meeting',
+    title: '生成组会提纲',
+    description: '适合口头汇报的讲解顺序',
+    icon: <TagOutlined />,
+    question: `${groundingInstruction}\n请把这篇论文整理成中文组会汇报提纲：开场一句话、背景动机、方法主线、关键实验、优点、局限、可讨论问题。要求适合 5-8 分钟口头讲解。`,
+  },
+];
+
+const PaperDetailPage: React.FC = () => {
+  const { paperId } = useParams<{ paperId: string }>();
+  const navigate = useNavigate();
+  const [paper, setPaper] = useState<PaperData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saved, setSaved] = useState(false);
+  const [readStatus, setReadStatus] = useState<'unread' | 'reading' | 'completed'>('unread');
+  const [readStatusUpdating, setReadStatusUpdating] = useState(false);
+  const [notes, setNotes] = useState('');
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [annotations, setAnnotations] = useState<PaperAnnotation[]>([]);
+  const [annotationSaving, setAnnotationSaving] = useState(false);
+  const [deletingAnnotationIds, setDeletingAnnotationIds] = useState<Set<string>>(new Set());
+  const [showPdf, setShowPdf] = useState(false);
+  const [targetPdfPage, setTargetPdfPage] = useState<number | null>(null);
+  const [mobilePanel, setMobilePanel] = useState<'content' | 'pdf' | 'chat'>('content');
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.md;
+
+  // PDF 地址提前计算
+  const pdfUrl = paper?.arxiv_id ? `/api/papers/pdf-proxy/${paper.arxiv_id}` : null;
+  const isAuthenticated = !!localStorage.getItem('access_token');
+  const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
+
+  // 划词弹出 Ask 按钮（参考 AlphaXiv）
+  const [selectionPopup, setSelectionPopup] = useState<{ text: string; x: number; y: number } | null>(null);
+  useEffect(() => {
+    const handleMouseUp = () => {
+      const sel = window.getSelection(); const text = sel?.toString().trim();
+      const selectionElement = sel?.anchorNode instanceof Element ? sel.anchorNode : sel?.anchorNode?.parentElement;
+      if (selectionElement?.closest('.paper-pdf-viewer')) {
+        setSelectionPopup(null);
+        return;
+      }
+      if (text && text.length > 5 && text.length < 500) {
+        const rect = sel?.getRangeAt(0)?.getBoundingClientRect();
+        if (rect) setSelectionPopup({ text, x: rect.left + rect.width / 2, y: rect.top - 45 });
+      } else setSelectionPopup(null);
+    };
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => document.removeEventListener('mouseup', handleMouseUp);
+  }, []);
+  const handleSelectionAsk = () => {
+    if (selectionPopup) {
+      setQuestion(selectionPopup.text);
+      setSelectionPopup(null);
+      if (isMobile) setMobilePanel('chat');
+    }
+  };
+  const handlePdfTextSelect = (text: string, pageNumber: number) => {
+    setPdfQuote({ text, pageNumber });
+    setSelectionPopup(null);
+    if (isMobile) setMobilePanel('chat');
+    message.success(`已添加第 ${pageNumber} 页引用`);
+  };
+
+  // AI 问答
+  const [chatMsgs, setChatMsgs] = useState<PaperChatMessage[]>([]);
+  const [question, setQuestion] = useState('');
+  const [pdfQuote, setPdfQuote] = useState<PaperPdfQuote | null>(null);
+  const [asking, setAsking] = useState(false);
+  const [askStatus, setAskStatus] = useState<string | null>(null);
+  const [paperRagEnabled, setPaperRagEnabled] = useState(true);
+  const [webSearch, setWebSearch] = useState(false);
+  const [searchDepth, setSearchDepth] = useState<'quick' | 'standard' | 'deep'>('standard');
+  const [tagging, setTagging] = useState(false);
+  const showThinking = useThemeStore((s) => s.showThinking ?? false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const retrievalStrategy = webSearch && paperRagEnabled
+    ? '混合检索'
+    : webSearch
+      ? '联网检索'
+      : paperRagEnabled
+        ? '论文库增强'
+        : '仅当前论文';
+
+  useEffect(() => {
+    if (!paperId) return;
+    setLoading(true);
+    api.get(`/papers/${paperId}`).then(res => {
+      setPaper(res.data);
+      if (res.data.tags && typeof res.data.tags === 'object' && res.data.tags.domain) setShowPdf(true);
+    }).catch(() => message.error('论文加载失败')).finally(() => setLoading(false));
+  }, [paperId]);
+
+  useEffect(() => {
+    if (!paperId || !isAuthenticated) return;
+    api.get(`/papers/${paperId}/user-state`).then(res => {
+      setSaved(res.data.saved);
+      setReadStatus(res.data.read_status || 'unread');
+      setNotes(res.data.personal_notes || '');
+    }).catch(() => {});
+    // 加载问答历史
+    api.get(`/papers/${paperId}/chat-history`).then(res => {
+      if (res.data.messages?.length > 0) setChatMsgs(res.data.messages);
+    }).catch(() => {});
+    api.get(`/papers/${paperId}/annotations`).then(res => {
+      setAnnotations(res.data || []);
+    }).catch(() => {});
+  }, [paperId, isAuthenticated]);
+
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMsgs]);
+
+  const appendStreamingReply = (content: string, references: PaperChatReference[], evidence?: PaperChatEvidenceMeta | null) => {
+    setChatMsgs(prev => {
+      const msgs = [...prev];
+      const last = msgs[msgs.length - 1];
+      if (last?.role === 'assistant' && last._streaming) {
+        msgs[msgs.length - 1] = {
+          ...last,
+          content: `${last.content}${content}`,
+          references,
+          evidence: evidence || last.evidence,
+          _reasoningStreaming: false,
+        };
+      } else {
+        msgs.push({ role: 'assistant', content, references, evidence: evidence || undefined, _streaming: true });
+      }
+      return msgs;
+    });
+  };
+  const appendStreamingReasoning = (content: string) => {
+    setChatMsgs(prev => {
+      const msgs = [...prev];
+      const last = msgs[msgs.length - 1];
+      if (last?.role === 'assistant' && last._streaming) {
+        msgs[msgs.length - 1] = {
+          ...last,
+          reasoning: `${last.reasoning || ''}${content}`,
+          _reasoningStreaming: true,
+          thinkingStartedAt: last.thinkingStartedAt || Date.now(),
+        };
+      } else {
+        msgs.push({
+          role: 'assistant',
+          content: '',
+          reasoning: content,
+          _streaming: true,
+          _reasoningStreaming: true,
+          thinkingStartedAt: Date.now(),
+        });
+      }
+      return msgs;
+    });
+  };
+
+  const consumePaperChatStream = async (response: Response) => {
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let full = '';
+    let reasoning = '';
+    let references: PaperChatReference[] = [];
+    let evidence: PaperChatEvidenceMeta | null = null;
+    let finished = false;
+
+    const handleFrame = (frame: string) => {
+      const data = frame
+        .split('\n')
+        .filter(line => line.startsWith('data: '))
+        .map(line => line.slice(6))
+        .join('\n');
+      if (!data) return false;
+      if (data === '[DONE]') return true;
+
+      try {
+        const event = JSON.parse(data) as { type?: string; content?: string | { references?: PaperChatReference[]; evidence?: PaperChatEvidenceMeta } };
+        if (event.type === 'status' && typeof event.content === 'string') {
+          setAskStatus(event.content);
+        } else if (event.type === 'reasoning' && typeof event.content === 'string') {
+          reasoning += event.content;
+          appendStreamingReasoning(event.content);
+        } else if (event.type === 'meta' && typeof event.content === 'object') {
+          references = event.content.references || [];
+          evidence = event.content.evidence || null;
+        } else if ((event.type === 'content' || event.type === 'error') && typeof event.content === 'string') {
+          full += event.content;
+          appendStreamingReply(event.content, references, evidence);
+        } else if (event.type === 'done') {
+          return true;
+        }
+      } catch {
+        full += data;
+        appendStreamingReply(data, references, evidence);
+      }
+      return false;
+    };
+
+    while (!finished) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, '\n');
+      const frames = buffer.split('\n\n');
+      buffer = frames.pop() || '';
+      for (const frame of frames) {
+        if (handleFrame(frame)) {
+          finished = true;
+          break;
+        }
+      }
+      if (done) {
+        if (buffer && handleFrame(buffer)) finished = true;
+        break;
+      }
+    }
+    setChatMsgs(prev => prev.map(msg => msg._streaming ? { ...msg, _streaming: false, _reasoningStreaming: false } : msg));
+    return { content: full, references, reasoning, evidence };
+  };
+
+  const handleWebSearchToggle = () => {
+    const nextWebSearch = !webSearch;
+    setWebSearch(nextWebSearch);
+    if (nextWebSearch && searchDepth !== 'deep') {
+      setSearchDepth('deep');
+      message.info('已开启联网增强，并自动切换为深度检索');
+    }
+  };
+
+  const handleEvidenceReferenceClick = (ref: PaperChatReference) => {
+    if (ref.type === 'paper_evidence' || ref.source === 'current_paper') {
+      const page = ref.page || ref.page_start;
+      if (page) {
+        setTargetPdfPage(page);
+        if (isMobile) setMobilePanel('pdf');
+        else setShowPdf(true);
+        message.info(`已跳转到 PDF 第 ${page} 页`);
+      }
+      return;
+    }
+    if (ref.url) window.open(ref.url, '_blank', 'noopener,noreferrer');
+    else if (ref.arxiv_id) window.open(`https://arxiv.org/abs/${ref.arxiv_id.replace(/v\d+$/, '')}`, '_blank', 'noopener,noreferrer');
+  };
+
+  const referenceTitle = (ref: PaperChatReference) => {
+    if (ref.type === 'paper_evidence' || ref.source === 'current_paper') {
+      const page = ref.page || ref.page_start;
+      const section = ref.section ? `${ref.section} · ` : '';
+      return `${ref.id || '证据'} · ${section}${page ? `PDF 第 ${page} 页` : '当前论文片段'}`;
+    }
+    return `${ref.source === 'web' ? '网页 · ' : ''}${ref.title?.slice(0, 24)}${ref.title?.length > 24 ? '...' : ''}`;
+  };
+
+  const submitPaperQuestion = async (rawQuestion?: string, displayQuestion?: string, quoteOverride?: PaperPdfQuote | null) => {
+    const templateMode = typeof rawQuestion === 'string';
+    const activeQuote = quoteOverride !== undefined ? quoteOverride : templateMode ? null : pdfQuote;
+    const visibleQuestion = (displayQuestion || rawQuestion || question.trim() || '请解释这段选中内容。').trim();
+    if ((!visibleQuestion && !activeQuote) || asking) return;
+    const q = activeQuote
+      ? `引用 PDF 第 ${activeQuote.pageNumber} 页选中内容：\n${activeQuote.text}\n\n用户问题：${visibleQuestion}`
+      : (rawQuestion || visibleQuestion);
+    const userMessage: PaperChatMessage = {
+      role: 'user',
+      content: q,
+      displayContent: visibleQuestion,
+      quote: activeQuote || undefined,
+    };
+    setQuestion('');
+    if (!templateMode) setPdfQuote(null);
+    if (templateMode && isMobile) setMobilePanel('chat');
+    setChatMsgs(prev => [...prev, userMessage]);
+    setAsking(true);
+    setAskStatus(webSearch ? '正在检索当前论文、论文库与网络来源...' : paperRagEnabled ? '正在检索当前论文与相关论文...' : '正在阅读当前论文...');
+    try {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(`/api/papers/${paperId}/ask-stream`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ question: q, history: chatMsgs.slice(-6), rag_enabled: paperRagEnabled, web_search: webSearch, search_depth: searchDepth, show_thinking: showThinking }),
+      });
+      if (!response.ok) throw new Error('Stream failed');
+      const reply = await consumePaperChatStream(response);
+      // Save to DB
+      const allMsgs = [...chatMsgs, userMessage, { role: 'assistant', content: reply.content, references: reply.references, reasoning: reply.reasoning, evidence: reply.evidence }];
+      api.post(`/papers/${paperId}/chat-history`, { messages: allMsgs }).catch(()=>{});
+    } catch {
+      if (!templateMode) {
+        setQuestion(current => current || visibleQuestion);
+        setPdfQuote(current => current || activeQuote);
+      }
+      setChatMsgs(prev => [...prev, { role: 'assistant', content: '❌ 问答失败，请稍后重试。' }]);
+    }
+    finally { setAsking(false); setAskStatus(null); }
+  };
+
+  const handleAsk = async () => {
+    await submitPaperQuestion();
+  };
+
+  const handleReadingTemplate = async (template: PaperReadingTemplate) => {
+    await submitPaperQuestion(template.question, template.title);
+  };
+
+  const handleSaveAnnotation = async () => {
+    if (!paperId || !pdfQuote) return;
+    if (!isAuthenticated) { message.warning('请先登录'); return; }
+    setAnnotationSaving(true);
+    try {
+      const response = await api.post(`/papers/${paperId}/annotations`, {
+        text: pdfQuote.text,
+        page: pdfQuote.pageNumber,
+        kind: 'quote',
+      });
+      setAnnotations(prev => [response.data, ...prev]);
+      setSaved(true);
+      message.success('已保存为论文摘录');
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '保存摘录失败');
+    } finally {
+      setAnnotationSaving(false);
+    }
+  };
+
+  const handleAskAnnotation = async (annotation: PaperAnnotation) => {
+    await submitPaperQuestion(
+      '请解释这段已保存摘录，并说明它在论文论证中的作用。如果上下文不足，请明确说明。',
+      `解释第 ${annotation.page} 页摘录`,
+      { text: annotation.text, pageNumber: annotation.page },
+    );
+  };
+
+  const handleDeleteAnnotation = async (annotation: PaperAnnotation) => {
+    if (!paperId) return;
+    setDeletingAnnotationIds(prev => new Set(prev).add(annotation.id));
+    try {
+      await api.delete(`/papers/${paperId}/annotations/${annotation.id}`);
+      setAnnotations(prev => prev.filter(item => item.id !== annotation.id));
+      message.success('摘录已删除');
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '删除摘录失败');
+    } finally {
+      setDeletingAnnotationIds(prev => { const next = new Set(prev); next.delete(annotation.id); return next; });
+    }
+  };
+
+  const handleSave = async () => {
+    if (!isAuthenticated) { message.warning('请先登录'); return; }
+    try {
+      if (saved) { await api.delete(`/papers/${paperId}/save`); setSaved(false); }
+      else { await api.post(`/papers/${paperId}/save`); setSaved(true); }
+    } catch { message.error('操作失败'); }
+  };
+
+  const handleReadStatusChange = async (status: 'unread' | 'reading' | 'completed') => {
+    if (!isAuthenticated) { message.warning('请先登录'); return; }
+    setReadStatusUpdating(true);
+    try {
+      await api.put(`/papers/${paperId}/read-status`, { status });
+      setReadStatus(status);
+      setSaved(true);
+      message.success(`已标记为${readingStatusMeta[status].label}`);
+    } catch {
+      message.error('阅读状态更新失败');
+    } finally {
+      setReadStatusUpdating(false);
+    }
+  };
+
+  const handleClearChatHistory = () => {
+    Modal.confirm({
+      title: '清空这篇论文的问答记录？',
+      content: '清空后将无法恢复，但不会影响收藏、笔记和阅读状态。',
+      okText: '确认清空',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await api.delete(`/papers/${paperId}/chat-history`);
+          setChatMsgs([]);
+          message.success('已清空论文问答记录');
+        } catch {
+          message.error('清空失败');
+        }
+      },
+    });
+  };
+
+  const handleSaveNotes = async () => {
+    if (!isAuthenticated) return; setNotesLoading(true);
+    try { await api.put(`/papers/${paperId}/note`, { note: notes }); message.success('已保存'); }
+    catch { message.error('保存失败'); } finally { setNotesLoading(false); }
+  };
+
+  const handleAutoTag = async () => {
+    setTagging(true);
+    try { const res = await api.post(`/papers/${paperId}/auto-tag`); if (paper) setPaper({...paper, tags:res.data.tags}); message.success('标签已生成'); }
+    catch { message.error('标签提取失败'); } finally { setTagging(false); }
+  };
+
+  if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
+  if (!paper) return <Empty description="论文未找到" />;
+
+  return (
+    <div className="paper-detail-page">
+      {/* 顶部工具栏 */}
+      <div className="paper-detail-toolbar" style={{ borderBottom: '1px solid #f0f0f0', background: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+        <Space className="paper-detail-toolbar-main">
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>
+          <Text className="paper-detail-title" strong ellipsis>{paper.title}</Text>
+        </Space>
+        <Space>
+          {paper.pdf_url && <Button icon={<LinkOutlined />} href={paper.pdf_url} target="_blank" rel="noreferrer">开放 PDF</Button>}
+          {isAuthenticated && (
+            <Space.Compact>
+              {(['unread', 'reading', 'completed'] as const).map(status => (
+                <Tooltip key={status} title={`标记为${readingStatusMeta[status].label}`}>
+                  <Button
+                    type={readStatus === status ? 'primary' : 'default'}
+                    icon={readingStatusMeta[status].icon}
+                    loading={readStatusUpdating && readStatus !== status}
+                    onClick={() => handleReadStatusChange(status)}
+                  >
+                    {!isMobile ? readingStatusMeta[status].label : undefined}
+                  </Button>
+                </Tooltip>
+              ))}
+            </Space.Compact>
+          )}
+          {!isMobile && pdfUrl && (
+            <Button type={showPdf ? 'primary' : 'default'} icon={showPdf ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />} onClick={() => setShowPdf(!showPdf)}>
+              {showPdf ? '隐藏 PDF' : '显示 PDF'}
+            </Button>
+          )}
+          {isAuthenticated && <Button icon={saved ? <StarFilled style={{color:'#faad14'}}/> : <StarFilled/>} onClick={handleSave}>{saved?'':'收藏'}</Button>}
+        </Space>
+        {isMobile && (
+          <Space.Compact className="paper-detail-mobile-tabs">
+            <Button type={mobilePanel === 'content' ? 'primary' : 'default'} onClick={() => setMobilePanel('content')}>正文</Button>
+            {pdfUrl && <Button type={mobilePanel === 'pdf' ? 'primary' : 'default'} onClick={() => setMobilePanel('pdf')}>PDF</Button>}
+            <Button type={mobilePanel === 'chat' ? 'primary' : 'default'} onClick={() => setMobilePanel('chat')}>问答</Button>
+          </Space.Compact>
+        )}
+      </div>
+
+      <div className="paper-detail-body">
+        {/* PDF 面板 */}
+        {pdfUrl && (isMobile ? mobilePanel === 'pdf' : showPdf) && (
+          <div className="paper-detail-pdf-panel" style={{ borderRight: '1px solid #f0f0f0', flexShrink: 0, height: '100%' }}>
+            <PDFViewer url={pdfUrl} onTextSelect={handlePdfTextSelect} targetPage={targetPdfPage} />
+          </div>
+        )}
+
+        {/* 中间内容 — 显示 PDF 时自动隐藏 */}
+        {(isMobile ? mobilePanel === 'content' : !showPdf) && (
+        <div className="paper-detail-content-panel" style={{ flex: 1, overflowY: 'auto', padding: 16, borderRight: '1px solid #f0f0f0' }}>
+          <Title level={4} style={{ marginTop: 0 }}>{paper.title}</Title>
+          <Space size="small" wrap style={{ marginBottom: 12 }}>
+            <Tag color="blue">{paper.year || 'N/A'}</Tag>
+            {paper.arxiv_id && <a href={`https://arxiv.org/abs/${paper.arxiv_id.replace(/v\d+$/,'')}`} target="_blank"><Tag icon={<LinkOutlined />} color="#b31b1b">arXiv:{paper.arxiv_id}</Tag></a>}
+            <Tag>{paper.citation_count} 引用</Tag>
+            <Tag color="green">{paper.source}</Tag>
+          </Space>
+          <Space size="small" wrap style={{ marginBottom: 12 }}>
+            <TagOutlined style={{ color: '#999' }} />
+            {paper.tags ? (() => { const t: any = paper.tags || {};
+              if (Array.isArray(t)) return t.slice(0,5).map((x: string,i: number) => <Tag key={i} color="purple">{x}</Tag>);
+              return <>{t.domain && <Tag color="blue">{t.domain}</Tag>}{(t.methods||[]).slice(0,3).map((m:string,i:number) => <Tag key={i} color="purple">{m}</Tag>)}</>;
+            })() : <Text type="secondary">无</Text>}
+            {isAdmin && <Button size="small" type="link" icon={<BulbOutlined />} loading={tagging} onClick={handleAutoTag}>AI 智能提取</Button>}
+          </Space>
+          <div style={{ marginTop: 12 }}>
+            <Text strong>作者：</Text>
+            <Text>{Array.isArray(paper.authors)?paper.authors.join(', '):paper.authors}</Text>
+          </div>
+          <Card
+            size="small"
+            className="paper-reading-assistant-card"
+            title={<span><RobotOutlined /> AI 精读助手</span>}
+            extra={
+              <Space size={6} wrap>
+                <Tag color="blue">{readingStatusMeta[readStatus].label}</Tag>
+                <Tag color={paper.full_text_preview ? 'green' : 'default'}>{paper.full_text_preview ? '全文增强' : '摘要优先'}</Tag>
+              </Space>
+            }
+            style={{ marginTop: 16, borderRadius: 12 }}
+          >
+            <Text type="secondary" style={{ display: 'block', marginBottom: 12, fontSize: 13 }}>
+              选择一个阅读任务，系统会自动组织更稳定的提问，并通过右侧 AI 问答返回结果。
+            </Text>
+            <Row gutter={[8, 8]}>
+              {paperReadingTemplates.map(template => (
+                <Col xs={24} sm={12} lg={8} key={template.key}>
+                  <button
+                    type="button"
+                    className="paper-reading-template"
+                    disabled={asking}
+                    onClick={() => handleReadingTemplate(template)}
+                  >
+                    <span className="paper-reading-template-icon">{template.icon}</span>
+                    <span className="paper-reading-template-copy">
+                      <Text strong>{template.title}</Text>
+                      <Text type="secondary">{template.description}</Text>
+                    </span>
+                  </button>
+                </Col>
+              ))}
+            </Row>
+          </Card>
+          <Divider style={{ marginTop: 16 }}>摘要</Divider>
+          <Paragraph style={{ lineHeight: 1.8 }}>{paper.abstract}</Paragraph>
+          {paper.full_text_preview && <><Divider>全文</Divider><Paragraph ellipsis={{rows:10,expandable:true}} style={{ lineHeight:1.8 }}>{paper.full_text_preview}</Paragraph></>}
+          {paper.similar_papers?.length>0 && <><Divider>📚 相关论文</Divider><Row gutter={[8,8]}>{paper.similar_papers.map((sp:any)=>(<Col xs={12} key={sp.id}><Card hoverable size="small" onClick={()=>navigate(`/papers/${sp.id}`)}><Text strong style={{fontSize:13}}>{sp.title}</Text><div>{sp.year&&<Tag color="blue">{sp.year}</Tag>}{sp.tags&&(Array.isArray(sp.tags)?sp.tags.slice(0,3):[]).map((t:string,i:number)=><Tag key={i} color="purple" style={{fontSize:11}}>{t}</Tag>)}</div></Card></Col>))}</Row></>}
+          {isAuthenticated && (
+            <Card size="small" style={{ marginTop: 16, borderRadius: 8 }} title="摘录与引用" extra={<Tag color="purple">{annotations.length}</Tag>}>
+              {annotations.length ? (
+                <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                  {annotations.map(annotation => (
+                    <div key={annotation.id} className="paper-annotation-item">
+                      <Space size={6} wrap style={{ marginBottom: 6 }}>
+                        <Tag color="gold">第 {annotation.page} 页</Tag>
+                        <Text type="secondary" style={{ fontSize: 12 }}>{new Date(annotation.created_at).toLocaleString()}</Text>
+                      </Space>
+                      <Paragraph style={{ marginBottom: 8, lineHeight: 1.7 }} ellipsis={{ rows: 3, expandable: true }}>{annotation.text}</Paragraph>
+                      <Space size={6} wrap>
+                        <Button size="small" icon={<SendOutlined />} disabled={asking} onClick={() => handleAskAnnotation(annotation)}>问 AI</Button>
+                        <Button size="small" danger icon={<DeleteOutlined />} loading={deletingAnnotationIds.has(annotation.id)} onClick={() => handleDeleteAnnotation(annotation)}>删除</Button>
+                      </Space>
+                    </div>
+                  ))}
+                </Space>
+              ) : (
+                <Text type="secondary">在 PDF 中划词后，可以保存为摘录，后续用于问答或整理引用。</Text>
+              )}
+            </Card>
+          )}
+          {isAuthenticated && (
+            <Card size="small" style={{ marginTop: 16, borderRadius: 8 }} title="📝 我的笔记"
+              extra={<Button type="primary" size="small" onClick={handleSaveNotes} loading={notesLoading}>保存</Button>}>
+              <TextArea rows={4} value={notes} onChange={e=>setNotes(e.target.value)} placeholder="记录对这篇论文的想法、关键要点..." />
+            </Card>
+          )}
+        </div>
+        )}
+
+        {/* AI 问答面板 — PDF 显示时 35%，否则 35% */}
+        {(!isMobile || mobilePanel === 'chat') && <div className="paper-detail-chat-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#fafafa', flexShrink: 0 }}>
+          <Card title={<span><RobotOutlined /> AI 问答</span>} extra={chatMsgs.length > 0 ? <Tooltip title="清空问答记录"><Button type="text" danger size="small" icon={<DeleteOutlined />} disabled={asking} onClick={handleClearChatHistory} /></Tooltip> : null} size="small"
+            className="paper-detail-chat-card"
+            style={{ flex: 1, display: 'flex', flexDirection: 'column', borderRadius: 0, border: 'none' }}
+            styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 } }}>
+            <div className="paper-chat-controls">
+              <Text className="paper-chat-strategy">{retrievalStrategy}</Text>
+              <Button className={`chat-control-pill ${paperRagEnabled ? 'is-active' : ''}`} type="text" size="small" icon={<DatabaseOutlined />} onClick={() => setPaperRagEnabled(!paperRagEnabled)}>论文库</Button>
+              <Tooltip title="联网增强可以与当前论文、论文库同时使用">
+                <Button className={`chat-control-pill ${webSearch ? 'is-active' : ''}`} type="text" size="small" icon={<GlobalOutlined />} onClick={handleWebSearchToggle}>联网增强</Button>
+              </Tooltip>
+              <Select className="chat-depth-select" size="small" value={searchDepth} onChange={setSearchDepth} variant="borderless" style={{ width: 66, fontSize: 12 }} options={[{ value: 'quick', label: '快速' }, { value: 'standard', label: '标准' }, { value: 'deep', label: '深度' }]} />
+            </div>
+            <div className="paper-detail-chat-scroll">
+              {chatMsgs.length === 0 ? (
+                <div style={{ padding: '24px 16px', textAlign: 'center', height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                  <div style={{
+                    width: 64, height: 64, margin: '0 auto 16px', borderRadius: 20,
+                    background: 'linear-gradient(135deg, #667eea22, #764ba222)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <RobotOutlined style={{ fontSize: 32, color: '#667eea' }} />
+                  </div>
+                  <Text strong style={{ fontSize: 15, color: '#333', marginBottom: 4 }}>论文问答助手</Text>
+                  <Text type="secondary" style={{ fontSize: 13, marginBottom: 20 }}>选择一个精读模板，或直接输入你的问题</Text>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {paperReadingTemplates.slice(0, 4).map(item => (
+                      <div
+                        key={item.key}
+                        onClick={() => !asking && handleReadingTemplate(item)}
+                        style={{
+                          padding: '10px 14px', borderRadius: 10, cursor: asking ? 'not-allowed' : 'pointer',
+                          background: '#fff', border: '1px solid #f0f0f0',
+                          textAlign: 'left', fontSize: 13, color: '#555',
+                          transition: 'all 0.2s', opacity: asking ? 0.55 : 1,
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = '#667eea'; e.currentTarget.style.background = '#f8f9ff'; }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = '#f0f0f0'; e.currentTarget.style.background = '#fff'; }}
+                      >
+                        <span style={{ marginRight: 8 }}>{item.icon}</span>
+                        {item.title}
+                        <Text type="secondary" style={{ display: 'block', marginLeft: 24, marginTop: 2, fontSize: 11 }}>{item.description}</Text>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                chatMsgs.map((msg,idx) => (
+                  <div key={idx} style={{ marginBottom: 16, display: 'flex', gap: 8, flexDirection: msg.role==='user'?'row-reverse':'row', alignItems:'flex-start' }}>
+                    <Avatar size={28} icon={msg.role==='user'?<UserOutlined/>:<RobotOutlined/>} style={{flexShrink:0, background:msg.role==='user'?'linear-gradient(135deg,#667eea,#764ba2)':'linear-gradient(135deg,#12c2e9,#c471ed)'}}/>
+                    <div style={{ maxWidth: '82%' }}>
+                      {msg.role === 'assistant' && msg.reasoning && (
+                        <ThinkingPanel reasoningText={msg.reasoning} isStreaming={!!msg._reasoningStreaming} startTime={msg.thinkingStartedAt} />
+                      )}
+                      {(msg.role === 'user' || msg.content) && (
+                        <div style={{ padding: '10px 14px', borderRadius: msg.role==='user'?'14px 4px 14px 14px':'4px 14px 14px 14px', background: msg.role==='user'? 'linear-gradient(135deg,#667eea,#764ba2)':'#fff', color: msg.role==='user'?'#fff':'#333', boxShadow: msg.role==='user'?'0 2px 8px rgba(102,126,234,.25)':'0 1px 3px rgba(0,0,0,.06)', border: msg.role==='user'?'none':'1px solid #f0f0f0', lineHeight: 1.7, fontSize: 13 }}>
+                          {msg.role === 'user' ? <>
+                            {msg.quote && <div className="paper-chat-message-quote"><strong>PDF 第 {msg.quote.pageNumber} 页</strong><br />{msg.quote.text}</div>}
+                            <div style={{whiteSpace:'pre-wrap'}}>{msg.displayContent || msg.content}</div>
+                          </> : <Markdown content={msg.content} />}
+                        </div>
+                      )}
+                      {msg.role === 'assistant' && !msg._streaming && (
+                        <div style={{ display:'flex', gap: 4, marginTop: 4, paddingLeft: 4 }}>
+                          <Button type="text" size="small" icon={<CopyOutlined />} onClick={()=>{navigator.clipboard.writeText(msg.content);message.success('已复制');}} style={{fontSize:11,color:'#bbb'}}>复制</Button>
+                          <Button type="text" size="small" icon={<RedoOutlined />} onClick={()=>{setQuestion('请重新回答');}} style={{fontSize:11,color:'#bbb'}}>重新生成</Button>
+                        </div>
+                      )}
+                      {((msg.references && msg.references.length > 0) || msg.evidence) && (
+                        <div className="paper-chat-references">
+                          {msg.evidence && (
+                            <div style={{ marginBottom: 6 }}>
+                              <Tag color={msg.evidence.evidence_insufficient ? 'orange' : 'green'} style={{ borderRadius: 8 }}>
+                                {msg.evidence.evidence_insufficient ? '证据不足' : `引用覆盖率 ${Math.round((msg.evidence.evidence_coverage || 0) * 100)}%`}
+                              </Tag>
+                              <Text type="secondary" style={{ fontSize: 11 }}>当前回答关联 {msg.evidence.evidence_count || 0} 条正文证据</Text>
+                            </div>
+                          )}
+                          {msg.references && msg.references.length > 0 && <Text type="secondary" style={{ fontSize: 11 }}>引用证据：</Text>}
+                          {(msg.references || []).map((ref, ri) => (
+                            <Tooltip key={`${ref.url || ref.arxiv_id || ref.id || ref.title}-${ri}`} title={ref.snippet || ref.title}>
+                              <Tag color={ref.source === 'web' ? 'cyan' : ref.source === 'current_paper' ? 'gold' : 'geekblue'} className="paper-chat-reference" onClick={() => handleEvidenceReferenceClick(ref)}>
+                                [{ri + 1}] {referenceTitle(ref)}
+                              </Tag>
+                            </Tooltip>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+              {asking && <div style={{display:'flex',gap:8,alignItems:'flex-start'}}><Avatar size={28} icon={<RobotOutlined/>} style={{background:'linear-gradient(135deg,#12c2e9,#c471ed)'}}/><div style={{padding:'10px 14px',borderRadius:'4px 14px 14px 14px',background:'#fff',border:'1px solid #f0f0f0'}}><Space size={8}><Space size={5}>{[0,0.2,0.4].map((delay,i)=><div key={i} style={{width:6,height:6,borderRadius:'50%',background:'#c471ed',animation:`bounce 1.4s infinite ease-in-out ${delay}s`}}/>)}</Space><Text type="secondary" style={{fontSize:12}}>{askStatus || '正在生成回答...'}</Text></Space></div></div>}
+              <div ref={chatEndRef} />
+            </div>
+            <div className="paper-detail-chat-composer">
+              {pdfQuote && (
+                <div className="paper-chat-quote-card">
+                  <div className="paper-chat-quote-header">
+                    <Text strong>PDF 第 {pdfQuote.pageNumber} 页</Text>
+                    <Space size={4}>
+                      <Button type="link" size="small" loading={annotationSaving} onClick={handleSaveAnnotation}>保存摘录</Button>
+                      <Button type="text" size="small" icon={<CloseOutlined />} onClick={() => setPdfQuote(null)} aria-label="移除引用" />
+                    </Space>
+                  </div>
+                  <div className="paper-chat-quote-text">{pdfQuote.text}</div>
+                </div>
+              )}
+              <div className="paper-detail-chat-editor">
+                <TextArea className="paper-detail-chat-input" value={question} onChange={e=>setQuestion(e.target.value)}
+                onPressEnter={e=>{if(!e.shiftKey){e.preventDefault();handleAsk();}}}
+                placeholder={pdfQuote ? '围绕引用内容提问，Enter 发送，Shift+Enter 换行' : '基于论文提问，Enter 发送，Shift+Enter 换行'}
+                autoSize={{ minRows: 1, maxRows: 6 }} disabled={asking}/>
+                <Button className="paper-detail-chat-send" type="primary" shape="circle" icon={<SendOutlined/>} loading={asking} disabled={!question.trim() && !pdfQuote} onClick={handleAsk}/>
+              </div>
+            </div>
+          </Card>
+        </div>}
+      </div>
+      {/* 划词弹出按钮（参考 AlphaXiv） */}
+      {selectionPopup && (
+        <div style={{
+          position: 'fixed', left: selectionPopup.x, top: selectionPopup.y, zIndex: 1000,
+          transform: 'translateX(-50%)', display: 'flex', gap: 6,
+        }}>
+          <Button size="small" type="primary"
+            icon={<SendOutlined />}
+            onClick={handleSelectionAsk}
+            style={{ borderRadius: 20, boxShadow: '0 4px 16px rgba(102,126,234,0.4)', background: 'linear-gradient(135deg, #667eea, #764ba2)' }}>
+            问问 AI
+          </Button>
+          <Button size="small"
+            onClick={async () => {
+              const t = selectionPopup.text;
+              setSelectionPopup(null);
+              try {
+                const res = await api.post('/papers/explain-text', { text: t, paper_id: paperId });
+                setChatMsgs(prev => [...prev, { role: 'user', content: `解释: ${t.slice(0,80)}...` }, { role: 'assistant', content: res.data.explanation }]);
+                if (isMobile) setMobilePanel('chat');
+              } catch { message.error('解释失败'); }
+            }}
+            style={{ borderRadius: 20, boxShadow: '0 2px 8px rgba(0,0,0,0.1)', background: '#fff', border: '1px solid #e0e0e0' }}>
+            💡 解释
+          </Button>
+        </div>
+      )}
+      <style>{'@keyframes bounce{0%,80%,100%{transform:scale(.6);opacity:.4}40%{transform:scale(1);opacity:1}}'}</style>
+    </div>
+  );
+};
+
+export default PaperDetailPage;

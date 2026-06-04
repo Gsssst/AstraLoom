@@ -1,0 +1,605 @@
+import React, { useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import {
+  Alert, Button, Card, Checkbox, Collapse, Col, Divider, Empty, Input, List, message,
+  Modal, Popconfirm, Progress, Row, Space, Spin, Steps, Switch, Tabs, Tag, Tooltip, Typography,
+} from 'antd';
+import {
+  ArrowLeftOutlined, BulbOutlined, CodeOutlined, DeleteOutlined,
+  ExperimentOutlined, FileSearchOutlined, FileTextOutlined, MessageOutlined, NodeIndexOutlined,
+  HistoryOutlined, ImportOutlined, PlusOutlined, PushpinOutlined, ReloadOutlined, RiseOutlined, RobotOutlined, RocketOutlined, SendOutlined,
+  ShareAltOutlined, StarFilled, ThunderboltOutlined, UserOutlined,
+} from '@ant-design/icons';
+import api from '../services/api';
+
+const { Title, Text, Paragraph } = Typography;
+const { TextArea } = Input;
+const heroGradient = 'linear-gradient(135deg, #5b6ee1 0%, #8b5cf6 56%, #c471ed 100%)';
+
+interface Project {
+  id: string; name: string; description: string | null;
+  keywords: string[] | null; status: string; ideas_count: number;
+}
+interface Evidence {
+  paper_id: string; title: string; year?: number; arxiv_id?: string;
+  category: 'seed' | 'background' | 'inspiration'; score: number;
+  abstract_excerpt: string; relevance: string; source?: string; source_url?: string; doi?: string;
+  imported_paper_id?: string;
+}
+interface Gap {
+  title: string; limitation: string; opportunity: string;
+  research_question: string; evidence_ids: string[]; uncertainty: string;
+}
+interface Review {
+  scores: Record<string, number>; rationale: string; uncertainty: string; recommendation: string;
+  aggregate_score?: number;
+  base_score?: number;
+  novelty_check?: {
+    status: 'likely_novel' | 'incremental' | 'too_similar';
+    score: number; max_similarity: number; rationale: string;
+    nearest_evidence?: { paper_id?: string; title?: string; source?: string } | null;
+  };
+  adversarial_review?: {
+    verdict: 'advance' | 'revise' | 'reject'; penalty: number;
+    objections: string[]; required_fixes: string[]; summary: string;
+  };
+  search_tree?: { round?: number; operator?: string; parent_title?: string | null; lineage?: string[] };
+}
+interface Candidate {
+  title: string; path: string; gap: string; hypothesis: string; approach: string;
+  evidence_ids: string[]; risks: string[]; falsification_test: string;
+  minimum_experiment: ExperimentPlan; review?: Review; score?: number;
+}
+interface ExperimentPlan { dataset: string; baselines: string[]; metrics: string[]; steps: string[]; }
+interface Idea {
+  id: string; project_id: string; title: string; description: string | null;
+  hypothesis?: string | null; approach?: string | null; novelty?: string | null;
+  feasibility_score: number | null; novelty_score: number | null; status: string;
+  generated_code: string | null; evidence_json?: { items?: Evidence[]; scope?: string } | null;
+  review_json?: Review | null; experiment_plan?: ExperimentPlan | null;
+  parent_idea_id?: string | null; evolution_json?: { focus?: string; rationale?: string; round?: number; experiment_feedback?: ExperimentRecord } | null;
+}
+interface ExperimentRecord {
+  experiment_id: string; idea_id?: string | null; name: string; dataset: string;
+  hyperparams: Record<string, unknown>; results: Record<string, unknown>; notes?: string; timestamp: string;
+}
+interface IdeaRun {
+  id: string; project_id: string; status: string; stage: string; progress: number;
+  message?: string; error?: string; evidence_map?: Record<string, Evidence[] | string | object>;
+  gap_map?: { summary?: string; gaps?: Gap[] }; candidate_pool?: Candidate[];
+  review_summary?: Record<string, unknown>; ideas?: Idea[];
+}
+
+const stageItems = [
+  ['briefing', '研究简报'], ['retrieving', '证据收集'], ['mapping_gaps', 'Gap Map'],
+  ['generating', '候选生成'], ['deduplicating', '语义去重'], ['reviewing', '六维评审'],
+  ['selecting', 'Proposal'], ['complete', '完成'],
+];
+const scoreLabels: Record<string, string> = {
+  novelty: '新颖性', evidence_grounding: '证据支撑', feasibility: '可行性',
+  testability: '可验证性', impact: '潜在价值', clarity: '清晰度',
+};
+const categoryLabels = { seed: '核心论文', background: '背景论文', inspiration: '灵感论文' };
+const categoryColors = { seed: 'purple', background: 'blue', inspiration: 'cyan' };
+const pathLabels: Record<string, string> = { grounded: 'Gap 推导', inspiration: '跨论文启发', seed_refinement: '种子优化' };
+const sourceLabels: Record<string, string> = { local_library: '本地论文库', arxiv: 'arXiv', semantic_scholar: 'Semantic Scholar' };
+const statusLabels: Record<string, string> = { draft: '待筛选', pinned: '已收藏', rejected: '已淘汰', implemented: '已有代码' };
+const noveltyLabels: Record<string, string> = { likely_novel: '可能新颖', incremental: '增量改进', too_similar: '过于相似' };
+const noveltyColors: Record<string, string> = { likely_novel: 'green', incremental: 'gold', too_similar: 'red' };
+const adversarialLabels: Record<string, string> = { advance: '建议推进', revise: '需要修改', reject: '暂不推进' };
+const adversarialColors: Record<string, string> = { advance: 'green', revise: 'orange', reject: 'red' };
+
+const ResearchProjectPage: React.FC = () => {
+  const { projectId } = useParams<{ projectId: string }>();
+  const navigate = useNavigate();
+  const [project, setProject] = useState<Project | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [ideas, setIdeas] = useState<Idea[]>([]);
+  const [run, setRun] = useState<IdeaRun | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [relatedPapers, setRelatedPapers] = useState<any[]>([]);
+  const [papersLoading, setPapersLoading] = useState(false);
+  const [discussMap, setDiscussMap] = useState<Record<string, { msg: string; log: any[]; loading: boolean }>>({});
+  const [codeMap, setCodeMap] = useState<Record<string, { loading: boolean }>>({});
+  const [externalSearch, setExternalSearch] = useState(true);
+  const [selectedIdeaIds, setSelectedIdeaIds] = useState<string[]>([]);
+  const [compareIdeas, setCompareIdeas] = useState<Idea[]>([]);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [evolvingIdea, setEvolvingIdea] = useState<Idea | null>(null);
+  const [evolutionFocus, setEvolutionFocus] = useState('');
+  const [evolving, setEvolving] = useState(false);
+  const [importingEvidence, setImportingEvidence] = useState<Set<string>>(new Set());
+  const [draftingIdeaIds, setDraftingIdeaIds] = useState<Set<string>>(new Set());
+  const [experiments, setExperiments] = useState<ExperimentRecord[]>([]);
+  const [experimentOpen, setExperimentOpen] = useState(false);
+  const [experimentIdea, setExperimentIdea] = useState<Idea | null>(null);
+  const [experimentName, setExperimentName] = useState('');
+  const [experimentDataset, setExperimentDataset] = useState('');
+  const [experimentResults, setExperimentResults] = useState('');
+  const [experimentNotes, setExperimentNotes] = useState('');
+  const [lineageOpen, setLineageOpen] = useState(false);
+  const [lineage, setLineage] = useState<Idea[]>([]);
+
+  const loadProject = async () => {
+    if (!projectId) return;
+    const response = await api.get(`/research/projects/${projectId}`);
+    setProject(response.data);
+    setIdeas(response.data.ideas || []);
+  };
+
+  useEffect(() => {
+    if (!projectId) return;
+    setLoading(true);
+    Promise.all([
+      loadProject(),
+      api.get(`/research/projects/${projectId}/idea-runs/latest`).then(response => setRun(response.data)).catch(() => {}),
+      api.get(`/research/projects/${projectId}/recommended-papers`).then(response => {
+        setRelatedPapers((response.data as any[]).map(p => ({ ...p, similarity: p.score })));
+      }).catch(() => {}).finally(() => setPapersLoading(false)),
+      api.get(`/research/projects/${projectId}/experiments`).then(response => setExperiments(response.data)).catch(() => {}),
+    ]).catch(() => message.error('加载研究工作台失败')).finally(() => setLoading(false));
+  }, [projectId]);
+
+  const applyStreamEvent = (event: any) => {
+    if (event.type === 'run' && event.run) setRun(event.run);
+    if (event.type === 'stage') {
+      setRun(previous => previous ? { ...previous, stage: event.stage, status: event.status, progress: event.progress, message: event.message } : previous);
+    }
+    if (event.type === 'artifact') {
+      setRun(previous => previous ? { ...previous, [event.artifact]: event.data } : previous);
+    }
+    if (event.type === 'error') message.error(event.message || 'Idea 工作台运行失败');
+    if (event.type === 'done' && event.run) {
+      setRun(event.run);
+      setIdeas(event.ideas || event.run.ideas || []);
+    }
+  };
+
+  const handleGenerate = async () => {
+    if (!projectId || generating) return;
+    setGenerating(true);
+    try {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(`/api/research/projects/${projectId}/idea-runs/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ num_ideas: 3, external_search: externalSearch }),
+      });
+      if (!response.ok || !response.body) throw new Error('无法启动 Idea 工作台');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const packets = buffer.split('\n\n');
+        buffer = packets.pop() || '';
+        packets.forEach(packet => {
+          const line = packet.split('\n').find(item => item.startsWith('data: '));
+          if (line) applyStreamEvent(JSON.parse(line.slice(6)));
+        });
+      }
+      await loadProject();
+      message.success('Idea 工作台已生成新的 Proposal');
+    } catch (error: any) {
+      message.error(error?.message || '生成失败');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const getDiscuss = (ideaId: string) => discussMap[ideaId] || { msg: '', log: [], loading: false };
+  const setDiscuss = (ideaId: string, update: any) => setDiscussMap(previous => ({
+    ...previous, [ideaId]: { ...getDiscuss(ideaId), ...update },
+  }));
+  const handleDiscuss = async (ideaId: string) => {
+    const current = getDiscuss(ideaId);
+    if (!current.msg.trim()) return;
+    setDiscuss(ideaId, { loading: true });
+    const log = [...current.log, { role: 'user', content: current.msg }];
+    setDiscuss(ideaId, { msg: '', log });
+    try {
+      const response = await api.post(`/research/ideas/${ideaId}/discuss`, { message: current.msg });
+      setDiscuss(ideaId, { log: [...log, { role: 'assistant', content: response.data.reply }] });
+    } catch { message.error('讨论失败'); }
+    finally { setDiscuss(ideaId, { loading: false }); }
+  };
+  const handleGenCode = async (ideaId: string) => {
+    setCodeMap(previous => ({ ...previous, [ideaId]: { loading: true } }));
+    try {
+      const response = await api.post(`/research/ideas/${ideaId}/generate-code?framework=pytorch`);
+      setIdeas(previous => previous.map(idea => idea.id === ideaId ? { ...idea, generated_code: response.data.code, status: 'implemented' } : idea));
+      message.success('实验代码已生成');
+    } catch { message.error('代码生成失败'); }
+    finally { setCodeMap(previous => ({ ...previous, [ideaId]: { loading: false } })); }
+  };
+  const createWritingDraft = async (idea: Idea) => {
+    setDraftingIdeaIds(previous => new Set(previous).add(idea.id));
+    try {
+      const response = await api.post(`/research/ideas/${idea.id}/writing-draft`);
+      const projectId = response.data.project?.id;
+      message.success(response.data.evidence_status === 'sufficient' ? '写作草稿已创建' : '写作草稿已创建，但证据不足');
+      if (projectId) navigate(`/writing?project=${projectId}`);
+    } catch {
+      message.error('创建写作草稿失败');
+    } finally {
+      setDraftingIdeaIds(previous => {
+        const next = new Set(previous);
+        next.delete(idea.id);
+        return next;
+      });
+    }
+  };
+  const handleShare = async () => {
+    try {
+      const response = await api.post(`/research/projects/${projectId}/share`);
+      await navigator.clipboard.writeText(`${window.location.origin}/research/share/${response.data.share_token}`);
+      message.success('分享链接已复制');
+    } catch { message.error('分享失败'); }
+  };
+  const updateDecision = async (ideaId: string, status: 'draft' | 'pinned' | 'rejected') => {
+    try {
+      const response = await api.patch(`/research/ideas/${ideaId}/decision`, { status });
+      setIdeas(previous => previous.map(idea => idea.id === ideaId ? response.data : idea));
+      message.success(status === 'pinned' ? '已收藏 Proposal' : status === 'rejected' ? '已标记为淘汰' : '已恢复为待筛选');
+    } catch { message.error('更新 Proposal 状态失败'); }
+  };
+  const toggleCompare = (ideaId: string, checked: boolean) => {
+    setSelectedIdeaIds(previous => checked ? [...previous, ideaId].slice(-4) : previous.filter(id => id !== ideaId));
+  };
+  const openComparison = async () => {
+    if (selectedIdeaIds.length < 2) return message.info('请至少选择两个 Proposal');
+    try {
+      const response = await api.post('/research/ideas/compare', { idea_ids: selectedIdeaIds });
+      setCompareIdeas(response.data);
+      setCompareOpen(true);
+    } catch { message.error('加载 Proposal 比较失败'); }
+  };
+  const evolveProposal = async () => {
+    if (!evolvingIdea) return;
+    setEvolving(true);
+    try {
+      const response = await api.post(`/research/ideas/${evolvingIdea.id}/evolve`, { focus: evolutionFocus });
+      setIdeas(previous => [response.data, ...previous]);
+      setEvolvingIdea(null);
+      setEvolutionFocus('');
+      message.success('已生成一个可追溯的 Proposal 新版本');
+    } catch { message.error('Proposal 演化失败'); }
+    finally { setEvolving(false); }
+  };
+  const importEvidence = async (item: Evidence) => {
+    if (!projectId || importingEvidence.has(item.paper_id)) return;
+    setImportingEvidence(previous => new Set(previous).add(item.paper_id));
+    try {
+      const response = await api.post(`/research/projects/${projectId}/evidence/import`, { paper_id: item.paper_id });
+      setRun(previous => {
+        if (!previous?.evidence_map) return previous;
+        const evidenceMap = { ...previous.evidence_map };
+        (['seed', 'background', 'inspiration'] as const).forEach(category => {
+          evidenceMap[category] = ((evidenceMap[category] as Evidence[]) || []).map(evidence =>
+            evidence.paper_id === item.paper_id ? { ...evidence, imported_paper_id: response.data.local_paper_id } : evidence);
+        });
+        return { ...previous, evidence_map: evidenceMap };
+      });
+      message.success(response.data.is_new ? '外部论文已入库并关联当前项目' : '论文已存在，已关联当前项目');
+    } catch { message.error('外部论文入库失败'); }
+    finally {
+      setImportingEvidence(previous => {
+        const next = new Set(previous); next.delete(item.paper_id); return next;
+      });
+    }
+  };
+  const openLineage = async (idea: Idea) => {
+    try {
+      const response = await api.get(`/research/ideas/${idea.id}/lineage`);
+      setLineage(response.data);
+      setLineageOpen(true);
+    } catch { message.error('加载演化谱系失败'); }
+  };
+  const openExperiment = (idea: Idea) => {
+    setExperimentIdea(idea);
+    setExperimentName('');
+    setExperimentDataset(idea.experiment_plan?.dataset || '');
+    setExperimentResults('');
+    setExperimentNotes('');
+    setExperimentOpen(true);
+  };
+  const saveExperiment = async () => {
+    if (!projectId || !experimentIdea || !experimentName.trim()) return message.info('请填写实验名称');
+    let results: Record<string, unknown> = {};
+    try { results = experimentResults.trim() ? JSON.parse(experimentResults) : {}; }
+    catch { return message.error('实验结果请填写合法 JSON，例如 {"accuracy": 0.82}'); }
+    try {
+      const response = await api.post('/research/experiments', {
+        project_id: projectId, idea_id: experimentIdea.id, name: experimentName,
+        dataset: experimentDataset, results, notes: experimentNotes, hyperparams: {},
+      });
+      setExperiments(previous => [response.data.experiment, ...previous]);
+      setExperimentOpen(false);
+      message.success('实验反馈已记录');
+    } catch { message.error('保存实验反馈失败'); }
+  };
+  const evolveFromFeedback = async (experiment: ExperimentRecord) => {
+    if (!experiment.idea_id) return;
+    try {
+      const response = await api.post(`/research/ideas/${experiment.idea_id}/evolve-from-feedback`, { experiment_id: experiment.experiment_id });
+      setIdeas(previous => [response.data, ...previous]);
+      message.success('已根据实验反馈生成下一轮 Proposal');
+    } catch { message.error('根据实验反馈演化失败'); }
+  };
+
+  if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
+  if (!project) return <Empty description="项目未找到" />;
+
+  const evidenceMap = run?.evidence_map || {};
+  const evidenceItems = (['seed', 'background', 'inspiration'] as const).flatMap(category => (evidenceMap[category] as Evidence[] || []));
+  const sourceErrors = evidenceMap.source_errors as Record<string, string> || {};
+  const gaps = run?.gap_map?.gaps || [];
+  const candidates = run?.candidate_pool || [];
+  const stageIndex = Math.max(0, stageItems.findIndex(([key]) => key === run?.stage));
+
+  const evidenceTab = (
+    <div>
+      <Alert showIcon type="info" message="证据地图" description="核心论文来自你主动关联的文献；背景论文用于界定现有方法；灵感论文可以来自本地论文库、arXiv 或 Semantic Scholar，用于新颖性检查和跨领域启发。" style={{ marginBottom: 16 }} />
+      {Object.keys(sourceErrors).length > 0 && <Alert showIcon type="warning" message="部分联网来源暂不可用" description={`已自动使用其余证据继续生成：${Object.keys(sourceErrors).join('、')}`} style={{ marginBottom: 16 }} />}
+      {evidenceItems.length === 0 ? <Empty description="运行工作台后会显示证据地图" /> : (
+        <List dataSource={evidenceItems} renderItem={item => (
+          <List.Item style={{ alignItems: 'flex-start' }}>
+            <List.Item.Meta
+              title={<Space wrap><Tag color={categoryColors[item.category]}>{categoryLabels[item.category]}</Tag><Tag>{sourceLabels[item.source || 'local_library'] || item.source}</Tag><Text strong>{item.title}</Text>{item.year && <Text type="secondary">{item.year}</Text>}</Space>}
+              description={<><Paragraph ellipsis={{ rows: 2 }} style={{ margin: '6px 0 4px' }}>{item.abstract_excerpt || '暂无摘要'}</Paragraph><Space wrap><Text type="secondary">{item.relevance}</Text>{item.source_url && <Button type="link" size="small" href={item.source_url} target="_blank">查看来源</Button>}{item.source !== 'local_library' && (item.imported_paper_id ? <Tag color="green">已入库</Tag> : <Button type="link" size="small" icon={<ImportOutlined />} loading={importingEvidence.has(item.paper_id)} onClick={() => importEvidence(item)}>一键入库</Button>)}</Space></>}
+            />
+          </List.Item>
+        )} />
+      )}
+    </div>
+  );
+
+  const gapTab = gaps.length === 0 ? <Empty description="证据收集后会自动形成 Gap Map" /> : (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      {gaps.map((gap, index) => (
+        <Card key={`${gap.title}-${index}`} size="small" title={<Space><NodeIndexOutlined style={{ color: '#8b5cf6' }} /><Text strong>{gap.title}</Text></Space>} style={{ borderRadius: 12 }}>
+          <Paragraph><Text strong>现有限制：</Text>{gap.limitation}</Paragraph>
+          <Paragraph><Text strong>研究机会：</Text>{gap.opportunity}</Paragraph>
+          <Paragraph style={{ marginBottom: 6 }}><Text strong>可验证问题：</Text>{gap.research_question}</Paragraph>
+          <Text type="secondary">不确定性：{gap.uncertainty}</Text>
+        </Card>
+      ))}
+    </Space>
+  );
+
+  const candidateTab = candidates.length === 0 ? <Empty description="Gap Map 完成后会显示候选假设池" /> : (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      {candidates.map((candidate, index) => (
+        <Card key={`${candidate.title}-${index}`} size="small" style={{ borderRadius: 12 }}
+          title={<Space wrap><Tag color="geekblue">{pathLabels[candidate.path] || candidate.path}</Tag><Text strong>{candidate.title}</Text></Space>}
+          extra={candidate.score != null && <Tag color="purple">{candidate.score.toFixed(2)}</Tag>}>
+          <Paragraph><Text strong>假设：</Text>{candidate.hypothesis}</Paragraph>
+          <Paragraph ellipsis={{ rows: 2 }} style={{ marginBottom: 0 }}><Text strong>验证方式：</Text>{candidate.falsification_test}</Paragraph>
+        </Card>
+      ))}
+    </Space>
+  );
+
+  const renderProposal = (idea: Idea) => {
+    const discussion = getDiscuss(idea.id);
+    const review = idea.review_json;
+    const plan = idea.experiment_plan;
+    return (
+      <div>
+        {idea.hypothesis && <Alert type="success" showIcon message="可证伪假设" description={idea.hypothesis} style={{ marginBottom: 14 }} />}
+        <Paragraph style={{ whiteSpace: 'pre-wrap' }}>{idea.description || '暂无描述'}</Paragraph>
+        {idea.approach && <Paragraph><Text strong>技术草图：</Text>{idea.approach}</Paragraph>}
+        {review && <>
+          <Divider>六维评审</Divider>
+          <Row gutter={[8, 8]}>
+            {Object.entries(review.scores || {}).map(([key, value]) => (
+              <Col xs={12} md={8} key={key}><Card size="small" style={{ borderRadius: 10 }}><Text type="secondary">{scoreLabels[key] || key}</Text><Title level={4} style={{ margin: '4px 0 0' }}>{value}/10</Title></Card></Col>
+            ))}
+          </Row>
+          <Paragraph style={{ marginTop: 12 }}><Text strong>评审理由：</Text>{review.rationale}</Paragraph>
+          <Text type="secondary">主要不确定性：{review.uncertainty}</Text>
+          {(review.novelty_check || review.adversarial_review || review.search_tree) && <>
+            <Divider>v3 质量信号</Divider>
+            <Space direction="vertical" size={10} style={{ width: '100%' }}>
+              {review.novelty_check && (
+                <Alert
+                  type={review.novelty_check.status === 'likely_novel' ? 'success' : review.novelty_check.status === 'incremental' ? 'warning' : 'error'}
+                  showIcon
+                  message={<Space wrap><Text strong>Novelty Check</Text><Tag color={noveltyColors[review.novelty_check.status]}>{noveltyLabels[review.novelty_check.status]}</Tag><Tag>{Math.round(review.novelty_check.score * 100)}%</Tag></Space>}
+                  description={<span>{review.novelty_check.rationale}{review.novelty_check.nearest_evidence?.title ? ` 最近相似证据：${review.novelty_check.nearest_evidence.title}` : ''}</span>}
+                />
+              )}
+              {review.adversarial_review && (
+                <Alert
+                  type={review.adversarial_review.verdict === 'advance' ? 'success' : review.adversarial_review.verdict === 'revise' ? 'warning' : 'error'}
+                  showIcon
+                  message={<Space wrap><Text strong>反驳评审</Text><Tag color={adversarialColors[review.adversarial_review.verdict]}>{adversarialLabels[review.adversarial_review.verdict]}</Tag><Tag>扣分 {review.adversarial_review.penalty}</Tag></Space>}
+                  description={
+                    <div>
+                      <Paragraph style={{ marginBottom: 6 }}>{review.adversarial_review.summary}</Paragraph>
+                      {review.adversarial_review.objections?.slice(0, 3).map((item, index) => <Tag color="red" key={index} style={{ marginBottom: 4 }}>{item}</Tag>)}
+                    </div>
+                  }
+                />
+              )}
+              {review.search_tree && (
+                <Card size="small" style={{ borderRadius: 10, background: '#fafafa' }}>
+                  <Space wrap>
+                    <Tag color="geekblue">搜索树 Round {review.search_tree.round ?? 0}</Tag>
+                    <Tag>{review.search_tree.operator || 'root'}</Tag>
+                    {review.search_tree.parent_title && <Text type="secondary">父节点：{review.search_tree.parent_title}</Text>}
+                  </Space>
+                </Card>
+              )}
+            </Space>
+          </>}
+        </>}
+        {plan && <>
+          <Divider>最小实验方案</Divider>
+          <Paragraph><Text strong>数据集：</Text>{plan.dataset}</Paragraph>
+          <Space wrap>{plan.baselines?.map(item => <Tag key={item}>基线：{item}</Tag>)}</Space>
+          <Space wrap style={{ marginTop: 8 }}>{plan.metrics?.map(item => <Tag color="blue" key={item}>指标：{item}</Tag>)}</Space>
+          <List size="small" dataSource={plan.steps || []} renderItem={(item, index) => <List.Item>{index + 1}. {item}</List.Item>} />
+        </>}
+        {idea.evidence_json?.items && idea.evidence_json.items.length > 0 && <>
+          <Divider>证据引用</Divider>
+          <Space wrap>{idea.evidence_json.items.map(item => <Tag color={categoryColors[item.category]} key={item.paper_id}>{item.title.slice(0, 36)}</Tag>)}</Space>
+        </>}
+        {idea.evolution_json && <Alert style={{ marginTop: 14 }} type="info" showIcon message="演化版本" description={idea.evolution_json.rationale || '该 Proposal 是根据父版本评审反馈生成的新版本。'} />}
+        <Divider>Proposal 决策</Divider>
+        <Space wrap>
+          {idea.status !== 'pinned' && <Button icon={<PushpinOutlined />} onClick={() => updateDecision(idea.id, 'pinned')}>收藏</Button>}
+          {idea.status !== 'rejected' && <Button danger onClick={() => updateDecision(idea.id, 'rejected')}>淘汰</Button>}
+          {(idea.status === 'pinned' || idea.status === 'rejected') && <Button onClick={() => updateDecision(idea.id, 'draft')}>恢复待筛选</Button>}
+          <Button type="primary" ghost onClick={() => { setEvolvingIdea(idea); setEvolutionFocus(''); }}>演化新版本</Button>
+          <Button icon={<HistoryOutlined />} onClick={() => openLineage(idea)}>查看谱系</Button>
+          <Button icon={<ExperimentOutlined />} onClick={() => openExperiment(idea)}>记录实验反馈</Button>
+          <Button icon={<FileTextOutlined />} loading={draftingIdeaIds.has(idea.id)} onClick={() => createWritingDraft(idea)}>生成写作草稿</Button>
+        </Space>
+        <Divider><MessageOutlined /> AI 讨论</Divider>
+        <div style={{ maxHeight: 240, overflowY: 'auto', marginBottom: 8, background: '#f8f9ff', padding: 12, borderRadius: 10 }}>
+          {discussion.log.length === 0 && <Text type="secondary">继续追问实验设计、强基线或风险控制方案</Text>}
+          {discussion.log.map((entry, index) => (
+            <div key={index} style={{ display: 'flex', gap: 8, marginBottom: 10, flexDirection: entry.role === 'user' ? 'row-reverse' : 'row' }}>
+              {entry.role === 'user' ? <UserOutlined /> : <RobotOutlined />}
+              <div style={{ maxWidth: '86%', padding: '8px 12px', borderRadius: 10, background: entry.role === 'user' ? '#6956d9' : '#fff', color: entry.role === 'user' ? '#fff' : '#333' }}>{entry.content}</div>
+            </div>
+          ))}
+        </div>
+        <Space.Compact style={{ width: '100%', marginBottom: 12 }}>
+          <TextArea autoSize={{ minRows: 1, maxRows: 4 }} value={discussion.msg} onChange={event => setDiscuss(idea.id, { msg: event.target.value })}
+            onPressEnter={event => { if (!event.shiftKey) { event.preventDefault(); handleDiscuss(idea.id); } }} placeholder="讨论这个 Proposal..." />
+          <Button type="primary" icon={<SendOutlined />} loading={discussion.loading} onClick={() => handleDiscuss(idea.id)} />
+        </Space.Compact>
+        {idea.generated_code ? <pre style={{ background: '#1e1e1e', color: '#d4d4d4', padding: 16, borderRadius: 10, maxHeight: 320, overflow: 'auto' }}>{idea.generated_code}</pre>
+          : <Button type="dashed" icon={<CodeOutlined />} loading={codeMap[idea.id]?.loading} onClick={() => handleGenCode(idea.id)} block>生成实验代码 (PyTorch)</Button>}
+      </div>
+    );
+  };
+
+  const proposalTab = ideas.length === 0 ? <Empty description="评审完成后会保存 Top Proposal" /> : (
+    <Collapse accordion items={ideas.map(idea => ({
+      key: idea.id,
+      label: <Space wrap><BulbOutlined style={{ color: '#faad14' }} /><Text strong>{idea.title}</Text><Tag color={idea.status === 'pinned' ? 'green' : idea.status === 'rejected' ? 'red' : 'default'}>{statusLabels[idea.status] || idea.status}</Tag>{idea.parent_idea_id && <Tag color="cyan">第 {idea.evolution_json?.round || 2} 轮</Tag>}{idea.review_json?.aggregate_score != null && <Tag color="purple">综合 {idea.review_json.aggregate_score}</Tag>}</Space>,
+      extra: <Space onClick={event => event.stopPropagation()}>
+        <Checkbox checked={selectedIdeaIds.includes(idea.id)} onChange={event => toggleCompare(idea.id, event.target.checked)}>比较</Checkbox>
+        {idea.feasibility_score != null && <Tooltip title="可行性"><Tag icon={<RiseOutlined />} color="blue">{idea.feasibility_score}/10</Tag></Tooltip>}
+        {idea.novelty_score != null && <Tooltip title="新颖性"><Tag icon={<StarFilled />} color="gold">{idea.novelty_score}/10</Tag></Tooltip>}
+        <Popconfirm title="删除这个 Proposal？" onConfirm={async () => { await api.delete(`/research/ideas/${idea.id}`); setIdeas(previous => previous.filter(item => item.id !== idea.id)); }}>
+          <Button danger type="text" size="small" icon={<DeleteOutlined />} />
+        </Popconfirm>
+      </Space>,
+      children: renderProposal(idea),
+    }))} />
+  );
+
+  const experimentTab = experiments.length === 0 ? <Empty description="在 Proposal 中记录实验后，会在这里形成反馈闭环" /> : (
+    <List dataSource={experiments} renderItem={experiment => (
+      <List.Item actions={experiment.idea_id ? [<Button key="evolve" type="link" onClick={() => evolveFromFeedback(experiment)}>根据反馈演化</Button>] : []}>
+        <List.Item.Meta
+          title={<Space wrap><ExperimentOutlined style={{ color: '#8b5cf6' }} /><Text strong>{experiment.name}</Text>{experiment.dataset && <Tag>{experiment.dataset}</Tag>}</Space>}
+          description={<Space direction="vertical" size={2}><Text type="secondary">{experiment.notes || '暂无备注'}</Text><Text code>{JSON.stringify(experiment.results || {})}</Text></Space>}
+        />
+      </List.Item>
+    )} />
+  );
+
+  return (
+    <div style={{ maxWidth: 1280, margin: '0 auto' }}>
+      <div style={{ background: heroGradient, borderRadius: 18, padding: '22px 28px', marginBottom: 20, color: '#fff' }}>
+        <div style={{ display: 'flex', gap: 16, justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap' }}>
+          <Space align="start">
+            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/research')} style={{ background: 'rgba(255,255,255,.18)', color: '#fff', border: 'none' }}>返回</Button>
+            <div><Title level={3} style={{ color: '#fff', margin: 0 }}>{project.name}</Title><Paragraph style={{ color: 'rgba(255,255,255,.8)', margin: '6px 0 0' }}>{project.description || '把一个研究方向逐步收敛为可验证的 Proposal'}</Paragraph></div>
+          </Space>
+          <Space wrap>
+            <Button icon={<ShareAltOutlined />} onClick={handleShare}>分享</Button>
+            <Button disabled={selectedIdeaIds.length < 2} onClick={openComparison}>比较 Proposal ({selectedIdeaIds.length})</Button>
+            <Space style={{ padding: '4px 10px', borderRadius: 8, background: 'rgba(255,255,255,.16)' }}>
+              <Text style={{ color: '#fff' }}>联网补充文献</Text>
+              <Switch checked={externalSearch} onChange={setExternalSearch} />
+            </Space>
+            <Button type="primary" icon={generating ? <ReloadOutlined spin /> : <ThunderboltOutlined />} loading={generating} onClick={handleGenerate}>生成候选 Proposal</Button>
+          </Space>
+        </div>
+      </div>
+
+      <Card style={{ borderRadius: 14, marginBottom: 18 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 10 }}>
+          <div><Text strong>Research Idea Workbench</Text><br /><Text type="secondary">{run?.message || '从证据开始，而不是让模型直接猜一个 Idea'}</Text></div>
+          <Progress type="circle" size={54} percent={run?.progress || 0} />
+        </div>
+        <Steps current={stageIndex} size="small" responsive items={stageItems.map(([, title]) => ({ title }))} />
+        {run?.error && <Alert type="error" showIcon message="最近一次运行失败" description={run.error} style={{ marginTop: 12 }} />}
+      </Card>
+
+      <Row gutter={[18, 18]}>
+        <Col xs={24} lg={6}>
+          <Card title="研究简报" style={{ borderRadius: 14, marginBottom: 14 }}>
+            <Space wrap>{project.keywords?.map(keyword => <Tag color="purple" key={keyword}>{keyword}</Tag>)}</Space>
+            <Divider />
+            <Text type="secondary">工作台运行</Text><Title level={4} style={{ margin: '4px 0' }}>{run ? run.status : '尚未启动'}</Title>
+            <Text type="secondary">已保存 Proposal：{ideas.length}</Text>
+          </Card>
+          <Card title="相关论文" loading={papersLoading} style={{ borderRadius: 14 }}>
+            <List size="small" dataSource={relatedPapers} locale={{ emptyText: '暂无匹配论文' }} renderItem={paper => (
+              <List.Item style={{ cursor: 'pointer' }} onClick={() => navigate(`/papers/${paper.id}`)}>
+                <List.Item.Meta title={<Text ellipsis>{paper.title}</Text>} description={<Space>{paper.year && <Tag>{paper.year}</Tag>}<Tag color="blue">{Math.round((paper.similarity || 0) * 100)}%</Tag></Space>} />
+              </List.Item>
+            )} />
+          </Card>
+        </Col>
+        <Col xs={24} lg={18}>
+          <Card style={{ borderRadius: 14 }} styles={{ body: { paddingTop: 8 } }}>
+            <Tabs items={[
+              { key: 'evidence', label: <Space><FileSearchOutlined />证据地图 <Tag>{evidenceItems.length}</Tag></Space>, children: evidenceTab },
+              { key: 'gaps', label: <Space><NodeIndexOutlined />Gap Map <Tag>{gaps.length}</Tag></Space>, children: gapTab },
+              { key: 'candidates', label: <Space><BulbOutlined />候选池 <Tag>{candidates.length}</Tag></Space>, children: candidateTab },
+              { key: 'proposals', label: <Space><ExperimentOutlined />Top Proposal <Tag color="purple">{ideas.length}</Tag></Space>, children: proposalTab },
+              { key: 'experiments', label: <Space><ExperimentOutlined />实验反馈 <Tag>{experiments.length}</Tag></Space>, children: experimentTab },
+            ]} />
+          </Card>
+        </Col>
+      </Row>
+      {!run && <div style={{ textAlign: 'center', padding: 28 }}><Button type="primary" size="large" icon={<RocketOutlined />} onClick={handleGenerate}>从论文证据开始生成</Button></div>}
+      <Modal open={compareOpen} title="Proposal 并排比较" width={1180} footer={null} onCancel={() => setCompareOpen(false)}>
+        <Row gutter={[12, 12]}>
+          {compareIdeas.map(idea => (
+            <Col xs={24} md={compareIdeas.length > 2 ? 12 : 24 / compareIdeas.length} key={idea.id}>
+              <Card size="small" style={{ height: '100%', borderRadius: 12 }} title={<Text strong>{idea.title}</Text>}>
+                <Space wrap style={{ marginBottom: 10 }}><Tag>{statusLabels[idea.status] || idea.status}</Tag>{idea.review_json?.aggregate_score != null && <Tag color="purple">综合 {idea.review_json.aggregate_score}</Tag>}</Space>
+                <Paragraph><Text strong>假设：</Text>{idea.hypothesis || '暂无'}</Paragraph>
+                <Paragraph><Text strong>证据数量：</Text>{idea.evidence_json?.items?.length || 0}</Paragraph>
+                <Paragraph><Text strong>最小实验：</Text>{idea.experiment_plan?.dataset || '暂无'}</Paragraph>
+                <Space wrap>{Object.entries(idea.review_json?.scores || {}).map(([key, value]) => <Tag color="blue" key={key}>{scoreLabels[key] || key} {value}</Tag>)}</Space>
+                {idea.evolution_json?.rationale && <Paragraph style={{ marginTop: 10 }}><Text strong>演化说明：</Text>{idea.evolution_json.rationale}</Paragraph>}
+              </Card>
+            </Col>
+          ))}
+        </Row>
+      </Modal>
+      <Modal open={!!evolvingIdea} title="演化 Proposal 新版本" confirmLoading={evolving} onOk={evolveProposal} onCancel={() => { setEvolvingIdea(null); setEvolutionFocus(''); }} okText="开始演化">
+        <Paragraph type="secondary">原 Proposal 会完整保留，新版本会记录父子关系和演化理由。可以填写你希望优先改进的方向。</Paragraph>
+        <TextArea value={evolutionFocus} onChange={event => setEvolutionFocus(event.target.value)} autoSize={{ minRows: 3, maxRows: 6 }} placeholder="例如：优先降低实验成本，或者增强跨数据集泛化验证" />
+      </Modal>
+      <Modal open={experimentOpen} title="记录实验反馈" onOk={saveExperiment} onCancel={() => setExperimentOpen(false)} okText="保存反馈">
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Input prefix={<PlusOutlined />} value={experimentName} onChange={event => setExperimentName(event.target.value)} placeholder="实验名称，例如：跨数据集 baseline" />
+          <Input value={experimentDataset} onChange={event => setExperimentDataset(event.target.value)} placeholder="数据集" />
+          <TextArea value={experimentResults} onChange={event => setExperimentResults(event.target.value)} autoSize={{ minRows: 3, maxRows: 6 }} placeholder={'结构化结果 JSON，例如：{"accuracy": 0.82, "latency_ms": 31}'} />
+          <TextArea value={experimentNotes} onChange={event => setExperimentNotes(event.target.value)} autoSize={{ minRows: 2, maxRows: 5 }} placeholder="失败案例、观察和下一轮改进方向" />
+        </Space>
+      </Modal>
+      <Modal open={lineageOpen} title="Proposal 演化谱系" footer={null} onCancel={() => setLineageOpen(false)}>
+        <Steps direction="vertical" items={lineage.map(idea => ({
+          title: <Space wrap><Text strong>{idea.title}</Text><Tag color="cyan">第 {idea.evolution_json?.round || 1} 轮</Tag></Space>,
+          description: idea.evolution_json?.rationale || '初始 Proposal',
+        }))} />
+      </Modal>
+    </div>
+  );
+};
+
+export default ResearchProjectPage;

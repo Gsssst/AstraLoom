@@ -1,0 +1,135 @@
+from types import SimpleNamespace
+
+import pytest
+from pydantic import ValidationError
+
+from app.api import chat_sessions
+from app.services.web_search import WebSearchResult
+
+
+class _AsyncContext:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+def test_send_message_request_validates_search_depth():
+    request = chat_sessions.SendMessageRequest(content="分析最新研究", search_depth="deep")
+
+    assert request.search_depth == "deep"
+    with pytest.raises(ValidationError):
+        chat_sessions.SendMessageRequest(content="分析最新研究", search_depth="unbounded")
+
+
+@pytest.mark.parametrize(
+    ("search_depth", "expected"),
+    [
+        ("quick", {"rag_papers": 2, "web_results": 2, "web_queries": 1}),
+        ("standard", {"rag_papers": 3, "web_results": 5, "web_queries": 3}),
+        ("deep", {"rag_papers": 5, "web_results": 8, "web_queries": 5}),
+        ("unknown", {"rag_papers": 3, "web_results": 5, "web_queries": 3}),
+    ],
+)
+def test_retrieval_limits_are_bounded(search_depth, expected):
+    limits = chat_sessions._retrieval_limits(search_depth)
+
+    assert limits == expected
+
+
+@pytest.mark.asyncio
+async def test_mixed_retrieval_combines_knowledge_base_and_web_context(monkeypatch):
+    calls = []
+    paper = SimpleNamespace(title="Multimodal Research", arxiv_id="2606.00001", year=2026)
+
+    class _FakeRAGService:
+        def __init__(self, session):
+            self.session = session
+
+        async def search_similar(self, query, top_k):
+            calls.append(("rag", query, top_k))
+            return [(paper, 0.91234)]
+
+        async def build_rag_context(self, query, max_papers):
+            calls.append(("rag_context", query, max_papers))
+            return "knowledge-base paper context"
+
+    async def _fake_search_web_results(query, max_results, search_depth):
+        calls.append(("web", query, max_results, search_depth))
+        return [WebSearchResult(
+            title="Web result",
+            snippet="recent result",
+            url="https://example.com",
+            provider="bing",
+            query=query,
+            rank=0,
+        )]
+
+    monkeypatch.setattr(chat_sessions, "AsyncSessionLocal", lambda: _AsyncContext())
+    monkeypatch.setattr(chat_sessions, "RAGService", _FakeRAGService)
+    monkeypatch.setattr(chat_sessions, "search_web_results", _fake_search_web_results)
+
+    context = []
+    references = await chat_sessions._append_retrieval_context(
+        context,
+        "multimodal models",
+        rag_enabled=True,
+        web_search_enabled=True,
+        search_depth="deep",
+    )
+
+    assert calls == [
+        ("rag", "multimodal models", 5),
+        ("rag_context", "multimodal models", 5),
+        ("web", "multimodal models", 8, "deep"),
+    ]
+    assert "联网检索获得的网页来源" in context[0]["content"]
+    assert "知识库" in context[1]["content"]
+    assert references == [
+        {"title": "Multimodal Research", "arxiv_id": "2606.00001", "year": 2026, "similarity": 0.9123, "source": "local_library"},
+        {"title": "Web result", "url": "https://example.com", "source": "web", "provider": "bing", "query": "multimodal models", "snippet": "recent result"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_web_search_failure_keeps_direct_chat_available(monkeypatch):
+    async def _fake_search_web_results(query, max_results, search_depth):
+        return []
+
+    monkeypatch.setattr(chat_sessions, "search_web_results", _fake_search_web_results)
+
+    context = []
+    references = await chat_sessions._append_retrieval_context(
+        context,
+        "latest research",
+        rag_enabled=False,
+        web_search_enabled=True,
+        search_depth="deep",
+    )
+
+    assert len(context) == 1
+    assert "未返回可用来源" in context[0]["content"]
+    assert references == []
+
+
+def test_retrieval_status_reports_web_source_count():
+    status = chat_sessions._retrieval_status(
+        [
+            {"source": "local_library"},
+            {"source": "web"},
+            {"source": "web"},
+        ],
+        web_search_enabled=True,
+    )
+
+    assert status == "已完成资料检索：知识库 1 篇，联网来源 2 条，正在生成回答..."
+
+
+def test_retrieval_status_explicitly_reports_empty_web_results():
+    status = chat_sessions._retrieval_status(
+        [{"source": "local_library"}],
+        web_search_enabled=True,
+    )
+
+    assert "联网增强未获取到有效网页来源" in status

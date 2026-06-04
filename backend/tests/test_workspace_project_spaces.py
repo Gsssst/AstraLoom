@@ -1,0 +1,87 @@
+"""Regression tests for project spaces and workflow unification."""
+
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from uuid import uuid4
+
+from app.core.security import get_current_user
+from app.main import app
+from app.services.workspace_service import WorkspaceService
+
+
+def _route(path: str, method: str):
+    return next(
+        route
+        for route in app.routes
+        if route.path == path and method in (route.methods or set())
+    )
+
+
+def _dependency_calls(path: str, method: str):
+    return {dependency.call for dependency in _route(path, method).dependant.dependencies}
+
+
+def test_workspace_routes_require_authentication():
+    private_routes = [
+        ("/api/workspaces", "POST"),
+        ("/api/workspaces", "GET"),
+        ("/api/workspaces/{space_id}", "GET"),
+        ("/api/workspaces/{space_id}", "PATCH"),
+        ("/api/workspaces/{space_id}", "DELETE"),
+        ("/api/workspaces/{space_id}/members", "POST"),
+        ("/api/workspaces/{space_id}/members/{user_id}", "DELETE"),
+    ]
+
+    for path, method in private_routes:
+        assert get_current_user in _dependency_calls(path, method)
+
+
+def test_workspace_role_and_next_actions_are_user_scoped():
+    owner_id = uuid4()
+    member_id = uuid4()
+    now = datetime.now(timezone.utc)
+    space = SimpleNamespace(
+        id=uuid4(),
+        owner_id=owner_id,
+        name="Video Grounding Workspace",
+        description="",
+        status="active",
+        metadata_json={},
+        created_at=now,
+        updated_at=now,
+        members=[
+            SimpleNamespace(user_id=owner_id, role="owner", created_at=now),
+            SimpleNamespace(user_id=member_id, role="viewer", created_at=now),
+        ],
+    )
+    service = WorkspaceService(SimpleNamespace())
+
+    assert service._role_for(space, owner_id) == "owner"
+    assert service._role_for(space, member_id) == "viewer"
+    assert service._role_for(space, uuid4()) == "none"
+
+    actions = service._next_actions({
+        "counts": {
+            "linked_papers": 0,
+            "recent_papers": 0,
+            "recent_research_projects": 0,
+            "recent_writing_projects": 0,
+        }
+    })
+
+    assert [action["kind"] for action in actions] == ["papers", "research", "writing"]
+
+
+def test_workspace_resource_briefs_provide_module_paths():
+    service = WorkspaceService(SimpleNamespace())
+    paper_id = uuid4()
+    research_id = uuid4()
+    writing_id = uuid4()
+
+    paper = SimpleNamespace(id=paper_id, title="Grounded Video Reasoning", year=2026, arxiv_id="2606.00001", source="arxiv")
+    research = SimpleNamespace(id=research_id, name="Video Grounding", description="Temporal grounding")
+    writing = SimpleNamespace(id=writing_id, title="Video Grounding Survey", description="", template_type="survey")
+
+    assert service._paper_brief(paper)["path"] == f"/papers/{paper_id}"
+    assert service._research_brief(research)["path"] == f"/research/{research_id}"
+    assert service._writing_brief(writing)["path"] == f"/writing?project={writing_id}"

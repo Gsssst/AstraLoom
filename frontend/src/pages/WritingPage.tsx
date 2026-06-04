@@ -1,0 +1,705 @@
+import React, { useState, useCallback, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
+import {
+  Alert, Card, Button, Input, Tag, Typography, Space, message,
+  Tabs, Select, Tooltip, List, Divider, Row, Col, Empty,
+} from 'antd';
+import {
+  EditOutlined, SearchOutlined, FileTextOutlined,
+  CopyOutlined, BulbOutlined,
+  BookOutlined, FormOutlined, ReadOutlined, SwapOutlined,
+  AuditOutlined, FolderOutlined, RocketOutlined,
+} from '@ant-design/icons';
+import api from '../services/api';
+import Markdown from '../components/Markdown';
+import { DiffViewer, PipelineProgress, WritingProjectPanel, SectionEditor } from '../components/writing';
+
+const { Title, Text, Paragraph } = Typography;
+const { TextArea } = Input;
+
+// ───────────────── 样式常量 ─────────────────
+const heroGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+const cardStyle = { borderRadius: 12, border: '1px solid #f0f0f0', transition: 'all 0.3s' };
+const inputStyle = { borderRadius: 10, fontSize: 14 };
+const primaryBtn = { borderRadius: 10, height: 40, fontWeight: 500 };
+const resultCard = { marginTop: 20, borderRadius: 12, border: '1px solid #e8e8e8', overflow: 'hidden' };
+
+// ───────────────── 功能卡片配置 ─────────────────
+const features = [
+  { icon: <SearchOutlined />, color: '#667eea', bg: '#f0f2ff', key: 'citations', label: '引用推荐', desc: '输入段落，AI 推荐相关论文引用' },
+  { icon: <BookOutlined />, color: '#f5576c', bg: '#fff0f2', key: 'related-work', label: 'Related Work', desc: '自动生成相关工作章节' },
+  { icon: <FormOutlined />, color: '#11998e', bg: '#f0fdf9', key: 'polish', label: '文本润色', desc: '学术化/简洁化/翻译' },
+  { icon: <FileTextOutlined />, color: '#f093fb', bg: '#fef5ff', key: 'abstract', label: '摘要生成', desc: '结构化论文摘要' },
+  { icon: <ReadOutlined />, color: '#4facfe', bg: '#f0f9ff', key: 'lit-review', label: '文献综述', desc: '章节 + 对比表格 + Gap' },
+  { icon: <SwapOutlined />, color: '#fa709a', bg: '#fff5f7', key: 'compare', label: '论文对比', desc: '多论文方法/数据对比' },
+  { icon: <AuditOutlined />, color: '#a18cd1', bg: '#f8f5ff', key: 'grant', label: '申请书', desc: 'NSFC 分段撰写' },
+  { icon: <FolderOutlined />, color: '#43e97b', bg: '#f5fff8', key: 'project', label: '项目管理', desc: '章节组织 + 多格式导出' },
+];
+
+// ───────────────── 输入/输出卡片 ─────────────────
+const ToolCard: React.FC<{
+  icon: React.ReactNode; color: string; title: string; desc: string;
+  children: React.ReactNode;
+}> = ({ icon, color, title, desc, children }) => (
+  <Card
+    style={{ ...cardStyle, borderTop: `3px solid ${color}` }}
+    styles={{ body: { padding: 24 } }}
+  >
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: 20 }}>
+      <div style={{
+        width: 48, height: 48, borderRadius: 14, background: `${color}15`,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 22, color, flexShrink: 0,
+      }}>
+        {icon}
+      </div>
+      <div>
+        <Title level={5} style={{ margin: 0 }}>{title}</Title>
+        <Text type="secondary" style={{ fontSize: 13 }}>{desc}</Text>
+      </div>
+    </div>
+    {children}
+  </Card>
+);
+
+const ResultCard: React.FC<{ children: React.ReactNode; onCopy?: () => void; extra?: React.ReactNode }> = ({ children, onCopy, extra }) => (
+  <Card style={resultCard} styles={{ body: { padding: 20 } }}
+    extra={extra || (onCopy ? <Button size="small" icon={<CopyOutlined />} onClick={onCopy} style={{ borderRadius: 8 }}>复制</Button> : undefined)}
+  >
+    {children}
+  </Card>
+);
+
+const LoadingDots = () => (
+  <Space size={5} style={{ padding: '20px 0' }}>
+    {[0, 0.15, 0.3].map((d, i) => (
+      <div key={i} style={{
+        width: 8, height: 8, borderRadius: '50%',
+        background: 'linear-gradient(135deg, #667eea, #764ba2)',
+        animation: `bounce 1.4s infinite ease-in-out ${d}s`,
+      }} />
+    ))}
+  </Space>
+);
+
+const WritingPage: React.FC = () => {
+  const location = useLocation();
+  const [activeTab, setActiveTab] = useState('citations');
+
+  // ── 状态 ──
+  const [citeText, setCiteText] = useState('');
+  const [citations, setCitations] = useState<any[]>([]);
+  const [citeLoading, setCiteLoading] = useState(false);
+  const [rwTopic, setRwTopic] = useState('');
+  const [rwResult, setRwResult] = useState('');
+  const [rwTable, setRwTable] = useState('');
+  const [rwLoading, setRwLoading] = useState(false);
+  const [rwTableLoading, setRwTableLoading] = useState(false);
+  const [polishText, setPolishText] = useState('');
+  const [polishStyle, setPolishStyle] = useState('academic');
+  const [polishResult, setPolishResult] = useState('');
+  const [polishLoading, setPolishLoading] = useState(false);
+  const [absTitle, setAbsTitle] = useState('');
+  const [absKeyPoints, setAbsKeyPoints] = useState('');
+  const [absResult, setAbsResult] = useState('');
+  const [absLoading, setAbsLoading] = useState(false);
+  const [lrTopic, setLrTopic] = useState('');
+  const [lrResult, setLrResult] = useState<any>(null);
+  const [lrLoading, setLrLoading] = useState(false);
+  const [compareIds, setCompareIds] = useState('');
+  const [compareResult, setCompareResult] = useState('');
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [grantTopic, setGrantTopic] = useState('');
+  const [grantBg, setGrantBg] = useState('');
+  const [grantSection, setGrantSection] = useState('立项依据');
+  const [grantResult, setGrantResult] = useState('');
+  const [grantLoading, setGrantLoading] = useState(false);
+  const [grantReview, setGrantReview] = useState('');
+  const [grantReviewing, setGrantReviewing] = useState(false);
+  const [grantPolishText, setGrantPolishText] = useState('');
+  const [grantPolishResult, setGrantPolishResult] = useState('');
+  const [grantPolishing, setGrantPolishing] = useState(false);
+  const [grantInnovResult, setGrantInnovResult] = useState('');
+  const [grantInnovLoading, setGrantInnovLoading] = useState(false);
+  const [diffResult, setDiffResult] = useState<any>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [selectedProject, setSelectedProject] = useState<any>(null);
+  const [projectSections, setProjectSections] = useState<any[]>([]);
+  const [evidenceCards, setEvidenceCards] = useState<any[]>([]);
+  const [evidenceCoverage, setEvidenceCoverage] = useState<any>(null);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const [evidenceTableLoading, setEvidenceTableLoading] = useState(false);
+  const [evidenceTable, setEvidenceTable] = useState<any>(null);
+  const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
+  const [citationChecks, setCitationChecks] = useState<Record<string, any>>({});
+  const [citationChecking, setCitationChecking] = useState<Record<string, boolean>>({});
+  const [draftTopic, setDraftTopic] = useState('');
+  const [draftLoading, setDraftLoading] = useState(false);
+  const [projectRefreshSignal, setProjectRefreshSignal] = useState(0);
+  const [pipelinePhases, setPipelinePhases] = useState<string[]>([]);
+  const [pipelineCurrentPhase, setPipelineCurrentPhase] = useState<string | null>(null);
+  const [pipelinePhaseStatuses, setPipelinePhaseStatuses] = useState<Record<string, 'pending' | 'running' | 'complete' | 'error'>>({});
+  const [pipelineStatusText, setPipelineStatusText] = useState('');
+  const [pipelineRunning, setPipelineRunning] = useState(false);
+  const [pipelineAbort, setPipelineAbort] = useState<AbortController | null>(null);
+
+  const handleCopy = (text: string) => { navigator.clipboard.writeText(text); message.success('已复制'); };
+  const matchColor = (status?: string) => status === 'strong' ? 'green' : status === 'partial' ? 'gold' : 'red';
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const projectId = params.get('project');
+    if (!projectId) return;
+    setActiveTab('project');
+    api.get(`/writing/projects/${projectId}`)
+      .then(response => {
+        setSelectedProject(response.data);
+        setProjectSections(response.data.sections || []);
+      })
+      .catch(() => message.error('无法打开写作项目'));
+  }, [location.search]);
+
+  useEffect(() => {
+    if (!selectedProject?.id) {
+      setEvidenceCards([]);
+      setEvidenceCoverage(null);
+      setEvidenceTable(null);
+      setCitationChecks({});
+      return;
+    }
+    setEvidenceLoading(true);
+    api.get(`/writing/projects/${selectedProject.id}/evidence-cards`)
+      .then(response => {
+        setEvidenceCards(response.data.cards || []);
+        setEvidenceCoverage(response.data.coverage || null);
+        setEvidenceTable(null);
+      })
+      .catch(() => {
+        setEvidenceCards([]);
+        setEvidenceCoverage(null);
+      })
+      .finally(() => setEvidenceLoading(false));
+  }, [selectedProject?.id]);
+
+  // ── 处理器 ── (保持简洁)
+  const handleRecommend = useCallback(async () => {
+    if (!citeText.trim()) return;
+    setCiteLoading(true);
+    try { const r = await api.post('/writing/recommend-citations', { text: citeText, top_k: 5 }); setCitations(r.data); if (!r.data.length) message.info('知识库中暂无相关论文'); }
+    catch { message.error('引用推荐失败'); } finally { setCiteLoading(false); }
+  }, [citeText]);
+  const handleRelatedWork = useCallback(async () => {
+    if (!rwTopic.trim()) return;
+    setRwLoading(true);
+    try { const r = await api.post('/writing/related-work', { topic: rwTopic, max_papers: 5, language: 'chinese' }); setRwResult(r.data.result); }
+    catch { message.error('生成失败'); } finally { setRwLoading(false); }
+  }, [rwTopic]);
+  const handleRelatedWorkTable = useCallback(async () => {
+    if (!rwTopic.trim()) return;
+    setRwTableLoading(true);
+    try { const r = await api.post('/writing/related-work/table', { topic: rwTopic, max_papers: 8, language: 'chinese' }); setRwTable(r.data.markdown || ''); }
+    catch { message.error('对比表生成失败'); } finally { setRwTableLoading(false); }
+  }, [rwTopic]);
+  const handlePolish = useCallback(async () => {
+    if (!polishText.trim()) return;
+    setPolishLoading(true);
+    try { const r = await api.post('/writing/polish', { text: polishText, style: polishStyle }); setPolishResult(r.data.result); }
+    catch { message.error('润色失败'); } finally { setPolishLoading(false); }
+  }, [polishText, polishStyle]);
+  const handleAbstract = useCallback(async () => {
+    if (!absTitle.trim()) return;
+    setAbsLoading(true);
+    try { const r = await api.post('/writing/generate-abstract', { title: absTitle, key_points: absKeyPoints, language: 'chinese' }); setAbsResult(r.data.result); }
+    catch { message.error('生成失败'); } finally { setAbsLoading(false); }
+  }, [absTitle, absKeyPoints]);
+  const handleLitReview = useCallback(async () => {
+    if (!lrTopic.trim()) return;
+    setLrLoading(true);
+    try { const r = await api.post('/writing/literature-review', { topic: lrTopic, max_papers: 10 }); setLrResult(r.data); }
+    catch { message.error('生成失败'); } finally { setLrLoading(false); }
+  }, [lrTopic]);
+  const handleCompare = useCallback(async () => {
+    const ids = compareIds.split(/[\s,]+/).filter(Boolean);
+    if (ids.length < 2) { message.warning('请输入至少 2 个论文 ID'); return; }
+    setCompareLoading(true);
+    try { const r = await api.post('/writing/compare-papers', { paper_ids: ids }); setCompareResult(r.data.result); }
+    catch { message.error('对比失败'); } finally { setCompareLoading(false); }
+  }, [compareIds]);
+  const handleDiffPolish = async () => {
+    if (!polishText.trim()) return;
+    setDiffLoading(true);
+    try { const r = await api.post('/writing/polish/diff', { text: polishText, style: polishStyle }); setDiffResult(r.data); }
+    catch { message.error('Diff 润色失败'); } finally { setDiffLoading(false); }
+  };
+  const handleApplyDiff = (result: string) => { setPolishResult(result); setDiffResult(null); message.success('Diff 修改已应用'); };
+  const handleSelectProject = async (p: any) => {
+    setSelectedProject(p);
+    setProjectSections(p.sections || []);
+    setCitationChecks({});
+    setActiveSectionId(null);
+    setEvidenceTable(null);
+  };
+  const handleCreateReviewDraft = async () => {
+    const topic = draftTopic.trim();
+    if (!topic) { message.warning('请先输入研究方向'); return; }
+    setDraftLoading(true);
+    try {
+      const r = await api.post('/writing/projects/from-topic', { topic, max_papers: 8, language: 'chinese' });
+      const project = r.data.project;
+      setSelectedProject(project);
+      setProjectSections(project.sections || []);
+      setProjectRefreshSignal(v => v + 1);
+      message.success(r.data.evidence_status === 'sufficient' ? '综述草稿已创建' : '已创建草稿，但证据不足，建议先补充论文');
+    } catch {
+      message.error('创建综述草稿失败');
+    } finally {
+      setDraftLoading(false);
+    }
+  };
+  const handleUpdateSection = async (sid: string, d: any) => {
+    try { await api.put(`/writing/projects/${selectedProject.id}/sections/${sid}`, d); setProjectSections(prev => prev.map(s => s.id === sid ? { ...s, ...d } : s)); }
+    catch { /* ignore */ }
+  };
+  const persistSectionContent = async (section: any, content: string, successText?: string) => {
+    if (!selectedProject?.id) return;
+    try {
+      await api.put(`/writing/projects/${selectedProject.id}/sections/${section.id}`, { content });
+      setProjectSections(prev => prev.map(s => s.id === section.id ? { ...s, content, word_count: content.length } : s));
+      if (successText) message.success(successText);
+    } catch {
+      message.error('章节更新失败');
+    }
+  };
+  const handleInsertEvidenceMarker = async (marker: string) => {
+    const target = projectSections.find(s => s.id === activeSectionId) || projectSections[0];
+    if (!target) {
+      message.warning('当前项目还没有可写入章节');
+      return;
+    }
+    const nextContent = `${(target.content || '').trimEnd()}${target.content ? ' ' : ''}${marker}`;
+    await persistSectionContent(
+      target,
+      nextContent,
+      activeSectionId ? `已插入到「${target.title}」` : `未检测到当前编辑章节，已插入到「${target.title}」`,
+    );
+  };
+  const handleGenerateEvidenceTable = async () => {
+    if (!selectedProject?.id) return;
+    setEvidenceTableLoading(true);
+    try {
+      const response = await api.post(`/writing/projects/${selectedProject.id}/evidence-related-work-table`);
+      setEvidenceTable(response.data);
+      if (response.data.warnings?.length) message.warning('证据表已生成，但存在证据覆盖提醒');
+      else message.success('证据对比表已生成');
+    } catch {
+      message.error('生成证据对比表失败');
+    } finally {
+      setEvidenceTableLoading(false);
+    }
+  };
+  const handleWriteEvidenceTableToSection = async () => {
+    if (!evidenceTable?.markdown) {
+      await handleGenerateEvidenceTable();
+      return;
+    }
+    const target = projectSections.find(s => /related work comparison table/i.test(s.title))
+      || projectSections.find(s => /related work/i.test(s.title));
+    if (!target) {
+      handleCopy(evidenceTable.markdown);
+      message.info('没有找到 Related Work 章节，已复制证据表');
+      return;
+    }
+    await persistSectionContent(target, evidenceTable.markdown, `已写入「${target.title}」`);
+  };
+  const handleCheckSectionCitations = async (section: any) => {
+    if (!selectedProject?.id) return;
+    if (!(section.content || '').trim()) {
+      message.warning('章节内容为空，暂时没有可校验的引用');
+      return;
+    }
+    setCitationChecking(prev => ({ ...prev, [section.id]: true }));
+    try {
+      const response = await api.post(`/writing/projects/${selectedProject.id}/citations/check-section`, {
+        section_id: section.id,
+        text: section.content || '',
+      });
+      setCitationChecks(prev => ({ ...prev, [section.id]: response.data }));
+      const warning = response.data.summary?.evidence_warning;
+      message.success(warning ? '引用校验完成：存在需要确认的证据' : '引用校验完成：当前引用较稳');
+    } catch {
+      message.error('引用校验失败');
+    } finally {
+      setCitationChecking(prev => ({ ...prev, [section.id]: false }));
+    }
+  };
+  const handleCancelPipeline = () => { pipelineAbort?.abort(); setPipelineRunning(false); };
+  const handlePipelineTask = async (taskType: string, inputData: any) => {
+    setPipelineRunning(true); setPipelinePhases([]); setPipelinePhaseStatuses({}); setPipelineStatusText('正在启动...'); setPipelineCurrentPhase(null);
+    const ctrl = new AbortController(); setPipelineAbort(ctrl);
+    try {
+      const t = localStorage.getItem('access_token');
+      const resp = await fetch('/api/writing/pipeline/stream', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` },
+        body: JSON.stringify({ task_type: taskType, input_data: inputData }), signal: ctrl.signal,
+      });
+      const reader = resp.body!.getReader(); const dec = new TextDecoder(); let buf = '';
+      while (true) {
+        const { done, value } = await reader.read(); if (done) break;
+        buf += dec.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+        const frames = buf.split('\n\n'); buf = frames.pop() || '';
+        for (const f of frames) for (const l of f.split('\n').filter(x => x.startsWith('data: '))) {
+          const d = l.slice(6); if (d === '[DONE]') continue;
+          try {
+            const ev = JSON.parse(d);
+            if (ev.type === 'pipeline_start') setPipelinePhases(ev.metadata?.phases || []);
+            else if (ev.type === 'phase_start') { setPipelineCurrentPhase(ev.phase); setPipelinePhaseStatuses(p => ({ ...p, [ev.phase!]: 'running' })); setPipelineStatusText(`${ev.phase} 阶段...`); }
+            else if (ev.type === 'phase_complete') setPipelinePhaseStatuses(p => ({ ...p, [ev.phase!]: 'complete' }));
+            else if (ev.type === 'status') setPipelineStatusText(typeof ev.content === 'string' ? ev.content : '');
+            else if (ev.type === 'error') { setPipelinePhaseStatuses(p => ({ ...p, [ev.phase!]: 'error' })); message.error(typeof ev.content === 'string' ? ev.content : '出错'); }
+            else if (ev.type === 'done') setPipelineStatusText('完成');
+          } catch { /* ignore */ }
+        }
+      }
+    } catch (e: any) { if (e.name !== 'AbortError') message.error('Pipeline 执行失败'); }
+    finally { setPipelineRunning(false); setPipelineAbort(null); }
+  };
+
+  // ── 申请书处理器 ──
+  const handleGrantWrite = async () => { if (!grantTopic.trim()) { message.warning('请填写项目主题'); return; } setGrantLoading(true); try { const r = await api.post('/writing/grant/write-section', { section: grantSection, topic: grantTopic, background: grantBg, previous_content: grantResult }); setGrantResult(r.data.result); } catch { message.error('生成失败'); } finally { setGrantLoading(false); } };
+  const handleGrantReview = async () => { if (!grantResult.trim()) { message.warning('请先生成或粘贴内容'); return; } setGrantReviewing(true); try { const r = await api.post('/writing/grant/review-section', { section: grantSection, content: grantResult, topic: grantTopic }); setGrantReview(r.data.result); } catch { message.error('审阅失败'); } finally { setGrantReviewing(false); } };
+  const handleGrantPolish = async () => { if (!grantPolishText.trim()) return; setGrantPolishing(true); try { const r = await api.post('/writing/grant/polish', { text: grantPolishText }); setGrantPolishResult(r.data.result); } catch { message.error('润色失败'); } finally { setGrantPolishing(false); } };
+  const handleGrantInnov = async () => { if (!grantTopic.trim()) { message.warning('请先填写项目主题'); return; } setGrantInnovLoading(true); try { const r = await api.post('/writing/grant/extract-innovation', { topic: grantTopic, background: grantBg, methods: grantResult }); setGrantInnovResult(r.data.result); } catch { message.error('提取失败'); } finally { setGrantInnovLoading(false); } };
+
+  // ══════════════════════════════════════════════════
+  //  Tab 内容
+  // ══════════════════════════════════════════════════
+
+  const citationTab = (
+    <ToolCard icon={<SearchOutlined />} color="#667eea" title="引用推荐" desc="输入写作段落，AI 从知识库中推荐最相关的论文引用">
+      <TextArea rows={4} style={{ ...inputStyle, marginBottom: 12 }} placeholder="粘贴你的论文段落，AI 将推荐最相关的引用论文..." value={citeText} onChange={e => setCiteText(e.target.value)} />
+      <Button type="primary" icon={<RocketOutlined />} loading={citeLoading} onClick={handleRecommend} style={{ ...primaryBtn, width: '100%' }}>智能推荐引用</Button>
+      {citeLoading && <div style={{ textAlign: 'center', marginTop: 16 }}><LoadingDots /></div>}
+      {!citeLoading && citations.length > 0 && (
+        <List style={{ marginTop: 16 }} dataSource={citations}
+          renderItem={(item, idx) => (
+            <Card hoverable size="small" style={{ marginBottom: 10, borderRadius: 10, border: '1px solid #f0f0f0' }}
+              extra={<Tooltip title="复制 BibTeX"><Button size="small" type="text" icon={<CopyOutlined />} onClick={() => handleCopy(item.bibtex)} /></Tooltip>}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <div style={{ width: 28, height: 28, borderRadius: 8, background: '#667eea15', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#667eea', fontWeight: 700, fontSize: 13, flexShrink: 0 }}>{idx + 1}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <Text strong style={{ fontSize: 13 }} ellipsis>{item.title}</Text>
+                  <div style={{ marginTop: 4 }}>
+                    <Space size={4} wrap>
+                      <Tag color="blue" style={{ borderRadius: 6 }}>{item.year}</Tag>
+                      <Tag style={{ borderRadius: 6 }}>{item.authors?.split(',')[0]}</Tag>
+                      <Tag color="geekblue" style={{ borderRadius: 6 }}>★{(item.similarity * 100).toFixed(0)}%</Tag>
+                      {item.role_label && <Tag color="purple" style={{ borderRadius: 6 }}>{item.role_label}</Tag>}
+                      {item.match_label && <Tag color={matchColor(item.match_status)} style={{ borderRadius: 6 }}>{item.match_label}</Tag>}
+                    </Space>
+                  </div>
+                  <Paragraph type="secondary" ellipsis={{ rows: 2 }} style={{ fontSize: 12, marginTop: 4, marginBottom: 0 }}>{item.abstract_snippet}</Paragraph>
+                  {(item.role_reason || item.match_explanation) && (
+                    <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 6 }}>
+                      {item.role_reason} {item.match_explanation}
+                    </Text>
+                  )}
+                </div>
+              </div>
+            </Card>
+          )}
+        />
+      )}
+    </ToolCard>
+  );
+
+  const relatedWorkTab = (
+    <ToolCard icon={<BookOutlined />} color="#f5576c" title="Related Work" desc="输入研究方向，AI 基于知识库检索论文并撰写规范的 Related Work 章节">
+      <Input size="large" style={{ ...inputStyle, marginBottom: 12 }} placeholder="研究方向，如：Video Grounding、多模态大语言模型的偏好对齐" value={rwTopic} onChange={e => setRwTopic(e.target.value)} prefix={<BulbOutlined style={{ color: '#f5576c' }} />} />
+      <Row gutter={12}>
+        <Col flex="auto"><Button type="primary" icon={<RocketOutlined />} loading={rwLoading} onClick={handleRelatedWork} style={{ ...primaryBtn, width: '100%', background: 'linear-gradient(135deg, #f5576c, #ff6b81)', border: 'none' }}>生成 Related Work</Button></Col>
+        <Col><Button icon={<SwapOutlined />} loading={rwTableLoading} onClick={handleRelatedWorkTable} style={{ ...primaryBtn, borderColor: '#f5576c', color: '#f5576c' }}>生成对比表</Button></Col>
+      </Row>
+      {(rwLoading || rwTableLoading) && <div style={{ textAlign: 'center', marginTop: 16 }}><LoadingDots /></div>}
+      {rwTable && <ResultCard onCopy={() => handleCopy(rwTable)} extra={<Tag color="magenta">Related Work 对比表</Tag>}><Markdown content={rwTable} /></ResultCard>}
+      {rwResult && <ResultCard onCopy={() => handleCopy(rwResult)}><Markdown content={rwResult} /></ResultCard>}
+    </ToolCard>
+  );
+
+  const polishTab = (
+    <ToolCard icon={<FormOutlined />} color="#11998e" title="文本润色" desc="学术化、简洁化、流畅性优化，或翻译为学术英语">
+      <Select value={polishStyle} onChange={setPolishStyle} style={{ width: 160, marginBottom: 12, borderRadius: 10 }}
+        options={[{ value: 'academic', label: '📝 学术化' }, { value: 'concise', label: '📐 简洁化' }, { value: 'fluent', label: '🌊 流畅性' }, { value: 'english', label: '🌍 翻译成英语' }]} />
+      <TextArea rows={5} style={{ ...inputStyle, marginBottom: 12 }} placeholder="输入需要润色的学术文本..." value={polishText} onChange={e => setPolishText(e.target.value)} />
+      <Row gutter={12}>
+        <Col flex="auto"><Button type="primary" icon={<RocketOutlined />} loading={polishLoading} onClick={handlePolish} style={{ ...primaryBtn, width: '100%', background: 'linear-gradient(135deg, #11998e, #38ef7d)', border: 'none' }}>一键润色</Button></Col>
+        <Col><Button icon={<SwapOutlined />} loading={diffLoading} onClick={handleDiffPolish} style={{ ...primaryBtn, borderColor: '#11998e', color: '#11998e' }}>Diff 模式</Button></Col>
+      </Row>
+      {polishLoading && <div style={{ textAlign: 'center', marginTop: 16 }}><LoadingDots /></div>}
+      {diffResult && <div style={{ marginTop: 16 }}><DiffViewer original={diffResult.original} polished={diffResult.polished} diff={diffResult.diff} onApply={handleApplyDiff} onCancel={() => setDiffResult(null)} /></div>}
+      {polishResult && !diffResult && <ResultCard onCopy={() => handleCopy(polishResult)}><Markdown content={polishResult} /></ResultCard>}
+    </ToolCard>
+  );
+
+  const abstractTab = (
+    <ToolCard icon={<FileTextOutlined />} color="#f093fb" title="摘要生成" desc="基于标题和关键要点，生成符合顶会标准的学术摘要">
+      <Input size="large" style={{ ...inputStyle, marginBottom: 12 }} placeholder="论文标题" prefix={<FileTextOutlined style={{ color: '#f093fb' }} />} value={absTitle} onChange={e => setAbsTitle(e.target.value)} />
+      <TextArea rows={4} style={{ ...inputStyle, marginBottom: 12 }} placeholder="论文关键要点：研究问题、方法概述、主要结果..." value={absKeyPoints} onChange={e => setAbsKeyPoints(e.target.value)} />
+      <Button type="primary" icon={<RocketOutlined />} loading={absLoading} onClick={handleAbstract} style={{ ...primaryBtn, width: '100%', background: 'linear-gradient(135deg, #f093fb, #f5576c)', border: 'none' }}>生成摘要</Button>
+      {absLoading && <div style={{ textAlign: 'center', marginTop: 16 }}><LoadingDots /></div>}
+      {absResult && <ResultCard onCopy={() => handleCopy(absResult)}><Markdown content={absResult} /></ResultCard>}
+    </ToolCard>
+  );
+
+  const litReviewTab = (
+    <ToolCard icon={<ReadOutlined />} color="#4facfe" title="文献综述" desc="AI 自动检索、分析、分类，生成包含对比表格和研究空白的完整综述">
+      <Input size="large" style={{ ...inputStyle, marginBottom: 12 }} placeholder="研究方向，如：Large Language Model Alignment Techniques" prefix={<ReadOutlined style={{ color: '#4facfe' }} />} value={lrTopic} onChange={e => setLrTopic(e.target.value)} />
+      <Button type="primary" icon={<RocketOutlined />} loading={lrLoading} onClick={handleLitReview} style={{ ...primaryBtn, width: '100%', background: 'linear-gradient(135deg, #4facfe, #00f2fe)', border: 'none' }}>生成文献综述</Button>
+      {lrLoading && <div style={{ textAlign: 'center', marginTop: 16 }}><LoadingDots /></div>}
+      {lrResult && (
+        <ResultCard onCopy={() => handleCopy(lrResult.content)}
+          extra={<Space>{lrResult.papers?.map((p: any) => <Tag key={p.index} color="blue" style={{ borderRadius: 6 }}>[{p.index}] {p.title.slice(0, 24)}...</Tag>)}</Space>}>
+          <Text type="secondary" style={{ fontSize: 12, marginBottom: 12, display: 'block' }}>基于 {lrResult.total_papers} 篇论文生成</Text>
+          <Divider style={{ margin: '12px 0' }} />
+          <Markdown content={lrResult.content} />
+        </ResultCard>
+      )}
+    </ToolCard>
+  );
+
+  const compareTab = (
+    <ToolCard icon={<SwapOutlined />} color="#fa709a" title="论文对比" desc="输入论文 ID（从详情页 URL 复制），AI 自动对比方法、数据集和实验结果">
+      <TextArea rows={3} style={{ ...inputStyle, marginBottom: 12 }} placeholder="粘贴论文 ID，逗号或换行分隔&#10;例如：d995a02d-b87a-43c4-aa04-5731e23c8225, 62c7cdd1-81ba-465a-b6a7" value={compareIds} onChange={e => setCompareIds(e.target.value)} />
+      <Button type="primary" icon={<RocketOutlined />} loading={compareLoading} onClick={handleCompare} style={{ ...primaryBtn, width: '100%', background: 'linear-gradient(135deg, #fa709a, #fee140)', border: 'none' }}>对比分析</Button>
+      {compareLoading && <div style={{ textAlign: 'center', marginTop: 16 }}><LoadingDots /></div>}
+      {compareResult && <ResultCard onCopy={() => handleCopy(compareResult)}><Markdown content={compareResult} /></ResultCard>}
+    </ToolCard>
+  );
+
+  const grantTab = (
+    <ToolCard icon={<AuditOutlined />} color="#a18cd1" title="NSFC 申请书助手" desc="参考 NSFC 模板分段撰写，支持 AI 撰写、模拟评审、创新点提炼和文本润色">
+      <Row gutter={[12, 12]}>
+        <Col xs={24} sm={8}><Select value={grantSection} onChange={setGrantSection} style={{ width: '100%', borderRadius: 10 }} options={['立项依据', '研究内容', '研究方案', '特色创新', '预期成果', '研究基础'].map(v => ({ value: v, label: v }))} /></Col>
+        <Col xs={24} sm={16}><Input placeholder="项目主题" value={grantTopic} onChange={e => setGrantTopic(e.target.value)} style={{ borderRadius: 10 }} /></Col>
+      </Row>
+      <TextArea rows={3} style={{ ...inputStyle, marginTop: 12 }} placeholder="项目背景/摘要（有助于提高生成质量）" value={grantBg} onChange={e => setGrantBg(e.target.value)} />
+      <Space style={{ marginTop: 12 }}>
+        <Button type="primary" icon={<RocketOutlined />} loading={grantLoading} onClick={handleGrantWrite} style={{ ...primaryBtn, background: 'linear-gradient(135deg, #a18cd1, #f5576c)', border: 'none' }}>生成 {grantSection}</Button>
+        <Button icon={<AuditOutlined />} loading={grantReviewing} onClick={handleGrantReview} style={primaryBtn}>模拟评审</Button>
+        <Button icon={<BulbOutlined />} loading={grantInnovLoading} onClick={handleGrantInnov} style={primaryBtn}>提炼创新点</Button>
+      </Space>
+      {grantLoading && <div style={{ textAlign: 'center', marginTop: 16 }}><LoadingDots /></div>}
+      {grantResult && <ResultCard onCopy={() => handleCopy(grantResult)} extra={<Tag color="purple">{grantSection}</Tag>}><Markdown content={grantResult} /></ResultCard>}
+      {grantReview && <Card style={{ marginTop: 12, borderRadius: 12, border: '2px solid #faad14', background: '#fffbe6' }} title="📋 评审意见"><Markdown content={grantReview} /></Card>}
+      {grantInnovResult && <ResultCard onCopy={() => handleCopy(grantInnovResult)} extra={<Tag color="orange">创新点</Tag>}><Markdown content={grantInnovResult} /></ResultCard>}
+      <Divider style={{ margin: '16px 0' }}>文本润色</Divider>
+      <TextArea rows={3} style={inputStyle} placeholder="粘贴需润色的申请书文本..." value={grantPolishText} onChange={e => setGrantPolishText(e.target.value)} />
+      <Button icon={<FormOutlined />} loading={grantPolishing} onClick={handleGrantPolish} style={{ ...primaryBtn, marginTop: 8, borderColor: '#a18cd1', color: '#a18cd1' }}>润色申请书文本</Button>
+      {grantPolishResult && <ResultCard onCopy={() => handleCopy(grantPolishResult)}><Markdown content={grantPolishResult} /></ResultCard>}
+    </ToolCard>
+  );
+
+  const evidencePanel = selectedProject ? (
+    <Card
+      title="证据卡片"
+      loading={evidenceLoading}
+      style={{ ...cardStyle, position: 'sticky', top: 12 }}
+      styles={{ body: { padding: 14, maxHeight: 720, overflowY: 'auto' } }}
+      extra={evidenceCoverage && <Tag color={evidenceCoverage.external ? 'gold' : 'green'}>{evidenceCoverage.local}/{evidenceCoverage.total} 已入库</Tag>}
+    >
+      <Space direction="vertical" style={{ width: '100%', marginBottom: 12 }}>
+        <Button
+          block
+          size="small"
+          icon={<SwapOutlined />}
+          loading={evidenceTableLoading}
+          onClick={handleGenerateEvidenceTable}
+          style={{ borderRadius: 8 }}
+        >
+          生成证据对比表
+        </Button>
+        <Button
+          block
+          size="small"
+          type="primary"
+          disabled={!evidenceTable?.markdown}
+          onClick={handleWriteEvidenceTableToSection}
+          style={{ borderRadius: 8 }}
+        >
+          写入对比表章节
+        </Button>
+        {evidenceTable?.warnings?.length > 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            message="证据覆盖提醒"
+            description={evidenceTable.warnings.join(' ')}
+            style={{ borderRadius: 8, fontSize: 12 }}
+          />
+        )}
+      </Space>
+      {evidenceCards.length ? (
+        <List
+          dataSource={evidenceCards}
+          renderItem={(card: any) => (
+            <List.Item style={{ padding: '10px 0' }}>
+              <div style={{ width: '100%' }}>
+                <Space size={6} wrap>
+                  <Tag color="purple">{card.citation_marker}</Tag>
+                  <Tag color={card.local_status === 'local' ? 'green' : 'gold'}>{card.local_status_label}</Tag>
+                  <Tag>{card.role_label}</Tag>
+                </Space>
+                <Text strong style={{ display: 'block', marginTop: 6, fontSize: 13 }}>
+                  {card.title}
+                </Text>
+                <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 4 }}>
+                  {[card.year, card.authors].filter(Boolean).join(' · ')}
+                </Text>
+                <Paragraph type="secondary" ellipsis={{ rows: 3 }} style={{ fontSize: 12, marginTop: 6, marginBottom: 8 }}>
+                  {card.snippet || '暂无摘要片段，建议补全文后再精细校验。'}
+                </Paragraph>
+                <Space>
+                  <Button size="small" onClick={() => handleCopy(card.citation_marker)} style={{ borderRadius: 8 }}>
+                    复制引用
+                  </Button>
+                  <Button size="small" type="primary" onClick={() => handleInsertEvidenceMarker(card.citation_marker)} style={{ borderRadius: 8 }}>
+                    插入当前章节
+                  </Button>
+                  {card.paper_id && (
+                    <Button size="small" onClick={() => handleCopy(`Paper ID: ${card.paper_id}`)} style={{ borderRadius: 8 }}>
+                      复制 Paper ID
+                    </Button>
+                  )}
+                </Space>
+              </div>
+            </List.Item>
+          )}
+        />
+      ) : (
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description="这个项目还没有关联证据。可先从研究方向创建草稿或补充推荐论文。"
+        />
+      )}
+    </Card>
+  ) : null;
+
+  const projectTab = (
+    <div style={{ display: 'flex', gap: 20 }}>
+      <div style={{ width: 280, flexShrink: 0 }}>
+        <WritingProjectPanel onSelectProject={handleSelectProject} selectedProjectId={selectedProject?.id} refreshSignal={projectRefreshSignal} />
+      </div>
+      <div style={{ flex: 1, minHeight: 400 }}>
+        <Card style={{ ...cardStyle, marginBottom: 16 }} styles={{ body: { padding: 16 } }}>
+          <Text strong>从研究方向创建综述草稿</Text>
+          <Text type="secondary" style={{ display: 'block', fontSize: 12, margin: '4px 0 12px' }}>自动创建章节、Related Work 对比表、研究空白和参考文献，作为后续写作起点。</Text>
+          <Row gutter={12}>
+            <Col flex="auto"><Input placeholder="例如：video grounding in multimodal large language models" value={draftTopic} onChange={e => setDraftTopic(e.target.value)} style={inputStyle} /></Col>
+            <Col><Button type="primary" icon={<RocketOutlined />} loading={draftLoading} onClick={handleCreateReviewDraft} style={primaryBtn}>创建综述草稿</Button></Col>
+          </Row>
+        </Card>
+        {selectedProject ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 16, alignItems: 'start' }}>
+            <div>
+              <Card style={{ ...cardStyle, marginBottom: 16 }} styles={{ body: { padding: '12px 20px' } }}>
+                <Space wrap>
+                  <Text strong style={{ fontSize: 15 }}>{selectedProject.title}</Text>
+                  <Tag color="blue" style={{ borderRadius: 6 }}>{selectedProject.template_type?.toUpperCase()}</Tag>
+                  <Button type="primary" size="small" icon={<RocketOutlined />} loading={pipelineRunning} onClick={() => handlePipelineTask('full_chapter', { topic: selectedProject.title })} style={{ borderRadius: 8 }}>AI 辅助写作</Button>
+                  <Button size="small" onClick={async () => { const r = await api.get(`/writing/projects/${selectedProject.id}/export?format=markdown`); handleCopy(r.data.data); }} style={{ borderRadius: 8 }}>导出 MD</Button>
+                  <Button size="small" onClick={async () => { const r = await api.get(`/writing/projects/${selectedProject.id}/export?format=bibtex`); handleCopy(r.data.data || ''); }} style={{ borderRadius: 8 }}>导出 BibTeX</Button>
+                  <Button size="small" onClick={() => window.open(`/api/writing/projects/${selectedProject.id}/export?format=docx`)} style={{ borderRadius: 8 }}>导出 Word</Button>
+                </Space>
+              </Card>
+              {pipelineRunning && <div style={{ marginBottom: 12 }}><PipelineProgress phases={pipelinePhases} currentPhase={pipelineCurrentPhase} phaseStatuses={pipelinePhaseStatuses} statusText={pipelineStatusText} onCancel={handleCancelPipeline} /></div>}
+              {projectSections.map(s => (
+                <SectionEditor
+                  key={s.id}
+                  section={s}
+                  onUpdate={handleUpdateSection}
+                  onFocus={section => setActiveSectionId(section.id)}
+                  onCheckCitations={handleCheckSectionCitations}
+                  checking={citationChecking[s.id]}
+                  citationCheck={citationChecks[s.id]}
+                />
+              ))}
+            </div>
+            <div>{evidencePanel}</div>
+          </div>
+        ) : (
+          <Card style={{ ...cardStyle, textAlign: 'center', padding: 60 }}><Empty description={<span><Text strong>选择或创建一个写作项目开始</Text><br /><Text type="secondary">使用章节管理器组织论文结构，一键导出 Word/Markdown</Text></span>} /></Card>
+        )}
+      </div>
+    </div>
+  );
+
+  const tabItems = [
+    { key: 'citations', label: <span><SearchOutlined /> 引用推荐</span>, children: citationTab },
+    { key: 'related-work', label: <span><BookOutlined /> Related Work</span>, children: relatedWorkTab },
+    { key: 'polish', label: <span><FormOutlined /> 文本润色</span>, children: polishTab },
+    { key: 'abstract', label: <span><FileTextOutlined /> 摘要生成</span>, children: abstractTab },
+    { key: 'lit-review', label: <span><ReadOutlined /> 文献综述</span>, children: litReviewTab },
+    { key: 'compare', label: <span><SwapOutlined /> 论文对比</span>, children: compareTab },
+    { key: 'grant', label: <span><AuditOutlined /> 申请书</span>, children: grantTab },
+    { key: 'project', label: <span><FolderOutlined /> 项目管理</span>, children: projectTab },
+  ];
+
+  return (
+    <div style={{ maxWidth: activeTab === 'project' ? 1360 : 960, margin: '0 auto' }}>
+      {/* ── Hero 头部 ── */}
+      <div style={{
+        background: heroGradient, borderRadius: 16, padding: '28px 36px', marginBottom: 24,
+        color: '#fff', position: 'relative', overflow: 'hidden',
+      }}>
+        <div style={{ position: 'absolute', right: -20, top: -30, fontSize: 140, opacity: 0.1 }}>✍️</div>
+        <Space align="center" size={12}>
+          <div style={{ width: 48, height: 48, borderRadius: 14, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>
+            <EditOutlined />
+          </div>
+          <div>
+            <Title level={3} style={{ color: '#fff', margin: 0 }}>AI 写作助手</Title>
+            <Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: 14 }}>
+              智能引用推荐 · Related Work · 文本润色 · 摘要生成 · 文献综述 · 申请书
+            </Text>
+          </div>
+        </Space>
+      </div>
+
+      {/* ── 快速入口 ── */}
+      <Row gutter={[12, 12]} style={{ marginBottom: 24 }}>
+        {features.map(f => (
+          <Col xs={12} sm={6} key={f.key}>
+            <Card
+              hoverable
+              size="small"
+              style={{ borderRadius: 12, border: activeTab === f.key ? `2px solid ${f.color}` : '1px solid #f0f0f0', cursor: 'pointer', transition: 'all 0.25s' }}
+              styles={{ body: { padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 10 } }}
+              onClick={() => setActiveTab(f.key)}
+            >
+              <div style={{ width: 36, height: 36, borderRadius: 10, background: f.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, color: f.color, flexShrink: 0 }}>{f.icon}</div>
+              <div style={{ minWidth: 0 }}>
+                <Text strong style={{ fontSize: 13 }}>{f.label}</Text>
+                <Text type="secondary" style={{ fontSize: 11, display: 'block' }} ellipsis>{f.desc}</Text>
+              </div>
+            </Card>
+          </Col>
+        ))}
+      </Row>
+
+      {/* ── 标签页内容 ── */}
+      <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems}
+        style={{ '--ant-primary-color': '#667eea' } as any}
+        tabBarStyle={{ marginBottom: 20 }}
+      />
+
+      {/* ── 全局 CSS 动画 ── */}
+      <style>{`
+        @keyframes bounce {
+          0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+          40% { transform: scale(1); opacity: 1; }
+        }
+      `}</style>
+    </div>
+  );
+};
+
+export default WritingPage;
