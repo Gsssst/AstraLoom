@@ -25,6 +25,7 @@ def test_workspace_routes_require_authentication():
     private_routes = [
         ("/api/workspaces", "POST"),
         ("/api/workspaces", "GET"),
+        ("/api/workspaces/resource-links", "GET"),
         ("/api/workspaces/{space_id}", "GET"),
         ("/api/workspaces/{space_id}", "PATCH"),
         ("/api/workspaces/{space_id}", "DELETE"),
@@ -152,6 +153,45 @@ def test_workspace_linked_resource_key_set_includes_durable_and_legacy_links():
 
     assert ("papers", str(durable_id)) in keys
     assert ("writing_projects", str(legacy_id)) in keys
+
+
+def test_workspace_resource_link_status_rows_mark_linked_and_editable_spaces():
+    user_id = uuid4()
+    resource_id = uuid4()
+    now = datetime.now(timezone.utc)
+    space = SimpleNamespace(
+        id=uuid4(),
+        name="Video Grounding",
+        description="shared workspace",
+        status="active",
+        owner_id=user_id,
+        metadata_json={},
+        created_at=now,
+        updated_at=now,
+        members=[SimpleNamespace(user_id=user_id, role="editor", created_at=now)],
+        resources=[
+            SimpleNamespace(
+                id=uuid4(),
+                resource_type="papers",
+                resource_id=str(resource_id),
+                added_by=user_id,
+                created_at=now,
+            )
+        ],
+    )
+    service = WorkspaceService(SimpleNamespace())
+
+    row = {
+        "id": str(space.id),
+        "name": space.name,
+        "role": service._role_for(space, user_id),
+        "linked": ("papers", str(resource_id)) in service._linked_resource_key_set(space),
+        "can_edit": service._role_for(space, user_id) in {"owner", "editor"},
+    }
+
+    assert row["linked"] is True
+    assert row["can_edit"] is True
+    assert row["role"] == "editor"
 
 
 def test_workspace_activity_records_include_actor_resource_and_metadata():

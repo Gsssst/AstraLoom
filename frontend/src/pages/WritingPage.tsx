@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons';
 import api from '../services/api';
 import Markdown from '../components/Markdown';
+import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
 import { DiffViewer, PipelineProgress, WritingProjectPanel, SectionEditor } from '../components/writing';
 
 const { Title, Text, Paragraph } = Typography;
@@ -742,6 +743,9 @@ const WritingPage: React.FC = () => {
                   <Button size="small" onClick={handleDownloadDocx} style={{ borderRadius: 8 }}>导出 Word</Button>
                 </Space>
               </Card>
+              <div style={{ marginBottom: 16 }}>
+                <WorkspaceResourceLinks resourceType="writing_projects" resourceId={selectedProject.id} title="所属项目空间" />
+              </div>
               {pipelineRunning && <div style={{ marginBottom: 12 }}><PipelineProgress phases={pipelinePhases} currentPhase={pipelineCurrentPhase} phaseStatuses={pipelinePhaseStatuses} statusText={pipelineStatusText} onCancel={handleCancelPipeline} /></div>}
               {publicationExportPanel}
               {projectSections.map(s => (

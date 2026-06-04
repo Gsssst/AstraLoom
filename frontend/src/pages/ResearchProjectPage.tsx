@@ -11,6 +11,7 @@ import {
   ShareAltOutlined, StarFilled, ThunderboltOutlined, UserOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
+import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -543,6 +544,9 @@ const ResearchProjectPage: React.FC = () => {
             <Text type="secondary">工作台运行</Text><Title level={4} style={{ margin: '4px 0' }}>{run ? run.status : '尚未启动'}</Title>
             <Text type="secondary">已保存 Proposal：{ideas.length}</Text>
           </Card>
+          <div style={{ marginBottom: 14 }}>
+            <WorkspaceResourceLinks resourceType="research_projects" resourceId={project.id} title="所属项目空间" />
+          </div>
           <Card title="相关论文" loading={papersLoading} style={{ borderRadius: 14 }}>
             <List size="small" dataSource={relatedPapers} locale={{ emptyText: '暂无匹配论文' }} renderItem={paper => (
               <List.Item style={{ cursor: 'pointer' }} onClick={() => navigate(`/papers/${paper.id}`)}>

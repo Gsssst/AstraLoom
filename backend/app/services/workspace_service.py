@@ -318,6 +318,43 @@ class WorkspaceService:
             item["linked"] = (item["type"], item["id"]) in linked
         return items
 
+    async def resource_link_status(
+        self,
+        user: User,
+        resource_type: str,
+        resource_id: str,
+    ) -> dict:
+        resource_type = self._normalize_resource_type(resource_type)
+        if not resource_type:
+            raise LookupError("不支持的资源类型")
+        result = await self.session.execute(
+            select(ProjectSpace)
+            .join(ProjectSpaceMember, ProjectSpaceMember.space_id == ProjectSpace.id)
+            .where(ProjectSpaceMember.user_id == user.id, ProjectSpace.status != "deleted")
+            .options(selectinload(ProjectSpace.members), selectinload(ProjectSpace.resources))
+            .order_by(ProjectSpace.updated_at.desc())
+        )
+        spaces = result.scalars().unique().all()
+        rows = []
+        target_key = (resource_type, str(resource_id))
+        for space in spaces:
+            role = self._role_for(space, user.id)
+            linked = target_key in self._linked_resource_key_set(space)
+            rows.append({
+                "id": str(space.id),
+                "name": space.name,
+                "description": space.description or "",
+                "role": role,
+                "linked": linked,
+                "can_edit": role in {"owner", "editor"},
+                "member_count": len(space.members or []),
+            })
+        return {
+            "resource_type": resource_type,
+            "resource_id": str(resource_id),
+            "spaces": rows,
+        }
+
     async def resource_role_for_user(
         self,
         user_id,

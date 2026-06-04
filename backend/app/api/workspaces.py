@@ -58,6 +58,20 @@ async def list_workspaces(
     return {"workspaces": await service.list_spaces(user)}
 
 
+@router.get("/resource-links")
+async def get_resource_workspace_links(
+    resource_type: str,
+    resource_id: str,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    service = WorkspaceService(db)
+    try:
+        return await service.resource_link_status(user, resource_type, resource_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
 @router.get("/{space_id}")
 async def get_workspace(
     space_id: str,
