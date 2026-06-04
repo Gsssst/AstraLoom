@@ -872,44 +872,130 @@ class WritingProjectService:
         if not project:
             return None
 
-        from app.db.models.paper import Paper
         from app.services.writing_service import WritingAssistantService
 
-        metadata = project.get("metadata_json") or {}
-        paper_ids = list(dict.fromkeys(metadata.get("recommended_paper_ids") or []))
-        arxiv_ids = list(dict.fromkeys(metadata.get("recommended_arxiv_ids") or []))
-
-        references = "\n".join(
-            section.get("content") or ""
-            for section in project.get("sections", [])
-            if section.get("title", "").lower() == "references"
-        )
-        import re
-        for match in re.findall(r"Paper ID:\s*([0-9a-fA-F-]{32,36})", references):
-            if match not in paper_ids:
-                paper_ids.append(match)
-        for match in re.findall(r"arXiv[:\s]+([0-9]{4}\.[0-9]{4,5}(?:v\d+)?)", references, flags=re.I):
-            if match not in arxiv_ids:
-                arxiv_ids.append(match)
-
-        papers = []
-        for pid in paper_ids:
-            try:
-                result = await self.session.execute(select(Paper).where(Paper.id == UUID(pid)))
-                paper = result.scalar_one_or_none()
-                if paper:
-                    papers.append(paper)
-            except ValueError:
-                continue
-
-        for arxiv_id in arxiv_ids:
-            result = await self.session.execute(select(Paper).where(Paper.arxiv_id == arxiv_id))
-            paper = result.scalar_one_or_none()
-            if paper and all(str(existing.id) != str(paper.id) for existing in papers):
-                papers.append(paper)
-
+        papers = await self._collect_reference_papers(project)
         writer = WritingAssistantService(self.session)
         return "\n\n".join(writer._generate_bibtex(paper) for paper in papers)
+
+    async def export_reference_list(self, project_id: str, user_id: str, style: str = "numeric") -> str | None:
+        """导出可读参考文献列表。"""
+        project = await self.get_project(project_id, user_id)
+        if not project:
+            return None
+        papers = await self._collect_reference_papers(project)
+        if not papers:
+            return "暂无可导出的参考文献。请先在写作项目中关联证据论文或补充 References。"
+        return self._format_reference_list(papers, style=style)
+
+    async def build_export_readiness(self, project_id: str, user_id: str) -> dict | None:
+        """生成投稿导出预检结果。"""
+        project = await self.get_project(project_id, user_id)
+        if not project:
+            return None
+
+        sections = project.get("sections") or []
+        empty_sections = []
+        short_sections = []
+        citation_mentions = []
+        unmatched_citations = []
+        total_words = 0
+
+        evidence = await self.get_evidence_cards(project_id, user_id)
+        cards = (evidence or {}).get("cards") or []
+        coverage = (evidence or {}).get("coverage") or {
+            "total": 0, "local": 0, "external": 0, "bibtex_ready": 0,
+        }
+
+        for section in sections:
+            title = section.get("title") or "Untitled"
+            content = section.get("content") or ""
+            word_count = self._count_words(content)
+            total_words += word_count
+            if not content.strip():
+                empty_sections.append(title)
+            elif word_count < 80 and title.lower() not in {"references", "related work comparison table"}:
+                short_sections.append(title)
+            for mention in self._extract_citation_mentions(content):
+                citation_mentions.append({**mention, "section": title})
+                if not self._resolve_citation_card(mention, cards):
+                    unmatched_citations.append({"citation": mention["raw"], "section": title})
+
+        papers = await self._collect_reference_papers(project)
+        warnings = []
+        if empty_sections:
+            warnings.append(f"有 {len(empty_sections)} 个章节为空：{', '.join(empty_sections[:4])}")
+        if short_sections:
+            warnings.append(f"有 {len(short_sections)} 个章节内容偏短：{', '.join(short_sections[:4])}")
+        if coverage.get("total", 0) == 0:
+            warnings.append("项目没有证据卡，导出内容缺少可追溯论文支撑。")
+        elif coverage.get("local", 0) < max(1, int(coverage.get("total", 0) * 0.5)):
+            warnings.append("本地入库证据覆盖率偏低，建议先补全文/补向量后再定稿。")
+        if coverage.get("total", 0) and coverage.get("bibtex_ready", 0) < coverage.get("total", 0):
+            warnings.append("部分证据缺少可导出的 BibTeX，本次参考文献可能不完整。")
+        if unmatched_citations:
+            warnings.append(f"有 {len(unmatched_citations)} 个正文引用未匹配到证据卡。")
+        if citation_mentions and not papers:
+            warnings.append("正文已有引用标记，但没有解析到真实论文条目。")
+
+        status = "ready"
+        if empty_sections:
+            status = "incomplete"
+        elif warnings:
+            status = "needs_attention"
+
+        return {
+            "project_id": project_id,
+            "status": status,
+            "status_label": {
+                "ready": "可导出",
+                "needs_attention": "建议检查",
+                "incomplete": "内容未完成",
+            }[status],
+            "warnings": warnings,
+            "section_summary": {
+                "total": len(sections),
+                "empty": len(empty_sections),
+                "short": len(short_sections),
+                "total_words": total_words,
+                "empty_sections": empty_sections,
+                "short_sections": short_sections,
+            },
+            "evidence_coverage": coverage,
+            "citation_summary": {
+                "mentions": len(citation_mentions),
+                "unmatched": len(unmatched_citations),
+                "unmatched_items": unmatched_citations[:8],
+            },
+            "reference_summary": {
+                "papers": len(papers),
+                "bibtex_ready": coverage.get("bibtex_ready", 0),
+            },
+        }
+
+    async def build_publication_package(self, project_id: str, user_id: str) -> dict | None:
+        """导出投稿包：正文、引用和导出预检信息。"""
+        project = await self.get_project(project_id, user_id)
+        if not project:
+            return None
+        markdown = await self.export_to_markdown(project_id, user_id) or ""
+        latex = await self.export_to_latex(project_id, user_id) or ""
+        bibtex = await self.export_to_bibtex(project_id, user_id) or ""
+        references = await self.export_reference_list(project_id, user_id) or ""
+        readiness = await self.build_export_readiness(project_id, user_id)
+        base = self._safe_export_basename(project.get("title") or "writing-project")
+        return {
+            "project_id": project_id,
+            "title": project.get("title") or "",
+            "readiness": readiness,
+            "formats": {
+                "markdown": {"filename": f"{base}.md", "content": markdown},
+                "latex": {"filename": f"{base}.tex", "content": latex},
+                "bibtex": {"filename": f"{base}.bib", "content": bibtex},
+                "references": {"filename": f"{base}_references.md", "content": references},
+                "docx": {"filename": f"{base}.docx", "download_url": f"/api/writing/projects/{project_id}/export?format=docx"},
+            },
+        }
 
     # --- 进度统计 ---
 
@@ -926,6 +1012,95 @@ class WritingProjectService:
             "total": total,
             "total_words": sum(s.word_count or 0 for s in sections),
         }
+
+    async def _collect_reference_papers(self, project: dict) -> list:
+        """从项目元数据和 References 章节解析真实论文。"""
+        from app.db.models.paper import Paper
+
+        metadata = project.get("metadata_json") or {}
+        paper_ids = list(dict.fromkeys(str(item) for item in (metadata.get("recommended_paper_ids") or []) if item))
+        arxiv_ids = list(dict.fromkeys(str(item) for item in (metadata.get("recommended_arxiv_ids") or []) if item))
+        dois = []
+
+        references = "\n".join(
+            section.get("content") or ""
+            for section in project.get("sections", [])
+            if section.get("title", "").lower() == "references"
+        )
+        for match in re.findall(r"Paper ID:\s*([0-9a-fA-F-]{32,36})", references):
+            if match not in paper_ids:
+                paper_ids.append(match)
+        for match in re.findall(r"arXiv[:\s]+([0-9]{4}\.[0-9]{4,5}(?:v\d+)?)", references, flags=re.I):
+            if match not in arxiv_ids:
+                arxiv_ids.append(match)
+        for match in re.findall(r"DOI[:\s]+([^\s,;]+)", references, flags=re.I):
+            doi = match.strip().rstrip(".")
+            if doi and doi not in dois:
+                dois.append(doi)
+
+        papers = []
+        seen = set()
+        for pid in paper_ids:
+            try:
+                result = await self.session.execute(select(Paper).where(Paper.id == UUID(pid)))
+                paper = result.scalar_one_or_none()
+                if paper and str(paper.id) not in seen:
+                    papers.append(paper)
+                    seen.add(str(paper.id))
+            except ValueError:
+                continue
+
+        for arxiv_id in arxiv_ids:
+            result = await self.session.execute(select(Paper).where(Paper.arxiv_id == arxiv_id))
+            paper = result.scalar_one_or_none()
+            if paper and str(paper.id) not in seen:
+                papers.append(paper)
+                seen.add(str(paper.id))
+
+        for doi in dois:
+            result = await self.session.execute(select(Paper).where(Paper.doi == doi))
+            paper = result.scalar_one_or_none()
+            if paper and str(paper.id) not in seen:
+                papers.append(paper)
+                seen.add(str(paper.id))
+
+        return papers
+
+    def _format_reference_list(self, papers: list, style: str = "numeric") -> str:
+        rows = []
+        for index, paper in enumerate(papers, 1):
+            prefix = f"[{index}] " if style == "numeric" else ""
+            authors = self._format_authors(getattr(paper, "authors", None))
+            year = getattr(paper, "year", None) or "n.d."
+            ids = []
+            if getattr(paper, "arxiv_id", None):
+                ids.append(f"arXiv:{paper.arxiv_id}")
+            if getattr(paper, "doi", None):
+                ids.append(f"DOI:{paper.doi}")
+            suffix = f" {'; '.join(ids)}." if ids else ""
+            rows.append(f"{prefix}{authors} ({year}). {paper.title}.{suffix}")
+        return "\n\n".join(rows)
+
+    def _format_authors(self, authors) -> str:
+        if isinstance(authors, list):
+            values = [str(item) for item in authors if item]
+        elif isinstance(authors, dict):
+            raw = authors.get("names") or authors.get("authors") or authors.get("list") or []
+            values = [str(item) for item in raw] if isinstance(raw, list) else [str(raw)]
+        elif isinstance(authors, str):
+            values = [authors]
+        else:
+            values = []
+        return ", ".join(values[:6]) or "Unknown Authors"
+
+    def _count_words(self, text: str) -> int:
+        ascii_words = re.findall(r"[A-Za-z0-9_]+", text or "")
+        cjk_chars = re.findall(r"[\u4e00-\u9fff]", text or "")
+        return len(ascii_words) + len(cjk_chars)
+
+    def _safe_export_basename(self, title: str) -> str:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", title.strip()).strip("_")
+        return (safe or "writing_project")[:80]
 
     # --- Helper ---
 

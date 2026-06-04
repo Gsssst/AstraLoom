@@ -8,7 +8,8 @@ import {
   EditOutlined, SearchOutlined, FileTextOutlined,
   CopyOutlined, BulbOutlined,
   BookOutlined, FormOutlined, ReadOutlined, SwapOutlined,
-  AuditOutlined, FolderOutlined, RocketOutlined,
+  AuditOutlined, FolderOutlined, RocketOutlined, DownloadOutlined,
+  FileZipOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import Markdown from '../components/Markdown';
@@ -136,6 +137,9 @@ const WritingPage: React.FC = () => {
   const [draftTopic, setDraftTopic] = useState('');
   const [draftLoading, setDraftLoading] = useState(false);
   const [projectRefreshSignal, setProjectRefreshSignal] = useState(0);
+  const [exportReadiness, setExportReadiness] = useState<any>(null);
+  const [exportPackage, setExportPackage] = useState<any>(null);
+  const [exportLoading, setExportLoading] = useState(false);
   const [pipelinePhases, setPipelinePhases] = useState<string[]>([]);
   const [pipelineCurrentPhase, setPipelineCurrentPhase] = useState<string | null>(null);
   const [pipelinePhaseStatuses, setPipelinePhaseStatuses] = useState<Record<string, 'pending' | 'running' | 'complete' | 'error'>>({});
@@ -145,6 +149,21 @@ const WritingPage: React.FC = () => {
 
   const handleCopy = (text: string) => { navigator.clipboard.writeText(text); message.success('已复制'); };
   const matchColor = (status?: string) => status === 'strong' ? 'green' : status === 'partial' ? 'gold' : 'red';
+  const exportStatusColor = (status?: string) => status === 'ready' ? 'green' : status === 'needs_attention' ? 'gold' : 'red';
+  const downloadTextFile = (filename: string, content: string) => {
+    const blob = new Blob([content || ''], { type: 'text/plain;charset=utf-8' });
+    downloadBlobFile(filename, blob);
+  };
+  const downloadBlobFile = (filename: string, blob: Blob) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -165,6 +184,8 @@ const WritingPage: React.FC = () => {
       setEvidenceCoverage(null);
       setEvidenceTable(null);
       setCitationChecks({});
+      setExportReadiness(null);
+      setExportPackage(null);
       return;
     }
     setEvidenceLoading(true);
@@ -180,6 +201,14 @@ const WritingPage: React.FC = () => {
       })
       .finally(() => setEvidenceLoading(false));
   }, [selectedProject?.id]);
+
+  useEffect(() => {
+    if (!selectedProject?.id) return;
+    setExportPackage(null);
+    api.get(`/writing/projects/${selectedProject.id}/export/readiness`)
+      .then(response => setExportReadiness(response.data))
+      .catch(() => setExportReadiness(null));
+  }, [selectedProject?.id, projectSections]);
 
   // ── 处理器 ── (保持简洁)
   const handleRecommend = useCallback(async () => {
@@ -330,6 +359,51 @@ const WritingPage: React.FC = () => {
       message.error('引用校验失败');
     } finally {
       setCitationChecking(prev => ({ ...prev, [section.id]: false }));
+    }
+  };
+  const handleLoadExportPackage = async () => {
+    if (!selectedProject?.id) return null;
+    setExportLoading(true);
+    try {
+      const response = await api.get(`/writing/projects/${selectedProject.id}/export/package`);
+      setExportPackage(response.data);
+      setExportReadiness(response.data.readiness || null);
+      return response.data;
+    } catch {
+      message.error('导出包生成失败');
+      return null;
+    } finally {
+      setExportLoading(false);
+    }
+  };
+  const getExportPackage = async () => exportPackage || await handleLoadExportPackage();
+  const handleCopyExportFormat = async (format: string) => {
+    const pkg = await getExportPackage();
+    const item = pkg?.formats?.[format];
+    if (!item?.content) {
+      message.warning('当前格式暂无可复制内容');
+      return;
+    }
+    handleCopy(item.content);
+  };
+  const handleDownloadExportFormat = async (format: string) => {
+    const pkg = await getExportPackage();
+    const item = pkg?.formats?.[format];
+    if (!item?.content) {
+      message.warning('当前格式暂无可下载内容');
+      return;
+    }
+    downloadTextFile(item.filename || `${format}.txt`, item.content);
+  };
+  const handleDownloadDocx = async () => {
+    if (!selectedProject?.id) return;
+    try {
+      const pkg = exportPackage || await handleLoadExportPackage();
+      const filename = pkg?.formats?.docx?.filename || `${selectedProject.title || 'writing_project'}.docx`;
+      const response = await api.get(`/writing/projects/${selectedProject.id}/export?format=docx`, { responseType: 'blob' });
+      downloadBlobFile(filename, response.data);
+    } catch {
+      message.error('Word 下载失败');
     }
   };
   const handleCancelPipeline = () => { pipelineAbort?.abort(); setPipelineRunning(false); };
@@ -583,6 +657,64 @@ const WritingPage: React.FC = () => {
     </Card>
   ) : null;
 
+  const publicationExportPanel = selectedProject ? (
+    <Card
+      title={<Space><FileZipOutlined /> 投稿导出包</Space>}
+      style={{ ...cardStyle, marginBottom: 16 }}
+      extra={exportReadiness && <Tag color={exportStatusColor(exportReadiness.status)}>{exportReadiness.status_label}</Tag>}
+    >
+      {exportReadiness?.warnings?.length ? (
+        <Alert
+          type={exportReadiness.status === 'incomplete' ? 'error' : 'warning'}
+          showIcon
+          message="导出前建议检查"
+          description={exportReadiness.warnings.join(' ')}
+          style={{ borderRadius: 10, marginBottom: 12 }}
+        />
+      ) : (
+        <Alert
+          type="success"
+          showIcon
+          message="当前草稿具备基础导出条件"
+          description="仍建议在投稿前人工检查格式、引用和实验细节。"
+          style={{ borderRadius: 10, marginBottom: 12 }}
+        />
+      )}
+      <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
+        <Col xs={12} md={6}><Tag color="blue">章节 {exportReadiness?.section_summary?.total ?? '-'}</Tag></Col>
+        <Col xs={12} md={6}><Tag color="purple">字数 {exportReadiness?.section_summary?.total_words ?? '-'}</Tag></Col>
+        <Col xs={12} md={6}><Tag color="green">证据 {exportReadiness?.evidence_coverage?.local ?? 0}/{exportReadiness?.evidence_coverage?.total ?? 0}</Tag></Col>
+        <Col xs={12} md={6}><Tag color="geekblue">参考文献 {exportReadiness?.reference_summary?.papers ?? 0}</Tag></Col>
+      </Row>
+      <Space wrap>
+        <Button icon={<FileZipOutlined />} loading={exportLoading} onClick={handleLoadExportPackage} style={{ borderRadius: 8 }}>
+          生成导出包
+        </Button>
+        <Button icon={<CopyOutlined />} onClick={() => handleCopyExportFormat('markdown')} style={{ borderRadius: 8 }}>
+          复制 Markdown
+        </Button>
+        <Button icon={<DownloadOutlined />} onClick={() => handleDownloadExportFormat('markdown')} style={{ borderRadius: 8 }}>
+          下载 MD
+        </Button>
+        <Button icon={<CopyOutlined />} onClick={() => handleCopyExportFormat('bibtex')} style={{ borderRadius: 8 }}>
+          复制 BibTeX
+        </Button>
+        <Button icon={<DownloadOutlined />} onClick={() => handleDownloadExportFormat('bibtex')} style={{ borderRadius: 8 }}>
+          下载 BibTeX
+        </Button>
+        <Button icon={<DownloadOutlined />} onClick={() => handleDownloadExportFormat('latex')} style={{ borderRadius: 8 }}>
+          下载 LaTeX
+        </Button>
+        <Button icon={<CopyOutlined />} onClick={() => handleCopyExportFormat('references')} style={{ borderRadius: 8 }}>
+          复制参考文献
+        </Button>
+        <Button type="primary" icon={<DownloadOutlined />} onClick={handleDownloadDocx} style={{ borderRadius: 8 }}>
+          下载 Word
+        </Button>
+      </Space>
+    </Card>
+  ) : null;
+
   const projectTab = (
     <div style={{ display: 'flex', gap: 20 }}>
       <div style={{ width: 280, flexShrink: 0 }}>
@@ -607,10 +739,11 @@ const WritingPage: React.FC = () => {
                   <Button type="primary" size="small" icon={<RocketOutlined />} loading={pipelineRunning} onClick={() => handlePipelineTask('full_chapter', { topic: selectedProject.title })} style={{ borderRadius: 8 }}>AI 辅助写作</Button>
                   <Button size="small" onClick={async () => { const r = await api.get(`/writing/projects/${selectedProject.id}/export?format=markdown`); handleCopy(r.data.data); }} style={{ borderRadius: 8 }}>导出 MD</Button>
                   <Button size="small" onClick={async () => { const r = await api.get(`/writing/projects/${selectedProject.id}/export?format=bibtex`); handleCopy(r.data.data || ''); }} style={{ borderRadius: 8 }}>导出 BibTeX</Button>
-                  <Button size="small" onClick={() => window.open(`/api/writing/projects/${selectedProject.id}/export?format=docx`)} style={{ borderRadius: 8 }}>导出 Word</Button>
+                  <Button size="small" onClick={handleDownloadDocx} style={{ borderRadius: 8 }}>导出 Word</Button>
                 </Space>
               </Card>
               {pipelineRunning && <div style={{ marginBottom: 12 }}><PipelineProgress phases={pipelinePhases} currentPhase={pipelineCurrentPhase} phaseStatuses={pipelinePhaseStatuses} statusText={pipelineStatusText} onCancel={handleCancelPipeline} /></div>}
+              {publicationExportPanel}
               {projectSections.map(s => (
                 <SectionEditor
                   key={s.id}

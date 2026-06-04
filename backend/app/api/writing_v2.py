@@ -518,7 +518,7 @@ async def reorder_sections(
 @router.get("/projects/{project_id}/export")
 async def export_project(
     project_id: str,
-    format: str = Query(default="markdown", pattern="^(markdown|latex|docx|bibtex)$"),
+    format: str = Query(default="markdown", pattern="^(markdown|latex|docx|bibtex|references)$"),
     user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -550,6 +550,38 @@ async def export_project(
     elif format == "bibtex":
         bibtex = await service.export_to_bibtex(project_id, str(user.id))
         return {"format": "bibtex", "data": bibtex or ""}
+
+    elif format == "references":
+        references = await service.export_reference_list(project_id, str(user.id))
+        return {"format": "references", "data": references or ""}
+
+
+@router.get("/projects/{project_id}/export/readiness")
+async def get_project_export_readiness(
+    project_id: str,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取写作项目导出预检结果。"""
+    service = WritingProjectService(db)
+    readiness = await service.build_export_readiness(project_id, str(user.id))
+    if readiness is None:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    return readiness
+
+
+@router.get("/projects/{project_id}/export/package")
+async def get_project_publication_package(
+    project_id: str,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取写作项目投稿导出包。"""
+    service = WritingProjectService(db)
+    package = await service.build_publication_package(project_id, str(user.id))
+    if package is None:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    return package
 
 
 # ============== 升级现有的流行 API ==============

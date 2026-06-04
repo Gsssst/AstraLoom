@@ -87,6 +87,109 @@ def test_review_draft_sections_are_prefilled_from_rows():
 
 
 @pytest.mark.asyncio
+async def test_export_reference_list_uses_real_project_papers(monkeypatch):
+    paper = _paper()
+
+    class _Rows:
+        def scalar_one_or_none(self):
+            return paper
+
+    class _Session:
+        async def execute(self, _statement):
+            return _Rows()
+
+    service = WritingProjectService(_Session())
+
+    async def fake_get_project(_project_id, _user_id):
+        return {
+            "metadata_json": {"recommended_paper_ids": [str(paper.id)]},
+            "sections": [],
+        }
+
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+
+    references = await service.export_reference_list("project-1", "user-1")
+
+    assert "[1]" in references
+    assert paper.title in references
+    assert "arXiv:2606.00001v1" in references
+
+
+@pytest.mark.asyncio
+async def test_export_readiness_flags_empty_sections_and_weak_evidence(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+
+    async def fake_get_project(_project_id, _user_id):
+        return {
+            "id": "project-1",
+            "title": "Video Grounding Survey",
+            "metadata_json": {},
+            "sections": [
+                {"id": "s1", "title": "Introduction", "content": ""},
+                {"id": "s2", "title": "Related Work", "content": "Video grounding needs evidence [1]."},
+            ],
+        }
+
+    async def fake_get_evidence_cards(_project_id, _user_id):
+        return {
+            "cards": [],
+            "coverage": {"total": 0, "local": 0, "external": 0, "bibtex_ready": 0},
+        }
+
+    async def fake_collect(_project):
+        return []
+
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+    monkeypatch.setattr(service, "get_evidence_cards", fake_get_evidence_cards)
+    monkeypatch.setattr(service, "_collect_reference_papers", fake_collect)
+
+    readiness = await service.build_export_readiness("project-1", "user-1")
+
+    assert readiness["status"] == "incomplete"
+    assert readiness["section_summary"]["empty"] == 1
+    assert readiness["citation_summary"]["unmatched"] == 1
+    assert readiness["warnings"]
+
+
+@pytest.mark.asyncio
+async def test_publication_package_contains_all_export_formats(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+
+    async def fake_get_project(_project_id, _user_id):
+        return {"id": "project-1", "title": "Video Grounding Survey", "sections": [], "metadata_json": {}}
+
+    async def fake_markdown(_project_id, _user_id):
+        return "# Video Grounding Survey"
+
+    async def fake_latex(_project_id, _user_id):
+        return "\\section{Introduction}"
+
+    async def fake_bibtex(_project_id, _user_id):
+        return "@article{video2026}"
+
+    async def fake_references(_project_id, _user_id):
+        return "[1] Video Grounding."
+
+    async def fake_readiness(_project_id, _user_id):
+        return {"status": "ready", "warnings": []}
+
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+    monkeypatch.setattr(service, "export_to_markdown", fake_markdown)
+    monkeypatch.setattr(service, "export_to_latex", fake_latex)
+    monkeypatch.setattr(service, "export_to_bibtex", fake_bibtex)
+    monkeypatch.setattr(service, "export_reference_list", fake_references)
+    monkeypatch.setattr(service, "build_export_readiness", fake_readiness)
+
+    package = await service.build_publication_package("project-1", "user-1")
+
+    assert package["formats"]["markdown"]["content"].startswith("# Video")
+    assert package["formats"]["latex"]["filename"].endswith(".tex")
+    assert package["formats"]["bibtex"]["content"].startswith("@article")
+    assert package["formats"]["references"]["content"].startswith("[1]")
+    assert package["formats"]["docx"]["download_url"].endswith("format=docx")
+
+
+@pytest.mark.asyncio
 async def test_project_bibtex_export_uses_metadata(monkeypatch):
     paper = _paper()
 
