@@ -5,7 +5,7 @@ import {
   CommentOutlined, BookOutlined, ExperimentOutlined, EditOutlined,
   SettingOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UserOutlined,
   LogoutOutlined, LoginOutlined, BellOutlined, BgColorsOutlined,
-  RocketOutlined, AppstoreOutlined, SafetyCertificateOutlined,
+  RocketOutlined, AppstoreOutlined, SafetyCertificateOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useThemeStore, THEME_PRESETS } from '../stores/useThemeStore';
@@ -16,6 +16,7 @@ const { Header, Sider, Content } = Layout;
 
 const menuItems = [
   { key: '/chat', icon: <CommentOutlined />, label: '对话', color: '#667eea' },
+  { key: '/actions', icon: <ThunderboltOutlined />, label: '行动中心', color: '#f59e0b' },
   { key: '/workspaces', icon: <AppstoreOutlined />, label: '项目空间', color: '#764ba2' },
   { key: '/papers', icon: <BookOutlined />, label: '论文库', color: '#00d2ff' },
   { key: '/research', icon: <ExperimentOutlined />, label: '研究方向', color: '#f5576c' },

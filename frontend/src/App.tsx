@@ -17,6 +17,7 @@ import PaperDigestInboxPage from './pages/PaperDigestInboxPage';
 import WorkspacesPage from './pages/WorkspacesPage';
 import WorkspaceDetailPage from './pages/WorkspaceDetailPage';
 import AdminPage from './pages/AdminPage';
+import ActionCenterPage from './pages/ActionCenterPage';
 import { useAuthStore } from './stores/useAuthStore';
 import { useThemeStore } from './stores/useThemeStore';
 
@@ -55,6 +56,7 @@ const App: React.FC = () => {
             {/* 内页 —— 侧边栏布局 */}
             <Route element={<AppLayout />}>
               <Route path="/chat" element={<ChatPage />} />
+              <Route path="/actions" element={<ActionCenterPage />} />
               <Route path="/papers" element={<PapersPage />} />
               <Route path="/papers/digests" element={<PaperDigestInboxPage />} />
               <Route path="/papers/:paperId" element={<PaperDetailPage />} />

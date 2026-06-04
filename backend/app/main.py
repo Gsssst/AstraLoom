@@ -92,6 +92,7 @@ from app.api.folders import router as folders_router  # noqa: E402
 from app.api.dashboard import router as dashboard_router  # noqa: E402
 from app.api.workspaces import router as workspaces_router  # noqa: E402
 from app.api.admin import router as admin_router  # noqa: E402
+from app.api.workflow import router as workflow_router  # noqa: E402
 
 app.include_router(chat.router, prefix="/api")
 app.include_router(tasks.router, prefix="/api")
@@ -108,3 +109,4 @@ app.include_router(folders_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
 app.include_router(workspaces_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
+app.include_router(workflow_router, prefix="/api")
