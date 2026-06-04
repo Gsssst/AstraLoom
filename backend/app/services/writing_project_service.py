@@ -412,6 +412,7 @@ class WritingProjectService:
         """获取项目详情。"""
         from app.db.models.writing import WritingProject
         from sqlalchemy.orm import selectinload
+        from app.services.workspace_service import WorkspaceService
 
         try:
             pid = UUID(project_id)
@@ -420,16 +421,26 @@ class WritingProjectService:
 
         result = await self.session.execute(
             select(WritingProject)
-            .where(WritingProject.id == pid, WritingProject.user_id == user_id)
+            .where(WritingProject.id == pid)
             .options(selectinload(WritingProject.sections))
         )
         project = result.scalar_one_or_none()
-        return self._project_to_dict(project) if project else None
+        if not project:
+            return None
+        if str(project.user_id) != str(user_id):
+            role = await WorkspaceService(self.session).resource_role_for_user(user_id, "writing_projects", str(project.id))
+            if not WorkspaceService(self.session).role_can_read_resource(role):
+                return None
+            data = self._project_to_dict(project)
+            data["workspace_access_role"] = role
+            return data
+        return self._project_to_dict(project)
 
     async def update_project(self, project_id: str, user_id: str,
                               **kwargs) -> dict | None:
         """更新项目。"""
         from app.db.models.writing import WritingProject
+        from app.services.workspace_service import WorkspaceService
 
         try:
             pid = UUID(project_id)
@@ -438,11 +449,16 @@ class WritingProjectService:
 
         result = await self.session.execute(
             select(WritingProject)
-            .where(WritingProject.id == pid, WritingProject.user_id == user_id)
+            .where(WritingProject.id == pid)
         )
         project = result.scalar_one_or_none()
         if not project:
             return None
+        if str(project.user_id) != str(user_id):
+            workspace = WorkspaceService(self.session)
+            role = await workspace.resource_role_for_user(user_id, "writing_projects", str(project.id))
+            if not workspace.role_can_edit_resource(role):
+                return None
 
         for key, value in kwargs.items():
             if hasattr(project, key):
@@ -479,6 +495,7 @@ class WritingProjectService:
                               **kwargs) -> dict | None:
         """更新章节内容/状态/标题。"""
         from app.db.models.writing import WritingSection, WritingProject
+        from app.services.workspace_service import WorkspaceService
 
         try:
             sid = UUID(section_id)
@@ -488,11 +505,20 @@ class WritingProjectService:
         result = await self.session.execute(
             select(WritingSection)
             .join(WritingProject, WritingSection.project_id == WritingProject.id)
-            .where(WritingSection.id == sid, WritingProject.user_id == user_id)
+            .where(WritingSection.id == sid)
         )
         section = result.scalar_one_or_none()
         if not section:
             return None
+        project_result = await self.session.execute(select(WritingProject).where(WritingProject.id == section.project_id))
+        project = project_result.scalar_one_or_none()
+        if not project:
+            return None
+        if str(project.user_id) != str(user_id):
+            workspace = WorkspaceService(self.session)
+            role = await workspace.resource_role_for_user(user_id, "writing_projects", str(project.id))
+            if not workspace.role_can_edit_resource(role):
+                return None
 
         for key, value in kwargs.items():
             if hasattr(section, key):
@@ -509,13 +535,29 @@ class WritingProjectService:
     async def reorder_sections(self, project_id: str, user_id: str,
                                 section_ids: List[str]) -> bool:
         """重排章节顺序。"""
-        from app.db.models.writing import WritingSection
+        from app.db.models.writing import WritingProject, WritingSection
+        from app.services.workspace_service import WorkspaceService
+
+        try:
+            pid = UUID(project_id)
+        except ValueError:
+            return False
+
+        result = await self.session.execute(select(WritingProject).where(WritingProject.id == pid))
+        project = result.scalar_one_or_none()
+        if not project:
+            return False
+        if str(project.user_id) != str(user_id):
+            workspace = WorkspaceService(self.session)
+            role = await workspace.resource_role_for_user(user_id, "writing_projects", str(project.id))
+            if not workspace.role_can_edit_resource(role):
+                return False
 
         for i, sid in enumerate(section_ids):
             try:
                 await self.session.execute(
                     update(WritingSection)
-                    .where(WritingSection.id == UUID(sid))
+                    .where(WritingSection.id == UUID(sid), WritingSection.project_id == str(pid))
                     .values(order=i)
                 )
             except (ValueError, Exception):

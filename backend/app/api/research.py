@@ -16,6 +16,7 @@ from app.db.models.research import ResearchProject, ResearchIdea, ResearchIdeaRu
 from app.services.research_service import ResearchPipelineService
 from app.services.research_idea_workbench import ResearchIdeaWorkbenchService
 from app.services.writing_project_service import WritingProjectService
+from app.services.workspace_service import WorkspaceService
 from app.services.digest_service import DigestService, ExperimentService, ShareService
 from app.services.paper_ingestion import PaperIngestionService
 from app.services.paper_search import PaperResult
@@ -45,6 +46,34 @@ async def _get_owned_project(db: AsyncSession, project_id: str, user) -> Researc
     )
     project = result.scalar_one_or_none()
     if not project:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    return project
+
+
+async def _get_workspace_accessible_project(
+    db: AsyncSession,
+    project_id: str,
+    user,
+    *,
+    require_editor: bool = False,
+) -> ResearchProject:
+    pid = _parse_uuid(project_id, "project_id")
+    result = await db.execute(
+        select(ResearchProject)
+        .where(ResearchProject.id == pid)
+        .options(selectinload(ResearchProject.ideas))
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    if project.user_id == user.id:
+        return project
+
+    workspace = WorkspaceService(db)
+    role = await workspace.resource_role_for_user(user.id, "research_projects", str(project.id))
+    if require_editor and not workspace.role_can_edit_resource(role):
+        raise HTTPException(status_code=403, detail="需要项目空间 editor 或 owner 权限")
+    if not require_editor and not workspace.role_can_read_resource(role):
         raise HTTPException(status_code=404, detail="项目未找到")
     return project
 
@@ -336,7 +365,7 @@ async def list_projects(db: AsyncSession = Depends(get_db), current_user=Depends
 @router.get("/projects/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str, db: AsyncSession = Depends(get_db), current_user=Depends(get_current_user)):
     """获取研究方向详情。"""
-    project = await _get_owned_project(db, project_id, current_user)
+    project = await _get_workspace_accessible_project(db, project_id, current_user)
 
     return ProjectResponse(
         id=str(project.id),
@@ -367,7 +396,7 @@ async def delete_project(project_id: str, db: AsyncSession = Depends(get_db), cu
 @router.get("/projects/{project_id}/recommended-papers")
 async def get_recommended_papers(project_id: str, db: AsyncSession = Depends(get_db), current_user=Depends(get_current_user)):
     """获取推荐的论文（异步，不阻塞页面加载）。"""
-    project = await _get_owned_project(db, project_id, current_user)
+    project = await _get_workspace_accessible_project(db, project_id, current_user)
     from app.services.paper_selection import PaperSelectionService
     selector = PaperSelectionService(db)
     papers = await selector.select_papers(
@@ -385,7 +414,7 @@ async def generate_ideas(
     current_user=Depends(get_current_user),
 ):
     """兼容入口：通过新的证据驱动工作台生成创新 Idea。"""
-    project = await _get_owned_project(db, project_id, current_user)
+    project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
 
     service = ResearchIdeaWorkbenchService(db)
     try:
@@ -404,7 +433,7 @@ async def create_idea_run(
     current_user=Depends(get_current_user),
 ):
     """创建并同步执行一次可恢复的 Idea 工作台运行。"""
-    project = await _get_owned_project(db, project_id, current_user)
+    project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
     service = ResearchIdeaWorkbenchService(db)
     run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search)
     ideas = await service.execute(project, run, num_ideas=req.num_ideas)
@@ -419,7 +448,7 @@ async def create_idea_run_stream(
     current_user=Depends(get_current_user),
 ):
     """创建 Idea 工作台运行，并以 SSE 返回阶段和中间产物。"""
-    project = await _get_owned_project(db, project_id, current_user)
+    project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
     service = ResearchIdeaWorkbenchService(db)
     run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search)
 
@@ -461,7 +490,7 @@ async def get_latest_idea_run(
     current_user=Depends(get_current_user),
 ):
     """获取当前项目最近一次 Idea 工作台运行。"""
-    project = await _get_owned_project(db, project_id, current_user)
+    project = await _get_workspace_accessible_project(db, project_id, current_user)
     result = await db.execute(
         select(ResearchIdeaRun)
         .where(ResearchIdeaRun.project_id == project.id)

@@ -18,6 +18,7 @@ from app.db.models.writing import WritingProject
 
 VALID_SPACE_ROLES = {"owner", "editor", "viewer"}
 VALID_RESOURCE_TYPES = {"papers", "research_projects", "writing_projects"}
+SPACE_ROLE_RANK = {"none": 0, "viewer": 1, "editor": 2, "owner": 3}
 
 
 class WorkspaceService:
@@ -316,6 +317,39 @@ class WorkspaceService:
         for item in items:
             item["linked"] = (item["type"], item["id"]) in linked
         return items
+
+    async def resource_role_for_user(
+        self,
+        user_id,
+        resource_type: str,
+        resource_id: str,
+    ) -> str:
+        resource_type = self._normalize_resource_type(resource_type) or ""
+        if resource_type not in VALID_RESOURCE_TYPES or not resource_id:
+            return "none"
+        try:
+            normalized_user_id = user_id if isinstance(user_id, UUID) else UUID(str(user_id))
+        except ValueError:
+            return "none"
+        result = await self.session.execute(
+            select(ProjectSpaceMember.role)
+            .join(ProjectSpace, ProjectSpace.id == ProjectSpaceMember.space_id)
+            .join(ProjectSpaceResource, ProjectSpaceResource.space_id == ProjectSpace.id)
+            .where(
+                ProjectSpace.status != "deleted",
+                ProjectSpaceMember.user_id == normalized_user_id,
+                ProjectSpaceResource.resource_type == resource_type,
+                ProjectSpaceResource.resource_id == str(resource_id),
+            )
+        )
+        roles = [role for role in result.scalars().all() if role in SPACE_ROLE_RANK]
+        return max(roles, key=lambda role: SPACE_ROLE_RANK[role], default="none")
+
+    def role_can_read_resource(self, role: str) -> bool:
+        return SPACE_ROLE_RANK.get(role, 0) >= SPACE_ROLE_RANK["viewer"]
+
+    def role_can_edit_resource(self, role: str) -> bool:
+        return SPACE_ROLE_RANK.get(role, 0) >= SPACE_ROLE_RANK["editor"]
 
     async def space_to_dict(self, space: ProjectSpace, user_id, include_summary: bool) -> dict:
         members = await self._members_to_dict(space)
