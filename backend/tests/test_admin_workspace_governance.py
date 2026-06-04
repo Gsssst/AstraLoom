@@ -46,6 +46,7 @@ def _dependency_calls(path: str, method: str):
         ("/api/admin/users", "GET"),
         ("/api/admin/users/{user_id}", "PATCH"),
         ("/api/admin/workspaces", "GET"),
+        ("/api/admin/workspace-activities", "GET"),
     ],
 )
 def test_admin_routes_require_admin(path, method):

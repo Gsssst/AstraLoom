@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -13,7 +13,8 @@ from app.core.security import require_admin
 from app.db.models.paper import Paper
 from app.db.models.research import ResearchProject
 from app.db.models.user import User
-from app.db.models.workspace import ProjectSpace
+from app.db.models.workspace import ProjectSpace, ProjectSpaceActivity
+from app.services.workspace_service import WorkspaceService
 from app.db.models.writing import WritingProject
 from app.db.session import get_db
 
@@ -151,6 +152,21 @@ async def list_admin_workspaces(
             for space in spaces
         ]
     }
+
+
+@router.get("/workspace-activities")
+async def list_admin_workspace_activities(
+    limit: int = 30,
+    db: AsyncSession = Depends(get_db),
+    _admin=Depends(require_admin),
+):
+    result = await db.execute(
+        select(ProjectSpaceActivity)
+        .order_by(desc(ProjectSpaceActivity.created_at))
+        .limit(max(1, min(limit, 100)))
+    )
+    service = WorkspaceService(db)
+    return {"activities": await service.activities_to_dict(result.scalars().all())}
 
 
 async def _ensure_not_last_admin(db: AsyncSession, target_user_id) -> None:

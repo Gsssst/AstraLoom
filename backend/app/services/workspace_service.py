@@ -5,18 +5,19 @@ from __future__ import annotations
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.models.paper import Paper, UserPaper
 from app.db.models.research import ResearchProject
 from app.db.models.user import User
-from app.db.models.workspace import ProjectSpace, ProjectSpaceMember
+from app.db.models.workspace import ProjectSpace, ProjectSpaceActivity, ProjectSpaceMember, ProjectSpaceResource
 from app.db.models.writing import WritingProject
 
 
 VALID_SPACE_ROLES = {"owner", "editor", "viewer"}
+VALID_RESOURCE_TYPES = {"papers", "research_projects", "writing_projects"}
 
 
 class WorkspaceService:
@@ -41,6 +42,7 @@ class WorkspaceService:
         self.session.add(space)
         await self.session.flush()
         self.session.add(ProjectSpaceMember(space_id=space.id, user_id=user.id, role="owner"))
+        self._record_activity(space, user, "space_created", metadata={"name": space.name})
         await self.session.commit()
         await self.session.refresh(space)
         return await self.space_to_dict(space, user.id, include_summary=False)
@@ -98,6 +100,7 @@ class WorkspaceService:
             space.description = str(updates["description"]).strip() or None
         if updates.get("metadata_json") is not None:
             space.metadata_json = updates["metadata_json"] or {}
+        self._record_activity(space, user, "space_updated", metadata={"fields": sorted(updates.keys())})
         await self.session.commit()
         await self.session.refresh(space)
         return await self.space_to_dict(space, user.id, include_summary=True)
@@ -110,6 +113,7 @@ class WorkspaceService:
         if role != "owner":
             raise PermissionError("只有项目空间 owner 可以删除空间")
         space.status = "deleted"
+        self._record_activity(space, user, "space_deleted")
         await self.session.commit()
         return True
 
@@ -135,12 +139,22 @@ class WorkspaceService:
             )
         )
         member = existing.scalar_one_or_none()
+        action = "member_updated"
         if member:
             if member.role == "owner":
                 raise PermissionError("不能修改 owner 角色")
             member.role = role
         else:
             self.session.add(ProjectSpaceMember(space_id=space.id, user_id=target_user.id, role=role))
+            action = "member_added"
+        self._record_activity(
+            space,
+            user,
+            action,
+            resource_type="members",
+            resource_id=str(target_user.id),
+            metadata={"target_username": target_user.username, "role": role},
+        )
         await self.session.commit()
         detail = await self.get_space_detail(str(space.id), user)
         return detail
@@ -167,8 +181,109 @@ class WorkspaceService:
         member = result.scalar_one_or_none()
         if member:
             await self.session.delete(member)
+            self._record_activity(space, user, "member_removed", resource_type="members", resource_id=str(uid))
             await self.session.commit()
         return await self.get_space_detail(str(space.id), user)
+
+    async def link_resource(
+        self,
+        space_id: str,
+        user: User,
+        resource_type: str,
+        resource_id: str,
+        metadata_json: Optional[dict] = None,
+    ) -> dict | None:
+        access = await self.get_space_for_user(space_id, user)
+        if not access:
+            return None
+        space, role = access
+        if role not in {"owner", "editor"}:
+            raise PermissionError("只有 owner 或 editor 可以绑定空间资源")
+        resource_type = self._normalize_resource_type(resource_type)
+        if not resource_type:
+            raise LookupError("不支持的资源类型")
+        resource = await self._resource_brief(resource_type, resource_id)
+        if not resource:
+            raise LookupError("资源不存在或无法访问")
+
+        existing = await self.session.execute(
+            select(ProjectSpaceResource).where(
+                ProjectSpaceResource.space_id == space.id,
+                ProjectSpaceResource.resource_type == resource_type,
+                ProjectSpaceResource.resource_id == str(resource_id),
+            )
+        )
+        link = existing.scalar_one_or_none()
+        if link:
+            link.metadata_json = metadata_json or link.metadata_json or {}
+        else:
+            link = ProjectSpaceResource(
+                space_id=space.id,
+                resource_type=resource_type,
+                resource_id=str(resource_id),
+                added_by=user.id,
+                metadata_json=metadata_json or {},
+            )
+            self.session.add(link)
+        self._record_activity(
+            space,
+            user,
+            "resource_linked",
+            resource_type=resource_type,
+            resource_id=str(resource_id),
+            metadata={"title": resource.get("title")},
+        )
+        await self.session.commit()
+        return await self.get_space_detail(str(space.id), user)
+
+    async def unlink_resource(
+        self,
+        space_id: str,
+        user: User,
+        resource_type: str,
+        resource_id: str,
+    ) -> dict | None:
+        access = await self.get_space_for_user(space_id, user)
+        if not access:
+            return None
+        space, role = access
+        if role not in {"owner", "editor"}:
+            raise PermissionError("只有 owner 或 editor 可以移除空间资源")
+        resource_type = self._normalize_resource_type(resource_type)
+        if not resource_type:
+            raise LookupError("不支持的资源类型")
+        result = await self.session.execute(
+            select(ProjectSpaceResource).where(
+                ProjectSpaceResource.space_id == space.id,
+                ProjectSpaceResource.resource_type == resource_type,
+                ProjectSpaceResource.resource_id == str(resource_id),
+            )
+        )
+        link = result.scalar_one_or_none()
+        if link:
+            await self.session.delete(link)
+            self._record_activity(
+                space,
+                user,
+                "resource_unlinked",
+                resource_type=resource_type,
+                resource_id=str(resource_id),
+            )
+            await self.session.commit()
+        return await self.get_space_detail(str(space.id), user)
+
+    async def list_activities(self, space_id: str, user: User, limit: int = 30) -> list[dict] | None:
+        access = await self.get_space_for_user(space_id, user)
+        if not access:
+            return None
+        space, _role = access
+        result = await self.session.execute(
+            select(ProjectSpaceActivity)
+            .where(ProjectSpaceActivity.space_id == space.id)
+            .order_by(desc(ProjectSpaceActivity.created_at))
+            .limit(max(1, min(limit, 100)))
+        )
+        return await self.activities_to_dict(result.scalars().all())
 
     async def space_to_dict(self, space: ProjectSpace, user_id, include_summary: bool) -> dict:
         members = await self._members_to_dict(space)
@@ -188,10 +303,11 @@ class WorkspaceService:
         if include_summary:
             data["summary"] = await self.build_summary(space)
             data["next_actions"] = self._next_actions(data["summary"])
+            data["activities"] = await self.recent_activities_for_space(space, limit=20)
         return data
 
     async def build_summary(self, space: ProjectSpace) -> dict:
-        links = list((space.metadata_json or {}).get("resource_links") or [])
+        links = self._resource_links_from_space(space)
         linked = await self._linked_resources(links)
         recent = await self._recent_resources(space.owner_id)
         return {
@@ -229,12 +345,16 @@ class WorkspaceService:
     async def _linked_resources(self, links: list[dict]) -> dict:
         grouped = {"papers": [], "research_projects": [], "writing_projects": []}
         for link in links:
-            rtype = link.get("type")
+            rtype = self._normalize_resource_type(link.get("type") or link.get("resource_type"))
             rid = link.get("id")
             if not rid:
                 continue
             item = await self._resource_brief(rtype, rid)
             if item and rtype in grouped:
+                item["link_id"] = link.get("link_id")
+                item["linked_at"] = link.get("linked_at")
+                item["linked_by"] = link.get("linked_by")
+                item["legacy"] = bool(link.get("legacy"))
                 grouped[rtype].append(item)
         return grouped
 
@@ -283,11 +403,102 @@ class WorkspaceService:
             return self._writing_brief(project) if project else None
         return None
 
+    def _resource_links_from_space(self, space: ProjectSpace) -> list[dict]:
+        links: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for resource in sorted(getattr(space, "resources", []) or [], key=lambda item: item.created_at, reverse=True):
+            rtype = self._normalize_resource_type(resource.resource_type)
+            rid = str(resource.resource_id)
+            if not rtype or (rtype, rid) in seen:
+                continue
+            seen.add((rtype, rid))
+            links.append({
+                "link_id": str(resource.id),
+                "type": rtype,
+                "id": rid,
+                "linked_by": str(resource.added_by) if resource.added_by else None,
+                "linked_at": resource.created_at.isoformat() if resource.created_at else "",
+            })
+
+        for link in list((space.metadata_json or {}).get("resource_links") or []):
+            rtype = self._normalize_resource_type(link.get("type") or link.get("resource_type"))
+            rid = str(link.get("id") or "")
+            if not rtype or not rid or (rtype, rid) in seen:
+                continue
+            seen.add((rtype, rid))
+            links.append({**link, "type": rtype, "id": rid, "legacy": True})
+        return links
+
+    async def recent_activities_for_space(self, space: ProjectSpace, limit: int = 20) -> list[dict]:
+        result = await self.session.execute(
+            select(ProjectSpaceActivity)
+            .where(ProjectSpaceActivity.space_id == space.id)
+            .order_by(desc(ProjectSpaceActivity.created_at))
+            .limit(max(1, min(limit, 100)))
+        )
+        return await self.activities_to_dict(result.scalars().all())
+
+    async def activities_to_dict(self, activities: list[ProjectSpaceActivity]) -> list[dict]:
+        actor_ids = [activity.actor_id for activity in activities if activity.actor_id]
+        users: dict = {}
+        if actor_ids:
+            result = await self.session.execute(select(User).where(User.id.in_(actor_ids)))
+            users = {user.id: user for user in result.scalars().all()}
+        rows = []
+        for activity in activities:
+            actor = users.get(activity.actor_id)
+            rows.append({
+                "id": str(activity.id),
+                "space_id": str(activity.space_id),
+                "actor_id": str(activity.actor_id) if activity.actor_id else None,
+                "actor_name": (actor.display_name or actor.username) if actor else "系统",
+                "action": activity.action,
+                "resource_type": activity.resource_type,
+                "resource_id": activity.resource_id,
+                "metadata_json": activity.metadata_json or {},
+                "created_at": activity.created_at.isoformat() if activity.created_at else "",
+            })
+        return rows
+
     def _role_for(self, space: ProjectSpace, user_id) -> str:
         for member in space.members or []:
             if str(member.user_id) == str(user_id):
                 return member.role
         return "none"
+
+    def _normalize_resource_type(self, resource_type: Optional[str]) -> Optional[str]:
+        aliases = {
+            "paper": "papers",
+            "papers": "papers",
+            "research": "research_projects",
+            "research_project": "research_projects",
+            "research_projects": "research_projects",
+            "writing": "writing_projects",
+            "writing_project": "writing_projects",
+            "writing_projects": "writing_projects",
+        }
+        normalized = aliases.get(str(resource_type or "").strip())
+        return normalized if normalized in VALID_RESOURCE_TYPES else None
+
+    def _record_activity(
+        self,
+        space: ProjectSpace,
+        actor: User,
+        action: str,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> ProjectSpaceActivity:
+        activity = ProjectSpaceActivity(
+            space_id=space.id,
+            actor_id=actor.id,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            metadata_json=metadata or {},
+        )
+        self.session.add(activity)
+        return activity
 
     def _paper_brief(self, paper: Paper) -> dict:
         return {

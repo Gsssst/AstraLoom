@@ -3,7 +3,7 @@
 import logging
 from sqlalchemy import text
 from app.db.session import engine, AsyncSessionLocal
-from app.db.models.workspace import ProjectSpace, ProjectSpaceMember
+from app.db.models.workspace import ProjectSpace, ProjectSpaceActivity, ProjectSpaceMember, ProjectSpaceResource
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,8 @@ async def init_db() -> None:
             await conn.run_sync(ProjectSpace.metadata.create_all, tables=[
                 ProjectSpace.__table__,
                 ProjectSpaceMember.__table__,
+                ProjectSpaceResource.__table__,
+                ProjectSpaceActivity.__table__,
             ])
             logger.info("✅ 项目空间表已就绪")
     except Exception as e:

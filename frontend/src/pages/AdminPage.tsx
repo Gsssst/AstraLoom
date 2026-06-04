@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Alert, Avatar, Button, Card, Col, Input, Row, Select, Space,
-  Statistic, Switch, Table, Tag, Typography, message,
+  Statistic, Switch, Table, Tag, Timeline, Typography, message,
 } from 'antd';
 import {
   AuditOutlined, DatabaseOutlined, ReloadOutlined, SafetyCertificateOutlined,
@@ -14,12 +14,23 @@ const { Title, Text, Paragraph } = Typography;
 
 const cardStyle = { borderRadius: 14, border: '1px solid #f0f0f0' };
 const heroGradient = 'linear-gradient(135deg, #232526 0%, #667eea 50%, #764ba2 100%)';
+const activityLabel: Record<string, string> = {
+  space_created: '创建项目空间',
+  space_updated: '更新项目空间',
+  space_deleted: '删除项目空间',
+  member_added: '添加成员',
+  member_updated: '更新成员',
+  member_removed: '移除成员',
+  resource_linked: '绑定资源',
+  resource_unlinked: '移除资源',
+};
 
 const AdminPage: React.FC = () => {
   const user = useAuthStore((state) => state.user);
   const [overview, setOverview] = useState<any>(null);
   const [users, setUsers] = useState<any[]>([]);
   const [workspaces, setWorkspaces] = useState<any[]>([]);
+  const [activities, setActivities] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [userQuery, setUserQuery] = useState('');
   const [workspaceQuery, setWorkspaceQuery] = useState('');
@@ -31,14 +42,16 @@ const AdminPage: React.FC = () => {
     if (!isAdmin) return;
     setLoading(true);
     try {
-      const [overviewRes, usersRes, spacesRes] = await Promise.all([
+      const [overviewRes, usersRes, spacesRes, activitiesRes] = await Promise.all([
         api.get('/admin/overview'),
         api.get('/admin/users', { params: { query: userQuery || undefined } }),
         api.get('/admin/workspaces', { params: { query: workspaceQuery || undefined } }),
+        api.get('/admin/workspace-activities', { params: { limit: 20 } }),
       ]);
       setOverview(overviewRes.data);
       setUsers(usersRes.data.users || []);
       setWorkspaces(spacesRes.data.workspaces || []);
+      setActivities(activitiesRes.data.activities || []);
     } catch (error: any) {
       message.error(error.response?.data?.detail || '管理员数据加载失败');
     } finally {
@@ -205,7 +218,7 @@ const AdminPage: React.FC = () => {
 
       <Card
         title="项目空间治理"
-        style={cardStyle}
+        style={{ ...cardStyle, marginBottom: 18 }}
         extra={
           <Input.Search
             allowClear
@@ -218,7 +231,7 @@ const AdminPage: React.FC = () => {
         }
       >
         <Paragraph type="secondary">
-          当前版本提供空间所有者和成员角色可见性；后续可继续接入空间级资源绑定和活动审计。
+          当前版本提供空间所有者、成员角色和资源协作状态可见性。
         </Paragraph>
         <Table
           rowKey="id"
@@ -267,6 +280,29 @@ const AdminPage: React.FC = () => {
             },
           ]}
         />
+      </Card>
+
+      <Card title="最近空间活动" style={cardStyle}>
+        {activities.length ? (
+          <Timeline
+            items={activities.map((item: any) => ({
+              children: (
+                <Space direction="vertical" size={2}>
+                  <Text>
+                    <Text strong>{item.actor_name}</Text> {activityLabel[item.action] || item.action}
+                    {item.resource_type && <Tag style={{ marginLeft: 8 }}>{item.resource_type}</Tag>}
+                  </Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {item.created_at ? new Date(item.created_at).toLocaleString() : ''}
+                    {item.metadata_json?.title ? ` · ${item.metadata_json.title}` : ''}
+                  </Text>
+                </Space>
+              ),
+            }))}
+          />
+        ) : (
+          <Alert type="info" showIcon message="暂无空间活动" description="创建空间、绑定资源或管理成员后，这里会出现治理时间线。" />
+        )}
       </Card>
     </div>
   );

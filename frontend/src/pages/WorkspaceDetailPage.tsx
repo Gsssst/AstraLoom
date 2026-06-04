@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  Button, Card, Col, Empty, Form, Input, List, Modal, Row, Select, Space, Statistic, Tag, Typography, message,
+  Button, Card, Col, Empty, Form, Input, List, Modal, Row, Select, Space, Statistic, Tag, Timeline, Typography, message,
 } from 'antd';
 import {
   ArrowLeftOutlined, BookOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined,
-  PlusOutlined, TeamOutlined, UserOutlined,
+  LinkOutlined, PlusOutlined, TeamOutlined, UserOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 
@@ -23,6 +23,17 @@ const resourceLabel: Record<string, string> = {
   writing_projects: '写作草稿',
 };
 
+const activityLabel: Record<string, string> = {
+  space_created: '创建了项目空间',
+  space_updated: '更新了项目空间',
+  space_deleted: '删除了项目空间',
+  member_added: '添加了成员',
+  member_updated: '更新了成员角色',
+  member_removed: '移除了成员',
+  resource_linked: '绑定了资源',
+  resource_unlinked: '移除了资源',
+};
+
 const WorkspaceDetailPage: React.FC = () => {
   const { spaceId } = useParams();
   const navigate = useNavigate();
@@ -31,6 +42,8 @@ const WorkspaceDetailPage: React.FC = () => {
   const [memberModalOpen, setMemberModalOpen] = useState(false);
   const [memberSaving, setMemberSaving] = useState(false);
   const [memberForm] = Form.useForm();
+  const [resourceForm] = Form.useForm();
+  const [resourceSaving, setResourceSaving] = useState(false);
 
   const fetchSpace = async () => {
     if (!spaceId) return;
@@ -74,16 +87,63 @@ const WorkspaceDetailPage: React.FC = () => {
     }
   };
 
+  const canEditResources = space?.role === 'owner' || space?.role === 'editor';
+
+  const handleLinkResource = async () => {
+    const values = await resourceForm.validateFields();
+    setResourceSaving(true);
+    try {
+      const response = await api.post(`/workspaces/${spaceId}/resources`, values);
+      setSpace(response.data);
+      resourceForm.resetFields();
+      message.success('资源已绑定到空间');
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '绑定资源失败');
+    } finally {
+      setResourceSaving(false);
+    }
+  };
+
+  const handleUnlinkResource = async (resourceType: string, resourceId: string) => {
+    try {
+      const response = await api.delete(`/workspaces/${spaceId}/resources/${resourceType}/${resourceId}`);
+      setSpace(response.data);
+      message.success('资源已从空间移除');
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '移除资源失败');
+    }
+  };
+
   const renderResourceList = (type: string, items: any[]) => (
     <Card title={<Space>{resourceIcon[type]}{resourceLabel[type]}</Space>} style={{ borderRadius: 14, height: '100%' }}>
       {items?.length ? (
         <List
           dataSource={items}
           renderItem={(item) => (
-            <List.Item style={{ cursor: 'pointer' }} onClick={() => navigate(item.path)}>
+            <List.Item
+              style={{ cursor: 'pointer' }}
+              onClick={() => navigate(item.path)}
+              actions={canEditResources && !item.legacy ? [
+                <Button
+                  key="unlink"
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    handleUnlinkResource(type, item.id);
+                  }}
+                />,
+              ] : []}
+            >
               <List.Item.Meta
                 title={<Text strong ellipsis>{item.title}</Text>}
-                description={<Text type="secondary" ellipsis>{item.subtitle}</Text>}
+                description={(
+                  <Space direction="vertical" size={2}>
+                    <Text type="secondary" ellipsis>{item.subtitle}</Text>
+                    {item.legacy && <Tag color="gold">旧链接</Tag>}
+                  </Space>
+                )}
               />
             </List.Item>
           )}
@@ -140,6 +200,34 @@ const WorkspaceDetailPage: React.FC = () => {
             <Col xs={24} lg={8}>{renderResourceList('writing_projects', resources.writing_projects || [])}</Col>
           </Row>
 
+          {canEditResources && (
+            <Card title={<Space><LinkOutlined />绑定空间资源</Space>} style={{ borderRadius: 14, marginBottom: 18 }}>
+              <Form form={resourceForm} layout="inline" initialValues={{ resource_type: 'papers' }} style={{ gap: 8 }}>
+                <Form.Item name="resource_type" rules={[{ required: true }]}>
+                  <Select
+                    style={{ width: 160 }}
+                    options={[
+                      { value: 'papers', label: '论文' },
+                      { value: 'research_projects', label: '研究方向' },
+                      { value: 'writing_projects', label: '写作草稿' },
+                    ]}
+                  />
+                </Form.Item>
+                <Form.Item name="resource_id" rules={[{ required: true, message: '请输入资源 ID' }]} style={{ flex: 1, minWidth: 280 }}>
+                  <Input placeholder="粘贴论文、研究方向或写作项目 ID" />
+                </Form.Item>
+                <Form.Item>
+                  <Button type="primary" icon={<LinkOutlined />} loading={resourceSaving} onClick={handleLinkResource}>
+                    绑定
+                  </Button>
+                </Form.Item>
+              </Form>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                现在先支持输入资源 ID，后续可以继续升级成“从论文库/研究方向/写作项目中搜索选择”。
+              </Text>
+            </Card>
+          )}
+
           <Row gutter={[16, 16]}>
             <Col xs={24} lg={14}>
               <Card title="下一步建议" style={{ borderRadius: 14 }}>
@@ -176,6 +264,29 @@ const WorkspaceDetailPage: React.FC = () => {
               </Card>
             </Col>
           </Row>
+
+          <Card title="最近活动" style={{ borderRadius: 14, marginTop: 18 }}>
+            {space.activities?.length ? (
+              <Timeline
+                items={space.activities.map((item: any) => ({
+                  children: (
+                    <Space direction="vertical" size={2}>
+                      <Text>
+                        <Text strong>{item.actor_name}</Text> {activityLabel[item.action] || item.action}
+                        {item.resource_type && <Tag style={{ marginLeft: 8 }}>{resourceLabel[item.resource_type] || item.resource_type}</Tag>}
+                      </Text>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {item.created_at ? new Date(item.created_at).toLocaleString() : ''}
+                        {item.metadata_json?.title ? ` · ${item.metadata_json.title}` : ''}
+                      </Text>
+                    </Space>
+                  ),
+                }))}
+              />
+            ) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无活动记录" />
+            )}
+          </Card>
         </>
       )}
 
