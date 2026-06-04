@@ -160,6 +160,31 @@ async def list_workspace_activities(
     return {"activities": activities}
 
 
+@router.get("/{space_id}/resource-candidates")
+async def list_workspace_resource_candidates(
+    space_id: str,
+    resource_type: str,
+    q: str = "",
+    limit: int = 12,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    service = WorkspaceService(db)
+    try:
+        items = await service.search_resource_candidates(
+            space_id=space_id,
+            user=user,
+            resource_type=resource_type,
+            q=q,
+            limit=limit,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    if items is None:
+        raise HTTPException(status_code=404, detail="项目空间未找到")
+    return {"items": items}
+
+
 @router.post("/{space_id}/resources")
 async def link_workspace_resource(
     space_id: str,

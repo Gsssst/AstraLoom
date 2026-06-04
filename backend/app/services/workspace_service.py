@@ -285,6 +285,38 @@ class WorkspaceService:
         )
         return await self.activities_to_dict(result.scalars().all())
 
+    async def search_resource_candidates(
+        self,
+        space_id: str,
+        user: User,
+        resource_type: str,
+        q: str = "",
+        limit: int = 12,
+    ) -> list[dict] | None:
+        access = await self.get_space_for_user(space_id, user)
+        if not access:
+            return None
+        space, _role = access
+        resource_type = self._normalize_resource_type(resource_type)
+        if not resource_type:
+            raise LookupError("不支持的资源类型")
+        limit = max(1, min(limit, 30))
+        q = (q or "").strip()
+
+        if resource_type == "papers":
+            items = await self._search_paper_candidates(q, limit)
+        elif resource_type == "research_projects":
+            items = await self._search_research_candidates(user, q, limit)
+        elif resource_type == "writing_projects":
+            items = await self._search_writing_candidates(user, q, limit)
+        else:
+            items = []
+
+        linked = self._linked_resource_key_set(space)
+        for item in items:
+            item["linked"] = (item["type"], item["id"]) in linked
+        return items
+
     async def space_to_dict(self, space: ProjectSpace, user_id, include_summary: bool) -> dict:
         members = await self._members_to_dict(space)
         data = {
@@ -384,6 +416,41 @@ class WorkspaceService:
             "writing_projects": [self._writing_brief(project) for project in writing_result.scalars().all()],
         }
 
+    async def _search_paper_candidates(self, q: str, limit: int) -> list[dict]:
+        query = select(Paper)
+        if q:
+            needle = f"%{q}%"
+            query = query.where(
+                or_(
+                    Paper.title.ilike(needle),
+                    Paper.abstract.ilike(needle),
+                    Paper.arxiv_id.ilike(needle),
+                    Paper.doi.ilike(needle),
+                    Paper.source.ilike(needle),
+                )
+            )
+            query = query.order_by(Paper.year.desc().nullslast(), Paper.updated_at.desc())
+        else:
+            query = query.order_by(Paper.updated_at.desc())
+        result = await self.session.execute(query.limit(limit))
+        return [self._paper_brief(paper) for paper in result.scalars().all()]
+
+    async def _search_research_candidates(self, user: User, q: str, limit: int) -> list[dict]:
+        query = select(ResearchProject).where(ResearchProject.user_id == user.id)
+        if q:
+            needle = f"%{q}%"
+            query = query.where(or_(ResearchProject.name.ilike(needle), ResearchProject.description.ilike(needle)))
+        result = await self.session.execute(query.order_by(ResearchProject.updated_at.desc()).limit(limit))
+        return [self._research_brief(project) for project in result.scalars().all()]
+
+    async def _search_writing_candidates(self, user: User, q: str, limit: int) -> list[dict]:
+        query = select(WritingProject).where(WritingProject.user_id == str(user.id))
+        if q:
+            needle = f"%{q}%"
+            query = query.where(or_(WritingProject.title.ilike(needle), WritingProject.description.ilike(needle)))
+        result = await self.session.execute(query.order_by(WritingProject.updated_at.desc()).limit(limit))
+        return [self._writing_brief(project) for project in result.scalars().all()]
+
     async def _resource_brief(self, rtype: str, rid: str) -> Optional[dict]:
         try:
             uid = UUID(rid)
@@ -428,6 +495,13 @@ class WorkspaceService:
             seen.add((rtype, rid))
             links.append({**link, "type": rtype, "id": rid, "legacy": True})
         return links
+
+    def _linked_resource_key_set(self, space: ProjectSpace) -> set[tuple[str, str]]:
+        return {
+            (link["type"], str(link["id"]))
+            for link in self._resource_links_from_space(space)
+            if link.get("type") and link.get("id")
+        }
 
     async def recent_activities_for_space(self, space: ProjectSpace, limit: int = 20) -> list[dict]:
         result = await self.session.execute(

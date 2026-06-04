@@ -31,6 +31,7 @@ def test_workspace_routes_require_authentication():
         ("/api/workspaces/{space_id}/members", "POST"),
         ("/api/workspaces/{space_id}/members/{user_id}", "DELETE"),
         ("/api/workspaces/{space_id}/activities", "GET"),
+        ("/api/workspaces/{space_id}/resource-candidates", "GET"),
         ("/api/workspaces/{space_id}/resources", "POST"),
         ("/api/workspaces/{space_id}/resources/{resource_type}/{resource_id}", "DELETE"),
     ]
@@ -127,6 +128,30 @@ def test_workspace_resource_type_aliases_are_normalized():
     assert service._normalize_resource_type("research_project") == "research_projects"
     assert service._normalize_resource_type("writing") == "writing_projects"
     assert service._normalize_resource_type("unknown") is None
+
+
+def test_workspace_linked_resource_key_set_includes_durable_and_legacy_links():
+    durable_id = uuid4()
+    legacy_id = uuid4()
+    now = datetime.now(timezone.utc)
+    space = SimpleNamespace(
+        metadata_json={"resource_links": [{"type": "writing_project", "id": str(legacy_id)}]},
+        resources=[
+            SimpleNamespace(
+                id=uuid4(),
+                resource_type="papers",
+                resource_id=str(durable_id),
+                added_by=uuid4(),
+                created_at=now,
+            )
+        ],
+    )
+    service = WorkspaceService(SimpleNamespace())
+
+    keys = service._linked_resource_key_set(space)
+
+    assert ("papers", str(durable_id)) in keys
+    assert ("writing_projects", str(legacy_id)) in keys
 
 
 def test_workspace_activity_records_include_actor_resource_and_metadata():

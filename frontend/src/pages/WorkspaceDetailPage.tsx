@@ -44,6 +44,11 @@ const WorkspaceDetailPage: React.FC = () => {
   const [memberForm] = Form.useForm();
   const [resourceForm] = Form.useForm();
   const [resourceSaving, setResourceSaving] = useState(false);
+  const [candidateType, setCandidateType] = useState('papers');
+  const [candidateQuery, setCandidateQuery] = useState('');
+  const [candidates, setCandidates] = useState<any[]>([]);
+  const [candidateLoading, setCandidateLoading] = useState(false);
+  const [manualMode, setManualMode] = useState(false);
 
   const fetchSpace = async () => {
     if (!spaceId) return;
@@ -60,6 +65,21 @@ const WorkspaceDetailPage: React.FC = () => {
   };
 
   useEffect(() => { fetchSpace(); }, [spaceId]);
+
+  const fetchCandidates = async (type = candidateType, q = candidateQuery) => {
+    if (!spaceId || !canEditResources) return;
+    setCandidateLoading(true);
+    try {
+      const response = await api.get(`/workspaces/${spaceId}/resource-candidates`, {
+        params: { resource_type: type, q: q || undefined, limit: 12 },
+      });
+      setCandidates(response.data.items || []);
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '候选资源加载失败');
+    } finally {
+      setCandidateLoading(false);
+    }
+  };
 
   const handleAddMember = async () => {
     const values = await memberForm.validateFields();
@@ -89,6 +109,10 @@ const WorkspaceDetailPage: React.FC = () => {
 
   const canEditResources = space?.role === 'owner' || space?.role === 'editor';
 
+  useEffect(() => {
+    if (canEditResources) fetchCandidates(candidateType, candidateQuery);
+  }, [canEditResources, candidateType, spaceId]);
+
   const handleLinkResource = async () => {
     const values = await resourceForm.validateFields();
     setResourceSaving(true);
@@ -96,6 +120,23 @@ const WorkspaceDetailPage: React.FC = () => {
       const response = await api.post(`/workspaces/${spaceId}/resources`, values);
       setSpace(response.data);
       resourceForm.resetFields();
+      message.success('资源已绑定到空间');
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '绑定资源失败');
+    } finally {
+      setResourceSaving(false);
+    }
+  };
+
+  const handleBindCandidate = async (candidate: any) => {
+    setResourceSaving(true);
+    try {
+      const response = await api.post(`/workspaces/${spaceId}/resources`, {
+        resource_type: candidate.type,
+        resource_id: candidate.id,
+      });
+      setSpace(response.data);
+      await fetchCandidates(candidateType, candidateQuery);
       message.success('资源已绑定到空间');
     } catch (error: any) {
       message.error(error.response?.data?.detail || '绑定资源失败');
@@ -202,29 +243,91 @@ const WorkspaceDetailPage: React.FC = () => {
 
           {canEditResources && (
             <Card title={<Space><LinkOutlined />绑定空间资源</Space>} style={{ borderRadius: 14, marginBottom: 18 }}>
-              <Form form={resourceForm} layout="inline" initialValues={{ resource_type: 'papers' }} style={{ gap: 8 }}>
-                <Form.Item name="resource_type" rules={[{ required: true }]}>
+              <Space direction="vertical" style={{ width: '100%' }} size={12}>
+                <Space wrap>
                   <Select
+                    value={candidateType}
                     style={{ width: 160 }}
+                    onChange={(value) => {
+                      setCandidateType(value);
+                      setCandidates([]);
+                    }}
                     options={[
                       { value: 'papers', label: '论文' },
                       { value: 'research_projects', label: '研究方向' },
                       { value: 'writing_projects', label: '写作草稿' },
                     ]}
                   />
-                </Form.Item>
-                <Form.Item name="resource_id" rules={[{ required: true, message: '请输入资源 ID' }]} style={{ flex: 1, minWidth: 280 }}>
-                  <Input placeholder="粘贴论文、研究方向或写作项目 ID" />
-                </Form.Item>
-                <Form.Item>
-                  <Button type="primary" icon={<LinkOutlined />} loading={resourceSaving} onClick={handleLinkResource}>
-                    绑定
+                  <Input.Search
+                    allowClear
+                    placeholder={`搜索${resourceLabel[candidateType] || '资源'}标题或描述`}
+                    value={candidateQuery}
+                    onChange={event => setCandidateQuery(event.target.value)}
+                    onSearch={value => fetchCandidates(candidateType, value)}
+                    style={{ width: 360 }}
+                  />
+                  <Button onClick={() => fetchCandidates(candidateType, candidateQuery)} loading={candidateLoading}>
+                    刷新候选
                   </Button>
-                </Form.Item>
-              </Form>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                现在先支持输入资源 ID，后续可以继续升级成“从论文库/研究方向/写作项目中搜索选择”。
-              </Text>
+                  <Button type="link" onClick={() => setManualMode(value => !value)}>
+                    {manualMode ? '收起手动 ID' : '手动输入 ID'}
+                  </Button>
+                </Space>
+
+                <List
+                  loading={candidateLoading}
+                  dataSource={candidates}
+                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无候选资源，换个关键词试试" /> }}
+                  renderItem={(item: any) => (
+                    <List.Item
+                      actions={[
+                        item.linked ? (
+                          <Tag color="green">已绑定</Tag>
+                        ) : (
+                          <Button
+                            type="primary"
+                            size="small"
+                            icon={<LinkOutlined />}
+                            loading={resourceSaving}
+                            onClick={() => handleBindCandidate(item)}
+                          >
+                            绑定
+                          </Button>
+                        ),
+                      ]}
+                    >
+                      <List.Item.Meta
+                        avatar={resourceIcon[item.type]}
+                        title={<Text strong>{item.title}</Text>}
+                        description={<Text type="secondary">{item.subtitle}</Text>}
+                      />
+                    </List.Item>
+                  )}
+                />
+
+                {manualMode && (
+                  <Form form={resourceForm} layout="inline" initialValues={{ resource_type: candidateType }} style={{ gap: 8 }}>
+                    <Form.Item name="resource_type" rules={[{ required: true }]}>
+                      <Select
+                        style={{ width: 160 }}
+                        options={[
+                          { value: 'papers', label: '论文' },
+                          { value: 'research_projects', label: '研究方向' },
+                          { value: 'writing_projects', label: '写作草稿' },
+                        ]}
+                      />
+                    </Form.Item>
+                    <Form.Item name="resource_id" rules={[{ required: true, message: '请输入资源 ID' }]} style={{ flex: 1, minWidth: 280 }}>
+                      <Input placeholder="粘贴论文、研究方向或写作项目 ID" />
+                    </Form.Item>
+                    <Form.Item>
+                      <Button icon={<LinkOutlined />} loading={resourceSaving} onClick={handleLinkResource}>
+                        用 ID 绑定
+                      </Button>
+                    </Form.Item>
+                  </Form>
+                )}
+              </Space>
             </Card>
           )}
 
