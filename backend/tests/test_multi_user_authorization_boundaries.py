@@ -142,6 +142,12 @@ def test_system_wide_routes_require_admin(path, method):
         ("/api/research/ideas/{idea_id}/lineage", "GET"),
         ("/api/research/projects/{project_id}/evidence/import", "POST"),
         ("/api/folders/", "GET"),
+        ("/api/folders/", "POST"),
+        ("/api/folders/{folder_id}/papers", "GET"),
+        ("/api/folders/{folder_id}/papers", "POST"),
+        ("/api/folders/{folder_id}/diagnostics", "GET"),
+        ("/api/folders/{folder_id}/paper-ids", "GET"),
+        ("/api/folders/{folder_id}/papers/{paper_id}", "DELETE"),
         ("/api/folders/{folder_id}", "DELETE"),
         ("/api/papers/ingest-personal", "POST"),
     ],
@@ -170,9 +176,32 @@ def test_folder_tree_excludes_foreign_children():
     foreign_child = SimpleNamespace(id=uuid4(), name="foreign", parent_id=root_id, user_id=uuid4(), children=[])
     root = SimpleNamespace(id=root_id, name="root", parent_id=None, user_id=owner_id, children=[owned_child, foreign_child])
 
-    tree = folders.build_tree(root, owner_id)
+    tree = folders.build_tree(root, owner_id, {str(root_id): 3})
 
     assert [child["name"] for child in tree["children"]] == ["owned"]
+    assert tree["paper_count"] == 3
+
+
+def test_research_project_create_accepts_collection_seed_papers():
+    paper_id = str(uuid4())
+    collection_id = str(uuid4())
+    req = research.ProjectCreate(name="Video grounding", paper_ids=[paper_id], collection_ids=[collection_id])
+
+    assert req.paper_ids == [paper_id]
+    assert req.collection_ids == [collection_id]
+
+
+def test_folder_readiness_warns_when_collection_is_weak():
+    diagnostics = folders._readiness_from_counts(
+        paper_count=2,
+        full_text_count=0,
+        embedding_count=1,
+        read_status_counts={"unread": 2, "reading": 0, "completed": 0},
+    )
+
+    assert diagnostics["ready_for_idea"] is False
+    assert diagnostics["full_text_coverage"] == 0
+    assert any("少于 3 篇" in warning for warning in diagnostics["warnings"])
 
 
 def test_personal_collection_delete_remains_available_to_authenticated_users():

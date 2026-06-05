@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Input, Button, List, Tag, Select, Space, Typography, Spin, Badge,
-  Card, message, Modal, Checkbox, Row, Col,
+  Card, message, Modal, Checkbox, Row, Col, Alert, Progress,
 } from 'antd';
 import {
   SearchOutlined, CalendarOutlined, UserOutlined,
@@ -33,6 +33,16 @@ interface PaperCollection {
   id: string;
   name: string;
   paper_count?: number;
+  diagnostics?: CollectionDiagnostics;
+}
+
+interface CollectionDiagnostics {
+  paper_count: number;
+  full_text_coverage: number;
+  embedding_coverage: number;
+  read_status_counts?: Record<string, number>;
+  ready_for_idea: boolean;
+  warnings?: string[];
 }
 
 const heroGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
@@ -73,6 +83,7 @@ const PapersPage: React.FC = () => {
   const [targetCollectionId, setTargetCollectionId] = useState<string | undefined>();
   const [creatingCollection, setCreatingCollection] = useState(false);
   const [addingCollection, setAddingCollection] = useState(false);
+  const [collectionDiagnostics, setCollectionDiagnostics] = useState<CollectionDiagnostics | null>(null);
   const isAuthenticated = !!localStorage.getItem('access_token');
   const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
   const isRemoteSource = ['scholarly', 'arxiv', 'semantic_scholar', 'openalex', 'google_scholar'].includes(source);
@@ -147,6 +158,18 @@ const PapersPage: React.FC = () => {
   }, [collections, selectedCollectionId, source]);
 
   useEffect(() => {
+    if (!selectedCollectionId) {
+      setCollectionDiagnostics(null);
+      return;
+    }
+    api.get(`/folders/${selectedCollectionId}/diagnostics`)
+      .then(response => setCollectionDiagnostics(response.data))
+      .catch(() => {
+        setCollectionDiagnostics(collections.find(item => item.id === selectedCollectionId)?.diagnostics || null);
+      });
+  }, [collections, selectedCollectionId]);
+
+  useEffect(() => {
     if (!isAuthenticated) return;
     const fetchDigestUnread = () => {
       api.get('/notifications/digests/unread-count')
@@ -177,20 +200,25 @@ const PapersPage: React.FC = () => {
     const remoteKey = `${paper.source}:${paper.remote_id}`;
     setIngestingIds(prev => new Set(prev).add(remoteKey));
     try {
-      await api.post('/papers/ingest-personal', {
+      const response = await api.post('/papers/ingest-personal', {
         source: paper.source,
         remote_id: paper.remote_id,
         remote_ingest_token: paper.remote_ingest_token,
         auto_download: false,
       });
+      const localPaperId = response.data.paper_ids?.[0];
+      if (targetCollectionId && localPaperId) {
+        await api.post(`/folders/${targetCollectionId}/papers`, { paper_ids: [localPaperId] });
+        await fetchCollections();
+      }
       setIngestedRemoteIds(prev => new Set(prev).add(remoteKey));
-      message.success('已加入你的论文库');
+      message.success(targetCollectionId ? '已入库并加入目标分类' : '已加入你的论文库');
     } catch (e: any) {
       message.error(e.response?.data?.detail || '加入论文库失败');
     } finally {
       setIngestingIds(prev => { const n = new Set(prev); n.delete(remoteKey); return n; });
     }
-  }, []);
+  }, [fetchCollections, targetCollectionId]);
 
   const handleIngest = useCallback(async () => {
     if (!ingestQuery.trim()) { message.warning('请输入搜索关键词或 arXiv ID'); return; }
@@ -334,6 +362,13 @@ const PapersPage: React.FC = () => {
   const sl = (s: string) => ({ arxiv: 'arXiv', semantic_scholar: 'Semantic Scholar', openalex: 'OpenAlex', google_scholar: 'Google Scholar', manual: '手动' }[s] || s);
 
   const stats = papers.length > 0 ? `共 ${papers.length} 篇论文` : '';
+  const collectionOptions = collections.map(item => {
+    const diagnostics = item.diagnostics;
+    const suffix = diagnostics
+      ? ` · 全文 ${Math.round((diagnostics.full_text_coverage || 0) * 100)}% / 向量 ${Math.round((diagnostics.embedding_coverage || 0) * 100)}%`
+      : '';
+    return { value: item.id, label: `${item.name}（${item.paper_count || 0}）${suffix}` };
+  });
 
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', height: 'calc(100vh - 110px)', display: 'flex', flexDirection: 'column' }}>
@@ -408,7 +443,7 @@ const PapersPage: React.FC = () => {
                   placeholder="选择分类"
                   value={selectedCollectionId}
                   onChange={setSelectedCollectionId}
-                  options={collections.map(item => ({ value: item.id, label: `${item.name}（${item.paper_count || 0}）` }))}
+                  options={collectionOptions}
                   style={{ minWidth: 220 }}
                 />
                 <Button icon={<FolderAddOutlined />} loading={creatingCollection} onClick={handleCreateCollection} style={{ borderRadius: 8 }}>
@@ -417,6 +452,46 @@ const PapersPage: React.FC = () => {
               </Space>
             </Col>
           </Row>
+        )}
+        {isAuthenticated && collections.length > 0 && source !== 'collection' && (
+          <Row gutter={[8, 8]} align="middle" style={{ marginTop: 8 }}>
+            <Col span={24}>
+              <Space size={8} wrap>
+                <Text type="secondary" style={{ fontSize: 13 }}>入库目标分类</Text>
+                <Select
+                  allowClear
+                  placeholder="远程论文可直接入库到分类"
+                  value={targetCollectionId}
+                  onChange={setTargetCollectionId}
+                  options={collectionOptions}
+                  style={{ minWidth: 260 }}
+                />
+              </Space>
+            </Col>
+          </Row>
+        )}
+        {source === 'collection' && collectionDiagnostics && (
+          <Alert
+            type={collectionDiagnostics.ready_for_idea ? 'success' : 'warning'}
+            showIcon
+            style={{ borderRadius: 10, marginTop: 10 }}
+            message={collectionDiagnostics.ready_for_idea ? '该分类适合作为 Idea 生成语料' : '该分类还需要维护后再用于 Idea 生成'}
+            description={(
+              <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                <Space size={12} wrap>
+                  <Text>论文 {collectionDiagnostics.paper_count}</Text>
+                  <Text>已读 {collectionDiagnostics.read_status_counts?.completed || 0}</Text>
+                  <Text>全文覆盖 {Math.round((collectionDiagnostics.full_text_coverage || 0) * 100)}%</Text>
+                  <Text>向量覆盖 {Math.round((collectionDiagnostics.embedding_coverage || 0) * 100)}%</Text>
+                </Space>
+                <Space size={12} wrap>
+                  <Progress size="small" style={{ width: 160 }} percent={Math.round((collectionDiagnostics.full_text_coverage || 0) * 100)} />
+                  <Progress size="small" style={{ width: 160 }} percent={Math.round((collectionDiagnostics.embedding_coverage || 0) * 100)} />
+                </Space>
+                {(collectionDiagnostics.warnings || []).length > 0 && <Text type="secondary">{(collectionDiagnostics.warnings || []).join('；')}</Text>}
+              </Space>
+            )}
+          />
         )}
         <Row gutter={[8, 8]} align="middle" style={{ marginTop: 8 }}>
           <Col flex="auto">
@@ -491,7 +566,7 @@ const PapersPage: React.FC = () => {
                         ingestedRemoteIds.has(`${paper.source}:${paper.remote_id}`)
                           ? <Tag color="green" style={{ borderRadius: 6 }}>已加入论文库</Tag>
                           : <Button size="small" type="primary" ghost icon={<ImportOutlined />} loading={ingestingIds.has(`${paper.source}:${paper.remote_id}`)}
-                            onClick={e => handleIngestOne(e, paper)} style={{ borderRadius: 8, height: 24 }}>加入论文库</Button>
+                            onClick={e => handleIngestOne(e, paper)} style={{ borderRadius: 8, height: 24 }}>{targetCollectionId ? '入库并加入分类' : '加入论文库'}</Button>
                       ) : paper.id ? <Tag color="green" style={{ borderRadius: 6 }}>已入库</Tag> : null}
                     </Space>
                   </div>
@@ -531,7 +606,7 @@ const PapersPage: React.FC = () => {
             placeholder="加入分类"
             value={targetCollectionId}
             onChange={setTargetCollectionId}
-            options={collections.map(item => ({ value: item.id, label: `${item.name}（${item.paper_count || 0}）` }))}
+            options={collectionOptions}
             style={{ width: 180 }}
             suffixIcon={<FolderOutlined />}
           />

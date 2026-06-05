@@ -25,6 +25,7 @@ interface Evidence {
   paper_id: string; title: string; year?: number; arxiv_id?: string;
   category: 'seed' | 'background' | 'inspiration'; score: number;
   abstract_excerpt: string; relevance: string; source?: string; source_url?: string; doi?: string;
+  collection_names?: string[];
   imported_paper_id?: string;
 }
 interface Gap {
@@ -56,7 +57,7 @@ interface Idea {
   id: string; project_id: string; title: string; description: string | null;
   hypothesis?: string | null; approach?: string | null; novelty?: string | null;
   feasibility_score: number | null; novelty_score: number | null; status: string;
-  generated_code: string | null; evidence_json?: { items?: Evidence[]; scope?: string } | null;
+  generated_code: string | null; evidence_json?: { items?: Evidence[]; scope?: string; collection_sources?: { id: string; name: string; evidence_count: number }[] } | null;
   review_json?: Review | null; experiment_plan?: ExperimentPlan | null;
   parent_idea_id?: string | null; evolution_json?: { focus?: string; rationale?: string; round?: number; experiment_feedback?: ExperimentRecord } | null;
 }
@@ -348,7 +349,7 @@ const ResearchProjectPage: React.FC = () => {
         <List dataSource={evidenceItems} renderItem={item => (
           <List.Item style={{ alignItems: 'flex-start' }}>
             <List.Item.Meta
-              title={<Space wrap><Tag color={categoryColors[item.category]}>{categoryLabels[item.category]}</Tag><Tag>{sourceLabels[item.source || 'local_library'] || item.source}</Tag><Text strong>{item.title}</Text>{item.year && <Text type="secondary">{item.year}</Text>}</Space>}
+              title={<Space wrap><Tag color={categoryColors[item.category]}>{categoryLabels[item.category]}</Tag><Tag>{sourceLabels[item.source || 'local_library'] || item.source}</Tag>{item.collection_names?.map(name => <Tag color="magenta" key={name}>分类：{name}</Tag>)}<Text strong>{item.title}</Text>{item.year && <Text type="secondary">{item.year}</Text>}</Space>}
               description={<><Paragraph ellipsis={{ rows: 2 }} style={{ margin: '6px 0 4px' }}>{item.abstract_excerpt || '暂无摘要'}</Paragraph><Space wrap><Text type="secondary">{item.relevance}</Text>{item.source_url && <Button type="link" size="small" href={item.source_url} target="_blank">查看来源</Button>}{item.source !== 'local_library' && (item.imported_paper_id ? <Tag color="green">已入库</Tag> : <Button type="link" size="small" icon={<ImportOutlined />} loading={importingEvidence.has(item.paper_id)} onClick={() => importEvidence(item)}>一键入库</Button>)}</Space></>}
             />
           </List.Item>
@@ -446,6 +447,13 @@ const ResearchProjectPage: React.FC = () => {
         </>}
         {idea.evidence_json?.items && idea.evidence_json.items.length > 0 && <>
           <Divider>证据引用</Divider>
+          {idea.evidence_json.collection_sources && idea.evidence_json.collection_sources.length > 0 && (
+            <Space wrap style={{ marginBottom: 8 }}>
+              {idea.evidence_json.collection_sources.map(source => (
+                <Tag color="magenta" key={source.id}>来自分类：{source.name} · {source.evidence_count} 条证据</Tag>
+              ))}
+            </Space>
+          )}
           <Space wrap>{idea.evidence_json.items.map(item => <Tag color={categoryColors[item.category]} key={item.paper_id}>{item.title.slice(0, 36)}</Tag>)}</Space>
         </>}
         {idea.evolution_json && <Alert style={{ marginTop: 14 }} type="info" showIcon message="演化版本" description={idea.evolution_json.rationale || '该 Proposal 是根据父版本评审反馈生成的新版本。'} />}

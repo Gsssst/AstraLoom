@@ -25,6 +25,12 @@ interface PaperCollection {
   id: string;
   name: string;
   paper_count?: number;
+  diagnostics?: {
+    full_text_coverage?: number;
+    embedding_coverage?: number;
+    ready_for_idea?: boolean;
+    warnings?: string[];
+  };
 }
 
 const ResearchPage: React.FC = () => {
@@ -71,7 +77,7 @@ const ResearchPage: React.FC = () => {
         }))
         : [];
       const paperIds = Array.from(new Set([...selectedPaperIds, ...collectionPaperIds.flat()]));
-      await api.post('/research/projects', { name: newProjectName, description: newProjectDesc, keywords: newProjectKeywords.split(',').map(k => k.trim()).filter(Boolean), paper_ids: paperIds });
+      await api.post('/research/projects', { name: newProjectName, description: newProjectDesc, keywords: newProjectKeywords.split(',').map(k => k.trim()).filter(Boolean), paper_ids: paperIds, collection_ids: selectedCollectionIds });
       message.success('项目已创建！'); setCreateModalOpen(false);
       setNewProjectName(''); setNewProjectDesc(''); setNewProjectKeywords(''); setSelectedPaperIds([]); setSelectedCollectionIds([]); setSearchResults([]); setPaperSearch('');
       loadProjects();
@@ -80,6 +86,9 @@ const ResearchPage: React.FC = () => {
 
   const statusColors: Record<string, string> = { active: '#52c41a', completed: '#1677ff', archived: '#999' };
   const statusLabels: Record<string, string> = { active: '进行中', completed: '已完成', archived: '已归档' };
+  const selectedCollectionWarnings = collections
+    .filter(item => selectedCollectionIds.includes(item.id))
+    .flatMap(item => (item.diagnostics?.warnings || []).map(warning => `${item.name}: ${warning}`));
 
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto' }}>
@@ -170,9 +179,20 @@ const ResearchPage: React.FC = () => {
             placeholder="从论文分类一键导入种子论文"
             value={selectedCollectionIds}
             onChange={setSelectedCollectionIds}
-            options={collections.map(item => ({ value: item.id, label: `${item.name}（${item.paper_count || 0} 篇）` }))}
+            options={collections.map(item => {
+              const diagnostics = item.diagnostics;
+              const suffix = diagnostics
+                ? ` · 全文 ${Math.round((diagnostics.full_text_coverage || 0) * 100)}% / 向量 ${Math.round((diagnostics.embedding_coverage || 0) * 100)}%`
+                : '';
+              return { value: item.id, label: `${item.name}（${item.paper_count || 0} 篇）${suffix}` };
+            })}
             style={{ width: '100%' }}
           />
+          {selectedCollectionWarnings.length > 0 && (
+            <Text type="warning" style={{ fontSize: 12 }}>
+              {selectedCollectionWarnings.slice(0, 2).join('；')}
+            </Text>
+          )}
           <Input.Search placeholder="搜索论文..." value={paperSearch} onChange={e => setPaperSearch(e.target.value)} onSearch={handlePaperSearch} loading={searching} enterButton={<SearchOutlined />} style={{ borderRadius: 10 }} />
           {searchResults.length > 0 && (
             <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 10, padding: 4 }}>

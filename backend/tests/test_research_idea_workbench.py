@@ -123,6 +123,19 @@ def test_adversarial_review_objects_to_weak_baseline_and_metrics():
     assert any("baseline" in item.lower() for item in adversarial["objections"])
 
 
+def test_collection_sources_are_summarized_from_evidence():
+    evidence = [
+        {"paper_id": "p1", "collection_ids": ["c1"], "collection_names": ["Video Grounding"]},
+        {"paper_id": "p2", "collection_ids": ["c1"], "collection_names": ["Video Grounding"]},
+        {"paper_id": "p3"},
+    ]
+    evidence_map = {"collection_sources": [{"id": "c1", "name": "Video Grounding", "paper_count": 5}]}
+
+    sources = ResearchIdeaWorkbenchService._collection_sources_for_evidence(evidence, evidence_map)
+
+    assert sources == [{"id": "c1", "name": "Video Grounding", "evidence_count": 2}]
+
+
 @pytest.mark.asyncio
 async def test_candidate_review_sorts_by_explainable_weighted_score(monkeypatch):
     service = ResearchIdeaWorkbenchService(_Session())

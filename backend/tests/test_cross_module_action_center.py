@@ -65,3 +65,29 @@ def test_workflow_action_response_groups_and_sorts_by_priority():
         "research:ideas",
         "writing:draft",
     ]
+
+
+def test_workflow_action_can_describe_executable_maintenance():
+    service = WorkflowActionService(SimpleNamespace())
+    action = service.action(
+        "papers:full-text",
+        "papers",
+        "high",
+        "补全文",
+        "提升论文问答证据覆盖",
+        "/settings",
+        "knowledge-maintenance",
+        {"count": 7},
+        action_type="api",
+        action_label="补 5 篇全文",
+        method="POST",
+        endpoint="/papers/maintenance/backfill-full-text?limit=5",
+        requires_admin=True,
+    )
+
+    assert action["action_type"] == "api"
+    assert action["action_label"] == "补 5 篇全文"
+    assert action["method"] == "POST"
+    assert action["endpoint"] == "/papers/maintenance/backfill-full-text?limit=5"
+    assert action["requires_admin"] is True
+    assert action["path"] == "/settings"

@@ -23,11 +23,66 @@ class FolderPaperRequest(BaseModel):
 class FolderResponse(BaseModel):
     id: str; name: str; parent_id: Optional[str]; children: list = []
     paper_count: int = 0
+    diagnostics: Optional[dict] = None
     model_config = {"from_attributes": True}
 
-def build_tree(folder: Folder, user_id, counts: dict | None = None) -> dict:
+
+def _readiness_from_counts(
+    *,
+    paper_count: int,
+    full_text_count: int,
+    embedding_count: int,
+    read_status_counts: dict[str, int],
+) -> dict:
+    full_text_coverage = full_text_count / paper_count if paper_count else 0
+    embedding_coverage = embedding_count / paper_count if paper_count else 0
+    completed_count = read_status_counts.get("completed", 0)
+    warnings = []
+    if paper_count < 3:
+        warnings.append("分类论文少于 3 篇，Idea 生成可能缺少对比证据")
+    if full_text_coverage < 0.5:
+        warnings.append("全文覆盖率偏低，模型可能只能基于摘要推断")
+    if embedding_coverage < 0.5:
+        warnings.append("向量覆盖率偏低，相关论文检索命中会受影响")
+    if paper_count and completed_count == 0:
+        warnings.append("该分类还没有已读论文，建议先完成核心论文阅读")
+    return {
+        "paper_count": paper_count,
+        "full_text_count": full_text_count,
+        "full_text_coverage": round(full_text_coverage, 3),
+        "embedding_count": embedding_count,
+        "embedding_coverage": round(embedding_coverage, 3),
+        "read_status_counts": read_status_counts,
+        "ready_for_idea": paper_count >= 3 and full_text_coverage >= 0.5 and embedding_coverage >= 0.5,
+        "warnings": warnings,
+    }
+
+
+async def _folder_diagnostics(db: AsyncSession, folder_id, user_id) -> dict:
+    result = await db.execute(
+        select(Paper, UserPaper.read_status)
+        .join(PaperFolderItem, PaperFolderItem.paper_id == Paper.id)
+        .outerjoin(UserPaper, (UserPaper.paper_id == Paper.id) & (UserPaper.user_id == user_id))
+        .where(PaperFolderItem.folder_id == folder_id, PaperFolderItem.user_id == user_id)
+    )
+    rows = result.all()
+    paper_count = len(rows)
+    full_text_count = sum(1 for paper, _status in rows if paper.full_text and len(paper.full_text) > 500)
+    embedding_count = sum(1 for paper, _status in rows if paper.embedding is not None)
+    read_status_counts = {"unread": 0, "reading": 0, "completed": 0}
+    for _paper, status in rows:
+        read_status_counts[status if status in read_status_counts else "unread"] += 1
+    return _readiness_from_counts(
+        paper_count=paper_count,
+        full_text_count=full_text_count,
+        embedding_count=embedding_count,
+        read_status_counts=read_status_counts,
+    )
+
+def build_tree(folder: Folder, user_id, counts: dict | None = None, diagnostics: dict | None = None) -> dict:
     return {"id": str(folder.id), "name": folder.name, "parent_id": str(folder.parent_id) if folder.parent_id else None,
-            "children": [build_tree(c, user_id, counts) for c in (folder.children or []) if c.user_id == user_id], "paper_count": (counts or {}).get(str(folder.id), 0)}
+            "children": [build_tree(c, user_id, counts, diagnostics) for c in (folder.children or []) if c.user_id == user_id], "paper_count": (counts or {}).get(str(folder.id), 0),
+            "diagnostics": (diagnostics or {}).get(str(folder.id))}
 
 
 def _paper_brief(paper: Paper, read_status: str | None = None) -> dict:
@@ -62,19 +117,21 @@ async def _owned_folder(db: AsyncSession, folder_id: str, user) -> Folder:
 
 @router.get("/", response_model=List[dict])
 async def list_folders(db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
-    count_result = await db.execute(
+    stats_result = await db.execute(
         select(PaperFolderItem.folder_id, func.count(PaperFolderItem.paper_id))
         .where(PaperFolderItem.user_id == user.id)
         .group_by(PaperFolderItem.folder_id)
     )
-    counts = {str(folder_id): int(count or 0) for folder_id, count in count_result.all()}
+    counts = {str(folder_id): int(count or 0) for folder_id, count in stats_result.all()}
     result = await db.execute(
         select(Folder).where(
             Folder.parent_id.is_(None),
             Folder.user_id == user.id,
         ).options(selectinload(Folder.children))
     )
-    return [build_tree(f, user.id, counts) for f in result.scalars().all()]
+    folders = result.scalars().all()
+    diagnostics = {str(folder.id): await _folder_diagnostics(db, folder.id, user.id) for folder in folders}
+    return [build_tree(f, user.id, counts, diagnostics) for f in folders]
 
 @router.post("/", status_code=201)
 async def create_folder(req: FolderCreate, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
@@ -106,6 +163,14 @@ async def list_folder_papers(folder_id: str, db: AsyncSession = Depends(get_db),
         .order_by(PaperFolderItem.created_at.desc())
     )
     return [_paper_brief(paper, read_status) for paper, read_status in result.all()]
+
+
+@router.get("/{folder_id}/diagnostics")
+async def get_folder_diagnostics(folder_id: str, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    """获取分类覆盖率与 Idea 生成准备度。"""
+    folder = await _owned_folder(db, folder_id, user)
+    diagnostics = await _folder_diagnostics(db, folder.id, user.id)
+    return {"folder_id": str(folder.id), "name": folder.name, **diagnostics}
 
 
 @router.get("/{folder_id}/paper-ids")

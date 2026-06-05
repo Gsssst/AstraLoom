@@ -208,6 +208,7 @@ class ResearchIdeaWorkbenchService:
             "description": project.description or "",
             "keywords": project.keywords or [],
             "user_seed": (project.metadata_json or {}).get("user_seed", ""),
+            "seed_collections": (project.metadata_json or {}).get("seed_collections", []),
         }
 
     async def collect_evidence(
@@ -256,8 +257,20 @@ class ResearchIdeaWorkbenchService:
                 target = background if len(background) < 6 else inspiration
                 target.append(self._evidence_item(paper, "background" if target is background else "inspiration", 0.0))
 
+        collection_by_paper: dict[str, list[dict[str, str]]] = {}
+        for collection in brief.get("seed_collections", []) or []:
+            for paper_id in collection.get("paper_ids", []) or []:
+                collection_by_paper.setdefault(str(paper_id), []).append({
+                    "id": str(collection.get("id", "")),
+                    "name": str(collection.get("name", "未命名分类")),
+                })
         seeds = [
-            self._evidence_item(paper, "seed", score_by_id.get(str(paper.id), 1.0))
+            self._evidence_item(
+                paper,
+                "seed",
+                score_by_id.get(str(paper.id), 1.0),
+                collections=collection_by_paper.get(str(paper.id), []),
+            )
             for paper in manual_papers
         ]
         external, source_errors = await self._collect_external_evidence(query) if external_search else ([], {})
@@ -282,17 +295,31 @@ class ResearchIdeaWorkbenchService:
                 "inspiration": len(inspiration),
                 "external": len(external),
             },
+            "collection_sources": [
+                {
+                    "id": str(collection.get("id", "")),
+                    "name": str(collection.get("name", "未命名分类")),
+                    "paper_count": len(collection.get("paper_ids", []) or []),
+                }
+                for collection in (brief.get("seed_collections", []) or [])
+            ],
         }
 
     @staticmethod
-    def _evidence_item(paper: Paper, category: str, score: float) -> dict[str, Any]:
+    def _evidence_item(
+        paper: Paper,
+        category: str,
+        score: float,
+        *,
+        collections: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
         abstract = re.sub(r"\s+", " ", paper.abstract or "").strip()
         reason = {
             "seed": "用户主动选入的核心论文",
             "background": "与研究简报高度相关，可用于界定现有方法与限制",
             "inspiration": "可用于跨论文组合或寻找不同技术路径",
         }[category]
-        return {
+        item = {
             "paper_id": str(paper.id),
             "title": paper.title,
             "year": paper.year,
@@ -304,6 +331,10 @@ class ResearchIdeaWorkbenchService:
             "source": "local_library",
             "source_url": paper.source_url,
         }
+        if collections:
+            item["collection_ids"] = [collection["id"] for collection in collections if collection.get("id")]
+            item["collection_names"] = [collection["name"] for collection in collections if collection.get("name")]
+        return item
 
     async def _collect_external_evidence(self, query: str) -> tuple[list[dict[str, Any]], dict[str, str]]:
         """Collect scholarly evidence without making the run depend on network health."""
@@ -743,6 +774,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         for candidate in reviewed[:num_ideas]:
             evidence_ids = candidate.get("evidence_ids", [])
             evidence = [evidence_lookup[paper_id] for paper_id in evidence_ids if paper_id in evidence_lookup]
+            collection_sources = self._collection_sources_for_evidence(evidence, evidence_map)
             review = candidate["review"]
             idea = ResearchIdea(
                 project_id=run.project_id,
@@ -753,9 +785,9 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                 novelty=review["rationale"],
                 feasibility_score=review["scores"]["feasibility"],
                 novelty_score=review["scores"]["novelty"],
-                referenced_papers={"paper_ids": evidence_ids},
+                referenced_papers={"paper_ids": evidence_ids, "collection_sources": collection_sources},
                 hypothesis=candidate["hypothesis"],
-                evidence_json={"items": evidence, "scope": evidence_map.get("scope")},
+                evidence_json={"items": evidence, "scope": evidence_map.get("scope"), "collection_sources": collection_sources},
                 review_json={
                     **review,
                     "aggregate_score": candidate["score"],
@@ -773,6 +805,26 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         for idea in ideas:
             await self.session.refresh(idea)
         return ideas
+
+    @staticmethod
+    def _collection_sources_for_evidence(
+        evidence: list[dict[str, Any]],
+        evidence_map: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        by_id = {
+            str(item.get("id")): {"id": str(item.get("id")), "name": item.get("name"), "paper_ids": set()}
+            for item in evidence_map.get("collection_sources", []) or []
+            if item.get("id")
+        }
+        for item in evidence:
+            for collection_id, collection_name in zip(item.get("collection_ids", []) or [], item.get("collection_names", []) or []):
+                entry = by_id.setdefault(str(collection_id), {"id": str(collection_id), "name": collection_name, "paper_ids": set()})
+                entry["paper_ids"].add(item.get("paper_id"))
+        return [
+            {"id": entry["id"], "name": entry["name"], "evidence_count": len(entry["paper_ids"])}
+            for entry in by_id.values()
+            if entry["paper_ids"]
+        ]
 
     async def evolve_idea(
         self,

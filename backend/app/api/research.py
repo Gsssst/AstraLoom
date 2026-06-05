@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
 from app.db.models.research import ResearchProject, ResearchIdea, ResearchIdeaRun
+from app.db.models.paper import Folder, PaperFolderItem
 from app.services.research_service import ResearchPipelineService
 from app.services.research_idea_workbench import ResearchIdeaWorkbenchService
 from app.services.writing_project_service import WritingProjectService
@@ -117,6 +118,7 @@ class ProjectCreate(BaseModel):
     description: Optional[str] = None
     keywords: Optional[List[str]] = None
     paper_ids: Optional[List[str]] = None
+    collection_ids: Optional[List[str]] = None
 
 
 class IdeaBrief(BaseModel):
@@ -305,6 +307,37 @@ def _stream_event(event_type: str, data: Any = None) -> str:
 
 # --- API ---
 
+async def _resolve_seed_collections(db: AsyncSession, user, collection_ids: Optional[List[str]]) -> list[dict[str, Any]]:
+    if not collection_ids:
+        return []
+    from uuid import UUID
+    resolved = []
+    seen = set()
+    for raw_id in collection_ids:
+        if raw_id in seen:
+            continue
+        seen.add(raw_id)
+        try:
+            folder_id = UUID(raw_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid collection_id")
+        folder = (await db.execute(
+            select(Folder).where(Folder.id == folder_id, Folder.user_id == user.id)
+        )).scalar_one_or_none()
+        if not folder:
+            raise HTTPException(status_code=404, detail="论文分类未找到")
+        paper_result = await db.execute(
+            select(PaperFolderItem.paper_id)
+            .where(PaperFolderItem.folder_id == folder.id, PaperFolderItem.user_id == user.id)
+            .order_by(PaperFolderItem.created_at.desc())
+        )
+        resolved.append({
+            "id": str(folder.id),
+            "name": folder.name,
+            "paper_ids": [str(pid) for pid in paper_result.scalars().all()],
+        })
+    return resolved
+
 @router.post("/projects", response_model=ProjectResponse, status_code=201)
 async def create_project(
     req: ProjectCreate,
@@ -312,11 +345,19 @@ async def create_project(
     current_user=Depends(get_current_user),
 ):
     """创建研究方向项目。"""
+    seed_collections = await _resolve_seed_collections(db, current_user, req.collection_ids)
+    collection_paper_ids = [
+        paper_id
+        for collection in seed_collections
+        for paper_id in collection.get("paper_ids", [])
+    ]
+    paper_ids = list(dict.fromkeys([*(req.paper_ids or []), *collection_paper_ids]))
     project = ResearchProject(
         name=req.name,
         description=req.description,
         keywords=req.keywords,
-        paper_ids=req.paper_ids or [],
+        paper_ids=paper_ids,
+        metadata_json={"seed_collections": seed_collections} if seed_collections else None,
         user_id=current_user.id,
     )
     db.add(project)
