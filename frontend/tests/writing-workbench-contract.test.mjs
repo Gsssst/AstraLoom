@@ -68,6 +68,16 @@ test('section citation diagnostics expose actionable next steps', () => {
   assert.match(sectionEditorSource, /decision_warning/);
 });
 
+test('section editor exposes draft quality coaching', () => {
+  assert.match(sectionEditorSource, /质量评估/);
+  assert.match(sectionEditorSource, /章节质量/);
+  assert.match(sectionEditorSource, /rewrite_actions/);
+  assert.match(sectionEditorSource, /dimensions/);
+  assert.match(writingPageSource, /sections\/quality-check/);
+  assert.match(writingPageSource, /qualityChecks/);
+  assert.match(writingPageSource, /handleCheckSectionQuality/);
+});
+
 test('writing project creation supports context binding', () => {
   assert.match(projectPanelSource, /api\.get\('\/research\/projects'\)/);
   assert.match(projectPanelSource, /api\.get\('\/folders\/'\)/);

@@ -125,6 +125,8 @@ const WritingPage: React.FC = () => {
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
   const [citationChecks, setCitationChecks] = useState<Record<string, any>>({});
   const [citationChecking, setCitationChecking] = useState<Record<string, boolean>>({});
+  const [qualityChecks, setQualityChecks] = useState<Record<string, any>>({});
+  const [qualityChecking, setQualityChecking] = useState<Record<string, boolean>>({});
   const [draftTopic, setDraftTopic] = useState('');
   const [draftLoading, setDraftLoading] = useState(false);
   const [projectRefreshSignal, setProjectRefreshSignal] = useState(0);
@@ -197,11 +199,14 @@ const WritingPage: React.FC = () => {
       setEvidenceCoverage(null);
       setEvidenceTable(null);
       setCitationChecks({});
+      setQualityChecks({});
       setExportReadiness(null);
       setExportPackage(null);
       setWorkbenchSummary(null);
       return;
     }
+    setCitationChecks({});
+    setQualityChecks({});
     setEvidenceLoading(true);
     api.get(`/writing/projects/${selectedProject.id}/evidence-cards`)
       .then(response => {
@@ -394,6 +399,27 @@ const WritingPage: React.FC = () => {
       message.error('引用校验失败');
     } finally {
       setCitationChecking(prev => ({ ...prev, [section.id]: false }));
+    }
+  };
+  const handleCheckSectionQuality = async (section: any) => {
+    if (!selectedProject?.id) return;
+    if (!(section.content || '').trim()) {
+      message.warning('章节内容为空，请先写出核心论断再评估质量');
+      return;
+    }
+    setQualityChecking(prev => ({ ...prev, [section.id]: true }));
+    try {
+      const response = await api.post(`/writing/projects/${selectedProject.id}/sections/quality-check`, {
+        section_id: section.id,
+        title: section.title || '',
+        text: section.content || '',
+      });
+      setQualityChecks(prev => ({ ...prev, [section.id]: response.data }));
+      message.success(response.data.status === 'ready' ? '质量评估完成：可进入润色' : '质量评估完成：仍有可补强点');
+    } catch {
+      message.error('质量评估失败');
+    } finally {
+      setQualityChecking(prev => ({ ...prev, [section.id]: false }));
     }
   };
   const handleLoadExportPackage = async () => {
@@ -1027,8 +1053,11 @@ const WritingPage: React.FC = () => {
                     onUpdate={handleUpdateSection}
                     onFocus={section => setActiveSectionId(section.id)}
                     onCheckCitations={handleCheckSectionCitations}
+                    onCheckQuality={handleCheckSectionQuality}
                     checking={citationChecking[s.id]}
+                    qualityChecking={qualityChecking[s.id]}
                     citationCheck={citationChecks[s.id]}
+                    qualityCheck={qualityChecks[s.id]}
                   />
                 ))}
               </div>

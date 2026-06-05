@@ -1035,6 +1035,112 @@ class WritingProjectService:
             "recommendations": self._recommend_evidence_cards(cards),
         }
 
+    async def analyze_section_quality(
+        self,
+        project_id: str,
+        user_id: str,
+        title: str,
+        text: str,
+        section_id: Optional[str] = None,
+    ) -> dict | None:
+        """Deterministically evaluate whether a section is ready to polish/export."""
+        project = await self.get_project(project_id, user_id)
+        if not project:
+            return None
+
+        content = (text or "").strip()
+        title = (title or "Untitled").strip()
+        word_count = len(re.findall(r"[A-Za-z0-9_\-]+|[\u4e00-\u9fff]", content))
+        paragraph_count = len([p for p in re.split(r"\n\s*\n", content) if p.strip()])
+        sentence_count = len([s for s in re.split(r"[。！？.!?]\s*", content) if s.strip()])
+        citations = self._extract_citation_mentions(content)
+        lowered = content.lower()
+
+        has_comparison = bool(re.search(r"baseline|benchmark|sota|compare|comparison|相比|对比|基线|已有工作|现有方法", lowered))
+        has_gap = bool(re.search(r"gap|limitation|challenge|future|不足|局限|挑战|未解决|仍然|缺少|空白", lowered))
+        has_evidence_language = bool(re.search(r"\[\d+\]|arxiv|paper id|实验|结果|数据集|evidence|benchmark|citation", lowered))
+
+        dimensions = [
+            self._quality_dimension(
+                "claim",
+                "核心论断",
+                bool(content) and (word_count >= 40 or sentence_count >= 2),
+                22 if word_count >= 80 else 16 if word_count >= 40 else 6 if content else 0,
+                "章节已有可识别的核心表述。",
+                "先用 1-2 句明确本节要证明或解释的核心 claim。",
+            ),
+            self._quality_dimension(
+                "evidence",
+                "证据支撑",
+                bool(citations) or has_evidence_language,
+                24 if len(citations) >= 2 else 18 if citations else 8 if has_evidence_language else 0,
+                "章节包含引用或证据线索。",
+                "为关键结论插入证据卡引用，或补充实验/数据集/原文片段。",
+            ),
+            self._quality_dimension(
+                "comparison",
+                "对比对象",
+                has_comparison,
+                18 if has_comparison else 5,
+                "章节说明了与已有方法或基线的关系。",
+                "补一句与 baseline、已有工作或相邻方法的差异。",
+            ),
+            self._quality_dimension(
+                "gap",
+                "研究空白",
+                has_gap,
+                18 if has_gap else 5,
+                "章节点出了局限、挑战或研究空白。",
+                "补一句说明现有工作还没有解决什么，以及本节如何过渡。",
+            ),
+            self._quality_dimension(
+                "structure",
+                "段落结构",
+                paragraph_count >= 2 or sentence_count >= 4,
+                18 if paragraph_count >= 2 and sentence_count >= 4 else 12 if sentence_count >= 3 else 4,
+                "章节结构具备基本展开。",
+                "把内容拆成“背景/证据/对比/小结”几个自然段。",
+            ),
+        ]
+
+        score = min(100, sum(item["score"] for item in dimensions))
+        if score >= 78:
+            status = "ready"
+            status_label = "可进入润色"
+            summary = "章节已经具备较完整的论断、证据和结构，可以继续做语言润色与引用细查。"
+        elif score >= 45:
+            status = "needs_revision"
+            status_label = "需要补强"
+            summary = "章节有初稿基础，但仍需补充证据、对比或研究空白后再进入定稿。"
+        else:
+            status = "incomplete"
+            status_label = "初稿不足"
+            summary = "章节还没有形成可靠学术段落，建议先补核心论断和证据。"
+
+        rewrite_actions = [
+            {"key": item["key"], "label": item["label"], "action": item["rewrite_hint"]}
+            for item in dimensions
+            if item["status"] != "pass"
+        ][:4]
+
+        return {
+            "project_id": project_id,
+            "section_id": section_id,
+            "title": title,
+            "status": status,
+            "status_label": status_label,
+            "overall_score": score,
+            "summary": summary,
+            "metrics": {
+                "word_count": word_count,
+                "paragraph_count": paragraph_count,
+                "sentence_count": sentence_count,
+                "citation_count": len(citations),
+            },
+            "dimensions": dimensions,
+            "rewrite_actions": rewrite_actions,
+        }
+
     async def build_evidence_related_work_table(self, project_id: str, user_id: str) -> dict | None:
         """基于写作项目证据卡生成 Related Work 对比表。"""
         evidence = await self.get_evidence_cards(project_id, user_id)
@@ -1102,6 +1208,33 @@ class WritingProjectService:
             },
             "warnings": warnings,
             "status": "weak_evidence" if warnings else "ready",
+        }
+
+    def _quality_dimension(
+        self,
+        key: str,
+        label: str,
+        passed: bool,
+        score: int,
+        pass_explanation: str,
+        rewrite_hint: str,
+    ) -> dict:
+        if passed:
+            status = "pass"
+            explanation = pass_explanation
+        elif score >= 10:
+            status = "partial"
+            explanation = f"{label}已有一些线索，但还不够明确。"
+        else:
+            status = "weak"
+            explanation = f"{label}不足。"
+        return {
+            "key": key,
+            "label": label,
+            "status": status,
+            "score": score,
+            "explanation": explanation,
+            "rewrite_hint": rewrite_hint,
         }
 
     # --- 导出 ---

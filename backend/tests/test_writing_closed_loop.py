@@ -563,6 +563,55 @@ async def test_writing_project_section_citation_check_marks_external_unchecked(m
 
 
 @pytest.mark.asyncio
+async def test_writing_section_quality_check_scores_ready_draft(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+
+    async def fake_get_project(_project_id, _user_id):
+        return {"id": "project-1", "title": "Video Grounding", "sections": []}
+
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+
+    result = await service.analyze_section_quality(
+        "project-1",
+        "user-1",
+        "Related Work",
+        (
+            "Video grounding methods increasingly rely on multimodal models to align temporal evidence with language claims [1]. "
+            "Compared with baseline localization pipelines, recent benchmark results show that stronger evidence retrieval improves robustness. "
+            "However, existing methods still leave a gap in long-video grounding and evaluation coverage.\n\n"
+            "This section therefore compares prior work, evidence assumptions, and open limitations."
+        ),
+        section_id="section-1",
+    )
+
+    assert result["status"] == "ready"
+    assert result["overall_score"] >= 78
+    assert result["metrics"]["citation_count"] == 1
+    assert all(item["status"] == "pass" for item in result["dimensions"])
+
+
+@pytest.mark.asyncio
+async def test_writing_section_quality_check_suggests_rewrite_actions(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+
+    async def fake_get_project(_project_id, _user_id):
+        return {"id": "project-1", "title": "Video Grounding", "sections": []}
+
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+
+    result = await service.analyze_section_quality(
+        "project-1",
+        "user-1",
+        "Introduction",
+        "Video grounding is useful.",
+    )
+
+    assert result["status"] == "incomplete"
+    assert result["overall_score"] < 45
+    assert {item["key"] for item in result["rewrite_actions"]} >= {"claim", "evidence"}
+
+
+@pytest.mark.asyncio
 async def test_evidence_related_work_table_reports_coverage_warnings(monkeypatch):
     service = WritingProjectService(SimpleNamespace())
 

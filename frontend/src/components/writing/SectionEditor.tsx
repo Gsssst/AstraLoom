@@ -1,6 +1,6 @@
 import React from 'react';
 import { Alert, Button, Input, List, Select, Space, Tag, Typography } from 'antd';
-import { AuditOutlined, EditOutlined } from '@ant-design/icons';
+import { AuditOutlined, CheckCircleOutlined, EditOutlined } from '@ant-design/icons';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -19,8 +19,11 @@ interface SectionEditorProps {
   onUpdate: (sectionId: string, data: Partial<Section>) => void;
   onFocus?: (section: Section) => void;
   onCheckCitations?: (section: Section) => void;
+  onCheckQuality?: (section: Section) => void;
   checking?: boolean;
+  qualityChecking?: boolean;
   citationCheck?: any;
+  qualityCheck?: any;
 }
 
 const statusColor = (status?: string) => {
@@ -35,8 +38,11 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
   onUpdate,
   onFocus,
   onCheckCitations,
+  onCheckQuality,
   checking,
+  qualityChecking,
   citationCheck,
+  qualityCheck,
 }) => {
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     onUpdate(section.id, { title: e.target.value });
@@ -65,6 +71,17 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
           prefix={<EditOutlined style={{ color: '#999' }} />}
         />
         <Space>
+          {onCheckQuality && (
+            <Button
+              size="small"
+              icon={<CheckCircleOutlined />}
+              loading={qualityChecking}
+              onClick={() => onCheckQuality(section)}
+              style={{ borderRadius: 8 }}
+            >
+              质量评估
+            </Button>
+          )}
           {onCheckCitations && (
             <Button
               size="small"
@@ -150,6 +167,48 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
                   </List.Item>
                 )}
               />
+            }
+            style={{ borderRadius: 10 }}
+          />
+        </div>
+      )}
+      {qualityCheck && (
+        <div style={{ marginTop: 8 }}>
+          <Alert
+            type={qualityCheck.status === 'ready' ? 'success' : qualityCheck.status === 'needs_revision' ? 'warning' : 'error'}
+            showIcon
+            message={
+              <Space wrap>
+                <Text strong>章节质量 {qualityCheck.overall_score || 0}/100</Text>
+                <Tag color={qualityCheck.status === 'ready' ? 'green' : qualityCheck.status === 'needs_revision' ? 'gold' : 'red'}>
+                  {qualityCheck.status_label}
+                </Tag>
+                <Tag color="blue">引用 {qualityCheck.metrics?.citation_count || 0}</Tag>
+                <Tag color="purple">字数 {qualityCheck.metrics?.word_count || 0}</Tag>
+              </Space>
+            }
+            description={
+              <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                <Text type="secondary">{qualityCheck.summary}</Text>
+                <Space size={6} wrap>
+                  {(qualityCheck.dimensions || []).map((item: any) => (
+                    <Tag key={item.key} color={item.status === 'pass' ? 'green' : item.status === 'partial' ? 'gold' : 'red'}>
+                      {item.label} · {item.status === 'pass' ? '通过' : item.status === 'partial' ? '部分' : '不足'}
+                    </Tag>
+                  ))}
+                </Space>
+                {(qualityCheck.rewrite_actions || []).length > 0 && (
+                  <List
+                    size="small"
+                    dataSource={qualityCheck.rewrite_actions}
+                    renderItem={(item: any) => (
+                      <List.Item style={{ padding: '4px 0' }}>
+                        <Text type="secondary"><Text strong>{item.label}：</Text>{item.action}</Text>
+                      </List.Item>
+                    )}
+                  />
+                )}
+              </Space>
             }
             style={{ borderRadius: 10 }}
           />

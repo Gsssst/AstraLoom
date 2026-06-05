@@ -87,6 +87,12 @@ class SectionCitationCheckRequest(BaseModel):
     text: str = Field(..., description="需要校验引用的章节文本")
 
 
+class SectionQualityCheckRequest(BaseModel):
+    section_id: Optional[str] = Field(default=None, description="章节 ID")
+    title: str = Field(default="", description="章节标题")
+    text: str = Field(..., description="需要评估质量的章节文本")
+
+
 # ============== Pipeline 流式端点 ==============
 
 @router.post("/pipeline/stream")
@@ -502,6 +508,27 @@ async def check_project_section_citations(
         project_id=project_id,
         user_id=str(user.id),
         section_id=req.section_id,
+        text=req.text,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    return result
+
+
+@router.post("/projects/{project_id}/sections/quality-check")
+async def check_project_section_quality(
+    project_id: str,
+    req: SectionQualityCheckRequest,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """评估章节草稿质量，返回结构化改写建议。"""
+    service = WritingProjectService(db)
+    result = await service.analyze_section_quality(
+        project_id=project_id,
+        user_id=str(user.id),
+        section_id=req.section_id,
+        title=req.title,
         text=req.text,
     )
     if result is None:
