@@ -23,3 +23,12 @@ test('validation panel surfaces readiness, risks, checklist, and next actions', 
   assert.match(researchProjectSource, /next_actions/);
   assert.match(researchProjectSource, /experiment_completeness/);
 });
+
+test('research project page exposes experiment execution pack', () => {
+  assert.match(researchProjectSource, /\/research\/ideas\/\$\{ideaId\}\/execution-pack/);
+  assert.match(researchProjectSource, /实验推进包/);
+  assert.match(researchProjectSource, /minimum_tasks/);
+  assert.match(researchProjectSource, /success_metrics/);
+  assert.match(researchProjectSource, /从 Proposal 到实验的执行路线/);
+  assert.match(researchProjectSource, /executionData\.next_actions/);
+});

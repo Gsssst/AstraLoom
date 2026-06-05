@@ -185,6 +185,64 @@ def test_validate_idea_marks_complete_plan_as_writing_ready():
     assert "创建写作草稿" in validation["next_actions"]
 
 
+def test_experiment_execution_pack_explains_missing_setup():
+    service = ResearchIdeaWorkbenchService(_Session())
+    idea = SimpleNamespace(
+        id=uuid4(),
+        project_id=uuid4(),
+        feasibility_score=7,
+        referenced_papers={"paper_ids": []},
+        evidence_json={"items": []},
+        review_json={},
+        experiment_plan={"dataset": "", "baselines": [], "metrics": [], "steps": []},
+    )
+
+    pack = service.build_experiment_execution_pack(idea, experiments=[])
+
+    assert pack["readiness"]["status"] == "needs_setup"
+    assert any(task["key"] == "dataset" and task["status"] == "missing" for task in pack["minimum_tasks"])
+    assert "补齐：选择数据集" in pack["next_actions"]
+    assert pack["feedback"]["count"] == 0
+
+
+def test_experiment_execution_pack_recommends_feedback_iteration():
+    service = ResearchIdeaWorkbenchService(_Session())
+    idea_id = uuid4()
+    idea = SimpleNamespace(
+        id=idea_id,
+        project_id=uuid4(),
+        feasibility_score=8,
+        referenced_papers={"paper_ids": ["p1", "p2"]},
+        evidence_json={"items": [
+            {"paper_id": "p1", "title": "Evidence A", "score": 0.9, "category": "seed"},
+            {"paper_id": "p2", "title": "Evidence B", "score": 0.8, "category": "background"},
+        ]},
+        review_json={"adversarial_review": {"objections": ["需要跨数据集验证。"]}},
+        experiment_plan={
+            "dataset": "Charades-STA",
+            "baselines": ["Strong baseline"],
+            "metrics": ["mIoU"],
+            "steps": ["Reproduce baseline", "Run proposal", "Ablation"],
+        },
+    )
+    feedback = {
+        "experiment_id": "exp-1",
+        "idea_id": str(idea_id),
+        "name": "first run",
+        "dataset": "Charades-STA",
+        "results": {"mIoU": 0.42},
+        "notes": "Fails on long videos.",
+    }
+
+    pack = service.build_experiment_execution_pack(idea, experiments=[feedback])
+
+    assert pack["readiness"]["status"] == "needs_iteration"
+    assert pack["feedback"]["count"] == 1
+    assert pack["feedback"]["has_results"] is True
+    assert pack["feedback"]["latest"]["experiment_id"] == "exp-1"
+    assert "根据实验反馈演化 Proposal" in pack["next_actions"]
+
+
 def test_collection_sources_are_summarized_from_evidence():
     evidence = [
         {"paper_id": "p1", "collection_ids": ["c1"], "collection_names": ["Video Grounding"]},

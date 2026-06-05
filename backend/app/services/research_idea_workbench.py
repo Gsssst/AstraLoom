@@ -1088,6 +1088,144 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                 actions.append(str(tip))
         return list(dict.fromkeys(actions))[:5]
 
+    def build_experiment_execution_pack(
+        self,
+        idea: ResearchIdea,
+        project: Optional[ResearchProject] = None,
+        experiments: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        """Summarize how an Idea should move from Proposal to experiment feedback."""
+        validation = self.validate_idea(idea, project)
+        plan = idea.experiment_plan or {}
+        linked_experiments = [
+            item for item in experiments or []
+            if str(item.get("idea_id") or "") == str(idea.id)
+        ]
+        latest_feedback = linked_experiments[-1] if linked_experiments else None
+        has_results = bool((latest_feedback or {}).get("results"))
+        tasks = [
+            self._execution_task(
+                "dataset",
+                "选择数据集",
+                plan.get("dataset"),
+                "先确定公开基准、验证集切分或用户自己的评测集合。",
+            ),
+            self._execution_task(
+                "baselines",
+                "复现强基线",
+                plan.get("baselines"),
+                "至少保留一个可复现强基线，避免 Proposal 只和弱 baseline 比。",
+            ),
+            self._execution_task(
+                "metrics",
+                "设定成功指标",
+                plan.get("metrics"),
+                "明确主指标、效率指标和失败判定阈值。",
+            ),
+            self._execution_task(
+                "steps",
+                "拆解实验步骤",
+                plan.get("steps"),
+                "把实验拆成复现、最小改动、消融和误差分析。",
+            ),
+        ]
+        setup_ready = all(item["status"] == "ready" for item in tasks)
+        experiment_completeness = float(validation["coverage"].get("experiment_completeness") or 0)
+        evidence_ready = bool(validation["coverage"].get("has_enough_evidence"))
+        readiness_score = round(
+            (experiment_completeness * 0.45)
+            + (0.25 if evidence_ready else 0)
+            + (0.20 if setup_ready else 0)
+            + (0.10 if has_results else 0),
+            2,
+        )
+        if has_results:
+            status = "needs_iteration"
+            label = "已有反馈，适合演化"
+        elif setup_ready and evidence_ready:
+            status = "ready"
+            label = "可以启动最小实验"
+        else:
+            status = "needs_setup"
+            label = "需要补齐实验设置"
+
+        review = idea.review_json or {}
+        adversarial = review.get("adversarial_review") if isinstance(review.get("adversarial_review"), dict) else {}
+        risks = [
+            {"level": risk.get("level", "medium"), "message": risk.get("message", "")}
+            for risk in validation.get("feasibility_risks", [])
+            if risk.get("message")
+        ]
+        for objection in adversarial.get("objections", []) or []:
+            risks.append({"level": "medium", "message": str(objection)})
+
+        metrics = [
+            {
+                "name": str(metric),
+                "target": "超过强基线，或明确解释失败原因与边界条件",
+            }
+            for metric in plan.get("metrics", []) or []
+        ]
+        return {
+            "idea_id": str(idea.id),
+            "project_id": str(idea.project_id),
+            "readiness": {"status": status, "label": label, "score": readiness_score},
+            "summary": self._execution_summary(status, setup_ready, evidence_ready, len(linked_experiments)),
+            "minimum_tasks": tasks,
+            "success_metrics": metrics or [{"name": "主任务指标", "target": "先补充可量化成功指标"}],
+            "feedback": {"count": len(linked_experiments), "has_results": has_results, "latest": latest_feedback},
+            "risks": risks[:6],
+            "next_actions": self._execution_next_actions(status, tasks, has_results, validation),
+            "validation": {
+                "writing_readiness": validation.get("writing_readiness"),
+                "coverage": validation.get("coverage"),
+                "collision_risk": validation.get("collision_risk"),
+            },
+        }
+
+    @staticmethod
+    def _execution_task(key: str, label: str, value: Any, missing_tip: str) -> dict[str, Any]:
+        if isinstance(value, list):
+            detail = "、".join(str(item) for item in value if str(item).strip())
+        else:
+            detail = str(value or "").strip()
+        return {
+            "key": key,
+            "label": label,
+            "status": "ready" if detail else "missing",
+            "detail": detail or missing_tip,
+        }
+
+    @staticmethod
+    def _execution_summary(status: str, setup_ready: bool, evidence_ready: bool, feedback_count: int) -> str:
+        if status == "needs_iteration":
+            return f"已记录 {feedback_count} 条实验反馈，下一步应基于失败案例或结构化结果演化 Proposal。"
+        if setup_ready and evidence_ready:
+            return "最小实验设置和证据覆盖基本齐备，可以先跑低成本第一轮实验。"
+        missing = []
+        if not setup_ready:
+            missing.append("实验设置")
+        if not evidence_ready:
+            missing.append("证据覆盖")
+        return f"当前仍需补齐{'、'.join(missing)}，否则实验反馈难以支撑后续写作。"
+
+    @staticmethod
+    def _execution_next_actions(
+        status: str,
+        tasks: list[dict[str, Any]],
+        has_results: bool,
+        validation: dict[str, Any],
+    ) -> list[str]:
+        if has_results:
+            return ["根据实验反馈演化 Proposal", "把失败案例写入风险与局限", "生成或更新写作草稿"]
+        missing = [task for task in tasks if task["status"] != "ready"]
+        if missing:
+            return [f"补齐：{task['label']}" for task in missing][:4]
+        actions = validation.get("next_actions") or []
+        if status == "ready":
+            return ["记录第一轮实验反馈", "生成实验代码", *actions[:2]]
+        return actions[:4] or ["先完成验证闭环，再启动实验"]
+
     @staticmethod
     def _collection_sources_for_evidence(
         evidence: list[dict[str, Any]],

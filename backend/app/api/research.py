@@ -654,6 +654,23 @@ async def validate_idea(idea_id: str, db: AsyncSession = Depends(get_db), curren
     return ResearchIdeaWorkbenchService(db).validate_idea(idea, project)
 
 
+@router.get("/ideas/{idea_id}/execution-pack", response_model=dict[str, Any])
+async def get_idea_execution_pack(
+    idea_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """返回 Proposal 到实验反馈的推进包：最小实验、成功指标、风险、反馈和下一步。"""
+    idea = await _get_owned_idea(db, idea_id, current_user)
+    project = await _get_owned_project(db, str(idea.project_id), current_user)
+    experiments = await ExperimentService(db).get_experiments(str(project.id))
+    return ResearchIdeaWorkbenchService(db).build_experiment_execution_pack(
+        idea,
+        project,
+        experiments=experiments,
+    )
+
+
 @router.post("/ideas/{idea_id}/writing-draft", response_model=WritingDraftResponse, status_code=201)
 async def create_writing_draft_from_idea(
     idea_id: str,

@@ -77,6 +77,16 @@ interface IdeaValidation {
   coverage: { evidence_count: number; referenced_paper_count: number; experiment_completeness: number; has_enough_evidence: boolean };
   next_actions: string[];
 }
+interface ExperimentExecutionPack {
+  idea_id: string;
+  readiness: { status: string; label: string; score: number };
+  summary: string;
+  minimum_tasks: { key: string; label: string; status: 'ready' | 'missing' | string; detail: string }[];
+  success_metrics: { name: string; target: string }[];
+  feedback: { count: number; has_results: boolean; latest?: ExperimentRecord | null };
+  risks: { level: string; message: string }[];
+  next_actions: string[];
+}
 interface IdeaRun {
   id: string; project_id: string; status: string; stage: string; progress: number;
   message?: string; error?: string; evidence_map?: Record<string, Evidence[] | string | object>;
@@ -103,6 +113,7 @@ const noveltyColors: Record<string, string> = { likely_novel: 'green', increment
 const adversarialLabels: Record<string, string> = { advance: '建议推进', revise: '需要修改', reject: '暂不推进' };
 const adversarialColors: Record<string, string> = { advance: 'green', revise: 'orange', reject: 'red' };
 const readinessColors: Record<string, string> = { ready: 'green', needs_validation: 'orange', blocked: 'red' };
+const executionReadinessColors: Record<string, string> = { ready: 'green', needs_setup: 'orange', needs_iteration: 'purple' };
 const riskColors: Record<string, string> = { high: 'red', medium: 'orange', low: 'green' };
 
 const ResearchProjectPage: React.FC = () => {
@@ -136,6 +147,7 @@ const ResearchProjectPage: React.FC = () => {
   const [lineageOpen, setLineageOpen] = useState(false);
   const [lineage, setLineage] = useState<Idea[]>([]);
   const [validationMap, setValidationMap] = useState<Record<string, { loading: boolean; data?: IdeaValidation }>>({});
+  const [executionPackMap, setExecutionPackMap] = useState<Record<string, { loading: boolean; data?: ExperimentExecutionPack }>>({});
 
   const loadProject = async () => {
     if (!projectId) return;
@@ -356,6 +368,17 @@ const ResearchProjectPage: React.FC = () => {
       setValidationMap(previous => ({ ...previous, [ideaId]: { ...previous[ideaId], loading: false } }));
     }
   };
+  const loadExecutionPack = async (ideaId: string) => {
+    setExecutionPackMap(previous => ({ ...previous, [ideaId]: { ...previous[ideaId], loading: true } }));
+    try {
+      const response = await api.get(`/research/ideas/${ideaId}/execution-pack`);
+      setExecutionPackMap(previous => ({ ...previous, [ideaId]: { loading: false, data: response.data } }));
+      message.success('实验推进包已更新');
+    } catch {
+      message.error('加载实验推进包失败');
+      setExecutionPackMap(previous => ({ ...previous, [ideaId]: { ...previous[ideaId], loading: false } }));
+    }
+  };
 
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
   if (!project) return <Empty description="项目未找到" />;
@@ -416,6 +439,8 @@ const ResearchProjectPage: React.FC = () => {
     const plan = idea.experiment_plan;
     const validation = validationMap[idea.id];
     const validationData = validation?.data;
+    const executionPack = executionPackMap[idea.id];
+    const executionData = executionPack?.data;
     return (
       <div>
         {idea.hypothesis && <Alert type="success" showIcon message="可证伪假设" description={idea.hypothesis} style={{ marginBottom: 14 }} />}
@@ -466,6 +491,92 @@ const ResearchProjectPage: React.FC = () => {
             </Space>
           </>}
         </>}
+        <Divider>实验推进包</Divider>
+        <Card size="small" style={{ borderRadius: 12, marginBottom: 12, background: '#fbfaff' }}>
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Space wrap>
+              <Button
+                type="primary"
+                ghost
+                icon={<ExperimentOutlined />}
+                loading={executionPack?.loading}
+                onClick={() => loadExecutionPack(idea.id)}
+              >
+                生成/刷新推进包
+              </Button>
+              {executionData && (
+                <>
+                  <Tag color={executionReadinessColors[executionData.readiness.status] || 'default'}>
+                    {executionData.readiness.label}
+                  </Tag>
+                  <Tag color="blue">推进度 {Math.round((executionData.readiness.score || 0) * 100)}%</Tag>
+                  <Tag color={executionData.feedback.has_results ? 'purple' : 'default'}>
+                    反馈 {executionData.feedback.count}
+                  </Tag>
+                </>
+              )}
+            </Space>
+            {executionData ? (
+              <>
+                <Alert
+                  showIcon
+                  type={executionData.readiness.status === 'ready' ? 'success' : executionData.readiness.status === 'needs_iteration' ? 'info' : 'warning'}
+                  message="从 Proposal 到实验的执行路线"
+                  description={executionData.summary}
+                />
+                <Row gutter={[12, 12]}>
+                  <Col xs={24} lg={12}>
+                    <Card size="small" title="最小实验任务" style={{ borderRadius: 10, height: '100%' }}>
+                      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                        {executionData.minimum_tasks.map(task => (
+                          <Tag
+                            key={task.key}
+                            color={task.status === 'ready' ? 'green' : 'orange'}
+                            style={{ whiteSpace: 'normal', lineHeight: 1.6, padding: '4px 8px' }}
+                          >
+                            {task.status === 'ready' ? '已就绪' : '待补齐'} · {task.label}：{task.detail}
+                          </Tag>
+                        ))}
+                      </Space>
+                    </Card>
+                  </Col>
+                  <Col xs={24} lg={12}>
+                    <Card size="small" title="成功指标与下一步" style={{ borderRadius: 10, height: '100%' }}>
+                      <List
+                        size="small"
+                        dataSource={executionData.success_metrics}
+                        renderItem={item => <List.Item><Text><Text strong>{item.name}：</Text>{item.target}</Text></List.Item>}
+                      />
+                      <Divider style={{ margin: '8px 0' }} />
+                      <Space wrap>
+                        {executionData.next_actions.map(action => <Tag color="purple" key={action}>{action}</Tag>)}
+                      </Space>
+                    </Card>
+                  </Col>
+                </Row>
+                {executionData.risks.length > 0 && (
+                  <Card size="small" title="实验风险" style={{ borderRadius: 10 }}>
+                    <Space wrap>
+                      {executionData.risks.map((risk, index) => (
+                        <Tag color={riskColors[risk.level] || 'default'} key={`${risk.message}-${index}`}>{risk.message}</Tag>
+                      ))}
+                    </Space>
+                  </Card>
+                )}
+                {executionData.feedback.latest && (
+                  <Alert
+                    showIcon
+                    type="info"
+                    message={`最近反馈：${executionData.feedback.latest.name}`}
+                    description={<Space direction="vertical" size={2}><Text>{executionData.feedback.latest.notes || '暂无备注'}</Text><Text code>{JSON.stringify(executionData.feedback.latest.results || {})}</Text></Space>}
+                  />
+                )}
+              </>
+            ) : (
+              <Text type="secondary">点击生成后，会把最小实验、成功指标、风险、反馈状态和下一步动作收束到这里。</Text>
+            )}
+          </Space>
+        </Card>
         {plan && <>
           <Divider>最小实验方案</Divider>
           <Paragraph><Text strong>数据集：</Text>{plan.dataset}</Paragraph>
@@ -549,6 +660,7 @@ const ResearchProjectPage: React.FC = () => {
           <Button type="primary" ghost onClick={() => { setEvolvingIdea(idea); setEvolutionFocus(''); }}>演化新版本</Button>
           <Button icon={<HistoryOutlined />} onClick={() => openLineage(idea)}>查看谱系</Button>
           <Button icon={<ExperimentOutlined />} onClick={() => openExperiment(idea)}>记录实验反馈</Button>
+          <Button icon={<ExperimentOutlined />} loading={executionPack?.loading} onClick={() => loadExecutionPack(idea.id)}>实验推进包</Button>
           <Button icon={<FileSearchOutlined />} loading={validation?.loading} onClick={() => loadIdeaValidation(idea.id)}>验证闭环</Button>
           <Button icon={<FileTextOutlined />} loading={draftingIdeaIds.has(idea.id)} onClick={() => createWritingDraft(idea)}>生成写作草稿</Button>
         </Space>
