@@ -3,7 +3,7 @@
 import json
 import logging
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -582,6 +582,42 @@ async def get_project_publication_package(
     if package is None:
         raise HTTPException(status_code=404, detail="项目未找到")
     return package
+
+
+@router.post("/projects/{project_id}/submission-template")
+async def bind_project_submission_template(
+    project_id: str,
+    venue: str = Form(default=""),
+    year: str = Form(default=""),
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Inspect and bind an official/user-provided submission template to a writing project."""
+    allowed_suffixes = (".tex", ".cls", ".sty", ".zip")
+    filename = file.filename or "template"
+    if not filename.lower().endswith(allowed_suffixes):
+        raise HTTPException(status_code=400, detail="请上传 .tex、.cls、.sty 或 .zip 模板文件")
+    content = await file.read()
+    if len(content) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="模板文件过大，请上传 8MB 以内的模板包")
+
+    inspection = latex_processor.inspect_submission_template(filename, content)
+    service = WritingProjectService(db)
+    project = await service.bind_submission_profile(
+        project_id=project_id,
+        user_id=str(user.id),
+        venue=venue,
+        year=year,
+        template_inspection=inspection,
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    return {
+        "project": project,
+        "inspection": inspection,
+        "submission_profile": (project.get("metadata_json") or {}).get("submission_profile") or {},
+    }
 
 
 # ============== 升级现有的流行 API ==============

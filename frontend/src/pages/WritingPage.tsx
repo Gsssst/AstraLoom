@@ -2,14 +2,14 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
   Alert, Card, Button, Input, Tag, Typography, Space, message,
-  Tabs, Select, Tooltip, List, Divider, Row, Col, Empty, Segmented,
+  Tabs, Select, Tooltip, List, Divider, Row, Col, Empty, Segmented, Upload,
 } from 'antd';
 import {
   EditOutlined, SearchOutlined, FileTextOutlined,
   CopyOutlined, BulbOutlined,
   BookOutlined, FormOutlined, ReadOutlined, SwapOutlined,
   AuditOutlined, FolderOutlined, RocketOutlined, DownloadOutlined,
-  FileZipOutlined,
+  FileZipOutlined, UploadOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import Markdown from '../components/Markdown';
@@ -130,6 +130,11 @@ const WritingPage: React.FC = () => {
   const [exportReadiness, setExportReadiness] = useState<any>(null);
   const [exportPackage, setExportPackage] = useState<any>(null);
   const [exportLoading, setExportLoading] = useState(false);
+  const [submissionVenue, setSubmissionVenue] = useState('');
+  const [submissionYear, setSubmissionYear] = useState('');
+  const [submissionTemplateFile, setSubmissionTemplateFile] = useState<any>(null);
+  const [submissionInspection, setSubmissionInspection] = useState<any>(null);
+  const [submissionUploading, setSubmissionUploading] = useState(false);
   const [pipelinePhases, setPipelinePhases] = useState<string[]>([]);
   const [pipelineCurrentPhase, setPipelineCurrentPhase] = useState<string | null>(null);
   const [pipelinePhaseStatuses, setPipelinePhaseStatuses] = useState<Record<string, 'pending' | 'running' | 'complete' | 'error'>>({});
@@ -201,6 +206,13 @@ const WritingPage: React.FC = () => {
       .catch(() => setExportReadiness(null));
   }, [selectedProject?.id, projectSections]);
 
+  useEffect(() => {
+    const profile = selectedProject?.metadata_json?.submission_profile || null;
+    setSubmissionVenue(profile?.venue || '');
+    setSubmissionYear(profile?.year || '');
+    setSubmissionInspection(profile?.template_source ? profile : null);
+  }, [selectedProject?.id]);
+
   // ── 处理器 ── (保持简洁)
   const handleRecommend = useCallback(async () => {
     if (!citeText.trim()) return;
@@ -258,6 +270,11 @@ const WritingPage: React.FC = () => {
     setCitationChecks({});
     setActiveSectionId(null);
     setEvidenceTable(null);
+    const profile = p.metadata_json?.submission_profile || {};
+    setSubmissionVenue(profile.venue || '');
+    setSubmissionYear(profile.year || '');
+    setSubmissionInspection(profile.template_source ? profile : null);
+    setSubmissionTemplateFile(null);
   };
   const handleCreateReviewDraft = async () => {
     const topic = draftTopic.trim();
@@ -395,6 +412,35 @@ const WritingPage: React.FC = () => {
       downloadBlobFile(filename, response.data);
     } catch {
       message.error('Word 下载失败');
+    }
+  };
+  const handleBindSubmissionTemplate = async () => {
+    if (!selectedProject?.id) return;
+    if (!submissionTemplateFile) {
+      message.warning('请先选择会议官方模板文件或模板 zip 包');
+      return;
+    }
+    setSubmissionUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('venue', submissionVenue);
+      formData.append('year', submissionYear);
+      formData.append('file', submissionTemplateFile);
+      const response = await api.post(`/writing/projects/${selectedProject.id}/submission-template`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setSelectedProject(response.data.project);
+      setProjectSections(response.data.project.sections || []);
+      setSubmissionInspection(response.data.inspection);
+      setSubmissionTemplateFile(null);
+      setExportPackage(null);
+      const readiness = await api.get(`/writing/projects/${selectedProject.id}/export/readiness`);
+      setExportReadiness(readiness.data);
+      message.success('投稿模板已检查并绑定到项目');
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '模板绑定失败');
+    } finally {
+      setSubmissionUploading(false);
     }
   };
   const handleCancelPipeline = () => { pipelineAbort?.abort(); setPipelineRunning(false); };
@@ -654,6 +700,72 @@ const WritingPage: React.FC = () => {
       style={{ ...cardStyle, marginBottom: 16 }}
       extra={exportReadiness && <Tag color={exportStatusColor(exportReadiness.status)}>{exportReadiness.status_label}</Tag>}
     >
+      <Card
+        size="small"
+        title="投稿目标与官方模板"
+        style={{ borderRadius: 12, marginBottom: 12, background: '#fafafa' }}
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="会议格式每年可能变化，建议上传官网模板包"
+          description="系统会检查 .tex/.cls/.sty/.zip 中的 documentclass、样式文件和主 tex 信息，并把结果绑定到当前写作项目。当前版本用于投稿预检和写作指导，不会声称自动保证格式合规。"
+          style={{ borderRadius: 8, marginBottom: 12 }}
+        />
+        <Row gutter={[10, 10]} align="middle">
+          <Col xs={24} md={7}>
+            <Input placeholder="会议/期刊，如 CVPR" value={submissionVenue} onChange={e => setSubmissionVenue(e.target.value)} style={inputStyle} />
+          </Col>
+          <Col xs={24} md={5}>
+            <Input placeholder="年份，如 2026" value={submissionYear} onChange={e => setSubmissionYear(e.target.value)} style={inputStyle} />
+          </Col>
+          <Col xs={24} md={7}>
+            <Upload
+              beforeUpload={(file) => {
+                setSubmissionTemplateFile(file);
+                return false;
+              }}
+              onRemove={() => setSubmissionTemplateFile(null)}
+              maxCount={1}
+              accept=".tex,.cls,.sty,.zip"
+            >
+              <Button icon={<UploadOutlined />} style={{ borderRadius: 8 }}>选择官方模板</Button>
+            </Upload>
+          </Col>
+          <Col xs={24} md={5}>
+            <Button type="primary" block loading={submissionUploading} onClick={handleBindSubmissionTemplate} style={{ borderRadius: 8 }}>
+              检查并绑定
+            </Button>
+          </Col>
+        </Row>
+        {(submissionInspection || exportReadiness?.submission_profile) && (
+          <div style={{ marginTop: 12 }}>
+            <Space wrap>
+              <Tag color={(submissionInspection?.template_status || submissionInspection?.status) === 'ready' ? 'green' : 'gold'}>
+                {submissionInspection?.status_label || exportReadiness?.submission_profile?.status_label || '模板状态'}
+              </Tag>
+              {(submissionInspection?.template_source || submissionInspection?.source_filename) && (
+                <Tag>{submissionInspection.template_source || submissionInspection.source_filename}</Tag>
+              )}
+              {(submissionInspection?.document_class || exportReadiness?.submission_profile?.document_class) && (
+                <Tag color="blue">documentclass: {submissionInspection.document_class || exportReadiness?.submission_profile?.document_class}</Tag>
+              )}
+              {(submissionInspection?.venue || exportReadiness?.submission_profile?.venue) && (
+                <Tag color="purple">{submissionInspection.venue || exportReadiness?.submission_profile?.venue} {submissionInspection.year || exportReadiness?.submission_profile?.year}</Tag>
+              )}
+            </Space>
+            {(submissionInspection?.warnings?.length || exportReadiness?.submission_profile?.warnings?.length) ? (
+              <Alert
+                type="warning"
+                showIcon
+                message="模板检查提醒"
+                description={(submissionInspection?.warnings || exportReadiness?.submission_profile?.warnings || []).join(' ')}
+                style={{ borderRadius: 8, marginTop: 8 }}
+              />
+            ) : null}
+          </div>
+        )}
+      </Card>
       {exportReadiness?.warnings?.length ? (
         <Alert
           type={exportReadiness.status === 'incomplete' ? 'error' : 'warning'}

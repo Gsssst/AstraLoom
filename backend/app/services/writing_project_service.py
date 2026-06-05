@@ -468,6 +468,41 @@ class WritingProjectService:
         await self.session.refresh(project)
         return self._project_to_dict(project)
 
+    async def bind_submission_profile(
+        self,
+        project_id: str,
+        user_id: str,
+        venue: str,
+        year: str,
+        template_inspection: dict,
+    ) -> dict | None:
+        """Bind target venue/year and inspected template metadata to a writing project."""
+        project = await self.get_project(project_id, user_id)
+        if not project:
+            return None
+        metadata = dict(project.get("metadata_json") or {})
+        inspection = dict(template_inspection or {})
+        profile = {
+            "venue": (venue or "").strip(),
+            "year": (year or "").strip(),
+            "template_source": inspection.get("source_filename") or "",
+            "template_status": inspection.get("status") or "needs_review",
+            "status_label": inspection.get("status_label") or "需要人工确认",
+            "document_class": inspection.get("document_class") or "",
+            "main_tex": inspection.get("main_tex") or "",
+            "class_files": inspection.get("class_files") or [],
+            "style_files": inspection.get("style_files") or [],
+            "packages": inspection.get("packages") or [],
+            "venue_hints": inspection.get("venue_hints") or [],
+            "warnings": inspection.get("warnings") or [],
+        }
+        if not profile["venue"] and profile["venue_hints"]:
+            profile["venue"] = profile["venue_hints"][0]
+        if not profile["venue"]:
+            profile["warnings"] = [*profile["warnings"], "尚未填写目标会议/期刊。"]
+        metadata["submission_profile"] = profile
+        return await self.update_project(project_id, user_id, metadata_json=metadata)
+
     async def delete_project(self, project_id: str, user_id: str) -> bool:
         """删除项目。"""
         from app.db.models.writing import WritingProject
@@ -948,6 +983,8 @@ class WritingProjectService:
         coverage = (evidence or {}).get("coverage") or {
             "total": 0, "local": 0, "external": 0, "bibtex_ready": 0,
         }
+        metadata = project.get("metadata_json") or {}
+        submission_profile = metadata.get("submission_profile") or {}
 
         for section in sections:
             title = section.get("title") or "Untitled"
@@ -979,6 +1016,10 @@ class WritingProjectService:
             warnings.append(f"有 {len(unmatched_citations)} 个正文引用未匹配到证据卡。")
         if citation_mentions and not papers:
             warnings.append("正文已有引用标记，但没有解析到真实论文条目。")
+        if not submission_profile:
+            warnings.append("尚未绑定官方投稿模板；内置结构模板不能保证当前年度会议格式。")
+        elif submission_profile.get("warnings"):
+            warnings.append("投稿模板需要人工确认：" + " ".join(submission_profile.get("warnings", [])[:3]))
 
         status = "ready"
         if empty_sections:
@@ -1012,6 +1053,11 @@ class WritingProjectService:
             "reference_summary": {
                 "papers": len(papers),
                 "bibtex_ready": coverage.get("bibtex_ready", 0),
+            },
+            "submission_profile": submission_profile or {
+                "template_status": "missing",
+                "status_label": "未绑定官方模板",
+                "warnings": ["尚未上传或绑定官方投稿模板。"],
             },
         }
 

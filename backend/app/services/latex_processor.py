@@ -156,6 +156,141 @@ class LatexProcessor:
         match = re.search(r'\\bibliography\{([^}]+)\}', tex_content)
         return match.group(1) if match else ""
 
+    def inspect_submission_template(self, filename: str, content: bytes) -> dict:
+        """Inspect an uploaded LaTeX submission template or template bundle."""
+        filename = filename or "template"
+        lower = filename.lower()
+        files = []
+        warnings = []
+
+        if lower.endswith(".zip"):
+            files, zip_warnings = self._inspect_zip_files(content)
+            warnings.extend(zip_warnings)
+        else:
+            text = self._decode_latex_text(content)
+            files.append({
+                "path": filename,
+                "kind": self._latex_file_kind(filename),
+                "size": len(content),
+                "content": text,
+            })
+
+        tex_files = [item for item in files if item["kind"] == "tex"]
+        cls_files = [item["path"] for item in files if item["kind"] == "cls"]
+        sty_files = [item["path"] for item in files if item["kind"] == "sty"]
+        main_tex = self._select_main_tex(tex_files)
+        source_text = main_tex.get("content", "") if main_tex else "\n".join(item.get("content", "") for item in files[:8])
+        document_class = self._extract_document_class(source_text)
+        packages = self._extract_packages(source_text)
+        bibliography = self.extract_bibliography(source_text)
+        sections = self.extract_sections(source_text) if main_tex else []
+
+        if lower.endswith(".zip") and not tex_files:
+            warnings.append("模板包中没有找到 .tex 主文件。")
+        if not document_class and not cls_files:
+            warnings.append("没有检测到 \\documentclass 或 .cls 文件，请确认上传的是完整官方模板。")
+        if not cls_files and not sty_files and lower.endswith(".zip"):
+            warnings.append("模板包中没有检测到 .cls/.sty 样式文件，可能只是普通源码包。")
+
+        venue_hints = self._guess_venue_hints(" ".join([filename, source_text[:3000], " ".join(cls_files + sty_files)]))
+        status = "ready" if not warnings else "needs_review"
+        return {
+            "status": status,
+            "status_label": "已识别模板" if status == "ready" else "需要人工确认",
+            "source_filename": filename,
+            "file_count": len(files),
+            "main_tex": main_tex["path"] if main_tex else "",
+            "document_class": document_class,
+            "class_files": cls_files,
+            "style_files": sty_files,
+            "packages": packages[:20],
+            "bibliography": bibliography,
+            "section_titles": [section["title"] for section in sections[:12]],
+            "venue_hints": venue_hints,
+            "warnings": warnings,
+        }
+
+    def _inspect_zip_files(self, content: bytes) -> tuple[list[dict], list[str]]:
+        import io
+        import zipfile
+
+        files = []
+        warnings = []
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                names = [name for name in archive.namelist() if not name.endswith("/")][:80]
+                for name in names:
+                    kind = self._latex_file_kind(name)
+                    if kind == "other":
+                        continue
+                    info = archive.getinfo(name)
+                    if info.file_size > 512_000:
+                        warnings.append(f"{name} 文件较大，已跳过内容解析。")
+                        text = ""
+                    else:
+                        text = self._decode_latex_text(archive.read(name))
+                    files.append({
+                        "path": name,
+                        "kind": kind,
+                        "size": info.file_size,
+                        "content": text,
+                    })
+        except zipfile.BadZipFile:
+            warnings.append("无法解析 zip 模板包，请确认文件未损坏。")
+        if not files:
+            warnings.append("模板包中没有找到可解析的 .tex/.cls/.sty 文件。")
+        return files, warnings
+
+    def _latex_file_kind(self, filename: str) -> str:
+        lower = (filename or "").lower()
+        if lower.endswith(".tex"):
+            return "tex"
+        if lower.endswith(".cls"):
+            return "cls"
+        if lower.endswith(".sty"):
+            return "sty"
+        if lower.endswith(".bib"):
+            return "bib"
+        return "other"
+
+    def _decode_latex_text(self, content: bytes) -> str:
+        for encoding in ("utf-8", "latin-1"):
+            try:
+                return content.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return content.decode("utf-8", errors="ignore")
+
+    def _select_main_tex(self, tex_files: list[dict]) -> dict | None:
+        if not tex_files:
+            return None
+        with_document = [item for item in tex_files if "\\documentclass" in item.get("content", "")]
+        if with_document:
+            return sorted(with_document, key=lambda item: (0 if "main" in item["path"].lower() else 1, len(item["path"])))[0]
+        return sorted(tex_files, key=lambda item: (0 if "main" in item["path"].lower() else 1, len(item["path"])))[0]
+
+    def _extract_document_class(self, tex_content: str) -> str:
+        match = re.search(r'\\documentclass(?:\[[^\]]*\])?\{([^}]+)\}', tex_content or "")
+        return match.group(1).strip() if match else ""
+
+    def _extract_packages(self, tex_content: str) -> list[str]:
+        packages = []
+        for match in re.finditer(r'\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}', tex_content or ""):
+            for package in match.group(1).split(","):
+                name = package.strip()
+                if name and name not in packages:
+                    packages.append(name)
+        return packages
+
+    def _guess_venue_hints(self, text: str) -> list[str]:
+        hints = []
+        candidates = ["ACL", "EMNLP", "NAACL", "CVPR", "ICCV", "ECCV", "NeurIPS", "ICML", "ICLR", "AAAI"]
+        lowered = (text or "").lower()
+        for candidate in candidates:
+            if candidate.lower() in lowered and candidate not in hints:
+                hints.append(candidate)
+        return hints
+
     def render_to_tex(self, project_title: str, sections: List[dict],
                       template: str = "article") -> str:
         """将写作项目渲染为 .tex 文件。"""

@@ -28,3 +28,9 @@ test('project creation clarifies structure templates are not official submission
   assert.match(projectPanelSource, /不代表当前年度官方投稿格式/);
   assert.match(projectPanelSource, /会议官网模板/);
 });
+
+test('paper workbench exposes official submission template profile panel', () => {
+  assert.match(writingPageSource, /投稿目标与官方模板/);
+  assert.match(writingPageSource, /会议格式每年可能变化/);
+  assert.match(writingPageSource, /检查并绑定/);
+});

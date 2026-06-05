@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.services.latex_processor import latex_processor
 from app.services.writing_service import WritingAssistantService
 from app.services.writing_project_service import WritingProjectService
 
@@ -84,6 +85,75 @@ def test_review_draft_sections_are_prefilled_from_rows():
     assert "video grounding" in sections["Abstract"]
     assert "Grounded Video Understanding" in sections["Related Work"]
     assert paper_id in sections["References"]
+
+
+def test_submission_template_inspector_reads_zip_template():
+    import io
+    import zipfile
+
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(archive_bytes, "w") as archive:
+        archive.writestr(
+            "main.tex",
+            "\\documentclass{article}\n\\usepackage{cvpr}\n\\begin{document}\n\\section{Introduction}\n\\end{document}",
+        )
+        archive.writestr("cvpr.sty", "% CVPR style file")
+
+    inspection = latex_processor.inspect_submission_template("cvpr2026.zip", archive_bytes.getvalue())
+
+    assert inspection["status"] == "ready"
+    assert inspection["document_class"] == "article"
+    assert inspection["style_files"] == ["cvpr.sty"]
+    assert inspection["main_tex"] == "main.tex"
+    assert "CVPR" in inspection["venue_hints"]
+
+
+@pytest.mark.asyncio
+async def test_bind_submission_profile_updates_project_metadata(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+    project_id = str(uuid4())
+
+    async def fake_get_project(_project_id, _user_id):
+        return {
+            "id": project_id,
+            "title": "Video Grounding",
+            "metadata_json": {"source": "manual"},
+            "sections": [],
+        }
+
+    async def fake_update_project(_project_id, _user_id, **kwargs):
+        return {
+            "id": project_id,
+            "metadata_json": kwargs["metadata_json"],
+            "sections": [],
+        }
+
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+    monkeypatch.setattr(service, "update_project", fake_update_project)
+
+    updated = await service.bind_submission_profile(
+        project_id,
+        "user-1",
+        venue="CVPR",
+        year="2026",
+        template_inspection={
+            "source_filename": "cvpr2026.zip",
+            "status": "ready",
+            "status_label": "已识别模板",
+            "document_class": "article",
+            "class_files": [],
+            "style_files": ["cvpr.sty"],
+            "venue_hints": ["CVPR"],
+            "warnings": [],
+        },
+    )
+
+    profile = updated["metadata_json"]["submission_profile"]
+
+    assert profile["venue"] == "CVPR"
+    assert profile["year"] == "2026"
+    assert profile["template_source"] == "cvpr2026.zip"
+    assert profile["style_files"] == ["cvpr.sty"]
 
 
 @pytest.mark.asyncio
