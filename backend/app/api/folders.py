@@ -1,15 +1,55 @@
 """文件夹管理 API。"""
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime, timezone
+import re
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from app.db.session import get_db
 from app.db.models.paper import Folder, Paper, PaperFolderItem, UserPaper
 from app.core.security import get_current_user
+from app.services.paper_search import PaperResult, create_remote_ingest_token, search_scholarly_papers
 
 router = APIRouter(prefix="/folders", tags=["文件夹"])
+
+STOPWORDS = {
+    "the", "and", "for", "with", "from", "this", "that", "into", "using", "based", "paper",
+    "study", "towards", "toward", "approach", "method", "model", "models", "large", "language",
+    "learning", "deep", "neural", "network", "networks", "efficient", "robust", "survey",
+    "benchmark", "analysis", "research", "review", "system", "systems", "task", "tasks",
+}
+
+DOMAIN_TOPIC_HINTS = [
+    (
+        ("video", "grounding"),
+        [
+            ("Temporal Video Grounding", "temporal video grounding"),
+            ("Video Moment Retrieval", "video moment retrieval"),
+            ("Video-Language Grounding", "video language grounding"),
+            ("Spatio-temporal Localization", "spatio temporal localization video grounding"),
+            ("Grounding Benchmarks", "video grounding benchmark dataset"),
+        ],
+    ),
+    (
+        ("multimodal",),
+        [
+            ("Vision-Language Alignment", "vision language alignment multimodal"),
+            ("Multimodal Benchmark", "multimodal benchmark evaluation"),
+            ("Video Multimodal Models", "video multimodal large language model"),
+        ],
+    ),
+    (
+        ("rag", "retrieval"),
+        [
+            ("Retrieval Augmentation", "retrieval augmented generation"),
+            ("RAG Evaluation", "retrieval augmented generation evaluation benchmark"),
+            ("Citation Grounding", "retrieval citation grounding"),
+        ],
+    ),
+]
 
 class FolderCreate(BaseModel):
     name: str = Field(..., max_length=200)
@@ -25,6 +65,14 @@ class FolderResponse(BaseModel):
     paper_count: int = 0
     diagnostics: Optional[dict] = None
     model_config = {"from_attributes": True}
+
+
+class FolderRecommendationResponse(BaseModel):
+    items: list[dict]
+    query: str
+    kind: str
+    reason: str
+    excluded_existing: int = 0
 
 
 def _readiness_from_counts(
@@ -59,13 +107,7 @@ def _readiness_from_counts(
 
 
 async def _folder_diagnostics(db: AsyncSession, folder_id, user_id) -> dict:
-    result = await db.execute(
-        select(Paper, UserPaper.read_status)
-        .join(PaperFolderItem, PaperFolderItem.paper_id == Paper.id)
-        .outerjoin(UserPaper, (UserPaper.paper_id == Paper.id) & (UserPaper.user_id == user_id))
-        .where(PaperFolderItem.folder_id == folder_id, PaperFolderItem.user_id == user_id)
-    )
-    rows = result.all()
+    rows = await _folder_paper_rows(db, folder_id, user_id)
     paper_count = len(rows)
     full_text_count = sum(1 for paper, _status in rows if paper.full_text and len(paper.full_text) > 500)
     embedding_count = sum(1 for paper, _status in rows if paper.embedding is not None)
@@ -78,6 +120,17 @@ async def _folder_diagnostics(db: AsyncSession, folder_id, user_id) -> dict:
         embedding_count=embedding_count,
         read_status_counts=read_status_counts,
     )
+
+
+async def _folder_paper_rows(db: AsyncSession, folder_id, user_id) -> list[tuple[Paper, Optional[str]]]:
+    result = await db.execute(
+        select(Paper, UserPaper.read_status)
+        .join(PaperFolderItem, PaperFolderItem.paper_id == Paper.id)
+        .outerjoin(UserPaper, (UserPaper.paper_id == Paper.id) & (UserPaper.user_id == user_id))
+        .where(PaperFolderItem.folder_id == folder_id, PaperFolderItem.user_id == user_id)
+        .order_by(PaperFolderItem.created_at.desc())
+    )
+    return list(result.all())
 
 def build_tree(folder: Folder, user_id, counts: dict | None = None, diagnostics: dict | None = None) -> dict:
     return {"id": str(folder.id), "name": folder.name, "parent_id": str(folder.parent_id) if folder.parent_id else None,
@@ -99,6 +152,173 @@ def _paper_brief(paper: Paper, read_status: str | None = None) -> dict:
         "citation_count": paper.citation_count,
         "created_at": paper.created_at.isoformat() if paper.created_at else "",
         "read_status": read_status,
+    }
+
+
+def _normalize_text_key(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+
+def _strip_arxiv_version(arxiv_id: str) -> str:
+    return re.sub(r"v\d+$", "", arxiv_id.lower())
+
+
+def _paper_existing_keys(paper: Paper) -> set[str]:
+    keys = set()
+    if paper.arxiv_id:
+        keys.add(f"arxiv:{_strip_arxiv_version(paper.arxiv_id)}")
+    if paper.doi:
+        keys.add(f"doi:{paper.doi.lower().removeprefix('https://doi.org/').removeprefix('http://doi.org/')}")
+    metadata = paper.metadata_json or {}
+    remote_id = metadata.get("remote_id") or metadata.get("external_id")
+    if remote_id:
+        keys.add(f"{paper.source}:{remote_id}")
+    if paper.title:
+        keys.add(f"title:{_normalize_text_key(paper.title)}")
+    return keys
+
+
+def _remote_existing_keys(paper: PaperResult) -> set[str]:
+    keys = set()
+    if paper.arxiv_id:
+        keys.add(f"arxiv:{_strip_arxiv_version(paper.arxiv_id)}")
+    if paper.doi:
+        keys.add(f"doi:{paper.doi.lower().removeprefix('https://doi.org/').removeprefix('http://doi.org/')}")
+    remote_id = (paper.metadata or {}).get("remote_id")
+    if remote_id:
+        keys.add(f"{paper.source}:{remote_id}")
+    if paper.title:
+        keys.add(f"title:{_normalize_text_key(paper.title)}")
+    return keys
+
+
+def _tokenize_topic_text(text: str) -> list[str]:
+    return [
+        token.lower()
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}", text or "")
+        if token.lower() not in STOPWORDS and not token.isdigit()
+    ]
+
+
+def _collection_topic_terms(folder: Folder, rows: list[tuple[Paper, Optional[str]]], limit: int = 8) -> list[str]:
+    weighted: dict[str, int] = {}
+
+    def add(token: str, weight: int):
+        weighted[token] = weighted.get(token, 0) + weight
+
+    for token in _tokenize_topic_text(folder.name):
+        add(token, 5)
+    for paper, _status in rows:
+        for token in _tokenize_topic_text(paper.title):
+            add(token, 4)
+        for token in _tokenize_topic_text((paper.abstract or "")[:1200]):
+            add(token, 1)
+        for tag in paper.tags or []:
+            for token in _tokenize_topic_text(str(tag)):
+                add(token, 3)
+
+    ranked = sorted(weighted.items(), key=lambda item: (-item[1], item[0]))
+    return [term for term, _score in ranked[:limit]]
+
+
+def _paper_matches_query_terms(paper: Paper, query: str) -> bool:
+    haystack = f"{paper.title} {paper.abstract or ''} {' '.join(str(tag) for tag in (paper.tags or []))}".lower()
+    terms = [term for term in _tokenize_topic_text(query) if term not in {"seminal", "classic", "recent"}]
+    if not terms:
+        return False
+    required = max(1, min(2, len(terms)))
+    return sum(1 for term in terms if term in haystack) >= required
+
+
+def _coverage_topics(folder: Folder, rows: list[tuple[Paper, Optional[str]]], topic_terms: list[str]) -> list[dict]:
+    base_query = " ".join(topic_terms[:4]) or folder.name
+    candidate_topics: list[tuple[str, str]] = [
+        ("Survey / Overview", f"{base_query} survey"),
+        ("Benchmark / Dataset", f"{base_query} benchmark dataset"),
+        ("Methods", f"{base_query} method architecture"),
+        ("Evaluation", f"{base_query} evaluation experiment"),
+        ("Recent Work", f"{base_query} recent"),
+    ]
+    lowered_terms = set(topic_terms) | set(_tokenize_topic_text(folder.name))
+    for triggers, hints in DOMAIN_TOPIC_HINTS:
+        if all(trigger in lowered_terms for trigger in triggers):
+            candidate_topics.extend(hints)
+
+    seen_queries = set()
+    topics = []
+    for label, query in candidate_topics:
+        query_key = _normalize_text_key(query)
+        if query_key in seen_queries:
+            continue
+        seen_queries.add(query_key)
+        matched = [paper for paper, _status in rows if _paper_matches_query_terms(paper, query)]
+        if len(matched) >= 2:
+            status = "covered"
+        elif len(matched) == 1:
+            status = "thin"
+        else:
+            status = "missing"
+        topics.append({
+            "label": label,
+            "query": query,
+            "matched_count": len(matched),
+            "matched_titles": [paper.title for paper in matched[:3]],
+            "status": status,
+        })
+    return topics
+
+
+def _coverage_summary(topics: list[dict], paper_count: int) -> str:
+    missing = [topic["label"] for topic in topics if topic["status"] == "missing"]
+    thin = [topic["label"] for topic in topics if topic["status"] == "thin"]
+    if paper_count == 0:
+        return "这个分类还没有论文，建议先用经典/综述类查询建立种子集合。"
+    if missing:
+        return f"分类已有 {paper_count} 篇论文，但 {missing[0]} 等主题还没有命中，建议优先补缺口论文。"
+    if thin:
+        return f"分类已有 {paper_count} 篇论文，{thin[0]} 等主题覆盖偏薄，建议补 1-2 篇代表作。"
+    return f"分类已有 {paper_count} 篇论文，核心主题覆盖较均衡，可以继续补近期工作保持新鲜度。"
+
+
+def _recommended_queries(folder: Folder, topic_terms: list[str], topics: list[dict]) -> dict:
+    base = " ".join(topic_terms[:4]) or folder.name
+    gap_topic = next((topic for topic in topics if topic["status"] in {"missing", "thin"}), None)
+    return {
+        "classic": f"{base} seminal survey benchmark",
+        "recent": f"{base} recent",
+        "gap": gap_topic["query"] if gap_topic else f"{base} open problems",
+        "related": base,
+    }
+
+
+def _recommendation_reason(kind: str, query: str) -> str:
+    return {
+        "classic": "用于补齐该分类的经典论文、综述或基准工作。",
+        "recent": "用于补齐该分类近两年的新论文。",
+        "gap": f"该方向在分类覆盖分析中偏薄，建议优先检索：{query}",
+        "related": "基于分类主题词扩展相近论文。",
+    }.get(kind, "基于分类主题词推荐。")
+
+
+def _remote_recommendation_brief(paper: PaperResult, kind: str, reason: str) -> dict:
+    return {
+        "id": "",
+        "title": paper.title,
+        "authors": paper.authors,
+        "year": paper.year,
+        "abstract": paper.abstract[:500] if paper.abstract else None,
+        "abstract_full": paper.abstract or None,
+        "arxiv_id": paper.arxiv_id,
+        "doi": paper.doi,
+        "source": paper.source,
+        "citation_count": paper.citation_count,
+        "created_at": "",
+        "remote_id": (paper.metadata or {}).get("remote_id"),
+        "remote_ingest_token": create_remote_ingest_token(paper),
+        "pdf_url": paper.pdf_url,
+        "source_url": paper.source_url,
+        "recommendation_kind": kind,
+        "recommendation_reason": reason,
     }
 
 
@@ -171,6 +391,81 @@ async def get_folder_diagnostics(folder_id: str, db: AsyncSession = Depends(get_
     folder = await _owned_folder(db, folder_id, user)
     diagnostics = await _folder_diagnostics(db, folder.id, user.id)
     return {"folder_id": str(folder.id), "name": folder.name, **diagnostics}
+
+
+@router.get("/{folder_id}/coverage")
+async def get_folder_coverage(folder_id: str, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    """分析分类主题覆盖与补论文查询建议。"""
+    folder = await _owned_folder(db, folder_id, user)
+    rows = await _folder_paper_rows(db, folder.id, user.id)
+    topic_terms = _collection_topic_terms(folder, rows)
+    topics = _coverage_topics(folder, rows, topic_terms)
+    return {
+        "folder_id": str(folder.id),
+        "name": folder.name,
+        "paper_count": len(rows),
+        "topic_terms": topic_terms,
+        "topics": topics,
+        "summary": _coverage_summary(topics, len(rows)),
+        "recommended_queries": _recommended_queries(folder, topic_terms, topics),
+    }
+
+
+@router.get("/{folder_id}/recommendations", response_model=FolderRecommendationResponse)
+async def get_folder_recommendations(
+    folder_id: str,
+    kind: Literal["classic", "recent", "gap", "related"] = Query("related"),
+    query: Optional[str] = Query(None, min_length=2, max_length=300),
+    limit: int = Query(6, ge=1, le=12),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """为分类推荐可一键入库的外部论文候选。"""
+    folder = await _owned_folder(db, folder_id, user)
+    rows = await _folder_paper_rows(db, folder.id, user.id)
+    topic_terms = _collection_topic_terms(folder, rows)
+    topics = _coverage_topics(folder, rows, topic_terms)
+    suggested_queries = _recommended_queries(folder, topic_terms, topics)
+    recommendation_query = query.strip() if query and query.strip() else suggested_queries.get(kind) or suggested_queries["related"]
+    current_year = datetime.now(timezone.utc).year
+    year_from = current_year - 2 if kind == "recent" else None
+    sort_by = "date" if kind == "recent" else "relevance"
+    reason = _recommendation_reason(kind, recommendation_query)
+
+    existing_keys = set()
+    for paper, _status in rows:
+        existing_keys.update(_paper_existing_keys(paper))
+
+    candidates = await search_scholarly_papers(
+        recommendation_query,
+        source="scholarly",
+        max_results=max(limit * 3, 12),
+        year_from=year_from,
+        sort_by=sort_by,
+    )
+    items: list[dict] = []
+    excluded_existing = 0
+    seen_remote_keys: set[str] = set()
+    for candidate in candidates:
+        candidate_keys = _remote_existing_keys(candidate)
+        if candidate_keys & existing_keys:
+            excluded_existing += 1
+            continue
+        dedupe_key = next(iter(candidate_keys), f"title:{_normalize_text_key(candidate.title)}")
+        if dedupe_key in seen_remote_keys:
+            continue
+        seen_remote_keys.add(dedupe_key)
+        items.append(_remote_recommendation_brief(candidate, kind, reason))
+        if len(items) >= limit:
+            break
+
+    return FolderRecommendationResponse(
+        items=items,
+        query=recommendation_query,
+        kind=kind,
+        reason=reason,
+        excluded_existing=excluded_existing,
+    )
 
 
 @router.get("/{folder_id}/paper-ids")

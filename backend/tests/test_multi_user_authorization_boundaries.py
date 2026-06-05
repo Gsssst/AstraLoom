@@ -146,6 +146,8 @@ def test_system_wide_routes_require_admin(path, method):
         ("/api/folders/{folder_id}/papers", "GET"),
         ("/api/folders/{folder_id}/papers", "POST"),
         ("/api/folders/{folder_id}/diagnostics", "GET"),
+        ("/api/folders/{folder_id}/coverage", "GET"),
+        ("/api/folders/{folder_id}/recommendations", "GET"),
         ("/api/folders/{folder_id}/paper-ids", "GET"),
         ("/api/folders/{folder_id}/papers/{paper_id}", "DELETE"),
         ("/api/folders/{folder_id}", "DELETE"),
@@ -202,6 +204,24 @@ def test_folder_readiness_warns_when_collection_is_weak():
     assert diagnostics["ready_for_idea"] is False
     assert diagnostics["full_text_coverage"] == 0
     assert any("少于 3 篇" in warning for warning in diagnostics["warnings"])
+
+
+def test_folder_coverage_surfaces_topic_gaps_for_collection():
+    folder = SimpleNamespace(id=uuid4(), name="Video Grounding", parent_id=None, user_id=uuid4())
+    paper = SimpleNamespace(
+        title="Temporal Video Grounding with Vision-Language Models",
+        abstract="We study temporal video grounding and video language grounding for moment retrieval.",
+        tags=["video grounding"],
+    )
+
+    terms = folders._collection_topic_terms(folder, [(paper, "completed")])
+    topics = folders._coverage_topics(folder, [(paper, "completed")], terms)
+    queries = folders._recommended_queries(folder, terms, topics)
+
+    assert "video" in terms
+    assert any(topic["status"] in {"thin", "missing"} for topic in topics)
+    assert "benchmark" in queries["classic"]
+    assert queries["gap"]
 
 
 def test_personal_collection_delete_remains_available_to_authenticated_users():

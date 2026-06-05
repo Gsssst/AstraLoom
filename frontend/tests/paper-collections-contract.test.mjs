@@ -21,7 +21,15 @@ test('paper library exposes user collections as a first-class source', () => {
   assert.match(papersPageSource, /\/diagnostics/);
   assert.match(papersPageSource, /ready_for_idea/);
   assert.match(papersPageSource, /api\.get\(`\/folders\/\$\{selectedCollectionId\}\/papers`\)/);
+  assert.match(papersPageSource, /\/coverage/);
+  assert.match(papersPageSource, /\/recommendations/);
+  assert.match(papersPageSource, /主题覆盖分析/);
+  assert.match(papersPageSource, /补论文推荐/);
+  assert.match(papersPageSource, /补经典/);
+  assert.match(papersPageSource, /补近期/);
+  assert.match(papersPageSource, /补缺口/);
   assert.match(papersPageSource, /api\.post\(`\/folders\/\$\{targetCollectionId\}\/papers`/);
+  assert.match(papersPageSource, /入库并加入当前分类/);
   assert.match(papersPageSource, /api\.delete\(`\/folders\/\$\{selectedCollectionId\}\/papers\/\$\{paper\.id\}`/);
   assert.match(papersPageSource, /已入库并加入目标分类/);
 });

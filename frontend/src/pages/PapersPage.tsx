@@ -27,6 +27,8 @@ interface PaperItem {
   pdf_url?: string | null;
   source_url?: string | null;
   read_status?: 'unread' | 'reading' | 'completed' | null;
+  recommendation_kind?: string;
+  recommendation_reason?: string;
 }
 
 interface PaperCollection {
@@ -44,6 +46,26 @@ interface CollectionDiagnostics {
   ready_for_idea: boolean;
   warnings?: string[];
 }
+
+interface CollectionCoverageTopic {
+  label: string;
+  query: string;
+  matched_count: number;
+  matched_titles?: string[];
+  status: 'covered' | 'thin' | 'missing';
+}
+
+interface CollectionCoverage {
+  folder_id: string;
+  name: string;
+  paper_count: number;
+  topic_terms: string[];
+  topics: CollectionCoverageTopic[];
+  summary: string;
+  recommended_queries: Record<'classic' | 'recent' | 'gap' | 'related', string>;
+}
+
+type RecommendationKind = 'classic' | 'recent' | 'gap' | 'related';
 
 const heroGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
 const readingStatusMeta = {
@@ -84,6 +106,11 @@ const PapersPage: React.FC = () => {
   const [creatingCollection, setCreatingCollection] = useState(false);
   const [addingCollection, setAddingCollection] = useState(false);
   const [collectionDiagnostics, setCollectionDiagnostics] = useState<CollectionDiagnostics | null>(null);
+  const [collectionCoverage, setCollectionCoverage] = useState<CollectionCoverage | null>(null);
+  const [recommendationKind, setRecommendationKind] = useState<RecommendationKind>('gap');
+  const [recommendationLoading, setRecommendationLoading] = useState(false);
+  const [recommendationPapers, setRecommendationPapers] = useState<PaperItem[]>([]);
+  const [recommendationMeta, setRecommendationMeta] = useState<{ query: string; reason: string } | null>(null);
   const isAuthenticated = !!localStorage.getItem('access_token');
   const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
   const isRemoteSource = ['scholarly', 'arxiv', 'semantic_scholar', 'openalex', 'google_scholar'].includes(source);
@@ -160,13 +187,21 @@ const PapersPage: React.FC = () => {
   useEffect(() => {
     if (!selectedCollectionId) {
       setCollectionDiagnostics(null);
+      setCollectionCoverage(null);
+      setRecommendationPapers([]);
+      setRecommendationMeta(null);
       return;
     }
+    setRecommendationPapers([]);
+    setRecommendationMeta(null);
     api.get(`/folders/${selectedCollectionId}/diagnostics`)
       .then(response => setCollectionDiagnostics(response.data))
       .catch(() => {
         setCollectionDiagnostics(collections.find(item => item.id === selectedCollectionId)?.diagnostics || null);
       });
+    api.get(`/folders/${selectedCollectionId}/coverage`)
+      .then(response => setCollectionCoverage(response.data))
+      .catch(() => setCollectionCoverage(null));
   }, [collections, selectedCollectionId]);
 
   useEffect(() => {
@@ -194,10 +229,11 @@ const PapersPage: React.FC = () => {
     } catch { message.error('生成失败'); } finally { setReportLoading(false); setReportModalOpen(false); }
   };
 
-  const handleIngestOne = useCallback(async (e: React.MouseEvent, paper: PaperItem) => {
+  const handleIngestOne = useCallback(async (e: React.MouseEvent, paper: PaperItem, collectionOverrideId?: string) => {
     e.stopPropagation();
     if (!paper.remote_id) return;
     const remoteKey = `${paper.source}:${paper.remote_id}`;
+    const collectionId = collectionOverrideId || targetCollectionId;
     setIngestingIds(prev => new Set(prev).add(remoteKey));
     try {
       const response = await api.post('/papers/ingest-personal', {
@@ -207,18 +243,27 @@ const PapersPage: React.FC = () => {
         auto_download: false,
       });
       const localPaperId = response.data.paper_ids?.[0];
-      if (targetCollectionId && localPaperId) {
-        await api.post(`/folders/${targetCollectionId}/papers`, { paper_ids: [localPaperId] });
+      if (collectionId && localPaperId) {
+        await api.post(`/folders/${collectionId}/papers`, { paper_ids: [localPaperId] });
         await fetchCollections();
+        if (collectionId === selectedCollectionId) {
+          const [diagnostics, coverage] = await Promise.all([
+            api.get(`/folders/${collectionId}/diagnostics`),
+            api.get(`/folders/${collectionId}/coverage`),
+          ]);
+          setCollectionDiagnostics(diagnostics.data);
+          setCollectionCoverage(coverage.data);
+          if (source === 'collection') handleSearch();
+        }
       }
       setIngestedRemoteIds(prev => new Set(prev).add(remoteKey));
-      message.success(targetCollectionId ? '已入库并加入目标分类' : '已加入你的论文库');
+      message.success(collectionId ? '已入库并加入目标分类' : '已加入你的论文库');
     } catch (e: any) {
       message.error(e.response?.data?.detail || '加入论文库失败');
     } finally {
       setIngestingIds(prev => { const n = new Set(prev); n.delete(remoteKey); return n; });
     }
-  }, [fetchCollections, targetCollectionId]);
+  }, [fetchCollections, handleSearch, selectedCollectionId, source, targetCollectionId]);
 
   const handleIngest = useCallback(async () => {
     if (!ingestQuery.trim()) { message.warning('请输入搜索关键词或 arXiv ID'); return; }
@@ -295,6 +340,29 @@ const PapersPage: React.FC = () => {
     }
   }, [fetchCollections, handleSearch, selectedCollectionId, selectedIds, source, targetCollectionId]);
 
+  const handleFetchRecommendations = useCallback(async (kind: RecommendationKind, query?: string) => {
+    if (!selectedCollectionId) {
+      message.warning('请先选择一个分类');
+      return;
+    }
+    setRecommendationKind(kind);
+    setRecommendationLoading(true);
+    try {
+      const response = await api.get(`/folders/${selectedCollectionId}/recommendations`, {
+        params: { kind, query, limit: 6 },
+      });
+      setRecommendationPapers(response.data.items || []);
+      setRecommendationMeta({ query: response.data.query, reason: response.data.reason });
+      if ((response.data.items || []).length === 0) {
+        message.info('没有找到新的补充论文，可以换一个推荐类型或调整分类关键词');
+      }
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || '推荐论文检索失败');
+    } finally {
+      setRecommendationLoading(false);
+    }
+  }, [selectedCollectionId]);
+
   const handleRemoveFromCollection = useCallback(async (e: React.MouseEvent, paper: PaperItem) => {
     e.stopPropagation();
     if (!selectedCollectionId || !paper.id) return;
@@ -360,6 +428,11 @@ const PapersPage: React.FC = () => {
 
   const sc = (s: string) => ({ arxiv: '#b31b1b', semantic_scholar: '#1890ff', openalex: '#13a8a8', google_scholar: '#5f6368', manual: '#52c41a' }[s] || '#999');
   const sl = (s: string) => ({ arxiv: 'arXiv', semantic_scholar: 'Semantic Scholar', openalex: 'OpenAlex', google_scholar: 'Google Scholar', manual: '手动' }[s] || s);
+  const topicStatusMeta = (status: CollectionCoverageTopic['status']) => ({
+    covered: { color: 'green', label: '已覆盖' },
+    thin: { color: 'orange', label: '偏薄' },
+    missing: { color: 'red', label: '缺口' },
+  }[status]);
 
   const stats = papers.length > 0 ? `共 ${papers.length} 篇论文` : '';
   const collectionOptions = collections.map(item => {
@@ -492,6 +565,109 @@ const PapersPage: React.FC = () => {
               </Space>
             )}
           />
+        )}
+        {source === 'collection' && collectionCoverage && (
+          <Card
+            size="small"
+            style={{ marginTop: 10, borderRadius: 12, border: '1px solid #efe7ff', background: '#fbfaff' }}
+            styles={{ body: { padding: 12 } }}
+          >
+            <Space direction="vertical" size={10} style={{ width: '100%' }}>
+              <Space size={8} wrap>
+                <Text strong>主题覆盖分析</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>{collectionCoverage.summary}</Text>
+              </Space>
+              <Space size={6} wrap>
+                {collectionCoverage.topic_terms?.slice(0, 8).map(term => (
+                  <Tag key={term} color="purple" style={{ borderRadius: 10 }}>{term}</Tag>
+                ))}
+              </Space>
+              <Space size={6} wrap>
+                {collectionCoverage.topics?.slice(0, 8).map(topic => {
+                  const meta = topicStatusMeta(topic.status);
+                  return (
+                    <Tag key={`${topic.label}-${topic.query}`} color={meta.color} style={{ borderRadius: 10 }}>
+                      {topic.label} · {meta.label} ({topic.matched_count})
+                    </Tag>
+                  );
+                })}
+              </Space>
+              <Space size={8} wrap>
+                <Text type="secondary" style={{ fontSize: 13 }}>补论文推荐</Text>
+                <Button
+                  size="small"
+                  type={recommendationKind === 'classic' ? 'primary' : 'default'}
+                  loading={recommendationLoading && recommendationKind === 'classic'}
+                  onClick={() => handleFetchRecommendations('classic', collectionCoverage.recommended_queries?.classic)}
+                  style={{ borderRadius: 8 }}
+                >
+                  补经典
+                </Button>
+                <Button
+                  size="small"
+                  type={recommendationKind === 'recent' ? 'primary' : 'default'}
+                  loading={recommendationLoading && recommendationKind === 'recent'}
+                  onClick={() => handleFetchRecommendations('recent', collectionCoverage.recommended_queries?.recent)}
+                  style={{ borderRadius: 8 }}
+                >
+                  补近期
+                </Button>
+                <Button
+                  size="small"
+                  type={recommendationKind === 'gap' ? 'primary' : 'default'}
+                  loading={recommendationLoading && recommendationKind === 'gap'}
+                  onClick={() => handleFetchRecommendations('gap', collectionCoverage.recommended_queries?.gap)}
+                  style={{ borderRadius: 8 }}
+                >
+                  补缺口
+                </Button>
+                {recommendationMeta && <Text type="secondary" style={{ fontSize: 12 }}>检索式：{recommendationMeta.query}</Text>}
+              </Space>
+              {recommendationMeta && <Text type="secondary" style={{ fontSize: 12 }}>{recommendationMeta.reason}</Text>}
+              {recommendationPapers.length > 0 && (
+                <Row gutter={[8, 8]}>
+                  {recommendationPapers.map(paper => {
+                    const remoteKey = `${paper.source}:${paper.remote_id}`;
+                    return (
+                      <Col xs={24} md={12} key={remoteKey || paper.title}>
+                        <Card size="small" hoverable onClick={() => setDetailPaper(paper)} style={{ borderRadius: 12 }}>
+                          <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                            <Text strong ellipsis>{paper.title}</Text>
+                            <Space size={4} wrap>
+                              {paper.year && <Tag icon={<CalendarOutlined />} color="blue">{paper.year}</Tag>}
+                              <Tag color={sc(paper.source)}>{sl(paper.source)}</Tag>
+                              {paper.arxiv_id && <Tag color="#b31b1b">arXiv:{paper.arxiv_id}</Tag>}
+                              {paper.citation_count > 0 && <Tag icon={<RiseOutlined />} color="orange">引用 {paper.citation_count}</Tag>}
+                            </Space>
+                            {paper.abstract && <Paragraph type="secondary" ellipsis={{ rows: 2 }} style={{ margin: 0, fontSize: 12 }}>{paper.abstract}</Paragraph>}
+                            <Space size={6} wrap>
+                              <Button type="link" size="small" icon={<EyeOutlined />} onClick={e => handleOpenAbstract(e, paper)} style={{ paddingInline: 0 }}>详情</Button>
+                              {paper.pdf_url && <Button type="link" size="small" icon={<FileTextOutlined />} href={paper.pdf_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ paddingInline: 0 }}>PDF</Button>}
+                              {ingestedRemoteIds.has(remoteKey)
+                                ? <Tag color="green">已加入当前分类</Tag>
+                                : (
+                                  <Button
+                                    size="small"
+                                    type="primary"
+                                    ghost
+                                    icon={<ImportOutlined />}
+                                    loading={ingestingIds.has(remoteKey)}
+                                    onClick={e => handleIngestOne(e, paper, selectedCollectionId)}
+                                    style={{ borderRadius: 8 }}
+                                  >
+                                    入库并加入当前分类
+                                  </Button>
+                                )}
+                            </Space>
+                          </Space>
+                        </Card>
+                      </Col>
+                    );
+                  })}
+                </Row>
+              )}
+            </Space>
+          </Card>
         )}
         <Row gutter={[8, 8]} align="middle" style={{ marginTop: 8 }}>
           <Col flex="auto">
