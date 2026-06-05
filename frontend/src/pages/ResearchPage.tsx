@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Card, Button, Input, Tag, Typography, Space, Spin,
-  message, Row, Col, Modal, Divider, Popconfirm,
+  message, Row, Col, Modal, Divider, Popconfirm, Select,
 } from 'antd';
 import {
   PlusOutlined, ExperimentOutlined, BulbOutlined,
@@ -21,6 +21,12 @@ interface Project {
   keywords: string[] | null; status: string; ideas_count: number;
 }
 
+interface PaperCollection {
+  id: string;
+  name: string;
+  paper_count?: number;
+}
+
 const ResearchPage: React.FC = () => {
   const navigate = useNavigate();
   const [projects, setProjects] = useState<Project[]>([]);
@@ -32,6 +38,8 @@ const ResearchPage: React.FC = () => {
   const [paperSearch, setPaperSearch] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [selectedPaperIds, setSelectedPaperIds] = useState<string[]>([]);
+  const [collections, setCollections] = useState<PaperCollection[]>([]);
+  const [selectedCollectionIds, setSelectedCollectionIds] = useState<string[]>([]);
   const [searching, setSearching] = useState(false);
 
   const handlePaperSearch = async () => {
@@ -42,16 +50,32 @@ const ResearchPage: React.FC = () => {
   };
   const togglePaper = (id: string) => { setSelectedPaperIds(prev => prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]); };
   const loadProjects = useCallback(async () => { setLoading(true); try { const r = await api.get('/research/projects'); setProjects(r.data); } catch { message.error('加载失败'); } finally { setLoading(false); } }, []);
+  const loadCollections = useCallback(async () => {
+    try {
+      const r = await api.get('/folders/');
+      setCollections(r.data || []);
+    } catch {
+      // Collection selection is optional.
+    }
+  }, []);
   useEffect(() => { loadProjects(); }, [loadProjects]);
+  useEffect(() => { loadCollections(); }, [loadCollections]);
   const handleDelete = async (id: string, name: string) => { try { await api.delete(`/research/projects/${id}`); message.success(`已删除「${name}」`); loadProjects(); } catch { message.error('删除失败'); } };
   const handleCreate = async () => {
     if (!newProjectName.trim()) return;
     try {
-      await api.post('/research/projects', { name: newProjectName, description: newProjectDesc, keywords: newProjectKeywords.split(',').map(k => k.trim()).filter(Boolean), paper_ids: selectedPaperIds });
+      const collectionPaperIds = selectedCollectionIds.length
+        ? await Promise.all(selectedCollectionIds.map(async id => {
+          const response = await api.get(`/folders/${id}/paper-ids`);
+          return response.data.paper_ids || [];
+        }))
+        : [];
+      const paperIds = Array.from(new Set([...selectedPaperIds, ...collectionPaperIds.flat()]));
+      await api.post('/research/projects', { name: newProjectName, description: newProjectDesc, keywords: newProjectKeywords.split(',').map(k => k.trim()).filter(Boolean), paper_ids: paperIds });
       message.success('项目已创建！'); setCreateModalOpen(false);
-      setNewProjectName(''); setNewProjectDesc(''); setNewProjectKeywords(''); setSelectedPaperIds([]); setSearchResults([]); setPaperSearch('');
+      setNewProjectName(''); setNewProjectDesc(''); setNewProjectKeywords(''); setSelectedPaperIds([]); setSelectedCollectionIds([]); setSearchResults([]); setPaperSearch('');
       loadProjects();
-    } catch { message.error('创建失败'); }
+    } catch (e: any) { message.error(e.response?.data?.detail || '创建失败'); }
   };
 
   const statusColors: Record<string, string> = { active: '#52c41a', completed: '#1677ff', archived: '#999' };
@@ -141,6 +165,14 @@ const ResearchPage: React.FC = () => {
           <Input style={{ borderRadius: 10 }} placeholder="关键词（逗号分隔），如：RLHF, alignment, reward modeling" value={newProjectKeywords} onChange={e => setNewProjectKeywords(e.target.value)} prefix={<Tag color="blue" style={{ margin: 0 }}>🏷️</Tag>} />
           <Divider style={{ fontSize: 13, margin: '4px 0' }}><BookOutlined style={{ color: '#f5576c' }} /> 关联论文（可选）</Divider>
           <Text type="secondary" style={{ fontSize: 12 }}>关联论文后，Idea 生成将优先基于这些论文进行分析</Text>
+          <Select
+            mode="multiple"
+            placeholder="从论文分类一键导入种子论文"
+            value={selectedCollectionIds}
+            onChange={setSelectedCollectionIds}
+            options={collections.map(item => ({ value: item.id, label: `${item.name}（${item.paper_count || 0} 篇）` }))}
+            style={{ width: '100%' }}
+          />
           <Input.Search placeholder="搜索论文..." value={paperSearch} onChange={e => setPaperSearch(e.target.value)} onSearch={handlePaperSearch} loading={searching} enterButton={<SearchOutlined />} style={{ borderRadius: 10 }} />
           {searchResults.length > 0 && (
             <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 10, padding: 4 }}>
@@ -156,7 +188,7 @@ const ResearchPage: React.FC = () => {
               })}
             </div>
           )}
-          {selectedPaperIds.length > 0 && <Text type="secondary" style={{ fontSize: 12 }}>✅ 已选择 {selectedPaperIds.length} 篇论文</Text>}
+          {(selectedPaperIds.length > 0 || selectedCollectionIds.length > 0) && <Text type="secondary" style={{ fontSize: 12 }}>✅ 手动选择 {selectedPaperIds.length} 篇，分类导入 {selectedCollectionIds.length} 组论文</Text>}
         </Space>
       </Modal>
     </div>

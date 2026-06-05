@@ -3,6 +3,7 @@
 import logging
 from sqlalchemy import text
 from app.db.session import engine, AsyncSessionLocal
+from app.db.models.paper import Folder, PaperFolderItem
 from app.db.models.workspace import ProjectSpace, ProjectSpaceActivity, ProjectSpaceMember, ProjectSpaceResource
 
 logger = logging.getLogger(__name__)
@@ -23,8 +24,10 @@ async def init_db() -> None:
                 ProjectSpaceMember.__table__,
                 ProjectSpaceResource.__table__,
                 ProjectSpaceActivity.__table__,
+                Folder.__table__,
+                PaperFolderItem.__table__,
             ])
-            logger.info("✅ 项目空间表已就绪")
+            logger.info("✅ 项目空间与论文分类表已就绪")
     except Exception as e:
         logger.error(f"数据库初始化失败: {e}")
         raise

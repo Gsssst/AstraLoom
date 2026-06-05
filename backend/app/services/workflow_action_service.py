@@ -60,6 +60,11 @@ class WorkflowActionService:
         path: str,
         source: str,
         metadata: dict | None = None,
+        action_type: str = "navigate",
+        action_label: str | None = None,
+        method: str | None = None,
+        endpoint: str | None = None,
+        requires_admin: bool = False,
     ) -> dict[str, Any]:
         return {
             "id": action_id,
@@ -70,6 +75,11 @@ class WorkflowActionService:
             "path": path,
             "source": source,
             "metadata": metadata or {},
+            "action_type": action_type,
+            "action_label": action_label or ("执行" if action_type == "api" else "进入"),
+            "method": method,
+            "endpoint": endpoint,
+            "requires_admin": requires_admin,
         }
 
     async def _paper_actions(self, user: User) -> list[dict[str, Any]]:
@@ -131,6 +141,11 @@ class WorkflowActionService:
                 "/settings",
                 "knowledge-maintenance",
                 {"count": missing_full_text},
+                action_type="api",
+                action_label="补 5 篇全文",
+                method="POST",
+                endpoint="/papers/maintenance/backfill-full-text?limit=5",
+                requires_admin=True,
             ))
         if missing_embeddings:
             actions.append(self.action(
@@ -142,6 +157,11 @@ class WorkflowActionService:
                 "/settings",
                 "knowledge-maintenance",
                 {"count": missing_embeddings},
+                action_type="api",
+                action_label="补 20 篇向量",
+                method="POST",
+                endpoint="/papers/maintenance/backfill-embeddings?limit=20",
+                requires_admin=True,
             ))
         return actions[:4]
 

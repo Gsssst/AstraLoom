@@ -24,9 +24,22 @@ const priorityConfig: Record<string, { label: string; color: string }> = {
   low: { label: '可安排', color: 'blue' },
 };
 
+const formatActionResult = (payload: any) => {
+  if (!payload || typeof payload !== 'object') return '动作已完成，行动中心已刷新。';
+  const parts = [
+    payload.processed !== undefined ? `处理 ${payload.processed}` : null,
+    payload.success !== undefined ? `成功 ${payload.success}` : null,
+    payload.failed !== undefined ? `失败 ${payload.failed}` : null,
+    payload.skipped !== undefined ? `跳过 ${payload.skipped}` : null,
+  ].filter(Boolean);
+  return parts.length ? `${parts.join('，')}。` : '动作已完成，行动中心已刷新。';
+};
+
 const ActionCenterPage: React.FC = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
+  const [runningActionId, setRunningActionId] = useState<string | null>(null);
+  const [lastActionResult, setLastActionResult] = useState<{ title: string; detail: string } | null>(null);
   const [data, setData] = useState<any>({ summary: {}, actions: [] });
 
   const fetchActions = async () => {
@@ -42,6 +55,35 @@ const ActionCenterPage: React.FC = () => {
   };
 
   useEffect(() => { fetchActions(); }, []);
+
+  const runAction = async (item: any) => {
+    if (item.action_type !== 'api') {
+      navigate(item.path);
+      return;
+    }
+    if (!item.endpoint) {
+      message.error('这个行动项缺少可执行入口');
+      return;
+    }
+    setRunningActionId(item.id);
+    setLastActionResult(null);
+    try {
+      const response = await api.request({
+        method: item.method || 'POST',
+        url: item.endpoint,
+      });
+      const detail = formatActionResult(response.data);
+      setLastActionResult({ title: item.title, detail });
+      message.success(`${item.action_label || '维护动作'}已完成`);
+      await fetchActions();
+    } catch (error: any) {
+      const detail = error.response?.data?.detail || '动作执行失败，请稍后重试或进入设置页处理。';
+      setLastActionResult({ title: item.title, detail });
+      message.error(detail);
+    } finally {
+      setRunningActionId(null);
+    }
+  };
 
   const groupedActions = useMemo(() => {
     const groups: Record<string, any[]> = {};
@@ -112,8 +154,18 @@ const ActionCenterPage: React.FC = () => {
         showIcon
         style={{ borderRadius: 12, marginBottom: 18 }}
         message="行动中心目前是自动生成建议"
-        description="它会从现有模块状态推断下一步，不会新建独立任务。需要执行时，点击进入对应模块即可。"
+        description="它会从现有模块状态推断下一步。知识库维护类行动可以直接执行，其他行动会带你进入对应模块继续处理。"
       />
+      {lastActionResult ? (
+        <Alert
+          type="success"
+          showIcon
+          closable
+          onClose={() => setLastActionResult(null)}
+          style={{ borderRadius: 12, marginBottom: 18 }}
+          message={`${lastActionResult.title}：${lastActionResult.detail}`}
+        />
+      ) : null}
 
       <Spin spinning={loading}>
         {!hasActions && !loading ? (
@@ -146,13 +198,25 @@ const ActionCenterPage: React.FC = () => {
                         dataSource={actions}
                         renderItem={(item: any) => {
                           const priority = priorityConfig[item.priority] || priorityConfig.low;
+                          const isApiAction = item.action_type === 'api';
                           return (
                             <List.Item
                               actions={[
-                                <Button key="go" type="link" onClick={() => navigate(item.path)}>
-                                  进入 <RightOutlined />
+                                isApiAction && item.path ? (
+                                  <Button key="details" type="link" onClick={() => navigate(item.path)}>
+                                    查看位置
+                                  </Button>
+                                ) : null,
+                                <Button
+                                  key="go"
+                                  type={isApiAction ? 'primary' : 'link'}
+                                  size={isApiAction ? 'small' : 'middle'}
+                                  loading={runningActionId === item.id}
+                                  onClick={() => runAction(item)}
+                                >
+                                  {item.action_label || (isApiAction ? '执行' : '进入')} {!isApiAction ? <RightOutlined /> : null}
                                 </Button>,
-                              ]}
+                              ].filter(Boolean)}
                             >
                               <List.Item.Meta
                                 avatar={<CheckCircleOutlined style={{ color: config.color, fontSize: 20, marginTop: 4 }} />}
@@ -160,6 +224,7 @@ const ActionCenterPage: React.FC = () => {
                                   <Space wrap>
                                     <Text strong>{item.title}</Text>
                                     <Tag color={priority.color}>{priority.label}</Tag>
+                                    {item.requires_admin ? <Tag color="purple">管理员维护</Tag> : null}
                                   </Space>
                                 )}
                                 description={(

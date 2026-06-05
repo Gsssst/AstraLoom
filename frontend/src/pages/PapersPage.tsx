@@ -11,6 +11,7 @@ import {
   ImportOutlined, FileTextOutlined, BookOutlined,
   RocketOutlined, EyeOutlined, RedoOutlined, LinkOutlined,
   BellOutlined, PlayCircleOutlined, CheckCircleOutlined, RollbackOutlined,
+  FolderOutlined, FolderAddOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import { useAuthStore } from '../stores/useAuthStore';
@@ -26,6 +27,12 @@ interface PaperItem {
   pdf_url?: string | null;
   source_url?: string | null;
   read_status?: 'unread' | 'reading' | 'completed' | null;
+}
+
+interface PaperCollection {
+  id: string;
+  name: string;
+  paper_count?: number;
 }
 
 const heroGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
@@ -61,6 +68,11 @@ const PapersPage: React.FC = () => {
   const [readingStatus, setReadingStatus] = useState<'unread' | 'reading' | 'completed'>('unread');
   const [readingCounts, setReadingCounts] = useState<Record<'unread' | 'reading' | 'completed', number>>({ unread: 0, reading: 0, completed: 0 });
   const [updatingStatusIds, setUpdatingStatusIds] = useState<Set<string>>(new Set());
+  const [collections, setCollections] = useState<PaperCollection[]>([]);
+  const [selectedCollectionId, setSelectedCollectionId] = useState<string | undefined>();
+  const [targetCollectionId, setTargetCollectionId] = useState<string | undefined>();
+  const [creatingCollection, setCreatingCollection] = useState(false);
+  const [addingCollection, setAddingCollection] = useState(false);
   const isAuthenticated = !!localStorage.getItem('access_token');
   const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
   const isRemoteSource = ['scholarly', 'arxiv', 'semantic_scholar', 'openalex', 'google_scholar'].includes(source);
@@ -83,6 +95,18 @@ const PapersPage: React.FC = () => {
     }
   }, [isAuthenticated]);
 
+  const fetchCollections = useCallback(async () => {
+    if (!isAuthenticated) return;
+    try {
+      const response = await api.get('/folders/');
+      setCollections(response.data || []);
+      const first = response.data?.[0]?.id;
+      setTargetCollectionId(prev => prev || first);
+    } catch {
+      // Collection metadata is optional for the normal paper search flow.
+    }
+  }, [isAuthenticated]);
+
   const handleSearch = useCallback(async (requestedRemotePage = 1) => {
     if (yearFrom && yearTo && yearFrom > yearTo) {
       message.warning('起始年份不能晚于截止年份');
@@ -91,7 +115,14 @@ const PapersPage: React.FC = () => {
     const requestedPage = isRemoteSource ? requestedRemotePage : 1;
     setLoading(true);
     try {
-      if (source === 'saved' || source === 'reading') {
+      if (source === 'collection') {
+        if (!selectedCollectionId) {
+          setPapers([]);
+          return;
+        }
+        const r = await api.get(`/folders/${selectedCollectionId}/papers`);
+        setPapers(r.data.map((p: any) => ({ ...p, id: p.id })));
+      } else if (source === 'saved' || source === 'reading') {
         const ep = source === 'saved' ? '/papers/collection/saved' : '/papers/collection/reading-list';
         const r = await api.get(ep, { params: source === 'reading' ? { status: readingStatus } : undefined });
         setPapers(r.data.map((p: any) => ({ ...p, id: p.id })));
@@ -101,11 +132,19 @@ const PapersPage: React.FC = () => {
         setRemotePage(requestedPage);
       }
     } catch (e: any) { setPapers([]); message.error(e.response?.data?.detail || (e.code === 'ECONNABORTED' ? '远程学术检索超时，请稍后重试' : '搜索失败')); } finally { setLoading(false); }
-  }, [isRemoteSource, readingStatus, searchQuery, source, sort, yearFrom, yearTo]);
+  }, [isRemoteSource, readingStatus, searchQuery, selectedCollectionId, source, sort, yearFrom, yearTo]);
 
-  useEffect(() => { handleSearch(1); }, [source, sort, readingStatus]);
+  useEffect(() => { handleSearch(1); }, [source, sort, readingStatus, selectedCollectionId]);
 
   useEffect(() => { fetchReadingCounts(); }, [fetchReadingCounts, source]);
+
+  useEffect(() => { fetchCollections(); }, [fetchCollections]);
+
+  useEffect(() => {
+    if (source === 'collection' && !selectedCollectionId && collections.length > 0) {
+      setSelectedCollectionId(collections[0].id);
+    }
+  }, [collections, selectedCollectionId, source]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -182,6 +221,64 @@ const PapersPage: React.FC = () => {
       else { await api.post(`/papers/${paper.id}/save`); setSavedIds(prev => new Set(prev).add(paper.id)); }
     } catch { message.error('操作失败'); }
   }, [savedIds, isAuthenticated]);
+
+  const handleCreateCollection = useCallback(async () => {
+    if (!isAuthenticated) {
+      message.warning('请先登录');
+      return;
+    }
+    const name = window.prompt('请输入分类名称，例如：Video Grounding 核心论文');
+    if (!name?.trim()) return;
+    setCreatingCollection(true);
+    try {
+      const response = await api.post('/folders/', { name: name.trim() });
+      message.success('分类已创建');
+      await fetchCollections();
+      setSource('collection');
+      setSelectedCollectionId(response.data.id);
+      setTargetCollectionId(response.data.id);
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || '创建分类失败');
+    } finally {
+      setCreatingCollection(false);
+    }
+  }, [fetchCollections, isAuthenticated]);
+
+  const handleAddSelectedToCollection = useCallback(async () => {
+    if (!targetCollectionId) {
+      message.warning('请先选择或创建一个分类');
+      return;
+    }
+    if (selectedIds.size === 0) {
+      message.warning('请先选择论文');
+      return;
+    }
+    setAddingCollection(true);
+    try {
+      const response = await api.post(`/folders/${targetCollectionId}/papers`, { paper_ids: Array.from(selectedIds) });
+      message.success(`已加入分类：新增 ${response.data.added || 0} 篇，跳过 ${response.data.skipped || 0} 篇`);
+      setSelectedIds(new Set());
+      await fetchCollections();
+      if (source === 'collection' && selectedCollectionId === targetCollectionId) handleSearch();
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || '加入分类失败');
+    } finally {
+      setAddingCollection(false);
+    }
+  }, [fetchCollections, handleSearch, selectedCollectionId, selectedIds, source, targetCollectionId]);
+
+  const handleRemoveFromCollection = useCallback(async (e: React.MouseEvent, paper: PaperItem) => {
+    e.stopPropagation();
+    if (!selectedCollectionId || !paper.id) return;
+    try {
+      await api.delete(`/folders/${selectedCollectionId}/papers/${paper.id}`);
+      message.success('已从分类移除');
+      setPapers(prev => prev.filter(item => item.id !== paper.id));
+      await fetchCollections();
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '移出分类失败');
+    }
+  }, [fetchCollections, selectedCollectionId]);
 
   const handleDeleteClick = useCallback((e: React.MouseEvent, paper: PaperItem) => { e.stopPropagation(); if (!paper.id || !isAuthenticated) { message.warning('请先登录'); return; } setDeleteModal({ open: true, paper }); }, [isAuthenticated]);
   const handleReadStatusChange = useCallback(async (e: React.MouseEvent, paper: PaperItem, status: 'unread' | 'reading' | 'completed') => {
@@ -281,6 +378,7 @@ const PapersPage: React.FC = () => {
             options={[
               { value: 'local', label: '📚 全部论文' },
               { value: 'saved', label: '⭐ 收藏' },
+              { value: 'collection', label: '🗂️ 自定义分类' },
               { value: 'reading', label: '📖 阅读列表' },
               { value: 'scholarly', label: '🔎 综合学术' },
               { value: 'arxiv', label: '📝 arXiv' },
@@ -301,6 +399,25 @@ const PapersPage: React.FC = () => {
             )}
           </Col>
         </Row>
+        {source === 'collection' && (
+          <Row gutter={[8, 8]} align="middle" style={{ marginTop: 8 }}>
+            <Col flex="auto">
+              <Space size={8} wrap>
+                <Text type="secondary" style={{ fontSize: 13 }}>论文分类</Text>
+                <Select
+                  placeholder="选择分类"
+                  value={selectedCollectionId}
+                  onChange={setSelectedCollectionId}
+                  options={collections.map(item => ({ value: item.id, label: `${item.name}（${item.paper_count || 0}）` }))}
+                  style={{ minWidth: 220 }}
+                />
+                <Button icon={<FolderAddOutlined />} loading={creatingCollection} onClick={handleCreateCollection} style={{ borderRadius: 8 }}>
+                  新建分类
+                </Button>
+              </Space>
+            </Col>
+          </Row>
+        )}
         <Row gutter={[8, 8]} align="middle" style={{ marginTop: 8 }}>
           <Col flex="auto">
             <Space size={8} wrap>
@@ -369,6 +486,7 @@ const PapersPage: React.FC = () => {
                       {paper.citation_count > 0 && <Tag icon={<RiseOutlined />} color="orange" style={{ borderRadius: 6 }}>引用 {paper.citation_count}</Tag>}
                       <Button type="link" size="small" icon={<EyeOutlined />} onClick={e => handleOpenAbstract(e, paper)} style={{ height: 24, paddingInline: 4 }}>查看摘要</Button>
                       {paper.pdf_url && <Button type="link" size="small" icon={<FileTextOutlined />} href={paper.pdf_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ height: 24, paddingInline: 4 }}>开放 PDF</Button>}
+                      {source === 'collection' && selectedCollectionId && <Button type="link" danger size="small" onClick={e => handleRemoveFromCollection(e, paper)} style={{ height: 24, paddingInline: 4 }}>移出分类</Button>}
                       {!paper.id && isAuthenticated && paper.remote_id ? (
                         ingestedRemoteIds.has(`${paper.source}:${paper.remote_id}`)
                           ? <Tag color="green" style={{ borderRadius: 6 }}>已加入论文库</Tag>
@@ -408,6 +526,17 @@ const PapersPage: React.FC = () => {
       {selectedIds.size > 0 && (
         <div style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 100, background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(10px)', borderRadius: 16, boxShadow: '0 8px 32px rgba(0,0,0,0.12)', padding: '10px 24px', display: 'flex', gap: 12, alignItems: 'center', border: '1px solid #e8e8e8' }}>
           <div style={{ background: heroGradient, color: '#fff', borderRadius: 10, padding: '2px 12px', fontWeight: 600, fontSize: 13 }}>已选 {selectedIds.size} 篇</div>
+          <Select
+            size="small"
+            placeholder="加入分类"
+            value={targetCollectionId}
+            onChange={setTargetCollectionId}
+            options={collections.map(item => ({ value: item.id, label: `${item.name}（${item.paper_count || 0}）` }))}
+            style={{ width: 180 }}
+            suffixIcon={<FolderOutlined />}
+          />
+          <Button size="small" icon={<FolderAddOutlined />} loading={addingCollection} onClick={handleAddSelectedToCollection} style={{ borderRadius: 8 }}>加入分类</Button>
+          <Button size="small" icon={<FolderAddOutlined />} loading={creatingCollection} onClick={handleCreateCollection} style={{ borderRadius: 8 }}>新建分类</Button>
           {isAdmin && <Button size="small" onClick={() => { const t = prompt('输入标签'); if (t) { api.post('/papers/batch-tag', { paper_ids: Array.from(selectedIds), tags: t.split(',').map(x => x.trim()).filter(Boolean) }).then(() => { message.success('已添加'); setSelectedIds(new Set()); handleSearch(); }).catch(() => message.error('失败')); } }} style={{ borderRadius: 8 }}>🏷️ 标签</Button>}
           <Button size="small" onClick={async () => { const r = await api.post('/writing/export', { format: 'bibtex', paper_ids: Array.from(selectedIds) }); const b = new Blob([r.data.data], { type: 'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'selected.bib'; a.click(); }} style={{ borderRadius: 8 }}>📥 导出</Button>
           <Button size="small" onClick={() => setSelectedIds(new Set())} style={{ borderRadius: 8 }}>✕</Button>

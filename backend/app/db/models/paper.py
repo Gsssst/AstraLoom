@@ -140,3 +140,31 @@ class Folder(Base, TimestampMixin):
 
     parent: Mapped[Optional["Folder"]] = relationship("Folder", remote_side="Folder.id", back_populates="children")
     children: Mapped[list] = relationship("Folder", back_populates="parent", lazy="selectin")
+    paper_items: Mapped[list["PaperFolderItem"]] = relationship(
+        "PaperFolderItem",
+        back_populates="folder",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+
+class PaperFolderItem(Base, TimestampMixin):
+    """用户论文分类-论文关联。"""
+    __tablename__ = "paper_folder_items"
+
+    folder_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("folders.id", ondelete="CASCADE"), primary_key=True
+    )
+    paper_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("papers.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+
+    folder: Mapped["Folder"] = relationship(back_populates="paper_items")
+    paper: Mapped["Paper"] = relationship(lazy="selectin")
+
+    __table_args__ = (
+        UniqueConstraint("folder_id", "paper_id", "user_id", name="uq_paper_folder_item"),
+    )
