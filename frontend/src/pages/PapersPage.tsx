@@ -75,6 +75,38 @@ const readingStatusMeta = {
   reading: { label: '阅读中', color: 'processing' as const },
   completed: { label: '已完成', color: 'success' as const },
 };
+const providerGuidance: Record<string, { label: string; providers: string[]; description: string; retry: string }> = {
+  scholarly: {
+    label: '综合学术检索',
+    providers: ['arXiv', 'Semantic Scholar', 'OpenAlex', 'Google Scholar'],
+    description: '会尽量融合多个学术源，适合先找全局候选；不同来源可用性取决于网络、API Key 和开放访问状态。',
+    retry: '结果少时可以放宽年份、换一批，或切换到单一 provider 排查来源问题。',
+  },
+  arxiv: {
+    label: 'arXiv',
+    providers: ['arXiv'],
+    description: '偏预印本和最新工作，通常最容易获得开放 PDF，但不覆盖所有会议/期刊论文。',
+    retry: '如果没有结果，尝试英文关键词、缩短查询，或去综合学术检索补 OpenAlex/Semantic Scholar。',
+  },
+  semantic_scholar: {
+    label: 'Semantic Scholar',
+    providers: ['Semantic Scholar'],
+    description: '适合查高引论文、引用信息和跨来源论文，但开放 PDF 需要看返回元数据。',
+    retry: '如果命中少，尝试更宽泛任务词，或切换 OpenAlex 查 DOI/期刊论文。',
+  },
+  openalex: {
+    label: 'OpenAlex',
+    providers: ['OpenAlex'],
+    description: '覆盖期刊、会议和 DOI 元数据较广，部分论文可能没有 PDF。',
+    retry: '如果只有摘要没有 PDF，可先入库，再用来源链接或 DOI 继续追踪全文。',
+  },
+  google_scholar: {
+    label: 'Google Scholar',
+    providers: ['Google Scholar'],
+    description: '需要后端配置可用 provider，适合兜底查较分散的学术网页结果。',
+    retry: '如果不可用，优先使用综合学术、OpenAlex 或 Semantic Scholar。',
+  },
+};
 
 const PapersPage: React.FC = () => {
   const navigate = useNavigate();
@@ -124,6 +156,7 @@ const PapersPage: React.FC = () => {
   const isAuthenticated = !!localStorage.getItem('access_token');
   const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
   const isRemoteSource = ['scholarly', 'arxiv', 'semantic_scholar', 'openalex', 'google_scholar'].includes(source);
+  const remoteGuidance = isRemoteSource ? providerGuidance[source] : null;
   const yearOptions = Array.from({ length: new Date().getFullYear() - 1899 }, (_, index) => {
     const year = new Date().getFullYear() - index;
     return { value: year, label: `${year}` };
@@ -770,6 +803,15 @@ const PapersPage: React.FC = () => {
             </Col>
           </Row>
         )}
+        {remoteGuidance && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ borderRadius: 10, marginTop: 10 }}
+            message={<Space wrap><Text strong>{remoteGuidance.label}</Text>{remoteGuidance.providers.map(provider => <Tag color="blue" key={provider}>{provider}</Tag>)}</Space>}
+            description={`${remoteGuidance.description} ${remoteGuidance.retry}`}
+          />
+        )}
         {source === 'collection' && collectionDiagnostics && (
           <Alert
             type={collectionDiagnostics.ready_for_idea ? 'success' : 'warning'}
@@ -963,8 +1005,12 @@ const PapersPage: React.FC = () => {
                       <Tag color={sc(paper.source)} style={{ borderRadius: 6 }}>{sl(paper.source)}</Tag>
                       {paper.read_status && <Tag color={readingStatusMeta[paper.read_status].color} style={{ borderRadius: 6 }}>{readingStatusMeta[paper.read_status].label}</Tag>}
                       {paper.citation_count > 0 && <Tag icon={<RiseOutlined />} color="orange" style={{ borderRadius: 6 }}>引用 {paper.citation_count}</Tag>}
+                      {!paper.id && <Tag color={paper.remote_id ? 'geekblue' : 'default'} style={{ borderRadius: 6 }}>{paper.remote_id ? '可一键入库' : '缺少远程 ID'}</Tag>}
+                      {!paper.id && <Tag color={paper.pdf_url ? 'green' : 'default'} style={{ borderRadius: 6 }}>{paper.pdf_url ? '开放 PDF' : '未返回 PDF'}</Tag>}
+                      {!paper.id && paper.source_url && <Tag color="cyan" style={{ borderRadius: 6 }}>有来源页</Tag>}
                       <Button type="link" size="small" icon={<EyeOutlined />} onClick={e => handleOpenAbstract(e, paper)} style={{ height: 24, paddingInline: 4 }}>查看摘要</Button>
                       {paper.pdf_url && <Button type="link" size="small" icon={<FileTextOutlined />} href={paper.pdf_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ height: 24, paddingInline: 4 }}>开放 PDF</Button>}
+                      {paper.source_url && <Button type="link" size="small" icon={<LinkOutlined />} href={paper.source_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ height: 24, paddingInline: 4 }}>来源页</Button>}
                       {source === 'collection' && selectedCollectionId && <Button type="link" danger size="small" onClick={e => handleRemoveFromCollection(e, paper)} style={{ height: 24, paddingInline: 4 }}>移出分类</Button>}
                       {!paper.id && isAuthenticated && paper.remote_id ? (
                         ingestedRemoteIds.has(`${paper.source}:${paper.remote_id}`)
@@ -974,6 +1020,11 @@ const PapersPage: React.FC = () => {
                       ) : paper.id ? <Tag color="green" style={{ borderRadius: 6 }}>已入库</Tag> : null}
                     </Space>
                   </div>
+                  {!paper.id && targetCollectionId && (
+                    <Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
+                      入库目标：论文库 + {collections.find(item => item.id === targetCollectionId)?.name || '所选分类'}
+                    </Text>
+                  )}
                   {paper.abstract && <Paragraph type="secondary" ellipsis={{ rows: 2 }} style={{ marginTop: 8, marginBottom: 0, fontSize: 13 }}>{paper.abstract}</Paragraph>}
                   {renderReadingActions(paper)}
                 </Col>
@@ -993,9 +1044,28 @@ const PapersPage: React.FC = () => {
             <div style={{ width: 80, height: 80, borderRadius: 20, background: '#f0f2ff', margin: '0 auto 20px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <BookOutlined style={{ fontSize: 36, color: '#667eea' }} />
             </div>
-            <Title level={4}>暂无论文</Title>
-            <Text type="secondary" style={{ fontSize: 14, display: 'block', marginBottom: 20 }}>尝试搜索 arXiv 或一键入库来添加论文</Text>
-            <Button type="primary" size="large" icon={<RocketOutlined />} onClick={() => { setIngestQuery('large language model'); handleIngest(); }} style={{ borderRadius: 12, height: 44 }}>示例：检索 "large language model"</Button>
+            <Title level={4}>{isRemoteSource ? '这次外部检索没有返回论文' : '暂无论文'}</Title>
+            {isRemoteSource ? (
+              <Space direction="vertical" size={10} style={{ width: '100%', alignItems: 'center' }}>
+                <Text type="secondary" style={{ fontSize: 14 }}>
+                  可能是关键词过窄、年份限制过紧、当前 provider 不可用，或该来源没有开放元数据。
+                </Text>
+                <Space wrap style={{ justifyContent: 'center' }}>
+                  <Button onClick={() => { setYearFrom(undefined); setYearTo(undefined); }} style={{ borderRadius: 10 }}>放宽年份</Button>
+                  <Button icon={<RedoOutlined />} loading={loading} onClick={() => handleSearch(remotePage + 1)} style={{ borderRadius: 10 }}>换一批</Button>
+                  <Button onClick={() => setSource(source === 'scholarly' ? 'openalex' : 'scholarly')} style={{ borderRadius: 10 }}>
+                    {source === 'scholarly' ? '切到 OpenAlex' : '切到综合学术'}
+                  </Button>
+                  {isAdmin && <Button icon={<DatabaseOutlined />} onClick={() => setSource('maintenance')} style={{ borderRadius: 10 }}>做检索诊断</Button>}
+                </Space>
+                {remoteGuidance && <Text type="secondary" style={{ fontSize: 12 }}>{remoteGuidance.retry}</Text>}
+              </Space>
+            ) : (
+              <>
+                <Text type="secondary" style={{ fontSize: 14, display: 'block', marginBottom: 20 }}>尝试搜索 arXiv 或一键入库来添加论文</Text>
+                <Button type="primary" size="large" icon={<RocketOutlined />} onClick={() => { setIngestQuery('large language model'); handleIngest(); }} style={{ borderRadius: 12, height: 44 }}>示例：检索 "large language model"</Button>
+              </>
+            )}
           </Card>
         )}
       </Spin>

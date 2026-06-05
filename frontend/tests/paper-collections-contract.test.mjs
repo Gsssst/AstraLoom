@@ -48,6 +48,24 @@ test('paper library exposes a first-class maintenance center', () => {
   assert.match(papersPageSource, /BM25 分支解释|分支解释/);
 });
 
+test('paper library makes external search and ingest transparent', () => {
+  assert.match(papersPageSource, /providerGuidance/);
+  assert.match(papersPageSource, /综合学术检索/);
+  assert.match(papersPageSource, /Semantic Scholar/);
+  assert.match(papersPageSource, /OpenAlex/);
+  assert.match(papersPageSource, /Google Scholar/);
+  assert.match(papersPageSource, /开放 PDF/);
+  assert.match(papersPageSource, /未返回 PDF/);
+  assert.match(papersPageSource, /来源页/);
+  assert.match(papersPageSource, /可一键入库/);
+  assert.match(papersPageSource, /缺少远程 ID/);
+  assert.match(papersPageSource, /入库目标：论文库/);
+  assert.match(papersPageSource, /这次外部检索没有返回论文/);
+  assert.match(papersPageSource, /放宽年份/);
+  assert.match(papersPageSource, /换一批/);
+  assert.match(papersPageSource, /做检索诊断/);
+});
+
 test('research direction creation can import collection paper ids as seeds', () => {
   assert.match(researchPageSource, /从论文分类一键导入种子论文/);
   assert.match(researchPageSource, /selectedCollectionIds/);
