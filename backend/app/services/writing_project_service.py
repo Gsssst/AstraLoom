@@ -154,6 +154,219 @@ class WritingProjectService:
 
         return self._project_to_dict(project)
 
+    async def create_project_from_context(
+        self,
+        user_id: str,
+        title: str,
+        description: str = "",
+        template_type: str = "blank",
+        writing_type: str = "paper",
+        research_project_id: Optional[str] = None,
+        collection_ids: Optional[list[str]] = None,
+        target_venue: str = "",
+        target_year: str = "",
+    ) -> dict:
+        """Create a writing project bound to research direction and paper collections."""
+        context = await self._resolve_writing_context(
+            user_id=user_id,
+            writing_type=writing_type,
+            research_project_id=research_project_id,
+            collection_ids=collection_ids or [],
+            target_venue=target_venue,
+            target_year=target_year,
+        )
+        seed_paper_ids = context.get("paper_ids") or []
+        metadata = {
+            "source": "context_bound_writing_project",
+            "writing_context": context,
+            "recommended_paper_ids": seed_paper_ids,
+            "recommended_arxiv_ids": [],
+            "evidence_status": "sufficient" if seed_paper_ids else "insufficient",
+        }
+        if target_venue or target_year:
+            metadata["submission_profile"] = {
+                "venue": (target_venue or "").strip(),
+                "year": (target_year or "").strip(),
+                "template_status": "missing",
+                "status_label": "未绑定官方模板",
+                "warnings": ["已设置投稿目标，但尚未上传或绑定官方模板。"],
+            }
+
+        effective_description = description or context.get("description") or ""
+        project = await self.create_project(
+            user_id=user_id,
+            title=title,
+            description=effective_description,
+            template_type=template_type,
+            metadata_json=metadata,
+        )
+        await self._seed_context_sections(project["id"], user_id, context)
+        updated = await self.get_project(project["id"], user_id)
+        return updated or project
+
+    async def _resolve_writing_context(
+        self,
+        *,
+        user_id: str,
+        writing_type: str,
+        research_project_id: Optional[str],
+        collection_ids: list[str],
+        target_venue: str,
+        target_year: str,
+    ) -> dict:
+        from app.db.models.paper import Folder, PaperFolderItem
+        from app.db.models.research import ResearchProject
+
+        context: dict[str, Any] = {
+            "writing_type": writing_type or "paper",
+            "target_venue": (target_venue or "").strip(),
+            "target_year": (target_year or "").strip(),
+            "research_project_id": None,
+            "research_project_name": "",
+            "description": "",
+            "collection_ids": [],
+            "collection_names": [],
+            "collection_sources": [],
+            "paper_ids": [],
+        }
+        paper_ids: list[str] = []
+
+        if research_project_id:
+            try:
+                rid = UUID(research_project_id)
+            except ValueError as exc:
+                raise ValueError("Invalid research_project_id") from exc
+            result = await self.session.execute(
+                select(ResearchProject).where(ResearchProject.id == rid, ResearchProject.user_id == UUID(user_id))
+            )
+            project = result.scalar_one_or_none()
+            if not project:
+                raise ValueError("研究方向未找到")
+            context["research_project_id"] = str(project.id)
+            context["research_project_name"] = project.name
+            context["description"] = project.description or ""
+            for paper_id in project.paper_ids or []:
+                if paper_id and str(paper_id) not in paper_ids:
+                    paper_ids.append(str(paper_id))
+
+        seen_collections = set()
+        for raw_id in collection_ids or []:
+            if not raw_id or raw_id in seen_collections:
+                continue
+            seen_collections.add(raw_id)
+            try:
+                folder_id = UUID(raw_id)
+            except ValueError as exc:
+                raise ValueError("Invalid collection_id") from exc
+            folder = (await self.session.execute(
+                select(Folder).where(Folder.id == folder_id, Folder.user_id == UUID(user_id))
+            )).scalar_one_or_none()
+            if not folder:
+                raise ValueError("论文分类未找到")
+            paper_result = await self.session.execute(
+                select(PaperFolderItem.paper_id)
+                .where(PaperFolderItem.folder_id == folder.id, PaperFolderItem.user_id == UUID(user_id))
+                .order_by(PaperFolderItem.created_at.desc())
+            )
+            folder_paper_ids = [str(pid) for pid in paper_result.scalars().all()]
+            context["collection_ids"].append(str(folder.id))
+            context["collection_names"].append(folder.name)
+            context["collection_sources"].append({
+                "id": str(folder.id),
+                "name": folder.name,
+                "paper_count": len(folder_paper_ids),
+            })
+            for paper_id in folder_paper_ids:
+                if paper_id not in paper_ids:
+                    paper_ids.append(paper_id)
+
+        context["paper_ids"] = paper_ids
+        return context
+
+    async def _seed_context_sections(self, project_id: str, user_id: str, context: dict) -> None:
+        project = await self.get_project(project_id, user_id)
+        if not project:
+            return
+        sections_by_title = {section["title"].lower(): section for section in project.get("sections", [])}
+        content_by_title = await self._build_context_seed_sections(project, user_id, context)
+        for title, content in content_by_title.items():
+            section = sections_by_title.get(title.lower())
+            if section and not (section.get("content") or "").strip():
+                await self.update_section(section["id"], user_id, content=content, status="draft")
+
+    async def _build_context_seed_sections(self, project: dict, user_id: str, context: dict) -> dict[str, str]:
+        evidence_table = await self.build_evidence_related_work_table(project["id"], user_id)
+        if evidence_table is None:
+            evidence_table = await self._build_context_paper_table(context)
+        topic = context.get("research_project_name") or project.get("title") or "当前写作项目"
+        venue = " ".join(str(item) for item in [context.get("target_venue"), context.get("target_year")] if item).strip() or "待定投稿目标"
+        collections = "、".join(context.get("collection_names") or []) or "未绑定论文分类"
+        paper_count = len(context.get("paper_ids") or [])
+        description = context.get("description") or project.get("description") or "暂无研究方向描述。"
+        table_md = evidence_table.get("markdown") if isinstance(evidence_table, dict) else str(evidence_table or "")
+        references = await self._build_context_reference_seed(context)
+        return {
+            "Introduction": (
+                f"写作主题：{topic}\n\n"
+                f"投稿目标：{venue}\n\n"
+                f"研究背景：{description}\n\n"
+                "本章节是基于绑定研究方向和论文分类生成的结构化起点。正式写作时应进一步补充问题定义、贡献列表和实验结论。"
+            ),
+            "Related Work": (
+                f"当前草稿绑定了论文分类：{collections}，初始证据论文 {paper_count} 篇。\n\n"
+                "建议先根据下方证据对比表梳理支持证据、基线方法和反例，再逐段扩写 Related Work。"
+            ),
+            "Related Work Comparison Table": table_md,
+            "References": references,
+        }
+
+    async def _build_context_paper_table(self, context: dict) -> dict:
+        from app.db.models.paper import Paper
+
+        paper_ids = context.get("paper_ids") or []
+        if not paper_ids:
+            return {"markdown": "暂无绑定论文。建议先选择论文分类或从论文库补充证据。"}
+        rows = []
+        for index, paper_id in enumerate(paper_ids[:12], 1):
+            try:
+                result = await self.session.execute(select(Paper).where(Paper.id == UUID(paper_id)))
+                paper = result.scalar_one_or_none()
+            except ValueError:
+                paper = None
+            if not paper:
+                continue
+            rows.append(
+                "| {idx} | {title} | {year} | {source} | {hint} |".format(
+                    idx=index,
+                    title=self._escape_table_cell(paper.title),
+                    year=paper.year or "N/A",
+                    source=self._escape_table_cell(paper.source or "local"),
+                    hint=self._escape_table_cell((paper.abstract or "待补全文后判断贡献")[:160]),
+                )
+            )
+        header = "| # | 论文 | 年份 | 来源 | 初始写作提示 |\n|---|---|---:|---|---|"
+        return {"markdown": "\n".join(["### Context-bound Evidence Table", "", header, *rows])}
+
+    async def _build_context_reference_seed(self, context: dict) -> str:
+        from app.db.models.paper import Paper
+
+        refs = []
+        for index, paper_id in enumerate(context.get("paper_ids") or [], 1):
+            try:
+                result = await self.session.execute(select(Paper).where(Paper.id == UUID(paper_id)))
+                paper = result.scalar_one_or_none()
+            except ValueError:
+                paper = None
+            if not paper:
+                continue
+            identifiers = [f"Paper ID: {paper.id}"]
+            if paper.arxiv_id:
+                identifiers.append(f"arXiv: {paper.arxiv_id}")
+            if paper.doi:
+                identifiers.append(f"DOI: {paper.doi}")
+            refs.append(f"[{index}] {paper.title} ({'; '.join(identifiers)})")
+        return "\n".join(refs) or "暂无可引用论文。请先绑定论文分类或补充证据。"
+
     async def create_review_draft_from_topic(
         self,
         user_id: str,

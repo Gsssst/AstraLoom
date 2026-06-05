@@ -51,6 +51,11 @@ class ProjectCreateRequest(BaseModel):
     title: str = Field(..., max_length=300)
     description: str = ""
     template_type: str = Field(default="blank")
+    writing_type: str = Field(default="paper")
+    research_project_id: Optional[str] = None
+    collection_ids: List[str] = Field(default_factory=list)
+    target_venue: str = ""
+    target_year: str = ""
 
 
 class ReviewDraftRequest(BaseModel):
@@ -358,6 +363,24 @@ async def create_project(
 ):
     """创建写作项目。"""
     service = WritingProjectService(db)
+    has_context = bool(req.research_project_id or req.collection_ids or req.target_venue or req.target_year or req.writing_type != "paper")
+    if has_context:
+        try:
+            return await service.create_project_from_context(
+                user_id=str(user.id),
+                title=req.title,
+                description=req.description,
+                template_type=req.template_type,
+                writing_type=req.writing_type,
+                research_project_id=req.research_project_id,
+                collection_ids=req.collection_ids,
+                target_venue=req.target_venue,
+                target_year=req.target_year,
+            )
+        except ValueError as exc:
+            detail = str(exc)
+            status_code = 404 if "未找到" in detail else 400
+            raise HTTPException(status_code=status_code, detail=detail)
     return await service.create_project(
         user_id=str(user.id),
         title=req.title,

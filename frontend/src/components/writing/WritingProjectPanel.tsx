@@ -11,6 +11,7 @@ interface Project {
   description: string;
   template_type: string;
   status: string;
+  metadata_json?: any;
   sections: any[];
   progress: { percentage: number; completed: number; total: number; total_words: number };
   created_at: string;
@@ -24,6 +25,19 @@ interface Template {
   section_count: number;
 }
 
+interface ResearchProjectOption {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+interface CollectionOption {
+  id: string;
+  name: string;
+  paper_count?: number;
+  children?: CollectionOption[];
+}
+
 interface WritingProjectPanelProps {
   onSelectProject: (project: Project) => void;
   selectedProjectId?: string;
@@ -33,15 +47,23 @@ interface WritingProjectPanelProps {
 const WritingProjectPanel: React.FC<WritingProjectPanelProps> = ({ onSelectProject, selectedProjectId, refreshSignal = 0 }) => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
+  const [researchProjects, setResearchProjects] = useState<ResearchProjectOption[]>([]);
+  const [collections, setCollections] = useState<CollectionOption[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newTemplate, setNewTemplate] = useState('blank');
+  const [writingType, setWritingType] = useState('paper');
+  const [targetVenue, setTargetVenue] = useState('');
+  const [targetYear, setTargetYear] = useState('');
+  const [selectedResearchProjectId, setSelectedResearchProjectId] = useState<string | undefined>();
+  const [selectedCollectionIds, setSelectedCollectionIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     loadProjects();
     loadTemplates();
+    loadContextOptions();
   }, [refreshSignal]);
 
   const loadProjects = async () => {
@@ -58,15 +80,43 @@ const WritingProjectPanel: React.FC<WritingProjectPanelProps> = ({ onSelectProje
     } catch { /* ignore */ }
   };
 
+  const flattenCollections = (items: CollectionOption[], depth = 0): { value: string; label: string }[] => items.flatMap(item => [
+    { value: item.id, label: `${'　'.repeat(depth)}${item.name}（${item.paper_count || 0}）` },
+    ...flattenCollections(item.children || [], depth + 1),
+  ]);
+
+  const loadContextOptions = async () => {
+    try {
+      const [researchRes, foldersRes] = await Promise.all([
+        api.get('/research/projects'),
+        api.get('/folders/'),
+      ]);
+      setResearchProjects(researchRes.data || []);
+      setCollections(foldersRes.data || []);
+    } catch {
+      // Context binding is optional; project creation still works without these selectors.
+    }
+  };
+
   const handleCreate = async () => {
     if (!newTitle.trim()) return;
     setLoading(true);
     try {
-      await api.post('/writing/projects', {
-        title: newTitle, description: newDesc, template_type: newTemplate,
+      const response = await api.post('/writing/projects', {
+        title: newTitle,
+        description: newDesc,
+        template_type: newTemplate,
+        writing_type: writingType,
+        target_venue: targetVenue,
+        target_year: targetYear,
+        research_project_id: selectedResearchProjectId,
+        collection_ids: selectedCollectionIds,
       });
       setShowCreate(false);
       setNewTitle(''); setNewDesc(''); setNewTemplate('blank');
+      setWritingType('paper'); setTargetVenue(''); setTargetYear('');
+      setSelectedResearchProjectId(undefined); setSelectedCollectionIds([]);
+      onSelectProject(response.data);
       loadProjects();
     } catch { /* ignore */ }
     finally { setLoading(false); }
@@ -112,6 +162,12 @@ const WritingProjectPanel: React.FC<WritingProjectPanelProps> = ({ onSelectProje
               <Space size="small" wrap>
                 <Tag>{project.template_type.toUpperCase()}</Tag>
                 <Tag color={project.status === 'complete' ? 'green' : 'blue'}>{project.status}</Tag>
+                {project.metadata_json?.writing_context?.research_project_name && (
+                  <Tag color="purple">方向：{project.metadata_json.writing_context.research_project_name}</Tag>
+                )}
+                {project.metadata_json?.writing_context?.collection_names?.length > 0 && (
+                  <Tag color="geekblue">分类 {project.metadata_json.writing_context.collection_names.length}</Tag>
+                )}
                 <Text type="secondary" style={{ fontSize: 11 }}>
                   {project.progress.total_words} 字
                 </Text>
@@ -128,6 +184,20 @@ const WritingProjectPanel: React.FC<WritingProjectPanelProps> = ({ onSelectProje
         <Space direction="vertical" style={{ width: '100%' }}>
           <Input placeholder="项目标题" value={newTitle} onChange={e => setNewTitle(e.target.value)} />
           <Input placeholder="项目描述（可选）" value={newDesc} onChange={e => setNewDesc(e.target.value)} />
+          <Select
+            value={writingType}
+            onChange={(value) => {
+              setWritingType(value);
+              if (value === 'grant') setNewTemplate('nsfc');
+              if (value === 'survey' && newTemplate === 'blank') setNewTemplate('survey');
+            }}
+            style={{ width: '100%' }}
+            options={[
+              { value: 'paper', label: '论文写作' },
+              { value: 'survey', label: '综述写作' },
+              { value: 'grant', label: '本子/申请书' },
+            ]}
+          />
           <Alert
             type="info"
             showIcon
@@ -139,6 +209,32 @@ const WritingProjectPanel: React.FC<WritingProjectPanelProps> = ({ onSelectProje
             options={templates.map(t => ({
               value: t.key, label: `${t.name} 结构 (${t.section_count} 章节)`,
             }))}
+          />
+          <Space.Compact style={{ width: '100%' }}>
+            <Input placeholder="目标会议/期刊，如 CVPR" value={targetVenue} onChange={e => setTargetVenue(e.target.value)} />
+            <Input placeholder="年份，如 2026" value={targetYear} onChange={e => setTargetYear(e.target.value)} style={{ width: 120 }} />
+          </Space.Compact>
+          <Select
+            allowClear
+            showSearch
+            placeholder="绑定研究方向（可选）"
+            value={selectedResearchProjectId}
+            onChange={setSelectedResearchProjectId}
+            style={{ width: '100%' }}
+            optionFilterProp="label"
+            options={researchProjects.map(project => ({
+              value: project.id,
+              label: project.name,
+            }))}
+          />
+          <Select
+            mode="multiple"
+            allowClear
+            placeholder="绑定论文分类（可多选，作为写作证据库）"
+            value={selectedCollectionIds}
+            onChange={setSelectedCollectionIds}
+            style={{ width: '100%' }}
+            options={flattenCollections(collections)}
           />
         </Space>
       </Modal>

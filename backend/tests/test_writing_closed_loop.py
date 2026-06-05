@@ -647,3 +647,58 @@ async def test_workbench_summary_prioritizes_next_actions(monkeypatch):
     assert summary["submission"]["template_status"] == "missing"
     assert summary["next_actions"][0]["key"] == "fill-empty-section"
     assert any(action["key"] == "bind-submission-template" for action in summary["next_actions"])
+
+
+@pytest.mark.asyncio
+async def test_context_project_creation_stores_binding_metadata(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+    captured = {}
+
+    async def fake_resolve(**_kwargs):
+        return {
+            "writing_type": "paper",
+            "target_venue": "CVPR",
+            "target_year": "2026",
+            "research_project_id": "research-1",
+            "research_project_name": "Video Grounding",
+            "description": "Ground videos in time and space.",
+            "collection_ids": ["collection-1"],
+            "collection_names": ["Video Grounding 核心论文"],
+            "collection_sources": [{"id": "collection-1", "name": "Video Grounding 核心论文", "paper_count": 2}],
+            "paper_ids": ["paper-1", "paper-2"],
+        }
+
+    async def fake_create_project(**kwargs):
+        captured.update(kwargs)
+        return {"id": "project-1", "title": kwargs["title"], "sections": []}
+
+    async def fake_seed(_project_id, _user_id, _context):
+        captured["seeded"] = True
+
+    async def fake_get_project(_project_id, _user_id):
+        return {"id": "project-1", "title": "Video Grounding Paper", "metadata_json": captured["metadata_json"], "sections": []}
+
+    monkeypatch.setattr(service, "_resolve_writing_context", fake_resolve)
+    monkeypatch.setattr(service, "create_project", fake_create_project)
+    monkeypatch.setattr(service, "_seed_context_sections", fake_seed)
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+
+    project = await service.create_project_from_context(
+        user_id=str(uuid4()),
+        title="Video Grounding Paper",
+        template_type="cvpr",
+        writing_type="paper",
+        research_project_id="research-1",
+        collection_ids=["collection-1"],
+        target_venue="CVPR",
+        target_year="2026",
+    )
+
+    metadata = captured["metadata_json"]
+    assert metadata["source"] == "context_bound_writing_project"
+    assert metadata["writing_context"]["research_project_name"] == "Video Grounding"
+    assert metadata["recommended_paper_ids"] == ["paper-1", "paper-2"]
+    assert metadata["submission_profile"]["venue"] == "CVPR"
+    assert metadata["evidence_status"] == "sufficient"
+    assert captured["seeded"] is True
+    assert project["metadata_json"] == metadata

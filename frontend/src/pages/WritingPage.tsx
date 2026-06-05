@@ -961,6 +961,21 @@ const WritingPage: React.FC = () => {
                 <Space wrap>
                   <Text strong style={{ fontSize: 15 }}>{selectedProject.title}</Text>
                   <Tag color="blue" style={{ borderRadius: 6 }}>{selectedProject.template_type?.toUpperCase()}</Tag>
+                  {selectedProject.metadata_json?.writing_context?.research_project_name && (
+                    <Tag color="purple" style={{ borderRadius: 6 }}>
+                      研究方向：{selectedProject.metadata_json.writing_context.research_project_name}
+                    </Tag>
+                  )}
+                  {selectedProject.metadata_json?.writing_context?.collection_names?.length > 0 && (
+                    <Tag color="geekblue" style={{ borderRadius: 6 }}>
+                      论文分类 {selectedProject.metadata_json.writing_context.collection_names.length}
+                    </Tag>
+                  )}
+                  {selectedProject.metadata_json?.writing_context?.target_venue && (
+                    <Tag color="gold" style={{ borderRadius: 6 }}>
+                      目标：{selectedProject.metadata_json.writing_context.target_venue} {selectedProject.metadata_json.writing_context.target_year || ''}
+                    </Tag>
+                  )}
                   <Button type="primary" size="small" icon={<RocketOutlined />} loading={pipelineRunning} onClick={() => handlePipelineTask('full_chapter', { topic: selectedProject.title })} style={{ borderRadius: 8 }}>AI 辅助写作</Button>
                   <Button size="small" onClick={async () => { const r = await api.get(`/writing/projects/${selectedProject.id}/export?format=markdown`); handleCopy(r.data.data); }} style={{ borderRadius: 8 }}>导出 MD</Button>
                   <Button size="small" onClick={async () => { const r = await api.get(`/writing/projects/${selectedProject.id}/export?format=bibtex`); handleCopy(r.data.data || ''); }} style={{ borderRadius: 8 }}>导出 BibTeX</Button>

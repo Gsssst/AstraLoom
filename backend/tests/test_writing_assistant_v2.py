@@ -510,6 +510,16 @@ class TestWritingV2Integration:
     def test_project_create_request(self):
         """项目创建请求模型。"""
         from app.api.writing_v2 import ProjectCreateRequest
-        req = ProjectCreateRequest(title="Test Paper", template_type="acl")
+        req = ProjectCreateRequest(
+            title="Test Paper",
+            template_type="acl",
+            research_project_id="research-1",
+            collection_ids=["collection-1"],
+            target_venue="ACL",
+            target_year="2026",
+        )
         assert req.title == "Test Paper"
         assert req.template_type == "acl"
+        assert req.writing_type == "paper"
+        assert req.collection_ids == ["collection-1"]
+        assert req.target_venue == "ACL"

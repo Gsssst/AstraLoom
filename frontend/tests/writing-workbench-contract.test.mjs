@@ -45,3 +45,17 @@ test('paper workbench exposes consolidated project summary and next actions', ()
   assert.match(writingPageSource, /投稿模板/);
   assert.match(writingPageSource, /去处理/);
 });
+
+test('writing project creation supports context binding', () => {
+  assert.match(projectPanelSource, /api\.get\('\/research\/projects'\)/);
+  assert.match(projectPanelSource, /api\.get\('\/folders\/'\)/);
+  assert.match(projectPanelSource, /writing_type/);
+  assert.match(projectPanelSource, /target_venue/);
+  assert.match(projectPanelSource, /target_year/);
+  assert.match(projectPanelSource, /research_project_id/);
+  assert.match(projectPanelSource, /collection_ids/);
+  assert.match(projectPanelSource, /绑定研究方向/);
+  assert.match(projectPanelSource, /绑定论文分类/);
+  assert.match(writingPageSource, /研究方向：/);
+  assert.match(writingPageSource, /论文分类/);
+});
