@@ -16,6 +16,7 @@ import {
 } from '@ant-design/icons';
 import api from '../services/api';
 import { useAuthStore } from '../stores/useAuthStore';
+import WorkflowStepGuide from '../components/WorkflowStepGuide';
 
 const { Text, Paragraph, Title } = Typography;
 
@@ -737,6 +738,41 @@ const PapersPage: React.FC = () => {
           </Space>
         </div>
       </div>
+
+      <WorkflowStepGuide
+        title="论文库下一步"
+        subtitle="先把论文资料变得可用，再整理成分类并交给研究方向。"
+        style={{ marginBottom: 12, flexShrink: 0 }}
+        steps={[
+          {
+            key: 'maintenance',
+            title: '检查知识库健康',
+            description: '诊断全文、向量和 BM25 覆盖，避免问答和检索只靠摘要猜测。',
+            actionLabel: '打开维护中心',
+            status: 'recommended',
+            icon: <DatabaseOutlined />,
+            onClick: () => setSource('maintenance'),
+          },
+          {
+            key: 'collections',
+            title: '整理到论文分类',
+            description: '把候选论文归入自定义分类，后续可以一键作为 idea 种子。',
+            actionLabel: '管理分类',
+            status: 'ready',
+            icon: <FolderOutlined />,
+            onClick: () => setSource('collection'),
+          },
+          {
+            key: 'research',
+            title: '进入研究方向',
+            description: '用分类论文生成研究 idea、实验计划和写作素材。',
+            actionLabel: '去研究方向',
+            status: 'optional',
+            icon: <RocketOutlined />,
+            path: '/research',
+          },
+        ]}
+      />
 
       {/* ── 搜索栏 ── */}
       <Card style={{ borderRadius: 14, marginBottom: 12, border: '1px solid #f0f0f0', flexShrink: 0 }} styles={{ body: { padding: '10px 20px' } }}>

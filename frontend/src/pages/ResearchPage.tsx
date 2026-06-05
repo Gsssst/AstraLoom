@@ -7,9 +7,10 @@ import {
 import {
   PlusOutlined, ExperimentOutlined, BulbOutlined,
   SearchOutlined, BookOutlined, CheckCircleFilled, DeleteOutlined,
-  RocketOutlined,
+  RocketOutlined, FolderOutlined, EditOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
+import WorkflowStepGuide from '../components/WorkflowStepGuide';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -106,6 +107,41 @@ const ResearchPage: React.FC = () => {
           <Button type="primary" size="large" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)} style={{ borderRadius: 12, height: 44, background: '#fff', color: '#f5576c', border: 'none', fontWeight: 600 }}>新建方向</Button>
         </div>
       </div>
+
+      <WorkflowStepGuide
+        title="研究方向下一步"
+        subtitle="从论文种子到 idea，再把成熟方向沉淀成写作项目。"
+        style={{ marginBottom: 24 }}
+        steps={[
+          {
+            key: 'paper-seeds',
+            title: '准备论文种子',
+            description: '先在论文库创建分类，减少创建方向时手动找论文的成本。',
+            actionLabel: '去论文库',
+            status: 'recommended',
+            icon: <BookOutlined />,
+            path: '/papers',
+          },
+          {
+            key: 'create-direction',
+            title: '新建并绑定分类',
+            description: '创建方向时可直接选择论文分类，让 idea 生成有明确语料边界。',
+            actionLabel: '新建方向',
+            status: 'ready',
+            icon: <FolderOutlined />,
+            onClick: () => setCreateModalOpen(true),
+          },
+          {
+            key: 'writing',
+            title: '沉淀到写作',
+            description: '把验证过的 idea 转成论文项目、Related Work 和证据卡片。',
+            actionLabel: '去写作助手',
+            status: 'optional',
+            icon: <EditOutlined />,
+            path: '/writing',
+          },
+        ]}
+      />
 
       {/* ── 项目列表 ── */}
       <Spin spinning={loading}>

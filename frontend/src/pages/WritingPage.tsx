@@ -14,6 +14,7 @@ import {
 import api from '../services/api';
 import Markdown from '../components/Markdown';
 import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
+import WorkflowStepGuide from '../components/WorkflowStepGuide';
 import { DiffViewer, PipelineProgress, WritingProjectPanel, SectionEditor } from '../components/writing';
 
 const { Title, Text, Paragraph } = Typography;
@@ -1059,6 +1060,49 @@ const WritingPage: React.FC = () => {
           </Col>
         </Row>
       </div>
+
+      <WorkflowStepGuide
+        title="写作工作台下一步"
+        subtitle="把研究方向、证据、引用和投稿模板收束到同一个写作流程。"
+        style={{ marginBottom: 18 }}
+        steps={[
+          {
+            key: 'research-source',
+            title: '从研究方向开始',
+            description: '先确认 idea 和实验计划，再把成熟方向转成写作项目。',
+            actionLabel: '去研究方向',
+            status: 'recommended',
+            icon: <RocketOutlined />,
+            path: '/research',
+          },
+          {
+            key: 'evidence',
+            title: '补齐证据与引用',
+            description: '用证据卡片、引用推荐和句子校验降低写作幻觉风险。',
+            actionLabel: '查看项目工作台',
+            status: 'ready',
+            icon: <BookOutlined />,
+            onClick: () => {
+              setAssistantMode('paper');
+              setActiveTab('project');
+              scrollToWorkbenchTarget('evidence');
+            },
+          },
+          {
+            key: 'export',
+            title: '导出前检查模板',
+            description: '会议格式每年会变，正式导出前应绑定或核对官方模板。',
+            actionLabel: '查看导出预检',
+            status: 'optional',
+            icon: <DownloadOutlined />,
+            onClick: () => {
+              setAssistantMode('paper');
+              setActiveTab('project');
+              scrollToWorkbenchTarget('export');
+            },
+          },
+        ]}
+      />
 
       {assistantMode === 'paper' ? (
         <>
