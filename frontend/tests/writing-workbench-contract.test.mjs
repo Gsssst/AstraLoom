@@ -10,6 +10,10 @@ const projectPanelSource = readFileSync(
   new URL('../src/components/writing/WritingProjectPanel.tsx', import.meta.url),
   'utf8',
 );
+const sectionEditorSource = readFileSync(
+  new URL('../src/components/writing/SectionEditor.tsx', import.meta.url),
+  'utf8',
+);
 
 test('writing assistant exposes paper and grant workbench modes', () => {
   assert.match(writingPageSource, /写论文助手/);
@@ -44,6 +48,24 @@ test('paper workbench exposes consolidated project summary and next actions', ()
   assert.match(writingPageSource, /引用风险/);
   assert.match(writingPageSource, /投稿模板/);
   assert.match(writingPageSource, /去处理/);
+});
+
+test('citation recommendation UI exposes evidence decision loop', () => {
+  assert.match(writingPageSource, /引用决策概览/);
+  assert.match(writingPageSource, /decision_label/);
+  assert.match(writingPageSource, /decision_action/);
+  assert.match(writingPageSource, /decision_warning/);
+  assert.match(writingPageSource, /支持证据/);
+  assert.match(writingPageSource, /基线方法/);
+  assert.match(writingPageSource, /反例\/局限/);
+  assert.match(writingPageSource, /谨慎使用/);
+});
+
+test('section citation diagnostics expose actionable next steps', () => {
+  assert.match(sectionEditorSource, /校验引用/);
+  assert.match(sectionEditorSource, /建议下一步/);
+  assert.match(sectionEditorSource, /decision_action/);
+  assert.match(sectionEditorSource, /decision_warning/);
 });
 
 test('writing project creation supports context binding', () => {

@@ -45,6 +45,21 @@ async def test_recommend_citations_returns_role_and_match(monkeypatch):
     assert results[0]["role_label"] == "基线方法"
     assert results[0]["match_status"] in {"strong", "partial"}
     assert results[0]["paper_id"] == str(paper.id)
+    assert results[0]["decision_label"].startswith("基线方法")
+    assert results[0]["decision_confidence"] in {"high", "medium"}
+    assert "基线" in results[0]["decision_action"] or "人工确认" in results[0]["decision_action"]
+
+
+def test_citation_decision_marks_weak_support_as_risky():
+    service = WritingAssistantService(SimpleNamespace())
+    decision = service.build_citation_decision(
+        {"role": "supporting_evidence", "role_label": "支持证据"},
+        {"match_status": "weak", "match_label": "弱匹配"},
+    )
+
+    assert decision["decision_confidence"] == "low"
+    assert "不建议直接引用" in decision["decision_warning"]
+    assert decision["decision_action"] == "谨慎使用：先补证据或替换引用"
 
 
 @pytest.mark.asyncio
@@ -511,6 +526,8 @@ async def test_writing_project_section_citation_check_scores_local_support(monke
     assert result["summary"]["total"] == 1
     assert result["checks"][0]["status"] in {"strong", "partial"}
     assert result["checks"][0]["card"]["title"] == paper.title
+    assert result["checks"][0]["decision_label"]
+    assert result["checks"][0]["decision_action"]
 
 
 @pytest.mark.asyncio
@@ -541,6 +558,8 @@ async def test_writing_project_section_citation_check_marks_external_unchecked(m
     assert result["checks"][0]["status"] == "unchecked"
     assert result["summary"]["unchecked"] == 1
     assert "尚未导入本地论文库" in result["checks"][0]["explanation"]
+    assert result["checks"][0]["decision_action"] == "先入库并补全文/补向量"
+    assert "临时占位引用" in result["checks"][0]["decision_warning"]
 
 
 @pytest.mark.asyncio

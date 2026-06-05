@@ -126,11 +126,21 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
                       <Space wrap>
                         <Tag color={statusColor(item.status)}>{item.citation || '无引用'}</Tag>
                         <Text strong>{item.label}</Text>
+                        {item.decision_label && <Tag color={statusColor(item.status)}>{item.decision_label}</Tag>}
                         {item.card?.title && <Text type="secondary">{item.card.title}</Text>}
                       </Space>
                       <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 4 }}>
                         {item.explanation}
                       </Text>
+                      {item.decision_action && (
+                        <Alert
+                          type={item.status === 'weak' || item.status === 'missing' ? 'warning' : 'info'}
+                          showIcon
+                          message="建议下一步"
+                          description={`${item.decision_action}${item.decision_warning ? `：${item.decision_warning}` : ''}`}
+                          style={{ borderRadius: 8, marginTop: 6, padding: '6px 10px' }}
+                        />
+                      )}
                       {item.match_terms?.length > 0 && (
                         <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
                           命中术语：{item.match_terms.join('、')}

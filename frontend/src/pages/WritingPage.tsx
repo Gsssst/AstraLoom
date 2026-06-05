@@ -147,6 +147,7 @@ const WritingPage: React.FC = () => {
 
   const handleCopy = (text: string) => { navigator.clipboard.writeText(text); message.success('已复制'); };
   const matchColor = (status?: string) => status === 'strong' ? 'green' : status === 'partial' ? 'gold' : 'red';
+  const decisionColor = (confidence?: string) => confidence === 'high' ? 'green' : confidence === 'medium' ? 'gold' : 'red';
   const exportStatusColor = (status?: string) => status === 'ready' ? 'green' : status === 'needs_attention' ? 'gold' : 'red';
   const riskColor = (risk?: string) => risk === 'high' ? 'red' : risk === 'medium' ? 'gold' : risk === 'low' ? 'blue' : 'green';
   const priorityColor = (priority?: string) => priority === 'high' ? 'red' : priority === 'medium' ? 'gold' : 'blue';
@@ -517,34 +518,64 @@ const WritingPage: React.FC = () => {
       <Button type="primary" icon={<RocketOutlined />} loading={citeLoading} onClick={handleRecommend} style={{ ...primaryBtn, width: '100%' }}>智能推荐引用</Button>
       {citeLoading && <div style={{ textAlign: 'center', marginTop: 16 }}><LoadingDots /></div>}
       {!citeLoading && citations.length > 0 && (
-        <List style={{ marginTop: 16 }} dataSource={citations}
-          renderItem={(item, idx) => (
-            <Card hoverable size="small" style={{ marginBottom: 10, borderRadius: 10, border: '1px solid #f0f0f0' }}
-              extra={<Tooltip title="复制 BibTeX"><Button size="small" type="text" icon={<CopyOutlined />} onClick={() => handleCopy(item.bibtex)} /></Tooltip>}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                <div style={{ width: 28, height: 28, borderRadius: 8, background: '#667eea15', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#667eea', fontWeight: 700, fontSize: 13, flexShrink: 0 }}>{idx + 1}</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <Text strong style={{ fontSize: 13 }} ellipsis>{item.title}</Text>
-                  <div style={{ marginTop: 4 }}>
-                    <Space size={4} wrap>
-                      <Tag color="blue" style={{ borderRadius: 6 }}>{item.year}</Tag>
-                      <Tag style={{ borderRadius: 6 }}>{item.authors?.split(',')[0]}</Tag>
-                      <Tag color="geekblue" style={{ borderRadius: 6 }}>★{(item.similarity * 100).toFixed(0)}%</Tag>
-                      {item.role_label && <Tag color="purple" style={{ borderRadius: 6 }}>{item.role_label}</Tag>}
-                      {item.match_label && <Tag color={matchColor(item.match_status)} style={{ borderRadius: 6 }}>{item.match_label}</Tag>}
-                    </Space>
+        <div style={{ marginTop: 16 }}>
+          <Alert
+            type="info"
+            showIcon
+            message="引用决策概览"
+            description={
+              <Space size={6} wrap>
+                {['supporting_evidence', 'baseline_method', 'counterexample', 'background'].map(role => {
+                  const count = citations.filter(item => item.role === role).length;
+                  const label = citations.find(item => item.role === role)?.role_label || ({ supporting_evidence: '支持证据', baseline_method: '基线方法', counterexample: '反例/局限', background: '背景资料' } as any)[role];
+                  return <Tag key={role} color={count ? 'purple' : 'default'} style={{ borderRadius: 999 }}>{label} {count}</Tag>;
+                })}
+                <Tag color="green" style={{ borderRadius: 999 }}>强匹配 {citations.filter(item => item.match_status === 'strong').length}</Tag>
+                <Tag color="gold" style={{ borderRadius: 999 }}>需确认 {citations.filter(item => item.match_status === 'partial').length}</Tag>
+                <Tag color="red" style={{ borderRadius: 999 }}>谨慎使用 {citations.filter(item => item.match_status === 'weak').length}</Tag>
+              </Space>
+            }
+            style={{ borderRadius: 10, marginBottom: 12 }}
+          />
+          <List dataSource={citations}
+            renderItem={(item, idx) => (
+              <Card hoverable size="small" style={{ marginBottom: 10, borderRadius: 10, border: '1px solid #f0f0f0', borderTop: `3px solid ${decisionColor(item.decision_confidence) === 'green' ? '#52c41a' : decisionColor(item.decision_confidence) === 'gold' ? '#faad14' : '#ff4d4f'}` }}
+                extra={<Tooltip title="复制 BibTeX"><Button size="small" type="text" icon={<CopyOutlined />} onClick={() => handleCopy(item.bibtex)} /></Tooltip>}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                  <div style={{ width: 28, height: 28, borderRadius: 8, background: '#667eea15', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#667eea', fontWeight: 700, fontSize: 13, flexShrink: 0 }}>{idx + 1}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <Text strong style={{ fontSize: 13 }} ellipsis>{item.title}</Text>
+                    <div style={{ marginTop: 4 }}>
+                      <Space size={4} wrap>
+                        <Tag color="blue" style={{ borderRadius: 6 }}>{item.year}</Tag>
+                        <Tag style={{ borderRadius: 6 }}>{item.authors?.split(',')[0]}</Tag>
+                        <Tag color="geekblue" style={{ borderRadius: 6 }}>★{(item.similarity * 100).toFixed(0)}%</Tag>
+                        {item.role_label && <Tag color="purple" style={{ borderRadius: 6 }}>{item.role_label}</Tag>}
+                        {item.match_label && <Tag color={matchColor(item.match_status)} style={{ borderRadius: 6 }}>{item.match_label}</Tag>}
+                        {item.decision_label && <Tag color={decisionColor(item.decision_confidence)} style={{ borderRadius: 6 }}>{item.decision_label}</Tag>}
+                      </Space>
+                    </div>
+                    {item.decision_action && (
+                      <Alert
+                        type={item.decision_confidence === 'low' ? 'warning' : 'success'}
+                        showIcon
+                        message={item.decision_action}
+                        description={item.decision_warning}
+                        style={{ borderRadius: 8, marginTop: 8, padding: '6px 10px', fontSize: 12 }}
+                      />
+                    )}
+                    <Paragraph type="secondary" ellipsis={{ rows: 2 }} style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>{item.abstract_snippet}</Paragraph>
+                    {(item.role_reason || item.match_explanation) && (
+                      <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 6 }}>
+                        {item.role_reason} {item.match_explanation}
+                      </Text>
+                    )}
                   </div>
-                  <Paragraph type="secondary" ellipsis={{ rows: 2 }} style={{ fontSize: 12, marginTop: 4, marginBottom: 0 }}>{item.abstract_snippet}</Paragraph>
-                  {(item.role_reason || item.match_explanation) && (
-                    <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 6 }}>
-                      {item.role_reason} {item.match_explanation}
-                    </Text>
-                  )}
                 </div>
-              </div>
-            </Card>
-          )}
-        />
+              </Card>
+            )}
+          />
+        </div>
       )}
     </ToolCard>
   );

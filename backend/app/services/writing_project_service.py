@@ -941,6 +941,8 @@ class WritingProjectService:
                     "label": "缺少引用",
                     "sentence": (text or "").strip()[:240],
                     "explanation": "该章节没有检测到 [1]、arXiv 或 Paper ID 引用标记。建议为关键结论补充证据引用。",
+                    "decision_action": "先为关键结论插入证据卡引用",
+                    "decision_warning": "没有引用标记时，导出前引用校验无法判断正文结论是否有证据支持。",
                     "card": None,
                 }],
                 "summary": self._citation_summary([{"status": "missing"}]),
@@ -957,6 +959,8 @@ class WritingProjectService:
                     "label": "未找到证据卡",
                     "sentence": sentence,
                     "explanation": "该引用没有匹配到当前写作项目的证据卡，请检查编号或补充 References。",
+                    "decision_action": "检查引用编号或补充证据卡",
+                    "decision_warning": "未匹配到证据卡的引用不应直接进入终稿。",
                     "card": None,
                 })
                 continue
@@ -968,6 +972,8 @@ class WritingProjectService:
                     "label": "本地记录缺失",
                     "sentence": sentence,
                     "explanation": "证据卡保存了本地论文 ID，但当前数据库没有找到该论文。建议重新入库或替换引用。",
+                    "decision_action": "重新入库该论文或替换引用",
+                    "decision_warning": "本地记录缺失时无法校验引用是否真实支撑当前句子。",
                     "card": card,
                 })
                 continue
@@ -979,6 +985,8 @@ class WritingProjectService:
                     "label": "外部证据未校验",
                     "sentence": sentence,
                     "explanation": "该证据尚未导入本地论文库，系统无法判断它是否支撑当前句子。建议先一键入库并补全文/补向量。",
+                    "decision_action": "先入库并补全文/补向量",
+                    "decision_warning": "外部证据未校验时，只能作为临时占位引用。",
                     "card": card,
                 })
                 continue
@@ -996,12 +1004,15 @@ class WritingProjectService:
                     "label": "本地论文缺失",
                     "sentence": sentence,
                     "explanation": "证据卡记录了本地论文 ID，但当前数据库没有找到该论文。",
+                    "decision_action": "修复证据卡或替换引用",
+                    "decision_warning": "数据库中找不到论文时，引用真实性无法确认。",
                     "card": card,
                 })
                 continue
 
             match = writer.score_sentence_paper_match(sentence, paper)
             role = writer.classify_citation_role(sentence, paper)
+            decision = writer.build_citation_decision(role, match)
             checks.append({
                 "citation": mention["raw"],
                 "status": match["match_status"],
@@ -1012,6 +1023,7 @@ class WritingProjectService:
                 "match_terms": match["match_terms"],
                 "role": role["role"],
                 "role_label": role["role_label"],
+                **decision,
                 "card": card,
             })
 

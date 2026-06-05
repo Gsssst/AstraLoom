@@ -101,6 +101,38 @@ class WritingAssistantService:
             "match_explanation": explanation,
         }
 
+    def build_citation_decision(self, role_info: dict, match_info: dict) -> dict:
+        """把引用角色和匹配质量转成写作动作建议。"""
+        role = role_info.get("role") or "supporting_evidence"
+        match_status = match_info.get("match_status") or "weak"
+
+        role_action = {
+            "supporting_evidence": "可用于支撑当前论断",
+            "counterexample": "适合放在局限、反例或问题动机中",
+            "baseline_method": "适合放在实验对比或基线方法说明中",
+            "background": "适合放在背景、问题定义或相关工作铺垫中",
+        }.get(role, "可作为候选引用")
+
+        if match_status == "strong":
+            confidence = "high"
+            warning = "匹配较强，仍建议在正式投稿前核对原文页码和具体结论。"
+            action = role_action
+        elif match_status == "partial":
+            confidence = "medium"
+            warning = "只有部分术语匹配，建议补充原文片段或换成更直接支持该句的证据。"
+            action = f"{role_action}，但需要人工确认"
+        else:
+            confidence = "low"
+            warning = "匹配较弱，不建议直接引用来支撑该句。请替换引用、补全文检索或改写句子。"
+            action = "谨慎使用：先补证据或替换引用"
+
+        return {
+            "decision_label": f"{role_info.get('role_label', '候选引用')} · {match_info.get('match_label', '待确认')}",
+            "decision_action": action,
+            "decision_warning": warning,
+            "decision_confidence": confidence,
+        }
+
     async def retrieve_topic_papers(self, topic: str, max_papers: int = 8) -> list[tuple[Paper, float]]:
         """检索写作主题相关论文。"""
         rag = RAGService(self.session)
@@ -118,6 +150,7 @@ class WritingAssistantService:
         for p, score in results:
             role_info = self.classify_citation_role(text, p)
             match_info = self.score_sentence_paper_match(text, p)
+            decision_info = self.build_citation_decision(role_info, match_info)
             recommendations.append({
                 "paper_id": str(p.id),
                 "title": p.title,
@@ -130,6 +163,7 @@ class WritingAssistantService:
                 "bibtex": self._generate_bibtex(p),
                 **role_info,
                 **match_info,
+                **decision_info,
             })
         return recommendations
 

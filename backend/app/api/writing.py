@@ -37,6 +37,10 @@ class CitationResult(BaseModel):
     match_label: Optional[str] = None
     match_terms: Optional[List[str]] = None
     match_explanation: Optional[str] = None
+    decision_label: Optional[str] = None
+    decision_action: Optional[str] = None
+    decision_warning: Optional[str] = None
+    decision_confidence: Optional[str] = None
 
 
 class RelatedWorkRequest(BaseModel):
