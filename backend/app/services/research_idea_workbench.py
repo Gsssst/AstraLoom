@@ -806,6 +806,288 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             await self.session.refresh(idea)
         return ideas
 
+    def validate_idea(self, idea: ResearchIdea, project: ResearchProject | None = None) -> dict[str, Any]:
+        """Summarize whether an idea is ready to move into experiments/writing.
+
+        This intentionally avoids another model call. The validation loop is a
+        deterministic review of artifacts already attached to the idea.
+        """
+        evidence_json = idea.evidence_json or {}
+        evidence_items = [item for item in evidence_json.get("items", []) or [] if isinstance(item, dict)]
+        review_json = idea.review_json or {}
+        plan = idea.experiment_plan or {}
+        referenced_ids = self._normalize_referenced_paper_ids(idea.referenced_papers)
+        novelty = review_json.get("novelty_check") or {}
+        adversarial = review_json.get("adversarial_review") or {}
+
+        related_work = self._validation_related_work(evidence_items, novelty)
+        collision_risk = self._validation_collision_risk(novelty, related_work)
+        checklist = self._validation_experiment_checklist(plan)
+        coverage = self._validation_coverage(evidence_items, referenced_ids, checklist)
+        feasibility_risks = self._validation_feasibility_risks(
+            idea,
+            adversarial,
+            collision_risk,
+            checklist,
+            coverage,
+        )
+        writing_readiness = self._validation_writing_readiness(
+            collision_risk,
+            checklist,
+            coverage,
+            feasibility_risks,
+        )
+
+        return {
+            "idea_id": str(idea.id),
+            "project_id": str(idea.project_id),
+            "project_name": getattr(project, "name", None),
+            "summary": self._validation_summary(writing_readiness, collision_risk, coverage),
+            "collision_risk": collision_risk,
+            "related_work": related_work,
+            "feasibility_risks": feasibility_risks,
+            "experiment_checklist": checklist,
+            "writing_readiness": writing_readiness,
+            "coverage": coverage,
+            "next_actions": self._validation_next_actions(writing_readiness, feasibility_risks, checklist),
+        }
+
+    @staticmethod
+    def _normalize_referenced_paper_ids(referenced_papers: Any) -> list[str]:
+        if not isinstance(referenced_papers, dict):
+            return []
+        paper_ids = referenced_papers.get("paper_ids") or []
+        return [str(item) for item in paper_ids if item]
+
+    @staticmethod
+    def _validation_related_work(
+        evidence_items: list[dict[str, Any]],
+        novelty: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        nearest = novelty.get("nearest_evidence") if isinstance(novelty, dict) else None
+        related: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        if isinstance(nearest, dict) and nearest.get("paper_id"):
+            related.append({
+                "paper_id": str(nearest.get("paper_id")),
+                "title": nearest.get("title") or "最近相似证据",
+                "source": nearest.get("source"),
+                "relation": "nearest_collision_candidate",
+                "reason": "Novelty Check 中最相似的已有工作。",
+            })
+            seen.add(str(nearest.get("paper_id")))
+
+        ranked = sorted(
+            evidence_items,
+            key=lambda item: float(item.get("score") or 0),
+            reverse=True,
+        )
+        for item in ranked:
+            paper_id = str(item.get("paper_id") or item.get("id") or "")
+            if not paper_id or paper_id in seen:
+                continue
+            related.append({
+                "paper_id": paper_id,
+                "title": item.get("title") or "未命名论文",
+                "year": item.get("year"),
+                "source": item.get("source"),
+                "category": item.get("category"),
+                "relation": "supporting_or_background_evidence",
+                "reason": item.get("relevance") or item.get("abstract_excerpt") or "Idea 生成时引用的证据论文。",
+            })
+            seen.add(paper_id)
+            if len(related) >= 5:
+                break
+        return related
+
+    @staticmethod
+    def _validation_collision_risk(
+        novelty: dict[str, Any],
+        related_work: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        status = str(novelty.get("status") or "unknown")
+        score = float(novelty.get("score") or 0)
+        max_similarity = float(novelty.get("max_similarity") or 0)
+        if status == "too_similar":
+            level = "high"
+            label = "高撞车风险"
+        elif status == "incremental":
+            level = "medium"
+            label = "增量风险"
+        elif status == "likely_novel":
+            level = "low"
+            label = "当前证据下较新颖"
+        else:
+            level = "unknown"
+            label = "缺少 novelty 检查"
+        return {
+            "level": level,
+            "label": label,
+            "status": status,
+            "score": round(score, 3),
+            "max_similarity": round(max_similarity, 3),
+            "reason": novelty.get("rationale") or "尚未形成可解释的新颖性判断。",
+            "nearest_related_work": related_work[0] if related_work else None,
+        }
+
+    @staticmethod
+    def _validation_experiment_checklist(plan: dict[str, Any]) -> dict[str, Any]:
+        def normalize_list(value: Any) -> list[str]:
+            if isinstance(value, list):
+                return [str(item).strip() for item in value if str(item).strip()]
+            if isinstance(value, str) and value.strip():
+                return [value.strip()]
+            return []
+
+        dataset = str(plan.get("dataset") or "").strip()
+        baselines = normalize_list(plan.get("baselines"))
+        metrics = normalize_list(plan.get("metrics"))
+        steps = normalize_list(plan.get("steps"))
+        ablations = normalize_list(plan.get("ablations") or plan.get("ablation_plan"))
+        if not ablations and baselines:
+            ablations = ["核心模块消融", "无改动/无增强版本对照"]
+        reproducibility = normalize_list(plan.get("reproducibility"))
+        if not reproducibility and steps:
+            reproducibility = ["记录数据切分、随机种子、关键超参和失败案例"]
+
+        def group(label: str, items: list[str], minimum: int, missing_tip: str) -> dict[str, Any]:
+            return {
+                "label": label,
+                "items": items,
+                "present": len(items) >= minimum,
+                "missing_tip": "" if len(items) >= minimum else missing_tip,
+            }
+
+        return {
+            "dataset": {
+                "label": "数据集",
+                "items": [dataset] if dataset else [],
+                "present": bool(dataset),
+                "missing_tip": "" if dataset else "补充至少一个主数据集或任务基准。",
+            },
+            "baselines": group("强基线", baselines, 1, "补充最新强基线和简单基线。"),
+            "metrics": group("评价指标", metrics, 1, "补充主指标、效率指标和稳定性指标。"),
+            "steps": group("实验步骤", steps, 3, "补充复现、改进、消融和误差分析步骤。"),
+            "ablations": group("消融设计", ablations, 1, "补充核心模块消融，避免只比较最终结果。"),
+            "reproducibility": group("可复现记录", reproducibility, 1, "补充随机种子、超参、数据切分和运行成本记录。"),
+        }
+
+    @staticmethod
+    def _validation_coverage(
+        evidence_items: list[dict[str, Any]],
+        referenced_ids: list[str],
+        checklist: dict[str, Any],
+    ) -> dict[str, Any]:
+        complete_groups = [key for key, value in checklist.items() if value.get("present")]
+        missing_groups = [key for key, value in checklist.items() if not value.get("present")]
+        evidence_count = len(evidence_items)
+        referenced_count = max(len(referenced_ids), len({item.get("paper_id") for item in evidence_items if item.get("paper_id")}))
+        return {
+            "evidence_count": evidence_count,
+            "referenced_paper_count": referenced_count,
+            "has_enough_evidence": evidence_count >= 2 or referenced_count >= 2,
+            "experiment_complete_groups": complete_groups,
+            "experiment_missing_groups": missing_groups,
+            "experiment_completeness": round(len(complete_groups) / max(len(checklist), 1), 2),
+        }
+
+    @staticmethod
+    def _validation_feasibility_risks(
+        idea: ResearchIdea,
+        adversarial: dict[str, Any],
+        collision_risk: dict[str, Any],
+        checklist: dict[str, Any],
+        coverage: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        risks: list[dict[str, Any]] = []
+        for item in adversarial.get("objections") or []:
+            risks.append({"level": "medium", "type": "adversarial_review", "message": str(item)})
+        if collision_risk.get("level") == "high":
+            risks.append({"level": "high", "type": "collision", "message": "与最近相似工作重叠较高，需要先明确机制差异。"})
+        elif collision_risk.get("level") == "medium":
+            risks.append({"level": "medium", "type": "collision", "message": "该 idea 更像增量改进，需要更强 baseline 和差异论证。"})
+        if not coverage.get("has_enough_evidence"):
+            risks.append({"level": "high", "type": "evidence_gap", "message": "证据论文少于 2 篇，暂不适合直接写作。"})
+        for key, value in checklist.items():
+            if not value.get("present"):
+                risks.append({
+                    "level": "medium",
+                    "type": f"missing_{key}",
+                    "message": value.get("missing_tip") or f"缺少{value.get('label', key)}。",
+                })
+        if idea.feasibility_score is not None and float(idea.feasibility_score) < 6:
+            risks.append({"level": "medium", "type": "low_feasibility_score", "message": "可行性评分偏低，需要先降低实验复杂度。"})
+        return risks[:10]
+
+    @staticmethod
+    def _validation_writing_readiness(
+        collision_risk: dict[str, Any],
+        checklist: dict[str, Any],
+        coverage: dict[str, Any],
+        risks: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        blocking_reasons: list[str] = []
+        if collision_risk.get("level") == "high":
+            blocking_reasons.append("撞车风险高")
+        if not coverage.get("has_enough_evidence"):
+            blocking_reasons.append("证据覆盖不足")
+        missing_required = [
+            checklist[key].get("label", key)
+            for key in ("dataset", "baselines", "metrics", "steps")
+            if not checklist.get(key, {}).get("present")
+        ]
+        if missing_required:
+            blocking_reasons.append(f"实验计划缺少：{'、'.join(missing_required)}")
+
+        high_risks = [risk for risk in risks if risk.get("level") == "high"]
+        if blocking_reasons:
+            status = "blocked"
+            label = "暂不适合进入写作"
+        elif high_risks or coverage.get("experiment_completeness", 0) < 0.8:
+            status = "needs_validation"
+            label = "需要补实验验证"
+        else:
+            status = "ready"
+            label = "可以进入写作草稿"
+        return {
+            "status": status,
+            "label": label,
+            "reasons": blocking_reasons or ["证据和最小实验计划已覆盖主要推进条件。"],
+        }
+
+    @staticmethod
+    def _validation_summary(
+        writing_readiness: dict[str, Any],
+        collision_risk: dict[str, Any],
+        coverage: dict[str, Any],
+    ) -> str:
+        return (
+            f"{writing_readiness.get('label')}；"
+            f"{collision_risk.get('label')}；"
+            f"证据 {coverage.get('evidence_count', 0)} 篇，"
+            f"实验完整度 {int(float(coverage.get('experiment_completeness', 0)) * 100)}%。"
+        )
+
+    @staticmethod
+    def _validation_next_actions(
+        writing_readiness: dict[str, Any],
+        risks: list[dict[str, Any]],
+        checklist: dict[str, Any],
+    ) -> list[str]:
+        if writing_readiness.get("status") == "ready":
+            return ["创建写作草稿", "记录第一轮实验结果", "准备 Related Work 对比表"]
+        actions = []
+        for risk in risks:
+            message = risk.get("message")
+            if message:
+                actions.append(str(message))
+        for value in checklist.values():
+            tip = value.get("missing_tip")
+            if tip:
+                actions.append(str(tip))
+        return list(dict.fromkeys(actions))[:5]
+
     @staticmethod
     def _collection_sources_for_evidence(
         evidence: list[dict[str, Any]],

@@ -123,6 +123,68 @@ def test_adversarial_review_objects_to_weak_baseline_and_metrics():
     assert any("baseline" in item.lower() for item in adversarial["objections"])
 
 
+def test_validate_idea_blocks_high_collision_and_missing_experiment():
+    service = ResearchIdeaWorkbenchService(_Session())
+    idea = SimpleNamespace(
+        id=uuid4(),
+        project_id=uuid4(),
+        feasibility_score=5,
+        referenced_papers={"paper_ids": ["p1"]},
+        evidence_json={"items": [{"paper_id": "p1", "title": "Adaptive Token Pruning", "score": 0.9, "category": "seed"}]},
+        review_json={
+            "novelty_check": {
+                "status": "too_similar",
+                "score": 0.1,
+                "max_similarity": 0.9,
+                "rationale": "Too close to prior work.",
+                "nearest_evidence": {"paper_id": "p1", "title": "Adaptive Token Pruning", "source": "local_library"},
+            },
+            "adversarial_review": {"objections": ["baseline 设置可能偏弱。"]},
+        },
+        experiment_plan={"dataset": "", "baselines": [], "metrics": [], "steps": ["Run once"]},
+    )
+
+    validation = service.validate_idea(idea)
+
+    assert validation["collision_risk"]["level"] == "high"
+    assert validation["writing_readiness"]["status"] == "blocked"
+    assert validation["coverage"]["has_enough_evidence"] is False
+    assert any(risk["type"] == "evidence_gap" for risk in validation["feasibility_risks"])
+    assert validation["experiment_checklist"]["baselines"]["present"] is False
+    assert validation["related_work"][0]["relation"] == "nearest_collision_candidate"
+
+
+def test_validate_idea_marks_complete_plan_as_writing_ready():
+    service = ResearchIdeaWorkbenchService(_Session())
+    idea = SimpleNamespace(
+        id=uuid4(),
+        project_id=uuid4(),
+        feasibility_score=8,
+        referenced_papers={"paper_ids": ["p1", "p2"]},
+        evidence_json={"items": [
+            {"paper_id": "p1", "title": "Grounding Evidence", "score": 0.9, "category": "seed"},
+            {"paper_id": "p2", "title": "Video Evidence", "score": 0.8, "category": "background"},
+        ]},
+        review_json={
+            "novelty_check": {"status": "likely_novel", "score": 0.86, "max_similarity": 0.14, "rationale": "Low overlap."},
+            "adversarial_review": {"objections": []},
+        },
+        experiment_plan={
+            "dataset": "Charades-STA",
+            "baselines": ["Latest strong baseline"],
+            "metrics": ["mIoU", "Recall@1"],
+            "steps": ["Reproduce baseline", "Run proposed method", "Ablation", "Error analysis"],
+        },
+    )
+
+    validation = service.validate_idea(idea)
+
+    assert validation["writing_readiness"]["status"] == "ready"
+    assert validation["coverage"]["experiment_completeness"] == 1
+    assert validation["experiment_checklist"]["ablations"]["present"] is True
+    assert "创建写作草稿" in validation["next_actions"]
+
+
 def test_collection_sources_are_summarized_from_evidence():
     evidence = [
         {"paper_id": "p1", "collection_ids": ["c1"], "collection_names": ["Video Grounding"]},

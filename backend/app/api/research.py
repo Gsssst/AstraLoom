@@ -646,6 +646,14 @@ async def get_idea(idea_id: str, db: AsyncSession = Depends(get_db), current_use
     return _idea_response(idea)
 
 
+@router.get("/ideas/{idea_id}/validation", response_model=dict[str, Any])
+async def validate_idea(idea_id: str, db: AsyncSession = Depends(get_db), current_user=Depends(get_current_user)):
+    """返回 Proposal 推进前验证闭环：撞车风险、证据缺口、实验清单和写作准备度。"""
+    idea = await _get_owned_idea(db, idea_id, current_user)
+    project = await _get_owned_project(db, str(idea.project_id), current_user)
+    return ResearchIdeaWorkbenchService(db).validate_idea(idea, project)
+
+
 @router.post("/ideas/{idea_id}/writing-draft", response_model=WritingDraftResponse, status_code=201)
 async def create_writing_draft_from_idea(
     idea_id: str,

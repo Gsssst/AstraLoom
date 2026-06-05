@@ -136,6 +136,7 @@ def test_system_wide_routes_require_admin(path, method):
         ("/api/research/idea-runs/{run_id}", "GET"),
         ("/api/research/ideas/compare", "POST"),
         ("/api/research/ideas/{idea_id}", "GET"),
+        ("/api/research/ideas/{idea_id}/validation", "GET"),
         ("/api/research/ideas/{idea_id}/decision", "PATCH"),
         ("/api/research/ideas/{idea_id}/evolve", "POST"),
         ("/api/research/ideas/{idea_id}/evolve-from-feedback", "POST"),

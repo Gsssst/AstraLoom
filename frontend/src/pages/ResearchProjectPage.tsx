@@ -65,6 +65,18 @@ interface ExperimentRecord {
   experiment_id: string; idea_id?: string | null; name: string; dataset: string;
   hyperparams: Record<string, unknown>; results: Record<string, unknown>; notes?: string; timestamp: string;
 }
+interface ValidationRisk { level: 'high' | 'medium' | 'low' | string; type: string; message: string; }
+interface ValidationChecklistGroup { label: string; items: string[]; present: boolean; missing_tip?: string; }
+interface IdeaValidation {
+  summary: string;
+  collision_risk: { level: string; label: string; status: string; score?: number; reason: string; nearest_related_work?: { title?: string; paper_id?: string; source?: string } | null };
+  related_work: { paper_id?: string; title: string; year?: number; source?: string; relation?: string; reason?: string }[];
+  feasibility_risks: ValidationRisk[];
+  experiment_checklist: Record<string, ValidationChecklistGroup>;
+  writing_readiness: { status: 'ready' | 'needs_validation' | 'blocked' | string; label: string; reasons: string[] };
+  coverage: { evidence_count: number; referenced_paper_count: number; experiment_completeness: number; has_enough_evidence: boolean };
+  next_actions: string[];
+}
 interface IdeaRun {
   id: string; project_id: string; status: string; stage: string; progress: number;
   message?: string; error?: string; evidence_map?: Record<string, Evidence[] | string | object>;
@@ -90,6 +102,8 @@ const noveltyLabels: Record<string, string> = { likely_novel: '可能新颖', in
 const noveltyColors: Record<string, string> = { likely_novel: 'green', incremental: 'gold', too_similar: 'red' };
 const adversarialLabels: Record<string, string> = { advance: '建议推进', revise: '需要修改', reject: '暂不推进' };
 const adversarialColors: Record<string, string> = { advance: 'green', revise: 'orange', reject: 'red' };
+const readinessColors: Record<string, string> = { ready: 'green', needs_validation: 'orange', blocked: 'red' };
+const riskColors: Record<string, string> = { high: 'red', medium: 'orange', low: 'green' };
 
 const ResearchProjectPage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
@@ -121,6 +135,7 @@ const ResearchProjectPage: React.FC = () => {
   const [experimentNotes, setExperimentNotes] = useState('');
   const [lineageOpen, setLineageOpen] = useState(false);
   const [lineage, setLineage] = useState<Idea[]>([]);
+  const [validationMap, setValidationMap] = useState<Record<string, { loading: boolean; data?: IdeaValidation }>>({});
 
   const loadProject = async () => {
     if (!projectId) return;
@@ -330,6 +345,17 @@ const ResearchProjectPage: React.FC = () => {
       message.success('已根据实验反馈生成下一轮 Proposal');
     } catch { message.error('根据实验反馈演化失败'); }
   };
+  const loadIdeaValidation = async (ideaId: string) => {
+    setValidationMap(previous => ({ ...previous, [ideaId]: { ...previous[ideaId], loading: true } }));
+    try {
+      const response = await api.get(`/research/ideas/${ideaId}/validation`);
+      setValidationMap(previous => ({ ...previous, [ideaId]: { loading: false, data: response.data } }));
+      message.success('验证闭环已更新');
+    } catch {
+      message.error('加载验证闭环失败');
+      setValidationMap(previous => ({ ...previous, [ideaId]: { ...previous[ideaId], loading: false } }));
+    }
+  };
 
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
   if (!project) return <Empty description="项目未找到" />;
@@ -388,6 +414,8 @@ const ResearchProjectPage: React.FC = () => {
     const discussion = getDiscuss(idea.id);
     const review = idea.review_json;
     const plan = idea.experiment_plan;
+    const validation = validationMap[idea.id];
+    const validationData = validation?.data;
     return (
       <div>
         {idea.hypothesis && <Alert type="success" showIcon message="可证伪假设" description={idea.hypothesis} style={{ marginBottom: 14 }} />}
@@ -456,6 +484,62 @@ const ResearchProjectPage: React.FC = () => {
           )}
           <Space wrap>{idea.evidence_json.items.map(item => <Tag color={categoryColors[item.category]} key={item.paper_id}>{item.title.slice(0, 36)}</Tag>)}</Space>
         </>}
+        {validationData && (
+          <>
+            <Divider>验证闭环</Divider>
+            <Alert
+              showIcon
+              type={validationData.writing_readiness.status === 'ready' ? 'success' : validationData.writing_readiness.status === 'blocked' ? 'error' : 'warning'}
+              message={<Space wrap><Text strong>{validationData.writing_readiness.label}</Text><Tag color={readinessColors[validationData.writing_readiness.status] || 'default'}>{validationData.writing_readiness.status}</Tag><Tag>实验完整度 {Math.round((validationData.coverage.experiment_completeness || 0) * 100)}%</Tag></Space>}
+              description={validationData.summary}
+              style={{ marginBottom: 12 }}
+            />
+            <Row gutter={[12, 12]}>
+              <Col xs={24} lg={8}>
+                <Card size="small" title="撞车风险" style={{ borderRadius: 12, height: '100%' }}>
+                  <Space wrap style={{ marginBottom: 8 }}>
+                    <Tag color={riskColors[validationData.collision_risk.level] || 'default'}>{validationData.collision_risk.label}</Tag>
+                    {validationData.collision_risk.score != null && <Tag>{Math.round(validationData.collision_risk.score * 100)}%</Tag>}
+                  </Space>
+                  <Paragraph style={{ marginBottom: 8 }}>{validationData.collision_risk.reason}</Paragraph>
+                  {validationData.collision_risk.nearest_related_work?.title && <Text type="secondary">最近相似：{validationData.collision_risk.nearest_related_work.title}</Text>}
+                </Card>
+              </Col>
+              <Col xs={24} lg={8}>
+                <Card size="small" title="风险与缺口" style={{ borderRadius: 12, height: '100%' }}>
+                  {validationData.feasibility_risks.length === 0 ? <Text type="secondary">暂无明显阻塞项</Text> : (
+                    <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                      {validationData.feasibility_risks.slice(0, 5).map((risk, index) => (
+                        <Tag color={riskColors[risk.level] || 'default'} key={`${risk.type}-${index}`} style={{ whiteSpace: 'normal', lineHeight: 1.5 }}>{risk.message}</Tag>
+                      ))}
+                    </Space>
+                  )}
+                </Card>
+              </Col>
+              <Col xs={24} lg={8}>
+                <Card size="small" title="下一步动作" style={{ borderRadius: 12, height: '100%' }}>
+                  <List size="small" dataSource={validationData.next_actions} renderItem={(item, index) => <List.Item>{index + 1}. {item}</List.Item>} />
+                </Card>
+              </Col>
+            </Row>
+            <Card size="small" title="最小实验检查清单" style={{ borderRadius: 12, marginTop: 12 }}>
+              <Space wrap>
+                {Object.entries(validationData.experiment_checklist).map(([key, group]) => (
+                  <Tooltip key={key} title={group.present ? group.items.join('；') : group.missing_tip}>
+                    <Tag color={group.present ? 'green' : 'orange'}>{group.present ? '已覆盖' : '待补充'} · {group.label}</Tag>
+                  </Tooltip>
+                ))}
+              </Space>
+            </Card>
+            {validationData.related_work.length > 0 && (
+              <Card size="small" title="相关/冲突工作" style={{ borderRadius: 12, marginTop: 12 }}>
+                <Space wrap>
+                  {validationData.related_work.slice(0, 5).map(item => <Tag color={item.relation === 'nearest_collision_candidate' ? 'red' : 'blue'} key={item.paper_id || item.title}>{item.title.slice(0, 48)}</Tag>)}
+                </Space>
+              </Card>
+            )}
+          </>
+        )}
         {idea.evolution_json && <Alert style={{ marginTop: 14 }} type="info" showIcon message="演化版本" description={idea.evolution_json.rationale || '该 Proposal 是根据父版本评审反馈生成的新版本。'} />}
         <Divider>Proposal 决策</Divider>
         <Space wrap>
@@ -465,6 +549,7 @@ const ResearchProjectPage: React.FC = () => {
           <Button type="primary" ghost onClick={() => { setEvolvingIdea(idea); setEvolutionFocus(''); }}>演化新版本</Button>
           <Button icon={<HistoryOutlined />} onClick={() => openLineage(idea)}>查看谱系</Button>
           <Button icon={<ExperimentOutlined />} onClick={() => openExperiment(idea)}>记录实验反馈</Button>
+          <Button icon={<FileSearchOutlined />} loading={validation?.loading} onClick={() => loadIdeaValidation(idea.id)}>验证闭环</Button>
           <Button icon={<FileTextOutlined />} loading={draftingIdeaIds.has(idea.id)} onClick={() => createWritingDraft(idea)}>生成写作草稿</Button>
         </Space>
         <Divider><MessageOutlined /> AI 讨论</Divider>
