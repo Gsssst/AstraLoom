@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Button, List, Tag, Progress, Space, Modal, Input, Select, Typography, Popconfirm } from 'antd';
+import { Alert, Card, Button, List, Tag, Progress, Space, Modal, Input, Select, Typography, Popconfirm } from 'antd';
 import { PlusOutlined, DeleteOutlined, FolderOutlined } from '@ant-design/icons';
 import api from '../../services/api';
 
@@ -128,9 +128,16 @@ const WritingProjectPanel: React.FC<WritingProjectPanelProps> = ({ onSelectProje
         <Space direction="vertical" style={{ width: '100%' }}>
           <Input placeholder="项目标题" value={newTitle} onChange={e => setNewTitle(e.target.value)} />
           <Input placeholder="项目描述（可选）" value={newDesc} onChange={e => setNewDesc(e.target.value)} />
+          <Alert
+            type="info"
+            showIcon
+            message="这里选择的是章节结构模板"
+            description="ACL/CVPR/NeurIPS 等只用于生成常见论文结构，不代表当前年度官方投稿格式。正式投稿前应导入或核对会议官网模板。"
+            style={{ borderRadius: 8 }}
+          />
           <Select value={newTemplate} onChange={setNewTemplate} style={{ width: '100%' }}
             options={templates.map(t => ({
-              value: t.key, label: `${t.name} (${t.section_count} 章节)`,
+              value: t.key, label: `${t.name} 结构 (${t.section_count} 章节)`,
             }))}
           />
         </Space>

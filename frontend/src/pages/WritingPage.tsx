@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
   Alert, Card, Button, Input, Tag, Typography, Space, message,
-  Tabs, Select, Tooltip, List, Divider, Row, Col, Empty,
+  Tabs, Select, Tooltip, List, Divider, Row, Col, Empty, Segmented,
 } from 'antd';
 import {
   EditOutlined, SearchOutlined, FileTextOutlined,
@@ -25,18 +25,6 @@ const cardStyle = { borderRadius: 12, border: '1px solid #f0f0f0', transition: '
 const inputStyle = { borderRadius: 10, fontSize: 14 };
 const primaryBtn = { borderRadius: 10, height: 40, fontWeight: 500 };
 const resultCard = { marginTop: 20, borderRadius: 12, border: '1px solid #e8e8e8', overflow: 'hidden' };
-
-// ───────────────── 功能卡片配置 ─────────────────
-const features = [
-  { icon: <SearchOutlined />, color: '#667eea', bg: '#f0f2ff', key: 'citations', label: '引用推荐', desc: '输入段落，AI 推荐相关论文引用' },
-  { icon: <BookOutlined />, color: '#f5576c', bg: '#fff0f2', key: 'related-work', label: 'Related Work', desc: '自动生成相关工作章节' },
-  { icon: <FormOutlined />, color: '#11998e', bg: '#f0fdf9', key: 'polish', label: '文本润色', desc: '学术化/简洁化/翻译' },
-  { icon: <FileTextOutlined />, color: '#f093fb', bg: '#fef5ff', key: 'abstract', label: '摘要生成', desc: '结构化论文摘要' },
-  { icon: <ReadOutlined />, color: '#4facfe', bg: '#f0f9ff', key: 'lit-review', label: '文献综述', desc: '章节 + 对比表格 + Gap' },
-  { icon: <SwapOutlined />, color: '#fa709a', bg: '#fff5f7', key: 'compare', label: '论文对比', desc: '多论文方法/数据对比' },
-  { icon: <AuditOutlined />, color: '#a18cd1', bg: '#f8f5ff', key: 'grant', label: '申请书', desc: 'NSFC 分段撰写' },
-  { icon: <FolderOutlined />, color: '#43e97b', bg: '#f5fff8', key: 'project', label: '项目管理', desc: '章节组织 + 多格式导出' },
-];
 
 // ───────────────── 输入/输出卡片 ─────────────────
 const ToolCard: React.FC<{
@@ -86,7 +74,8 @@ const LoadingDots = () => (
 
 const WritingPage: React.FC = () => {
   const location = useLocation();
-  const [activeTab, setActiveTab] = useState('citations');
+  const [assistantMode, setAssistantMode] = useState<'paper' | 'grant'>('paper');
+  const [activeTab, setActiveTab] = useState('project');
 
   // ── 状态 ──
   const [citeText, setCiteText] = useState('');
@@ -170,6 +159,7 @@ const WritingPage: React.FC = () => {
     const params = new URLSearchParams(location.search);
     const projectId = params.get('project');
     if (!projectId) return;
+    setAssistantMode('paper');
     setActiveTab('project');
     api.get(`/writing/projects/${projectId}`)
       .then(response => {
@@ -769,64 +759,85 @@ const WritingPage: React.FC = () => {
     </div>
   );
 
-  const tabItems = [
+  const paperTabItems = [
+    { key: 'project', label: <span><FolderOutlined /> 论文项目工作台</span>, children: projectTab },
     { key: 'citations', label: <span><SearchOutlined /> 引用推荐</span>, children: citationTab },
     { key: 'related-work', label: <span><BookOutlined /> Related Work</span>, children: relatedWorkTab },
     { key: 'polish', label: <span><FormOutlined /> 文本润色</span>, children: polishTab },
     { key: 'abstract', label: <span><FileTextOutlined /> 摘要生成</span>, children: abstractTab },
     { key: 'lit-review', label: <span><ReadOutlined /> 文献综述</span>, children: litReviewTab },
     { key: 'compare', label: <span><SwapOutlined /> 论文对比</span>, children: compareTab },
-    { key: 'grant', label: <span><AuditOutlined /> 申请书</span>, children: grantTab },
-    { key: 'project', label: <span><FolderOutlined /> 项目管理</span>, children: projectTab },
   ];
 
   return (
-    <div style={{ maxWidth: activeTab === 'project' ? 1360 : 960, margin: '0 auto' }}>
+    <div style={{ maxWidth: assistantMode === 'paper' && activeTab === 'project' ? 1360 : 980, margin: '0 auto' }}>
       {/* ── Hero 头部 ── */}
       <div style={{
         background: heroGradient, borderRadius: 16, padding: '28px 36px', marginBottom: 24,
         color: '#fff', position: 'relative', overflow: 'hidden',
       }}>
         <div style={{ position: 'absolute', right: -20, top: -30, fontSize: 140, opacity: 0.1 }}>✍️</div>
-        <Space align="center" size={12}>
-          <div style={{ width: 48, height: 48, borderRadius: 14, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>
-            <EditOutlined />
-          </div>
-          <div>
-            <Title level={3} style={{ color: '#fff', margin: 0 }}>AI 写作助手</Title>
-            <Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: 14 }}>
-              智能引用推荐 · Related Work · 文本润色 · 摘要生成 · 文献综述 · 申请书
-            </Text>
-          </div>
-        </Space>
+        <Row justify="space-between" align="middle" gutter={[16, 16]}>
+          <Col xs={24} md={14}>
+            <Space align="center" size={12}>
+              <div style={{ width: 48, height: 48, borderRadius: 14, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>
+                <EditOutlined />
+              </div>
+              <div>
+                <Title level={3} style={{ color: '#fff', margin: 0 }}>AI 写作工作台</Title>
+                <Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: 14 }}>
+                  以项目为中心管理论文、本子、证据、引用校验和导出预检
+                </Text>
+              </div>
+            </Space>
+          </Col>
+          <Col xs={24} md={10} style={{ textAlign: 'right' }}>
+            <Segmented
+              value={assistantMode}
+              onChange={(value) => {
+                const mode = value as 'paper' | 'grant';
+                setAssistantMode(mode);
+                if (mode === 'paper') setActiveTab('project');
+              }}
+              options={[
+                { label: '写论文助手', value: 'paper', icon: <FileTextOutlined /> },
+                { label: '写本子助手', value: 'grant', icon: <AuditOutlined /> },
+              ]}
+              style={{ background: 'rgba(255,255,255,0.18)', padding: 4 }}
+            />
+          </Col>
+        </Row>
       </div>
 
-      {/* ── 快速入口 ── */}
-      <Row gutter={[12, 12]} style={{ marginBottom: 24 }}>
-        {features.map(f => (
-          <Col xs={12} sm={6} key={f.key}>
-            <Card
-              hoverable
-              size="small"
-              style={{ borderRadius: 12, border: activeTab === f.key ? `2px solid ${f.color}` : '1px solid #f0f0f0', cursor: 'pointer', transition: 'all 0.25s' }}
-              styles={{ body: { padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 10 } }}
-              onClick={() => setActiveTab(f.key)}
-            >
-              <div style={{ width: 36, height: 36, borderRadius: 10, background: f.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, color: f.color, flexShrink: 0 }}>{f.icon}</div>
-              <div style={{ minWidth: 0 }}>
-                <Text strong style={{ fontSize: 13 }}>{f.label}</Text>
-                <Text type="secondary" style={{ fontSize: 11, display: 'block' }} ellipsis>{f.desc}</Text>
-              </div>
-            </Card>
-          </Col>
-        ))}
-      </Row>
-
-      {/* ── 标签页内容 ── */}
-      <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems}
-        style={{ '--ant-primary-color': '#667eea' } as any}
-        tabBarStyle={{ marginBottom: 20 }}
-      />
+      {assistantMode === 'paper' ? (
+        <>
+          <Alert
+            type="info"
+            showIcon
+            style={{ borderRadius: 12, marginBottom: 18 }}
+            message="写论文助手现在以项目为中心"
+            description="内置 ACL/CVPR/NeurIPS 等只是章节结构模板，不等于当年官方投稿格式。真正投稿前应导入或核对会议官网模板；后续我们会把官方模板导入做成独立流程。"
+          />
+          <Tabs
+            activeKey={activeTab}
+            onChange={setActiveTab}
+            items={paperTabItems}
+            style={{ '--ant-primary-color': '#667eea' } as any}
+            tabBarStyle={{ marginBottom: 20 }}
+          />
+        </>
+      ) : (
+        <>
+          <Alert
+            type="warning"
+            showIcon
+            style={{ borderRadius: 12, marginBottom: 18 }}
+            message="写本子助手独立处理申请书流程"
+            description="本模式聚焦申请书分段撰写、模拟评审、创新点提炼和文本润色，避免和论文投稿流程混在一起。"
+          />
+          {grantTab}
+        </>
+      )}
 
       {/* ── 全局 CSS 动画 ── */}
       <style>{`

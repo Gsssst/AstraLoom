@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test:layout": "node --test tests/app-layout-contract.test.mjs",
+    "test:writing": "node --test tests/writing-workbench-contract.test.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },

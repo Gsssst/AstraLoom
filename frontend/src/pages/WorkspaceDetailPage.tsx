@@ -176,7 +176,7 @@ const WorkspaceDetailPage: React.FC = () => {
           dataSource={items}
           renderItem={(item) => (
             <List.Item
-              style={{ cursor: 'pointer' }}
+              style={{ cursor: 'pointer', overflow: 'hidden', alignItems: 'flex-start' }}
               onClick={() => navigate(item.path)}
               actions={canEditResources && !item.legacy ? [
                 <Button
@@ -192,10 +192,11 @@ const WorkspaceDetailPage: React.FC = () => {
               ] : []}
             >
               <List.Item.Meta
-                title={<Text strong ellipsis>{item.title}</Text>}
+                style={{ minWidth: 0, overflow: 'hidden' }}
+                title={<Text strong ellipsis style={{ display: 'block', maxWidth: '100%' }}>{item.title}</Text>}
                 description={(
-                  <Space direction="vertical" size={2}>
-                    <Text type="secondary" ellipsis>{item.subtitle}</Text>
+                  <Space direction="vertical" size={2} style={{ width: '100%', minWidth: 0 }}>
+                    <Text type="secondary" ellipsis style={{ display: 'block', maxWidth: '100%' }}>{item.subtitle}</Text>
                     {item.legacy && <Tag color="gold">旧链接</Tag>}
                   </Space>
                 )}
