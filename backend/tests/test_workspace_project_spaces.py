@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 from app.core.security import get_current_user
 from app.main import app
 from app.services.workspace_service import WorkspaceService
@@ -254,3 +256,70 @@ def test_workspace_dashboard_stage_progress_and_status_cards():
         "activity": 3,
     }
     assert [card["status"] for card in active_dashboard["status_cards"]] == ["ready", "ready", "ready", "ready"]
+
+
+@pytest.mark.asyncio
+async def test_workspace_list_includes_launchpad_summary(monkeypatch):
+    now = datetime.now(timezone.utc)
+    user_id = uuid4()
+    space = SimpleNamespace(
+        id=uuid4(),
+        owner_id=user_id,
+        name="Launchpad Workspace",
+        description="",
+        status="active",
+        metadata_json={},
+        created_at=now,
+        updated_at=now,
+        members=[SimpleNamespace(user_id=user_id, role="owner", created_at=now)],
+        resources=[],
+    )
+
+    class _ScalarRows:
+        def unique(self):
+            return self
+
+        def all(self):
+            return [space]
+
+    class _ExecuteResult:
+        def scalars(self):
+            return _ScalarRows()
+
+    class _Session:
+        async def execute(self, _query):
+            return _ExecuteResult()
+
+    service = WorkspaceService(_Session())
+
+    async def _members_to_dict(_space):
+        return [{"user_id": str(user_id), "role": "owner"}]
+
+    async def _build_summary(_space):
+        return {
+            "linked_resources": {"papers": [], "research_projects": [], "writing_projects": []},
+            "recent_resources": {"papers": [], "research_projects": [], "writing_projects": []},
+            "counts": {
+                "linked_papers": 2,
+                "linked_research_projects": 1,
+                "linked_writing_projects": 0,
+                "recent_papers": 2,
+                "recent_research_projects": 1,
+                "recent_writing_projects": 0,
+                "recent_activities": 1,
+            },
+        }
+
+    async def _activities(_space, limit=20):
+        return []
+
+    monkeypatch.setattr(service, "_members_to_dict", _members_to_dict)
+    monkeypatch.setattr(service, "build_summary", _build_summary)
+    monkeypatch.setattr(service, "recent_activities_for_space", _activities)
+
+    rows = await service.list_spaces(SimpleNamespace(id=user_id))
+
+    assert rows[0]["summary"]["counts"]["linked_papers"] == 2
+    assert rows[0]["dashboard"]["stage"] == "researching"
+    assert rows[0]["dashboard"]["progress_score"] > 0
+    assert rows[0]["next_actions"]

@@ -53,11 +53,11 @@ class WorkspaceService:
             select(ProjectSpace)
             .join(ProjectSpaceMember, ProjectSpaceMember.space_id == ProjectSpace.id)
             .where(ProjectSpaceMember.user_id == user.id, ProjectSpace.status != "deleted")
-            .options(selectinload(ProjectSpace.members))
+            .options(selectinload(ProjectSpace.members), selectinload(ProjectSpace.resources))
             .order_by(ProjectSpace.updated_at.desc())
         )
         spaces = result.scalars().unique().all()
-        return [await self.space_to_dict(space, user.id, include_summary=False) for space in spaces]
+        return [await self.space_to_dict(space, user.id, include_summary=True) for space in spaces]
 
     async def get_space_for_user(self, space_id: str, user: User) -> tuple[ProjectSpace, str] | None:
         try:

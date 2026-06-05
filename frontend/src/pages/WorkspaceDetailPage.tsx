@@ -5,9 +5,10 @@ import {
 } from 'antd';
 import {
   ArrowLeftOutlined, BookOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined,
-  LinkOutlined, PlusOutlined, TeamOutlined, UserOutlined,
+  LinkOutlined, PlusOutlined, RocketOutlined, TeamOutlined, UserOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
+import WorkflowStepGuide from '../components/WorkflowStepGuide';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -169,6 +170,15 @@ const WorkspaceDetailPage: React.FC = () => {
     }
   };
 
+  const openResourceBinder = (type: string) => {
+    if (!canEditResources) return;
+    setCandidateType(type);
+    setManualMode(false);
+    setTimeout(() => {
+      document.getElementById('workspace-resource-binder')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 0);
+  };
+
   const renderResourceList = (type: string, items: any[]) => (
     <Card title={<Space>{resourceIcon[type]}{resourceLabel[type]}</Space>} style={{ borderRadius: 14, height: '100%' }}>
       {items?.length ? (
@@ -255,6 +265,42 @@ const WorkspaceDetailPage: React.FC = () => {
 
       {space && (
         <>
+          <WorkflowStepGuide
+            title="项目空间启动台"
+            subtitle={canEditResources ? '把论文、研究方向和写作项目收进同一个空间，再从这里继续推进。' : '你当前是只读成员，可以从这里查看资源并进入对应模块。'}
+            style={{ marginBottom: 18 }}
+            steps={[
+              {
+                key: 'bind-papers',
+                title: canEditResources ? '绑定核心论文' : '查看核心论文',
+                description: canEditResources ? '先把相关论文加入空间，后续方向生成和写作都能共享上下文。' : '从已绑定论文进入阅读与问答，理解空间当前证据基础。',
+                actionLabel: canEditResources ? '选择论文' : '查看论文资源',
+                status: 'recommended',
+                icon: <BookOutlined />,
+                onClick: canEditResources ? () => openResourceBinder('papers') : undefined,
+                path: canEditResources ? undefined : '/papers',
+              },
+              {
+                key: 'research-projects',
+                title: canEditResources ? '创建或绑定方向' : '查看研究方向',
+                description: canEditResources ? '把分类论文沉淀成研究方向，让 idea 和实验计划挂到空间里。' : '查看空间内已有方向、idea 和验证状态。',
+                actionLabel: canEditResources ? '去研究方向' : '进入研究方向',
+                status: 'ready',
+                icon: <ExperimentOutlined />,
+                path: '/research',
+              },
+              {
+                key: 'writing-projects',
+                title: '推进写作项目',
+                description: '把已验证的 idea、证据卡片和引用校验收束到论文或本子草稿。',
+                actionLabel: '打开写作工作台',
+                status: dashboard.resource_balance?.writing_projects ? 'ready' : 'optional',
+                icon: <EditOutlined />,
+                path: '/writing',
+              },
+            ]}
+          />
+
           <Row gutter={[16, 16]} style={{ marginBottom: 18 }}>
             {statusCards.map((card: any) => (
               <Col xs={12} md={6} key={card.key}>
@@ -289,7 +335,7 @@ const WorkspaceDetailPage: React.FC = () => {
               </Row>
 
               {canEditResources && (
-                <Card title={<Space><LinkOutlined />绑定空间资源</Space>} style={{ borderRadius: 14 }}>
+                <Card id="workspace-resource-binder" title={<Space><LinkOutlined />绑定空间资源</Space>} style={{ borderRadius: 14 }}>
                   <Space direction="vertical" style={{ width: '100%' }} size={12}>
                     <Space wrap>
                       <Select
@@ -383,7 +429,7 @@ const WorkspaceDetailPage: React.FC = () => {
                 <List
                   dataSource={space.next_actions || []}
                   renderItem={(item: any) => (
-                    <List.Item actions={[<Button size="small" onClick={() => navigate(item.path)} style={{ borderRadius: 8 }}>进入</Button>]}>
+                    <List.Item actions={[<Button size="small" icon={<RocketOutlined />} onClick={() => navigate(item.path)} style={{ borderRadius: 8 }}>进入</Button>]}>
                       <List.Item.Meta title={item.label} description="根据当前空间资源覆盖情况自动推荐" />
                     </List.Item>
                   )}

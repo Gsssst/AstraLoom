@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Button, Card, Col, Empty, Form, Input, List, Modal, Row, Space, Tag, Typography, message,
+  Button, Card, Col, Empty, Form, Input, List, Modal, Progress, Row, Space, Tag, Typography, message,
 } from 'antd';
 import {
   AppstoreOutlined, PlusOutlined, TeamOutlined, BookOutlined, ExperimentOutlined, EditOutlined,
@@ -9,6 +9,11 @@ import {
 import api from '../services/api';
 
 const { Title, Text, Paragraph } = Typography;
+const launchpadResourceMeta = [
+  { key: 'linked_papers', label: '论文', icon: <BookOutlined /> },
+  { key: 'linked_research_projects', label: '方向', icon: <ExperimentOutlined /> },
+  { key: 'linked_writing_projects', label: '写作', icon: <EditOutlined /> },
+];
 
 const WorkspacesPage: React.FC = () => {
   const navigate = useNavigate();
@@ -90,21 +95,44 @@ const WorkspacesPage: React.FC = () => {
             dataSource={spaces}
             renderItem={(space) => (
               <List.Item>
-                <Card hoverable onClick={() => navigate(`/workspaces/${space.id}`)} style={{ borderRadius: 14, minHeight: 190 }}>
-                  <Space direction="vertical" style={{ width: '100%' }}>
-                    <Space wrap>
-                      <Tag color={space.role === 'owner' ? 'purple' : 'blue'}>{space.role}</Tag>
-                      <Tag icon={<TeamOutlined />}>{space.member_count || 1} 人</Tag>
+                <Card hoverable onClick={() => navigate(`/workspaces/${space.id}`)} style={{ borderRadius: 14, minHeight: 246 }}>
+                  <Space direction="vertical" style={{ width: '100%' }} size={10}>
+                    <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
+                      <Space wrap>
+                        <Tag color={space.role === 'owner' ? 'purple' : 'blue'}>{space.role}</Tag>
+                        <Tag icon={<TeamOutlined />}>{space.member_count || 1} 人</Tag>
+                      </Space>
+                      <Tag color="geekblue">{space.dashboard?.stage_label || '科研看板'}</Tag>
                     </Space>
-                    <Title level={4} style={{ margin: 0 }}>{space.name}</Title>
-                    <Paragraph type="secondary" ellipsis={{ rows: 2 }} style={{ minHeight: 44 }}>
+                    <Title level={4} style={{ margin: 0 }} ellipsis={{ rows: 1 }}>{space.name}</Title>
+                    <Paragraph type="secondary" ellipsis={{ rows: 2 }} style={{ minHeight: 44, marginBottom: 2 }}>
                       {space.description || '暂无描述，建议补充研究目标、当前阶段和协作范围。'}
                     </Paragraph>
-                    <Space wrap>
-                      <Tag icon={<BookOutlined />}>论文库</Tag>
-                      <Tag icon={<ExperimentOutlined />}>研究方向</Tag>
-                      <Tag icon={<EditOutlined />}>写作</Tag>
-                    </Space>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <Progress
+                        percent={space.dashboard?.progress_score || 0}
+                        size="small"
+                        strokeColor={{ '0%': '#667eea', '100%': '#764ba2' }}
+                        style={{ flex: 1 }}
+                      />
+                      <Text type="secondary" style={{ fontSize: 12 }}>推进度</Text>
+                    </div>
+                    <Row gutter={[8, 8]}>
+                      {launchpadResourceMeta.map(item => (
+                        <Col span={8} key={item.key}>
+                          <div style={{ border: '1px solid #f0edff', borderRadius: 10, padding: '8px 6px', textAlign: 'center', background: '#fbfaff' }}>
+                            <Space size={4} style={{ color: '#6f5bd6' }}>
+                              {item.icon}
+                              <Text strong>{space.summary?.counts?.[item.key] || 0}</Text>
+                            </Space>
+                            <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>{item.label}</Text>
+                          </div>
+                        </Col>
+                      ))}
+                    </Row>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      打开后可绑定论文、方向和写作项目，并查看下一步建议。
+                    </Text>
                   </Space>
                 </Card>
               </List.Item>
