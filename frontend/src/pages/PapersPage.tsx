@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Input, Button, List, Tag, Select, Space, Typography, Spin, Badge,
   Card, message, Modal, Checkbox, Row, Col, Alert, Progress,
+  Statistic, Empty, Segmented,
 } from 'antd';
 import {
   SearchOutlined, CalendarOutlined, UserOutlined,
@@ -11,7 +12,7 @@ import {
   ImportOutlined, FileTextOutlined, BookOutlined,
   RocketOutlined, EyeOutlined, RedoOutlined, LinkOutlined,
   BellOutlined, PlayCircleOutlined, CheckCircleOutlined, RollbackOutlined,
-  FolderOutlined, FolderAddOutlined,
+  FolderOutlined, FolderAddOutlined, DatabaseOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import { useAuthStore } from '../stores/useAuthStore';
@@ -66,6 +67,7 @@ interface CollectionCoverage {
 }
 
 type RecommendationKind = 'classic' | 'recent' | 'gap' | 'related';
+type DiagnosticTab = 'hybrid' | 'bm25' | 'dense';
 
 const heroGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
 const readingStatusMeta = {
@@ -111,6 +113,14 @@ const PapersPage: React.FC = () => {
   const [recommendationLoading, setRecommendationLoading] = useState(false);
   const [recommendationPapers, setRecommendationPapers] = useState<PaperItem[]>([]);
   const [recommendationMeta, setRecommendationMeta] = useState<{ query: string; reason: string } | null>(null);
+  const [kbHealth, setKbHealth] = useState<any>(null);
+  const [kbRecommendations, setKbRecommendations] = useState<any[]>([]);
+  const [kbLoading, setKbLoading] = useState(false);
+  const [kbAction, setKbAction] = useState<string | null>(null);
+  const [kbQuery, setKbQuery] = useState('');
+  const [kbDiagnostics, setKbDiagnostics] = useState<any>(null);
+  const [kbDiagTab, setKbDiagTab] = useState<DiagnosticTab>('hybrid');
+  const [kbDiagLoading, setKbDiagLoading] = useState(false);
   const isAuthenticated = !!localStorage.getItem('access_token');
   const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
   const isRemoteSource = ['scholarly', 'arxiv', 'semantic_scholar', 'openalex', 'google_scholar'].includes(source);
@@ -148,6 +158,10 @@ const PapersPage: React.FC = () => {
   const handleSearch = useCallback(async (requestedRemotePage = 1) => {
     if (yearFrom && yearTo && yearFrom > yearTo) {
       message.warning('起始年份不能晚于截止年份');
+      return;
+    }
+    if (source === 'maintenance') {
+      setPapers([]);
       return;
     }
     const requestedPage = isRemoteSource ? requestedRemotePage : 1;
@@ -363,6 +377,57 @@ const PapersPage: React.FC = () => {
     }
   }, [selectedCollectionId]);
 
+  const fetchMaintenanceCenter = useCallback(async () => {
+    if (!isAdmin) return;
+    setKbLoading(true);
+    try {
+      const [healthRes, recommendationsRes] = await Promise.all([
+        api.get('/papers/maintenance/health'),
+        api.get('/papers/maintenance/recommendations'),
+      ]);
+      setKbHealth(healthRes.data);
+      setKbRecommendations(recommendationsRes.data || []);
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || '知识库维护状态读取失败');
+    } finally {
+      setKbLoading(false);
+    }
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (source === 'maintenance') fetchMaintenanceCenter();
+  }, [fetchMaintenanceCenter, source]);
+
+  const runKbAction = useCallback(async (action: string, endpoint: string) => {
+    setKbAction(action);
+    try {
+      const response = await api.post(endpoint);
+      message.success(`维护完成：成功 ${response.data.success || 0}，失败 ${response.data.failed || 0}，跳过 ${response.data.skipped || 0}`);
+      await fetchMaintenanceCenter();
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || '维护操作失败');
+    } finally {
+      setKbAction(null);
+    }
+  }, [fetchMaintenanceCenter]);
+
+  const runKbDiagnostics = useCallback(async () => {
+    if (!kbQuery.trim()) {
+      message.warning('请输入要诊断的检索词');
+      return;
+    }
+    setKbDiagLoading(true);
+    try {
+      const response = await api.get('/papers/maintenance/search-diagnostics', { params: { q: kbQuery.trim(), top_k: 5 } });
+      setKbDiagnostics(response.data);
+      setKbDiagTab('hybrid');
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || '检索诊断失败');
+    } finally {
+      setKbDiagLoading(false);
+    }
+  }, [kbQuery]);
+
   const handleRemoveFromCollection = useCallback(async (e: React.MouseEvent, paper: PaperItem) => {
     e.stopPropagation();
     if (!selectedCollectionId || !paper.id) return;
@@ -433,6 +498,26 @@ const PapersPage: React.FC = () => {
     thin: { color: 'orange', label: '偏薄' },
     missing: { color: 'red', label: '缺口' },
   }[status]);
+  const recommendationColor = (severity: string) => ({ high: 'red', medium: 'orange', low: 'green' }[severity] || 'blue');
+  const renderMaintenanceHits = (items: any[] = []) => (
+    <List
+      size="small"
+      locale={{ emptyText: '暂无结果' }}
+      dataSource={items}
+      renderItem={item => (
+        <List.Item>
+          <List.Item.Meta
+            title={<Space wrap><Text strong>{item.title}</Text>{item.score !== undefined && <Tag color="blue">score {Number(item.score).toFixed ? Number(item.score).toFixed(2) : item.score}</Tag>}</Space>}
+            description={<Space size={6} wrap>
+              <Tag color={item.has_full_text ? 'green' : 'default'}>{item.has_full_text ? '有全文' : '缺全文'}</Tag>
+              <Tag color={item.has_embedding ? 'green' : 'default'}>{item.has_embedding ? '有向量' : '缺向量'}</Tag>
+              {item.match_sources?.map((sourceName: string) => <Tag key={sourceName}>{sourceName}</Tag>)}
+            </Space>}
+          />
+        </List.Item>
+      )}
+    />
+  );
 
   const stats = papers.length > 0 ? `共 ${papers.length} 篇论文` : '';
   const collectionOptions = collections.map(item => {
@@ -442,6 +527,147 @@ const PapersPage: React.FC = () => {
       : '';
     return { value: item.id, label: `${item.name}（${item.paper_count || 0}）${suffix}` };
   });
+  const weakCollections = collections.filter(item => item.diagnostics && !item.diagnostics.ready_for_idea);
+
+  const maintenanceView = !isAdmin ? (
+    <Card style={{ borderRadius: 16, border: '1px solid #f0f0f0' }}>
+      <Alert
+        type="info"
+        showIcon
+        message="知识库维护需要管理员权限"
+        description="全文覆盖、向量补齐和 BM25 重建会影响全局检索质量，因此修复动作只对管理员开放。你仍然可以在分类视图查看自己分类的健康提示。"
+      />
+    </Card>
+  ) : (
+    <Spin spinning={kbLoading}>
+      <Space direction="vertical" size={14} style={{ width: '100%' }}>
+        <Card
+          style={{ borderRadius: 16, border: '1px solid #efe7ff' }}
+          title={<Space><DatabaseOutlined style={{ color: '#764ba2' }} /><Text strong>知识库维护中心</Text></Space>}
+          extra={<Button size="small" icon={<RedoOutlined />} loading={kbLoading} onClick={fetchMaintenanceCenter}>刷新</Button>}
+        >
+          <Alert
+            type="info"
+            showIcon
+            style={{ borderRadius: 10, marginBottom: 14 }}
+            message="这里集中维护论文库能否被正确检索和用于问答"
+            description="全文覆盖影响论文页章节问答，向量覆盖影响语义召回，BM25 影响关键词召回。分类健康度会影响研究方向 idea 生成质量。"
+          />
+          {kbHealth ? (
+            <>
+              <Row gutter={[12, 12]}>
+                <Col xs={12} md={6}><Card size="small" style={{ borderRadius: 12 }}><Statistic title="论文总数" value={kbHealth.total_papers || 0} /></Card></Col>
+                <Col xs={12} md={6}><Card size="small" style={{ borderRadius: 12 }}><Statistic title="全文覆盖" value={Math.round((kbHealth.full_text_coverage || 0) * 100)} suffix="%" /><Progress percent={Math.round((kbHealth.full_text_coverage || 0) * 100)} size="small" showInfo={false} /></Card></Col>
+                <Col xs={12} md={6}><Card size="small" style={{ borderRadius: 12 }}><Statistic title="向量覆盖" value={Math.round((kbHealth.embedding_coverage || 0) * 100)} suffix="%" /><Progress percent={Math.round((kbHealth.embedding_coverage || 0) * 100)} size="small" showInfo={false} /></Card></Col>
+                <Col xs={12} md={6}><Card size="small" style={{ borderRadius: 12 }}><Statistic title="缺口" value={(kbHealth.missing_full_text || 0) + (kbHealth.missing_embeddings || 0)} suffix="项" /></Card></Col>
+              </Row>
+              <Space wrap style={{ marginTop: 12 }}>
+                <Tag color={kbHealth.bm25_index?.ready ? 'green' : 'orange'}>BM25：{kbHealth.bm25_index?.ready ? `已索引 ${kbHealth.bm25_index.indexed_papers} 篇` : '未构建'}</Tag>
+                <Tag>缺全文 {kbHealth.missing_full_text || 0}</Tag>
+                <Tag>缺向量 {kbHealth.missing_embeddings || 0}</Tag>
+                <Tag>arXiv 论文 {kbHealth.arxiv_papers || 0}</Tag>
+              </Space>
+              <Space wrap style={{ marginTop: 14 }}>
+                <Button icon={<RedoOutlined />} loading={kbAction === 'bm25'} onClick={() => runKbAction('bm25', '/papers/maintenance/rebuild-bm25')}>重建 BM25</Button>
+                <Button loading={kbAction === 'embeddings'} onClick={() => runKbAction('embeddings', '/papers/maintenance/backfill-embeddings?limit=20')}>补 20 篇向量</Button>
+                <Button loading={kbAction === 'fulltext'} onClick={() => runKbAction('fulltext', '/papers/maintenance/backfill-full-text?limit=5')}>补 5 篇全文</Button>
+              </Space>
+            </>
+          ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无维护状态" />}
+        </Card>
+
+        {kbRecommendations.length > 0 && (
+          <Card title="系统建议优先维护" style={{ borderRadius: 16 }}>
+            <Row gutter={[12, 12]}>
+              {kbRecommendations.map((rec: any) => (
+                <Col xs={24} md={8} key={rec.id}>
+                  <Card size="small" style={{ borderRadius: 12, height: '100%' }}>
+                    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                      <Space wrap><Tag color={recommendationColor(rec.severity)}>{rec.severity}</Tag><Text strong>{rec.title}</Text></Space>
+                      <Text type="secondary" style={{ fontSize: 12 }}>{rec.reason}</Text>
+                      {!!rec.sample_papers?.length && <Space wrap>{rec.sample_papers.slice(0, 2).map((paper: any) => <Tag key={paper.id}>{paper.title?.slice(0, 24)}</Tag>)}</Space>}
+                      <Button size="small" type="primary" loading={kbAction === rec.id} onClick={() => runKbAction(rec.id, rec.action_endpoint)}>{rec.action_label}</Button>
+                    </Space>
+                  </Card>
+                </Col>
+              ))}
+            </Row>
+          </Card>
+        )}
+
+        <Card title="分类健康度" style={{ borderRadius: 16 }}>
+          {collections.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无自定义分类" /> : (
+            <Row gutter={[12, 12]}>
+              {collections.map(collection => {
+                const diagnostics = collection.diagnostics;
+                return (
+                  <Col xs={24} md={12} key={collection.id}>
+                    <Card size="small" style={{ borderRadius: 12, borderColor: diagnostics?.ready_for_idea ? '#b7eb8f' : '#ffe58f' }}>
+                      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                        <Space wrap><Text strong>{collection.name}</Text><Tag color={diagnostics?.ready_for_idea ? 'green' : 'orange'}>{diagnostics?.ready_for_idea ? '可用于 Idea' : '需要维护'}</Tag><Tag>论文 {collection.paper_count || diagnostics?.paper_count || 0}</Tag></Space>
+                        {diagnostics ? (
+                          <>
+                            <Space wrap>
+                              <Text type="secondary">全文 {Math.round((diagnostics.full_text_coverage || 0) * 100)}%</Text>
+                              <Progress style={{ width: 120 }} size="small" percent={Math.round((diagnostics.full_text_coverage || 0) * 100)} showInfo={false} />
+                              <Text type="secondary">向量 {Math.round((diagnostics.embedding_coverage || 0) * 100)}%</Text>
+                              <Progress style={{ width: 120 }} size="small" percent={Math.round((diagnostics.embedding_coverage || 0) * 100)} showInfo={false} />
+                            </Space>
+                            {!!diagnostics.warnings?.length && <Text type="secondary" style={{ fontSize: 12 }}>{diagnostics.warnings.join('；')}</Text>}
+                          </>
+                        ) : <Text type="secondary">暂无诊断信息</Text>}
+                      </Space>
+                    </Card>
+                  </Col>
+                );
+              })}
+            </Row>
+          )}
+          {weakCollections.length > 0 && <Alert type="warning" showIcon style={{ marginTop: 12, borderRadius: 10 }} message={`${weakCollections.length} 个分类不适合直接用于 Idea 生成`} description={weakCollections.map(item => item.name).join('、')} />}
+        </Card>
+
+        <Card title="检索诊断" style={{ borderRadius: 16 }}>
+          <Space.Compact style={{ width: '100%' }}>
+            <Input value={kbQuery} onChange={e => setKbQuery(e.target.value)} onPressEnter={runKbDiagnostics} placeholder="例如：video grounding 或 introduction token pruning" />
+            <Button type="primary" icon={<SearchOutlined />} loading={kbDiagLoading} onClick={runKbDiagnostics}>诊断</Button>
+          </Space.Compact>
+          {kbDiagnostics && (
+            <div style={{ marginTop: 14 }}>
+              <Alert
+                type={kbDiagnostics.hybrid?.length ? 'success' : 'warning'}
+                showIcon
+                style={{ borderRadius: 10, marginBottom: 12 }}
+                message={kbDiagnostics.summary}
+                description={kbDiagnostics.query_terms?.length ? `标准化查询词：${kbDiagnostics.query_terms.join('、')}` : '没有提取到稳定查询词'}
+              />
+              <Segmented
+                value={kbDiagTab}
+                onChange={value => setKbDiagTab(String(value) as DiagnosticTab)}
+                options={[
+                  { label: `Hybrid (${kbDiagnostics.hybrid?.length || 0})`, value: 'hybrid' },
+                  { label: `BM25 (${kbDiagnostics.bm25?.length || 0})`, value: 'bm25' },
+                  { label: `Dense (${kbDiagnostics.dense?.length || 0})`, value: 'dense' },
+                ]}
+              />
+              <div style={{ marginTop: 12 }}>{renderMaintenanceHits(kbDiagnostics[kbDiagTab] || [])}</div>
+              {!!kbDiagnostics.branch_explanations?.[kbDiagTab]?.length && (
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginTop: 12, borderRadius: 10 }}
+                  message={`${kbDiagTab.toUpperCase()} 分支解释`}
+                  description={<ul style={{ margin: '4px 0 0 18px', padding: 0 }}>{kbDiagnostics.branch_explanations[kbDiagTab].map((note: string, index: number) => <li key={index}>{note}</li>)}</ul>}
+                />
+              )}
+              {!!kbDiagnostics.recommended_actions?.length && (
+                <Alert type="warning" showIcon style={{ marginTop: 12, borderRadius: 10 }} message="这次诊断建议" description={kbDiagnostics.recommended_actions.map((rec: any) => rec.title).join('、')} />
+              )}
+            </div>
+          )}
+        </Card>
+      </Space>
+    </Spin>
+  );
 
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', height: 'calc(100vh - 110px)', display: 'flex', flexDirection: 'column' }}>
@@ -488,6 +714,7 @@ const PapersPage: React.FC = () => {
               { value: 'saved', label: '⭐ 收藏' },
               { value: 'collection', label: '🗂️ 自定义分类' },
               { value: 'reading', label: '📖 阅读列表' },
+              { value: 'maintenance', label: '🛠️ 维护中心' },
               { value: 'scholarly', label: '🔎 综合学术' },
               { value: 'arxiv', label: '📝 arXiv' },
               { value: 'semantic_scholar', label: '🎓 Semantic Scholar' },
@@ -526,7 +753,7 @@ const PapersPage: React.FC = () => {
             </Col>
           </Row>
         )}
-        {isAuthenticated && collections.length > 0 && source !== 'collection' && (
+        {isAuthenticated && collections.length > 0 && source !== 'collection' && source !== 'maintenance' && (
           <Row gutter={[8, 8]} align="middle" style={{ marginTop: 8 }}>
             <Col span={24}>
               <Space size={8} wrap>
@@ -669,7 +896,7 @@ const PapersPage: React.FC = () => {
             </Space>
           </Card>
         )}
-        <Row gutter={[8, 8]} align="middle" style={{ marginTop: 8 }}>
+        {source !== 'maintenance' && <Row gutter={[8, 8]} align="middle" style={{ marginTop: 8 }}>
           <Col flex="auto">
             <Space size={8} wrap>
               <Text type="secondary" style={{ fontSize: 13 }}>发表年份</Text>
@@ -687,7 +914,7 @@ const PapersPage: React.FC = () => {
               </Space>
             </Col>
           )}
-        </Row>
+        </Row>}
         {source === 'reading' && (
           <Row style={{ marginTop: 10 }}>
             <Col span={24}>
@@ -712,6 +939,7 @@ const PapersPage: React.FC = () => {
 
       {/* ── 论文列表 (可滚动) ── */}
       <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, paddingRight: 4 }}>
+      {source === 'maintenance' ? maintenanceView : (
       <Spin spinning={loading}>
         {papers.length > 0 ? (
           <List dataSource={papers} renderItem={(paper, idx) => (
@@ -771,6 +999,7 @@ const PapersPage: React.FC = () => {
           </Card>
         )}
       </Spin>
+      )}
       </div>
 
       {/* ── 底部选择栏 ── */}

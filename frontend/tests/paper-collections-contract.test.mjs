@@ -34,6 +34,20 @@ test('paper library exposes user collections as a first-class source', () => {
   assert.match(papersPageSource, /已入库并加入目标分类/);
 });
 
+test('paper library exposes a first-class maintenance center', () => {
+  assert.match(papersPageSource, /维护中心/);
+  assert.match(papersPageSource, /\/papers\/maintenance\/health/);
+  assert.match(papersPageSource, /\/papers\/maintenance\/recommendations/);
+  assert.match(papersPageSource, /\/papers\/maintenance\/search-diagnostics/);
+  assert.match(papersPageSource, /\/papers\/maintenance\/rebuild-bm25/);
+  assert.match(papersPageSource, /\/papers\/maintenance\/backfill-embeddings\?limit=20/);
+  assert.match(papersPageSource, /\/papers\/maintenance\/backfill-full-text\?limit=5/);
+  assert.match(papersPageSource, /知识库维护中心/);
+  assert.match(papersPageSource, /分类健康度/);
+  assert.match(papersPageSource, /需要管理员权限/);
+  assert.match(papersPageSource, /BM25 分支解释|分支解释/);
+});
+
 test('research direction creation can import collection paper ids as seeds', () => {
   assert.match(researchPageSource, /从论文分类一键导入种子论文/);
   assert.match(researchPageSource, /selectedCollectionIds/);
