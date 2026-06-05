@@ -585,3 +585,65 @@ async def test_evidence_related_work_table_reports_coverage_warnings(monkeypatch
     assert "Local Video Grounding" in result["markdown"]
     assert "External Grounding Survey" in result["markdown"]
     assert "证据提示" in result["markdown"]
+
+
+@pytest.mark.asyncio
+async def test_workbench_summary_prioritizes_next_actions(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+
+    async def fake_get_project(_project_id, _user_id):
+        return {
+            "id": "project-1",
+            "title": "Video Grounding Survey",
+            "template_type": "survey",
+            "progress": {"percentage": 20, "completed": 1, "total": 3, "total_words": 180},
+            "metadata_json": {},
+            "sections": [
+                {"id": "s1", "title": "Introduction", "content": ""},
+                {"id": "s2", "title": "Related Work", "content": "Video grounding needs evidence [1]."},
+            ],
+        }
+
+    async def fake_readiness(_project_id, _user_id):
+        return {
+            "status": "incomplete",
+            "status_label": "内容未完成",
+            "warnings": ["有 1 个章节为空：Introduction", "尚未绑定官方投稿模板；内置结构模板不能保证当前年度会议格式。"],
+            "section_summary": {
+                "total": 2,
+                "empty": 1,
+                "short": 1,
+                "total_words": 180,
+                "empty_sections": ["Introduction"],
+                "short_sections": ["Related Work"],
+            },
+            "evidence_coverage": {"total": 0, "local": 0, "external": 0, "bibtex_ready": 0},
+            "citation_summary": {"mentions": 1, "unmatched": 1},
+            "submission_profile": {
+                "template_status": "missing",
+                "status_label": "未绑定官方模板",
+                "warnings": ["尚未上传或绑定官方投稿模板。"],
+            },
+        }
+
+    async def fake_evidence(_project_id, _user_id):
+        return {
+            "evidence_status": "insufficient",
+            "coverage": {"total": 0, "local": 0, "external": 0, "bibtex_ready": 0},
+            "cards": [],
+        }
+
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+    monkeypatch.setattr(service, "build_export_readiness", fake_readiness)
+    monkeypatch.setattr(service, "get_evidence_cards", fake_evidence)
+
+    summary = await service.build_workbench_summary("project-1", "user-1")
+
+    assert summary["stage"]["key"] == "drafting"
+    assert summary["risk_level"] == "high"
+    assert summary["progress"]["empty_sections"] == 1
+    assert summary["evidence"]["status"] == "insufficient"
+    assert summary["citations"]["unmatched"] == 1
+    assert summary["submission"]["template_status"] == "missing"
+    assert summary["next_actions"][0]["key"] == "fill-empty-section"
+    assert any(action["key"] == "bind-submission-template" for action in summary["next_actions"])

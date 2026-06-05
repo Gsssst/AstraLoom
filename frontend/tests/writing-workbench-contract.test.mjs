@@ -34,3 +34,14 @@ test('paper workbench exposes official submission template profile panel', () =>
   assert.match(writingPageSource, /会议格式每年可能变化/);
   assert.match(writingPageSource, /检查并绑定/);
 });
+
+test('paper workbench exposes consolidated project summary and next actions', () => {
+  assert.match(writingPageSource, /workbench-summary/);
+  assert.match(writingPageSource, /写作工作台总览/);
+  assert.match(writingPageSource, /建议下一步/);
+  assert.match(writingPageSource, /章节进度/);
+  assert.match(writingPageSource, /证据覆盖/);
+  assert.match(writingPageSource, /引用风险/);
+  assert.match(writingPageSource, /投稿模板/);
+  assert.match(writingPageSource, /去处理/);
+});

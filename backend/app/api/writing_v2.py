@@ -570,6 +570,20 @@ async def get_project_export_readiness(
     return readiness
 
 
+@router.get("/projects/{project_id}/workbench-summary")
+async def get_project_workbench_summary(
+    project_id: str,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取项目级写作工作台总览与下一步建议。"""
+    service = WritingProjectService(db)
+    summary = await service.build_workbench_summary(project_id, str(user.id))
+    if summary is None:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    return summary
+
+
 @router.get("/projects/{project_id}/export/package")
 async def get_project_publication_package(
     project_id: str,

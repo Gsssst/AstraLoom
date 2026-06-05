@@ -1085,6 +1085,205 @@ class WritingProjectService:
             },
         }
 
+    async def build_workbench_summary(self, project_id: str, user_id: str) -> dict | None:
+        """Build a project-first writing workbench summary with next actions."""
+        project = await self.get_project(project_id, user_id)
+        if not project:
+            return None
+
+        readiness = await self.build_export_readiness(project_id, user_id)
+        evidence = await self.get_evidence_cards(project_id, user_id)
+        progress = project.get("progress") or {}
+        sections = project.get("sections") or []
+        section_summary = (readiness or {}).get("section_summary") or {}
+        evidence_coverage = (evidence or {}).get("coverage") or (readiness or {}).get("evidence_coverage") or {
+            "total": 0,
+            "local": 0,
+            "external": 0,
+            "bibtex_ready": 0,
+        }
+        citation_summary = (readiness or {}).get("citation_summary") or {}
+        submission_profile = (readiness or {}).get("submission_profile") or {}
+        warnings = list((readiness or {}).get("warnings") or [])
+        stage = self._workbench_stage(progress, section_summary, evidence_coverage, readiness)
+        next_actions = self._workbench_next_actions(
+            project=project,
+            stage=stage,
+            readiness=readiness or {},
+            evidence_coverage=evidence_coverage,
+            citation_summary=citation_summary,
+            submission_profile=submission_profile,
+            sections=sections,
+        )
+        risk_level = self._workbench_risk_level(warnings, evidence_coverage, citation_summary, submission_profile)
+
+        return {
+            "project_id": project_id,
+            "title": project.get("title") or "",
+            "mode": "paper" if project.get("template_type") != "nsfc" else "grant",
+            "stage": stage,
+            "status": (readiness or {}).get("status") or "needs_attention",
+            "status_label": (readiness or {}).get("status_label") or "建议检查",
+            "risk_level": risk_level,
+            "progress": {
+                "percentage": progress.get("percentage") or 0,
+                "completed_sections": progress.get("completed") or 0,
+                "total_sections": progress.get("total") or len(sections),
+                "total_words": progress.get("total_words") or section_summary.get("total_words") or 0,
+                "empty_sections": section_summary.get("empty") or 0,
+                "short_sections": section_summary.get("short") or 0,
+            },
+            "evidence": {
+                **evidence_coverage,
+                "status": (evidence or {}).get("evidence_status") or ("sufficient" if evidence_coverage.get("total") else "insufficient"),
+            },
+            "citations": {
+                "mentions": citation_summary.get("mentions") or 0,
+                "unmatched": citation_summary.get("unmatched") or 0,
+            },
+            "submission": {
+                "venue": submission_profile.get("venue") or "",
+                "year": submission_profile.get("year") or "",
+                "template_status": submission_profile.get("template_status") or "missing",
+                "status_label": submission_profile.get("status_label") or "未绑定官方模板",
+                "template_source": submission_profile.get("template_source") or "",
+                "warnings": submission_profile.get("warnings") or [],
+            },
+            "warnings": warnings[:8],
+            "next_actions": next_actions,
+            "quick_links": [
+                {"key": "sections", "label": "继续编辑章节", "target": "sections"},
+                {"key": "evidence", "label": "查看证据卡片", "target": "evidence"},
+                {"key": "export", "label": "投稿导出预检", "target": "export"},
+            ],
+        }
+
+    def _workbench_stage(
+        self,
+        progress: dict,
+        section_summary: dict,
+        evidence_coverage: dict,
+        readiness: Optional[dict],
+    ) -> dict:
+        if not progress.get("total"):
+            return {"key": "setup", "label": "搭建结构", "description": "先创建章节结构和写作目标。"}
+        if section_summary.get("empty"):
+            return {"key": "drafting", "label": "补齐初稿", "description": "仍有空章节，优先把论文结构写完整。"}
+        if evidence_coverage.get("total", 0) == 0 or evidence_coverage.get("local", 0) < max(1, int(evidence_coverage.get("total", 0) * 0.5)):
+            return {"key": "evidence", "label": "补强证据", "description": "证据覆盖不足，先补本地论文和证据对比表。"}
+        if (readiness or {}).get("status") == "needs_attention":
+            return {"key": "review", "label": "引用与格式检查", "description": "草稿已成形，进入引用、证据和模板预检。"}
+        return {"key": "export", "label": "准备导出", "description": "基础条件较完整，可以生成导出包并人工复核。"}
+
+    def _workbench_next_actions(
+        self,
+        *,
+        project: dict,
+        stage: dict,
+        readiness: dict,
+        evidence_coverage: dict,
+        citation_summary: dict,
+        submission_profile: dict,
+        sections: list,
+    ) -> list[dict]:
+        actions: list[dict] = []
+        empty_sections = (readiness.get("section_summary") or {}).get("empty_sections") or []
+        short_sections = (readiness.get("section_summary") or {}).get("short_sections") or []
+        if empty_sections:
+            actions.append({
+                "key": "fill-empty-section",
+                "label": f"补齐空章节：{empty_sections[0]}",
+                "priority": "high",
+                "target": "sections",
+                "reason": "项目还没有形成完整论文骨架。",
+            })
+        elif short_sections:
+            actions.append({
+                "key": "expand-short-section",
+                "label": f"扩展偏短章节：{short_sections[0]}",
+                "priority": "medium",
+                "target": "sections",
+                "reason": "部分章节还不足以支撑正式草稿。",
+            })
+
+        total = evidence_coverage.get("total") or 0
+        local = evidence_coverage.get("local") or 0
+        if total == 0:
+            actions.append({
+                "key": "add-evidence",
+                "label": "从论文库或研究方向补证据",
+                "priority": "high",
+                "target": "evidence",
+                "reason": "没有证据卡，Related Work 和引用校验无法闭环。",
+            })
+        elif local < max(1, int(total * 0.5)):
+            actions.append({
+                "key": "localize-evidence",
+                "label": "把外部证据入库并补全文/向量",
+                "priority": "high",
+                "target": "evidence",
+                "reason": "本地证据覆盖偏低，最终写作容易变成摘要推测。",
+            })
+        else:
+            actions.append({
+                "key": "build-evidence-table",
+                "label": "生成 Related Work 证据对比表",
+                "priority": "medium",
+                "target": "evidence-table",
+                "reason": "把证据角色、基线和支持关系整理进写作结构。",
+            })
+
+        if citation_summary.get("unmatched", 0) > 0:
+            actions.append({
+                "key": "fix-unmatched-citations",
+                "label": "修复未匹配引用",
+                "priority": "high",
+                "target": "citations",
+                "reason": "正文引用没有对应证据卡，导出前必须确认。",
+            })
+        elif sections:
+            actions.append({
+                "key": "check-section-citations",
+                "label": "逐章节运行引用校验",
+                "priority": "medium",
+                "target": "citations",
+                "reason": "检查引用是否真实存在并能支撑句子。",
+            })
+
+        if not submission_profile or submission_profile.get("template_status") == "missing":
+            actions.append({
+                "key": "bind-submission-template",
+                "label": "上传并绑定会议官方模板",
+                "priority": "medium",
+                "target": "submission-template",
+                "reason": "内置结构模板不能保证当前年度投稿格式。",
+            })
+
+        if not actions:
+            actions.append({
+                "key": "build-export-package",
+                "label": "生成投稿导出包",
+                "priority": "medium",
+                "target": "export",
+                "reason": "草稿基础状态良好，可以导出 Markdown/BibTeX/Word 后人工复核。",
+            })
+        return actions[:5]
+
+    def _workbench_risk_level(
+        self,
+        warnings: list[str],
+        evidence_coverage: dict,
+        citation_summary: dict,
+        submission_profile: dict,
+    ) -> str:
+        if evidence_coverage.get("total", 0) == 0 or citation_summary.get("unmatched", 0) > 0:
+            return "high"
+        if len(warnings) >= 3 or not submission_profile or submission_profile.get("template_status") == "missing":
+            return "medium"
+        if warnings:
+            return "low"
+        return "clear"
+
     # --- 进度统计 ---
 
     def _calc_progress(self, sections: list) -> dict:

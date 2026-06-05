@@ -130,6 +130,8 @@ const WritingPage: React.FC = () => {
   const [exportReadiness, setExportReadiness] = useState<any>(null);
   const [exportPackage, setExportPackage] = useState<any>(null);
   const [exportLoading, setExportLoading] = useState(false);
+  const [workbenchSummary, setWorkbenchSummary] = useState<any>(null);
+  const [workbenchLoading, setWorkbenchLoading] = useState(false);
   const [submissionVenue, setSubmissionVenue] = useState('');
   const [submissionYear, setSubmissionYear] = useState('');
   const [submissionTemplateFile, setSubmissionTemplateFile] = useState<any>(null);
@@ -145,6 +147,19 @@ const WritingPage: React.FC = () => {
   const handleCopy = (text: string) => { navigator.clipboard.writeText(text); message.success('已复制'); };
   const matchColor = (status?: string) => status === 'strong' ? 'green' : status === 'partial' ? 'gold' : 'red';
   const exportStatusColor = (status?: string) => status === 'ready' ? 'green' : status === 'needs_attention' ? 'gold' : 'red';
+  const riskColor = (risk?: string) => risk === 'high' ? 'red' : risk === 'medium' ? 'gold' : risk === 'low' ? 'blue' : 'green';
+  const priorityColor = (priority?: string) => priority === 'high' ? 'red' : priority === 'medium' ? 'gold' : 'blue';
+  const scrollToWorkbenchTarget = (target?: string) => {
+    if (target === 'submission-template' || target === 'export') {
+      document.getElementById('writing-export-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    if (target === 'evidence' || target === 'evidence-table') {
+      document.getElementById('writing-evidence-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    document.getElementById('writing-sections-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
   const downloadTextFile = (filename: string, content: string) => {
     const blob = new Blob([content || ''], { type: 'text/plain;charset=utf-8' });
     downloadBlobFile(filename, blob);
@@ -182,6 +197,7 @@ const WritingPage: React.FC = () => {
       setCitationChecks({});
       setExportReadiness(null);
       setExportPackage(null);
+      setWorkbenchSummary(null);
       return;
     }
     setEvidenceLoading(true);
@@ -197,6 +213,15 @@ const WritingPage: React.FC = () => {
       })
       .finally(() => setEvidenceLoading(false));
   }, [selectedProject?.id]);
+
+  useEffect(() => {
+    if (!selectedProject?.id) return;
+    setWorkbenchLoading(true);
+    api.get(`/writing/projects/${selectedProject.id}/workbench-summary`)
+      .then(response => setWorkbenchSummary(response.data))
+      .catch(() => setWorkbenchSummary(null))
+      .finally(() => setWorkbenchLoading(false));
+  }, [selectedProject?.id, projectSections]);
 
   useEffect(() => {
     if (!selectedProject?.id) return;
@@ -609,8 +634,103 @@ const WritingPage: React.FC = () => {
     </ToolCard>
   );
 
+  const workbenchOverviewPanel = selectedProject ? (
+    <Card
+      title={<Space><RocketOutlined /> 写作工作台总览</Space>}
+      loading={workbenchLoading}
+      style={{ ...cardStyle, marginBottom: 16 }}
+      extra={workbenchSummary && (
+        <Space>
+          <Tag color={riskColor(workbenchSummary.risk_level)}>风险：{workbenchSummary.risk_level}</Tag>
+          <Tag color={exportStatusColor(workbenchSummary.status)}>{workbenchSummary.status_label}</Tag>
+        </Space>
+      )}
+    >
+      {workbenchSummary ? (
+        <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <Alert
+            type={workbenchSummary.risk_level === 'high' ? 'warning' : 'info'}
+            showIcon
+            message={`${workbenchSummary.stage?.label || '写作推进'}：${workbenchSummary.stage?.description || '继续完善当前写作项目。'}`}
+            description="这里集中展示项目的章节、证据、引用和模板状态。下一步动作是规则化建议，不会替代人工判断。"
+            style={{ borderRadius: 10 }}
+          />
+          <Row gutter={[12, 12]}>
+            <Col xs={12} md={6}>
+              <Card size="small" style={{ borderRadius: 10 }}>
+                <Text type="secondary">章节进度</Text>
+                <Title level={4} style={{ margin: '4px 0' }}>{workbenchSummary.progress?.completed_sections || 0}/{workbenchSummary.progress?.total_sections || 0}</Title>
+                <Text type="secondary">{workbenchSummary.progress?.total_words || 0} 字</Text>
+              </Card>
+            </Col>
+            <Col xs={12} md={6}>
+              <Card size="small" style={{ borderRadius: 10 }}>
+                <Text type="secondary">证据覆盖</Text>
+                <Title level={4} style={{ margin: '4px 0' }}>{workbenchSummary.evidence?.local || 0}/{workbenchSummary.evidence?.total || 0}</Title>
+                <Text type="secondary">BibTeX {workbenchSummary.evidence?.bibtex_ready || 0}</Text>
+              </Card>
+            </Col>
+            <Col xs={12} md={6}>
+              <Card size="small" style={{ borderRadius: 10 }}>
+                <Text type="secondary">引用风险</Text>
+                <Title level={4} style={{ margin: '4px 0' }}>{workbenchSummary.citations?.unmatched || 0}</Title>
+                <Text type="secondary">未匹配 / {workbenchSummary.citations?.mentions || 0} 引用</Text>
+              </Card>
+            </Col>
+            <Col xs={12} md={6}>
+              <Card size="small" style={{ borderRadius: 10 }}>
+                <Text type="secondary">投稿模板</Text>
+                <Title level={5} style={{ margin: '6px 0' }}>{workbenchSummary.submission?.status_label || '未绑定官方模板'}</Title>
+                <Text type="secondary">{[workbenchSummary.submission?.venue, workbenchSummary.submission?.year].filter(Boolean).join(' ') || '待配置'}</Text>
+              </Card>
+            </Col>
+          </Row>
+          {workbenchSummary.warnings?.length > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              message="工作台提醒"
+              description={workbenchSummary.warnings.join(' ')}
+              style={{ borderRadius: 10 }}
+            />
+          )}
+          <div>
+            <Text strong>建议下一步</Text>
+            <List
+              size="small"
+              dataSource={workbenchSummary.next_actions || []}
+              renderItem={(action: any) => (
+                <List.Item
+                  actions={[
+                    <Button key="go" size="small" onClick={() => scrollToWorkbenchTarget(action.target)} style={{ borderRadius: 8 }}>
+                      去处理
+                    </Button>,
+                  ]}
+                >
+                  <List.Item.Meta
+                    title={<Space><Tag color={priorityColor(action.priority)}>{action.priority}</Tag><Text>{action.label}</Text></Space>}
+                    description={action.reason}
+                  />
+                </List.Item>
+              )}
+            />
+          </div>
+        </Space>
+      ) : (
+        <Alert
+          type="info"
+          showIcon
+          message="暂时无法生成工作台总览"
+          description="你仍然可以继续编辑章节、查看证据卡和导出预检。"
+          style={{ borderRadius: 10 }}
+        />
+      )}
+    </Card>
+  ) : null;
+
   const evidencePanel = selectedProject ? (
     <Card
+      id="writing-evidence-panel"
       title="证据卡片"
       loading={evidenceLoading}
       style={{ ...cardStyle, position: 'sticky', top: 12 }}
@@ -696,6 +816,7 @@ const WritingPage: React.FC = () => {
 
   const publicationExportPanel = selectedProject ? (
     <Card
+      id="writing-export-panel"
       title={<Space><FileZipOutlined /> 投稿导出包</Space>}
       style={{ ...cardStyle, marginBottom: 16 }}
       extra={exportReadiness && <Tag color={exportStatusColor(exportReadiness.status)}>{exportReadiness.status_label}</Tag>}
@@ -835,6 +956,7 @@ const WritingPage: React.FC = () => {
         {selectedProject ? (
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 16, alignItems: 'start' }}>
             <div>
+              {workbenchOverviewPanel}
               <Card style={{ ...cardStyle, marginBottom: 16 }} styles={{ body: { padding: '12px 20px' } }}>
                 <Space wrap>
                   <Text strong style={{ fontSize: 15 }}>{selectedProject.title}</Text>
@@ -850,17 +972,19 @@ const WritingPage: React.FC = () => {
               </div>
               {pipelineRunning && <div style={{ marginBottom: 12 }}><PipelineProgress phases={pipelinePhases} currentPhase={pipelineCurrentPhase} phaseStatuses={pipelinePhaseStatuses} statusText={pipelineStatusText} onCancel={handleCancelPipeline} /></div>}
               {publicationExportPanel}
-              {projectSections.map(s => (
-                <SectionEditor
-                  key={s.id}
-                  section={s}
-                  onUpdate={handleUpdateSection}
-                  onFocus={section => setActiveSectionId(section.id)}
-                  onCheckCitations={handleCheckSectionCitations}
-                  checking={citationChecking[s.id]}
-                  citationCheck={citationChecks[s.id]}
-                />
-              ))}
+              <div id="writing-sections-panel">
+                {projectSections.map(s => (
+                  <SectionEditor
+                    key={s.id}
+                    section={s}
+                    onUpdate={handleUpdateSection}
+                    onFocus={section => setActiveSectionId(section.id)}
+                    onCheckCitations={handleCheckSectionCitations}
+                    checking={citationChecking[s.id]}
+                    citationCheck={citationChecks[s.id]}
+                  />
+                ))}
+              </div>
             </div>
             <div>{evidencePanel}</div>
           </div>
