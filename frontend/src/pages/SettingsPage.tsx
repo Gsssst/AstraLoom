@@ -12,7 +12,7 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
-import { getApiErrorMessage } from '../services/apiError';
+import { getApiErrorDetails, getApiErrorMessage, type ApiErrorDetails } from '../services/apiError';
 import { useThemeStore, THEME_PRESETS } from '../stores/useThemeStore';
 import { useAuthStore, type User } from '../stores/useAuthStore';
 
@@ -39,6 +39,7 @@ const SettingsPage: React.FC = () => {
   const [savingApiConfig, setSavingApiConfig] = useState(false);
   const [testingApiConfig, setTestingApiConfig] = useState(false);
   const [apiConfigTestResult, setApiConfigTestResult] = useState<any>(null);
+  const [apiConfigTestError, setApiConfigTestError] = useState<ApiErrorDetails | null>(null);
   const [myUsage, setMyUsage] = useState<any>(null);
   const [allUsage, setAllUsage] = useState<any>(null);
   const [usageTab, setUsageTab] = useState<string>('my');
@@ -161,6 +162,7 @@ const SettingsPage: React.FC = () => {
       setSelectedApiProvider(r.data.provider);
       setSelectedApiModel(r.data.model);
       setApiConfigTestResult(null);
+      setApiConfigTestError(null);
       message.success('模型配置已切换');
     } catch (e: any) {
       message.error(getApiErrorMessage(e, { fallback: '模型配置保存失败' }));
@@ -171,12 +173,15 @@ const SettingsPage: React.FC = () => {
   const handleTestApiConfig = async () => {
     setTestingApiConfig(true);
     setApiConfigTestResult(null);
+    setApiConfigTestError(null);
     try {
       const r = await api.post('/settings/api-config/test');
       setApiConfigTestResult(r.data);
       message.success(`模型连接测试成功：${r.data.latency_ms}ms`);
     } catch (e: any) {
-      message.error(getApiErrorMessage(e, { fallback: '模型连接测试失败' }));
+      const details = getApiErrorDetails(e, { fallback: '模型连接测试失败' });
+      setApiConfigTestError(details);
+      message.warning(details.message);
     } finally {
       setTestingApiConfig(false);
     }
@@ -356,6 +361,27 @@ const SettingsPage: React.FC = () => {
             style={{ borderRadius: 10 }}
             message={`连接测试完成：${apiConfigTestResult.provider} / ${apiConfigTestResult.model}`}
             description={`耗时 ${apiConfigTestResult.latency_ms}ms；回复预览：${apiConfigTestResult.preview || '无内容'}`}
+          />
+        )}
+
+        {apiConfigTestError && (
+          <Alert
+            type={apiConfigTestError.severity === 'error' ? 'error' : 'warning'}
+            showIcon
+            style={{ borderRadius: 10 }}
+            message={`连接测试失败：${apiConfigTestError.message}`}
+            description={
+              <Space direction="vertical" size={6}>
+                <Text>{apiConfigTestError.recovery}</Text>
+                <Space size={6} wrap>
+                  <Tag color="orange">{apiConfigTestError.category}</Tag>
+                  <Tag color={apiConfigTestError.retryable ? 'blue' : 'default'}>
+                    {apiConfigTestError.retryable ? '可重试' : '需先处理配置'}
+                  </Tag>
+                  {apiConfigTestError.status && <Tag>HTTP {apiConfigTestError.status}</Tag>}
+                </Space>
+              </Space>
+            }
           />
         )}
 

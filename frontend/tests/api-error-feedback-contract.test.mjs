@@ -22,6 +22,8 @@ const loadHelper = async () => {
 
 test('api error helper recognizes backend response shapes', () => {
   assert.match(apiErrorSource, /getApiErrorMessage/);
+  assert.match(apiErrorSource, /getApiErrorDetails/);
+  assert.match(apiErrorSource, /ApiErrorDetails/);
   assert.match(apiErrorSource, /data\.error/);
   assert.match(apiErrorSource, /data\.detail/);
   assert.match(apiErrorSource, /ECONNABORTED/);
@@ -48,7 +50,7 @@ test('api error helper summarizes validation detail arrays', async () => {
 });
 
 test('api error helper handles timeout, network, and status fallbacks', async () => {
-  const { getApiErrorMessage } = await loadHelper();
+  const { getApiErrorDetails, getApiErrorMessage } = await loadHelper();
   assert.equal(getApiErrorMessage({ code: 'ECONNABORTED' }), '请求超时，请稍后重试');
   assert.equal(
     getApiErrorMessage({ message: 'Network Error' }, { action: '加载失败' }),
@@ -58,13 +60,28 @@ test('api error helper handles timeout, network, and status fallbacks', async ()
     getApiErrorMessage({ response: { status: 403, data: {} } }),
     '当前账号没有权限执行此操作',
   );
+  assert.deepEqual(
+    {
+      category: getApiErrorDetails({ message: 'Network Error' }).category,
+      severity: getApiErrorDetails({ message: 'Network Error' }).severity,
+      retryable: getApiErrorDetails({ message: 'Network Error' }).retryable,
+    },
+    { category: 'network', severity: 'error', retryable: true },
+  );
+  assert.equal(getApiErrorDetails({ response: { status: 401, data: {} } }).category, 'auth');
+  assert.equal(getApiErrorDetails({ response: { status: 422, data: {} } }).category, 'validation');
+  assert.equal(getApiErrorDetails({ response: { status: 502, data: {} } }).category, 'upstream');
 });
 
 test('api error helper formats fetch status errors', async () => {
-  const { getHttpErrorMessage } = await loadHelper();
+  const { getHttpErrorDetails, getHttpErrorMessage } = await loadHelper();
   assert.equal(
     getHttpErrorMessage(502, { detail: '模型服务暂时不可用' }, { action: '发送失败' }),
     '发送失败：模型服务暂时不可用',
   );
   assert.equal(getHttpErrorMessage(504), '请求超时，请稍后重试');
+  const details = getHttpErrorDetails(504);
+  assert.equal(details.category, 'timeout');
+  assert.equal(details.retryable, true);
+  assert.match(details.recovery, /重试/);
 });
