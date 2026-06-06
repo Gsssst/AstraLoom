@@ -31,6 +31,15 @@ const promptShortcuts = [
   { icon: <HighlightOutlined />, label: '润色文本', text: '请将以下文本润色为学术风格：' },
 ];
 
+interface AttachedFile {
+  file: File;
+  text: string;
+  extracting: boolean;
+  id: string;
+  dataUrl?: string;
+  mimeType?: string;
+}
+
 const formatSessionTime = (value: string) => {
   const date = new Date(value);
   const now = new Date();
@@ -47,7 +56,7 @@ const ChatPage: React.FC = () => {
   const { sessions, currentSessionId, messages, loading, sending, drawerOpen, loadSessions, createSession, selectSession, deleteSession, toggleRag, setDrawerOpen } = useChatSessionStore();
 
   const [input, setInput] = useState('');
-  const [attachedFiles, setAttachedFiles] = useState<Array<{ file: File; text: string; extracting: boolean; id: string }>>([]);
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [searchDepth, setSearchDepth] = useState<'quick' | 'standard' | 'deep'>('standard');
   const [webSearch, setWebSearch] = useState(false);
   const [convSearch, setConvSearch] = useState('');
@@ -186,12 +195,20 @@ const ChatPage: React.FC = () => {
     if (attachedFiles.length > 0) {
       const files = [...attachedFiles]; setAttachedFiles([]);
       const fileNames = files.map(f => f.file.name).join(', ');
-      const allText = files.map(f => f.text).filter(Boolean).join('\n\n---\n\n');
+      const allText = files
+        .filter(f => !f.file.type.startsWith('image/'))
+        .map(f => f.text)
+        .filter(Boolean)
+        .join('\n\n---\n\n');
+      const imageAttachments = files
+        .filter(f => f.file.type.startsWith('image/') && f.dataUrl)
+        .map(f => ({ filename: f.file.name, mime_type: f.mimeType || f.file.type || 'image/png', data_url: f.dataUrl }));
       const icons = files.map(f => f.file.type.startsWith('image/') ? '🖼️' : '📄').join('');
       useChatSessionStore.setState(s => ({ messages: [...s.messages, { role: 'user', content: `${icons} ${fileNames}${text ? '\n' + text : ''}`, created_at: new Date().toISOString() }], sending: true }));
       try {
         const t = localStorage.getItem('access_token');
-        const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: `请分析文件: ${fileNames}`, rag_enabled: ragEnabled, extra_context: allText || undefined, web_search: webSearch, search_depth: searchDepth, show_thinking: showThinking }) });
+        const prompt = text || `请分析文件: ${fileNames}`;
+        const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: prompt, rag_enabled: ragEnabled, extra_context: allText || undefined, attachments: imageAttachments, web_search: webSearch, search_depth: searchDepth, show_thinking: showThinking }) });
         if (!r.ok) throw new Error('fail');
         await consumeChatStream(r);
       } catch (e: any) { useChatSessionStore.setState(s => ({ messages: [...s.messages, { role: 'assistant', content: `❌ ${e.message || '上传失败'}` }] })); }
@@ -386,7 +403,7 @@ const ChatPage: React.FC = () => {
               </div>
             )}
             <div className="chat-editor">
-              <Tooltip title="上传论文或图片"><Button className="chat-upload-button" type="text" icon={<UploadOutlined />} onClick={() => { const el = document.createElement('input'); el.type = 'file'; el.accept = 'image/*,.pdf'; el.multiple = true; el.onchange = async () => { for (const f of Array.from(el.files || [])) { if (f.size > 10 * 1024 * 1024) { message.warning(`${f.name} 超过10MB`); continue; } const id = Math.random().toString(36).slice(2); setAttachedFiles(prev => [...prev, { file: f, text: '', extracting: true, id }]); const fd = new FormData(); fd.append('file', f); try { const res = await api.post('/chat-sessions/extract-file', fd, { headers: { 'Content-Type': 'multipart/form-data' } }); setAttachedFiles(prev => prev.map(p => p.id === id ? { ...p, text: res.data.extracted_text || '', extracting: false } : p)); } catch { setAttachedFiles(prev => prev.filter(p => p.id !== id)); message.error(`${f.name} 解析失败`); } } }; el.click(); }} /></Tooltip>
+              <Tooltip title="上传论文或图片"><Button className="chat-upload-button" type="text" icon={<UploadOutlined />} onClick={() => { const el = document.createElement('input'); el.type = 'file'; el.accept = 'image/*,.pdf'; el.multiple = true; el.onchange = async () => { for (const f of Array.from(el.files || [])) { if (f.size > 10 * 1024 * 1024) { message.warning(`${f.name} 超过10MB`); continue; } const id = Math.random().toString(36).slice(2); setAttachedFiles(prev => [...prev, { file: f, text: '', extracting: true, id }]); const fd = new FormData(); fd.append('file', f); try { const res = await api.post('/chat-sessions/extract-file', fd, { headers: { 'Content-Type': 'multipart/form-data' } }); setAttachedFiles(prev => prev.map(p => p.id === id ? { ...p, text: res.data.extracted_text || '', extracting: false, dataUrl: res.data.data_url || undefined, mimeType: res.data.mime_type || undefined } : p)); } catch { setAttachedFiles(prev => prev.filter(p => p.id !== id)); message.error(`${f.name} 解析失败`); } } }; el.click(); }} /></Tooltip>
               <div className="chat-input-wrap"><Input.TextArea className="chat-input" value={input} onChange={e => setInput(e.target.value)} onPressEnter={e => { if (!e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={ragEnabled ? '输入消息，Enter 发送，Shift+Enter 换行' : '输入消息...'} autoSize={{ minRows: 1, maxRows: 5 }} /></div>
               <Tooltip title="发送"><Button className="chat-send-button" type="primary" shape="circle" icon={sending ? <LoadingOutlined /> : <SendOutlined />} onClick={handleSend} loading={sending} disabled={!input.trim() && attachedFiles.length === 0} /></Tooltip>
             </div>

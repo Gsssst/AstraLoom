@@ -5,7 +5,7 @@ import logging
 from typing import Any, List, Literal, Optional
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -14,7 +14,7 @@ from app.db.session import get_db
 from app.db.models.chat import ChatSession, ChatMessage
 from app.db.models.user import User
 from app.core.security import get_current_user
-from app.services.llm import llm_service
+from app.services.llm import OPENAI_COMPATIBLE_PROVIDER, llm_service
 from app.services.rag_service import RAGService
 from app.services.web_search import format_web_context, search_web_results
 from app.db.session import AsyncSessionLocal
@@ -119,10 +119,24 @@ class MessageResponse(BaseModel):
     created_at: str
 
 
+class ChatImageAttachment(BaseModel):
+    filename: str = Field(default="image")
+    mime_type: str = Field(default="image/png")
+    data_url: str = Field(..., max_length=14_000_000)
+
+    @field_validator("data_url")
+    @classmethod
+    def validate_data_url(cls, value: str) -> str:
+        if not value.startswith("data:image/") or ";base64," not in value[:80]:
+            raise ValueError("图片附件必须是 data:image/*;base64 格式")
+        return value
+
+
 class SendMessageRequest(BaseModel):
     content: str = Field(..., min_length=1)
     rag_enabled: Optional[bool] = None
     extra_context: Optional[str] = Field(default=None, description="额外上下文（如文件内容），不显示在对话中")
+    attachments: list[ChatImageAttachment] = Field(default_factory=list, max_length=4)
     web_search: Optional[bool] = Field(default=False, description="是否启用联网搜索")
     search_depth: Literal["quick", "standard", "deep"] = Field(default="standard", description="检索深度")
     show_thinking: bool = Field(default=False, description="是否展示思考过程")
@@ -148,6 +162,43 @@ def _stream_event(event_type: str, content: Any = None) -> str:
 def _stream_failure_content(full_content: str) -> tuple[str, str]:
     appended = INTERRUPTED_STREAM_FALLBACK if full_content else EMPTY_STREAM_FALLBACK
     return f"{full_content}{appended}", appended
+
+
+def _image_text_fallback(attachments: list[ChatImageAttachment]) -> str:
+    if not attachments:
+        return ""
+    names = ", ".join(item.filename for item in attachments)
+    return (
+        f"[图片附件: {names}]\n"
+        "当前选择的模型不支持视觉图片输入，不能看到图片本体。"
+        "请用户切换到 GPT-5.5（OpenAI 兼容）模型后再进行图片分析。"
+    )
+
+
+def _build_llm_context_for_request(
+    context: list[dict[str, Any]],
+    req: SendMessageRequest,
+) -> list[dict[str, Any]]:
+    """Attach current-turn images only when the active provider supports vision."""
+    if not req.attachments:
+        return context
+
+    active_provider = llm_service.get_active_option().get("provider")
+    if active_provider != OPENAI_COMPATIBLE_PROVIDER:
+        fallback = _image_text_fallback(req.attachments)
+        return [*context, {"role": "system", "content": fallback}] if fallback else context
+
+    text = req.content.strip() or "请分析上传的图片。"
+    content_parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    for attachment in req.attachments:
+        content_parts.append({
+            "type": "image_url",
+            "image_url": {"url": attachment.data_url},
+        })
+    multimodal_message = {"role": "user", "content": content_parts}
+    if context and context[-1].get("role") == "user" and context[-1].get("content") == req.content:
+        return [*context[:-1], multimodal_message]
+    return [*context, multimodal_message]
 
 
 def _retrieval_limits(search_depth: str) -> dict[str, int]:
@@ -517,6 +568,7 @@ async def send_message_stream(
         search_depth=req.search_depth,
     )
     retrieval_quality = await _retrieval_quality_snapshot(rag_enabled=rag_enabled)
+    llm_context = _build_llm_context_for_request(context, req)
 
     # 流式响应
     async def generate():
@@ -532,14 +584,14 @@ async def send_message_stream(
         yield _stream_event("meta", {"references": references})
         try:
             if req.show_thinking:
-                async for event in llm_service.chat_stream_with_thinking(messages=context):
+                async for event in llm_service.chat_stream_with_thinking(messages=llm_context):
                     if event["type"] == "reasoning":
                         yield _stream_event("reasoning", event["content"])
                     elif event["type"] == "content":
                         full_content += event["content"]
                         yield _stream_event("content", event["content"])
             else:
-                async for token in llm_service.chat_stream(messages=context):
+                async for token in llm_service.chat_stream(messages=llm_context):
                     if not token:
                         continue
                     full_content += token
@@ -585,6 +637,7 @@ async def extract_file_text(
 
     extracted_text = ""
     file_type = "unknown"
+    data_url: str | None = None
 
     if "image" in content_type or filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
         file_type = "image"
@@ -592,6 +645,7 @@ async def extract_file_text(
         b64 = base64.b64encode(file_bytes).decode("utf-8")
         mime = content_type or "image/png"
         extracted_text = f"[图片: {filename}]\n请描述你在这张图片中看到了什么，特别关注任何文字、图表或数据。"
+        data_url = f"data:{mime};base64,{b64}"
         logger.info(f"图片上传: {filename} ({len(file_bytes)} bytes)")
 
     elif "pdf" in content_type or filename.lower().endswith('.pdf'):
@@ -610,6 +664,8 @@ async def extract_file_text(
         "file_type": file_type,
         "file_size": len(file_bytes),
         "extracted_text": extracted_text[:50000],
+        "data_url": data_url if file_type == "image" else None,
+        "mime_type": content_type or None,
         "text_length": len(extracted_text),
     }
 
