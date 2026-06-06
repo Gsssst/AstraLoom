@@ -557,6 +557,20 @@
   line-height: 1.45;
 }
 
+.chat-stop-inline-button {
+  height: 26px !important;
+  padding: 0 9px !important;
+  flex-shrink: 0;
+  border-radius: 13px !important;
+  color: #dc2626 !important;
+  background: #fef2f2 !important;
+}
+
+.chat-stop-inline-button:hover {
+  color: #b91c1c !important;
+  background: #fee2e2 !important;
+}
+
 .chat-empty-state {
   max-width: 720px;
   margin: clamp(56px, 10vh, 118px) auto 0;
@@ -807,6 +821,18 @@
   color: #94a3b8 !important;
   background: #e2e8f0 !important;
   box-shadow: none;
+}
+
+.chat-stop-button {
+  color: #dc2626 !important;
+  border: 1px solid rgba(220, 38, 38, 0.16) !important;
+  background: #fef2f2 !important;
+}
+
+.chat-stop-button:hover {
+  color: #b91c1c !important;
+  border-color: rgba(220, 38, 38, 0.28) !important;
+  background: #fee2e2 !important;
 }
 
 @media (max-width: 767px) {
