@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import api from '../services/api';
+import { getApiErrorMessage } from '../services/apiError';
 
 interface Message {
   id?: string;
@@ -61,7 +62,10 @@ export const useChatSessionStore = create<ChatSessionState>((set, get) => ({
     try {
       const res = await api.get('/chat-sessions/');
       set({ sessions: res.data, loading: false });
-    } catch { set({ loading: false }); }
+    } catch (error) {
+      set({ loading: false });
+      throw error;
+    }
   },
 
   createSession: async () => {
@@ -74,7 +78,9 @@ export const useChatSessionStore = create<ChatSessionState>((set, get) => ({
         messages: [],
       }));
       return session.id;
-    } catch { return ''; }
+    } catch (error) {
+      throw error;
+    }
   },
 
   selectSession: async (id: string) => {
@@ -82,7 +88,10 @@ export const useChatSessionStore = create<ChatSessionState>((set, get) => ({
     try {
       const res = await api.get(`/chat-sessions/${id}/messages`);
       set({ messages: res.data, loading: false });
-    } catch { set({ loading: false }); }
+    } catch (error) {
+      set({ loading: false });
+      throw error;
+    }
   },
 
   deleteSession: async (id: string) => {
@@ -102,7 +111,9 @@ export const useChatSessionStore = create<ChatSessionState>((set, get) => ({
       } else {
         set({ messages: [] });
       }
-    } catch {}
+    } catch (error) {
+      throw error;
+    }
   },
 
   sendMessage: async (content: string) => {
@@ -122,7 +133,7 @@ export const useChatSessionStore = create<ChatSessionState>((set, get) => ({
         ),
       }));
     } catch (e: any) {
-      const errMsg = e.response?.data?.detail || '发送失败';
+      const errMsg = getApiErrorMessage(e, { fallback: '发送失败' });
       set(s => ({
         messages: [...s.messages, { role: 'assistant', content: `❌ ${errMsg}` }],
       }));

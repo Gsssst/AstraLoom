@@ -12,10 +12,11 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
+import { getApiErrorMessage } from '../services/apiError';
 import { useThemeStore, THEME_PRESETS } from '../stores/useThemeStore';
 import { useAuthStore, type User } from '../stores/useAuthStore';
 
-const { Title, Text, Paragraph } = Typography;
+const { Title, Text } = Typography;
 const { TextArea } = Input;
 
 const heroGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
@@ -33,6 +34,9 @@ const SettingsPage: React.FC = () => {
   const [newPwd, setNewPwd] = useState('');
   const [changingPwd, setChangingPwd] = useState(false);
   const [apiConfig, setApiConfig] = useState<any>(null);
+  const [selectedApiProvider, setSelectedApiProvider] = useState('');
+  const [selectedApiModel, setSelectedApiModel] = useState('');
+  const [savingApiConfig, setSavingApiConfig] = useState(false);
   const [myUsage, setMyUsage] = useState<any>(null);
   const [allUsage, setAllUsage] = useState<any>(null);
   const [usageTab, setUsageTab] = useState<string>('my');
@@ -63,10 +67,10 @@ const SettingsPage: React.FC = () => {
 
   useEffect(() => {
     if (!isAuthenticated) { navigate('/login'); return; }
-    api.get('/settings/profile').then(res => { setProfile(res.data); setEmail(res.data.email); if (res.data.role === 'admin') api.get('/usage/all-stats').then(r => setAllUsage(r.data)).catch(() => {}); }).catch(() => {});
-    api.get('/settings/api-config').then(res => setApiConfig(res.data)).catch(() => {});
+    api.get('/settings/profile').then(res => { setProfile(res.data); setEmail(res.data.email); if (res.data.role === 'admin') api.get('/usage/all-stats').then(r => setAllUsage(r.data)).catch(() => {}); }).catch(error => message.error(getApiErrorMessage(error, { fallback: '个人资料加载失败' })));
+    api.get('/settings/api-config').then(res => { setApiConfig(res.data); setSelectedApiProvider(res.data.provider); setSelectedApiModel(res.data.model); }).catch(error => message.error(getApiErrorMessage(error, { fallback: '模型配置加载失败' })));
     api.get('/usage/my-stats').then(res => setMyUsage(res.data)).catch(() => {});
-    api.get('/notifications/subscription').then(res => { setSubKeywords((res.data.keywords || []).join(', ')); setSubEmail(res.data.email_enabled); setSubPush(res.data.push_enabled); setSubEmailAvailable(res.data.email_available); setSubLastSentAt(res.data.last_sent_at); setSubSendHour(res.data.send_hour ?? 8); setSubLoaded(true); }).catch(() => {});
+    api.get('/notifications/subscription').then(res => { setSubKeywords((res.data.keywords || []).join(', ')); setSubEmail(res.data.email_enabled); setSubPush(res.data.push_enabled); setSubEmailAvailable(res.data.email_available); setSubLastSentAt(res.data.last_sent_at); setSubSendHour(res.data.send_hour ?? 8); setSubLoaded(true); }).catch(error => message.error(getApiErrorMessage(error, { fallback: '通知订阅加载失败' })));
   }, [isAuthenticated, navigate]);
 
   const fetchKbHealth = async () => {
@@ -80,7 +84,7 @@ const SettingsPage: React.FC = () => {
       setKbHealth(healthRes.data);
       setKbRecommendations(recommendationsRes.data || []);
     } catch (e: any) {
-      message.error(e.response?.data?.detail || '知识库状态读取失败');
+      message.error(getApiErrorMessage(e, { fallback: '知识库状态读取失败' }));
     } finally {
       setKbLoading(false);
     }
@@ -97,7 +101,7 @@ const SettingsPage: React.FC = () => {
       message.success(`维护完成：成功 ${res.data.success || 0}，失败 ${res.data.failed || 0}，跳过 ${res.data.skipped || 0}`);
       await fetchKbHealth();
     } catch (e: any) {
-      message.error(e.response?.data?.detail || '维护操作失败');
+      message.error(getApiErrorMessage(e, { fallback: '维护操作失败' }));
     } finally {
       setKbAction(null);
     }
@@ -114,7 +118,7 @@ const SettingsPage: React.FC = () => {
       setKbDiagnostics(res.data);
       setKbDiagTab('hybrid');
     } catch (e: any) {
-      message.error(e.response?.data?.detail || '检索诊断失败');
+      message.error(getApiErrorMessage(e, { fallback: '检索诊断失败' }));
     } finally {
       setKbDiagLoading(false);
     }
@@ -122,7 +126,7 @@ const SettingsPage: React.FC = () => {
 
   const subscriptionPayload = () => ({ keywords: subKeywords.split(/[,，]/).map(k => k.trim()).filter(Boolean), email_enabled: subEmail, push_enabled: subPush, frequency: 'daily', send_hour: subSendHour });
   const syncSubscription = (data: any) => { setSubKeywords((data.keywords || []).join(', ')); setSubEmail(data.email_enabled); setSubPush(data.push_enabled); setSubEmailAvailable(data.email_available); setSubLastSentAt(data.last_sent_at); setSubSendHour(data.send_hour ?? 8); };
-  const handleSaveSub = async () => { setSubSaving(true); try { const r = await api.put('/notifications/subscription', subscriptionPayload()); syncSubscription(r.data); message.success('订阅已更新'); } catch (e: any) { message.error(e.response?.data?.detail || '保存失败'); } finally { setSubSaving(false); } };
+  const handleSaveSub = async () => { setSubSaving(true); try { const r = await api.put('/notifications/subscription', subscriptionPayload()); syncSubscription(r.data); message.success('订阅已更新'); } catch (e: any) { message.error(getApiErrorMessage(e, { fallback: '订阅保存失败' })); } finally { setSubSaving(false); } };
   const handleTestSub = async () => {
     setSubTesting(true);
     setSubTestResult(null);
@@ -135,14 +139,32 @@ const SettingsPage: React.FC = () => {
       window.dispatchEvent(new Event('notifications:refresh'));
       message.success('测试推送已发送，请查看右上角通知铃铛');
     } catch (e: any) {
-      message.error(e.response?.data?.detail || '测试推送失败');
+      message.error(getApiErrorMessage(e, { fallback: '测试推送失败' }));
     } finally {
       setSubTesting(false);
     }
   };
-  const handleSaveProfile = async () => { setSaving(true); try { const r = await api.put('/settings/profile', { email }); syncProfileIdentity(r.data); message.success('已更新'); } catch { message.error('保存失败'); } finally { setSaving(false); } };
-  const handleChangePwd = async () => { if (!oldPwd || !newPwd) { message.warning('请填写完整'); return; } if (newPwd.length < 6) { message.warning('新密码至少6位'); return; } setChangingPwd(true); try { await api.post('/settings/change-password', { old_password: oldPwd, new_password: newPwd }); message.success('密码已修改'); setOldPwd(''); setNewPwd(''); } catch (e: any) { message.error(e.response?.data?.detail || '修改失败'); } finally { setChangingPwd(false); } };
-  const handleExport = async (fmt: string) => { try { const r = await api.post('/writing/export', { format: fmt }); const blob = new Blob([fmt === 'csv' ? '﻿' + r.data.data : r.data.data], { type: fmt === 'csv' ? 'text/csv;charset=utf-8' : 'text/plain' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `papers.${fmt}`; a.click(); URL.revokeObjectURL(url); message.success('导出成功'); } catch { message.error('导出失败'); } };
+  const handleSaveProfile = async () => { setSaving(true); try { const r = await api.put('/settings/profile', { email }); syncProfileIdentity(r.data); message.success('已更新'); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '资料保存失败' })); } finally { setSaving(false); } };
+  const handleChangePwd = async () => { if (!oldPwd || !newPwd) { message.warning('请填写完整'); return; } if (newPwd.length < 6) { message.warning('新密码至少6位'); return; } setChangingPwd(true); try { await api.post('/settings/change-password', { old_password: oldPwd, new_password: newPwd }); message.success('密码已修改'); setOldPwd(''); setNewPwd(''); } catch (e: any) { message.error(getApiErrorMessage(e, { fallback: '密码修改失败' })); } finally { setChangingPwd(false); } };
+  const handleExport = async (fmt: string) => { try { const r = await api.post('/writing/export', { format: fmt }); const blob = new Blob([fmt === 'csv' ? '﻿' + r.data.data : r.data.data], { type: fmt === 'csv' ? 'text/csv;charset=utf-8' : 'text/plain' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `papers.${fmt}`; a.click(); URL.revokeObjectURL(url); message.success('导出成功'); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '导出失败' })); } };
+  const handleSaveApiConfig = async () => {
+    if (!selectedApiProvider) {
+      message.warning('请选择模型');
+      return;
+    }
+    setSavingApiConfig(true);
+    try {
+      const r = await api.put('/settings/api-config', { provider: selectedApiProvider, model: selectedApiModel });
+      setApiConfig(r.data);
+      setSelectedApiProvider(r.data.provider);
+      setSelectedApiModel(r.data.model);
+      message.success('模型配置已切换');
+    } catch (e: any) {
+      message.error(getApiErrorMessage(e, { fallback: '模型配置保存失败' }));
+    } finally {
+      setSavingApiConfig(false);
+    }
+  };
 
   // ══════════════════════════════════════
   //  Tab: Theme
@@ -173,7 +195,7 @@ const SettingsPage: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
             <Text strong style={{ fontSize: 14 }}>💭 显示 AI 思考过程</Text>
-            <br /><Text type="secondary" style={{ fontSize: 12 }}>开启后展示 DeepSeek V4 Pro 的推理过程（可折叠）</Text>
+            <br /><Text type="secondary" style={{ fontSize: 12 }}>开启后展示支持模型的推理过程（可折叠）</Text>
           </div>
           <Switch checked={showThinking} onChange={setShowThinking} />
         </div>
@@ -189,7 +211,7 @@ const SettingsPage: React.FC = () => {
       {/* Avatar card */}
       <Card style={{ ...cardStyle, marginBottom: 20 }} styles={{ body: { padding: 24 } }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
-          <div style={{ position: 'relative', cursor: 'pointer' }} onClick={() => { const el = document.createElement('input'); el.type = 'file'; el.accept = 'image/*'; el.onchange = async (e: any) => { const f = e.target.files?.[0]; if (!f) return; const fd = new FormData(); fd.append('file', f); try { const r = await api.post('/settings/upload-avatar', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 30000 }); syncProfileIdentity({ avatar: r.data.avatar }); message.success('头像已更新'); } catch { message.error('上传失败'); } }; el.click(); }}>
+          <div style={{ position: 'relative', cursor: 'pointer' }} onClick={() => { const el = document.createElement('input'); el.type = 'file'; el.accept = 'image/*'; el.onchange = async (e: any) => { const f = e.target.files?.[0]; if (!f) return; const fd = new FormData(); fd.append('file', f); try { const r = await api.post('/settings/upload-avatar', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 30000 }); syncProfileIdentity({ avatar: r.data.avatar }); message.success('头像已更新'); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '头像上传失败' })); } }; el.click(); }}>
             <Avatar size={72} src={profile.avatar} icon={<UserOutlined />} style={{ background: 'linear-gradient(135deg, #667eea, #764ba2)', fontSize: 28 }} />
             <div style={{ position: 'absolute', bottom: 0, right: 0, background: '#667eea', borderRadius: '50%', width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 14, border: '2px solid #fff' }}>+</div>
           </div>
@@ -208,7 +230,7 @@ const SettingsPage: React.FC = () => {
             <Text strong style={{ fontSize: 13 }}>显示名称</Text>
             <Space.Compact style={{ width: '100%', marginTop: 4 }}>
               <Input style={inputStyle} placeholder="显示名称" value={profile.display_name || ''} onChange={e => setProfile({ ...profile, display_name: e.target.value })} />
-              <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={async () => { setSaving(true); try { const r = await api.put('/settings/profile', { display_name: profile.display_name }); syncProfileIdentity(r.data); message.success('已更新'); } catch { message.error('保存失败'); } finally { setSaving(false); } }} style={{ borderRadius: '0 10px 10px 0' }}>保存</Button>
+              <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={async () => { setSaving(true); try { const r = await api.put('/settings/profile', { display_name: profile.display_name }); syncProfileIdentity(r.data); message.success('已更新'); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '显示名称保存失败' })); } finally { setSaving(false); } }} style={{ borderRadius: '0 10px 10px 0' }}>保存</Button>
             </Space.Compact>
           </div>
           <div>
@@ -235,19 +257,79 @@ const SettingsPage: React.FC = () => {
   // ══════════════════════════════════════
   //  Tab: API
   // ══════════════════════════════════════
+  const selectedApiOption = (apiConfig?.options || []).find((item: any) => item.provider === selectedApiProvider);
   const apiTab = apiConfig && (
-    <Card style={{ ...cardStyle, maxWidth: 520 }} styles={{ body: { padding: 24 } }}>
-      <Descriptions column={1} bordered size="small" labelStyle={{ fontWeight: 600 }}>
-        <Descriptions.Item label="LLM 提供商"><Tag color="purple" style={{ borderRadius: 6 }}>DeepSeek</Tag></Descriptions.Item>
-        <Descriptions.Item label="模型"><Text code>{apiConfig.model}</Text></Descriptions.Item>
-        <Descriptions.Item label="API 地址"><Text code style={{ fontSize: 12 }}>{apiConfig.api_base}</Text></Descriptions.Item>
-        <Descriptions.Item label="API Key">
-          <Tag color={apiConfig.has_api_key ? 'green' : 'red'} style={{ borderRadius: 6 }}>{apiConfig.has_api_key ? '✅ 已配置' : '❌ 未配置'}</Tag>
-        </Descriptions.Item>
-      </Descriptions>
-      <Paragraph type="secondary" style={{ marginTop: 16, marginBottom: 0, fontSize: 13 }}>
-        API Key 通过服务器 <Text code>.env</Text> 中的 <Text code>DEEPSEEK_API_KEY</Text> 配置。修改后需重启服务。
-      </Paragraph>
+    <Card style={{ ...cardStyle, maxWidth: 680 }} styles={{ body: { padding: 24 } }}>
+      <Space direction="vertical" style={{ width: '100%' }} size={16}>
+        <Descriptions column={1} bordered size="small" labelStyle={{ fontWeight: 600 }}>
+          <Descriptions.Item label="当前提供商"><Tag color="purple" style={{ borderRadius: 6 }}>{apiConfig.provider}</Tag></Descriptions.Item>
+          <Descriptions.Item label="当前模型"><Text code>{apiConfig.model}</Text></Descriptions.Item>
+          <Descriptions.Item label="API 地址"><Text code style={{ fontSize: 12 }}>{apiConfig.api_base || '未配置'}</Text></Descriptions.Item>
+          <Descriptions.Item label="API Key">
+            <Tag color={apiConfig.has_api_key ? 'green' : 'red'} style={{ borderRadius: 6 }}>{apiConfig.has_api_key ? '已配置' : '未配置'}</Tag>
+          </Descriptions.Item>
+        </Descriptions>
+
+        <Divider style={{ margin: 0 }} />
+
+        <div>
+          <Text strong>模型选择</Text>
+          <Select
+            value={selectedApiProvider}
+            onChange={(provider) => {
+              const option = (apiConfig.options || []).find((item: any) => item.provider === provider);
+              setSelectedApiProvider(provider);
+              setSelectedApiModel(option?.model || '');
+            }}
+            options={(apiConfig.options || []).map((item: any) => ({
+              value: item.provider,
+              label: `${item.label} · ${item.model}${item.configured ? '' : ' · 未配置'}`,
+              disabled: !item.configured,
+            }))}
+            style={{ width: '100%', marginTop: 8 }}
+          />
+        </div>
+
+        {selectedApiOption && (
+          <Card size="small" style={{ borderRadius: 12, background: '#fafafa' }}>
+            <Space direction="vertical" style={{ width: '100%' }} size={8}>
+              <Space size={8} wrap>
+                <Tag color={selectedApiOption.configured ? 'green' : 'orange'} style={{ borderRadius: 6 }}>
+                  {selectedApiOption.configured ? '服务端已配置' : '等待服务端配置'}
+                </Tag>
+                <Tag color={selectedApiOption.supports_thinking ? 'blue' : 'default'} style={{ borderRadius: 6 }}>
+                  {selectedApiOption.supports_thinking ? '支持思考流' : '普通内容流'}
+                </Tag>
+              </Space>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Base URL: <Text code>{selectedApiOption.api_base || selectedApiOption.api_base_env}</Text>
+              </Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                API Key: <Text code>{selectedApiOption.api_key_env}</Text> · Model: <Text code>{selectedApiOption.model_env}</Text>
+              </Text>
+            </Space>
+          </Card>
+        )}
+
+        <Button
+          type="primary"
+          icon={<SaveOutlined />}
+          loading={savingApiConfig}
+          disabled={profile?.role !== 'admin' || !selectedApiOption?.configured}
+          onClick={handleSaveApiConfig}
+          style={{ borderRadius: 10, width: 160 }}
+        >
+          保存模型
+        </Button>
+
+        <Alert
+          type="info"
+          showIcon
+          style={{ borderRadius: 10 }}
+          message="API Key 和 Base URL 只从服务器环境变量读取"
+          description="GPT-5.5 兼容接口请在 .env 中配置 OPENAI_COMPATIBLE_API_BASE、OPENAI_COMPATIBLE_API_KEY 和 OPENAI_COMPATIBLE_MODEL。要让重启后仍默认使用它，再设置 LLM_PROVIDER=openai-compatible。"
+        />
+      </Space>
     </Card>
   );
 

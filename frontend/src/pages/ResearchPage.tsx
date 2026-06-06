@@ -10,6 +10,7 @@ import {
   RocketOutlined, FolderOutlined, EditOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
+import { getApiErrorMessage } from '../services/apiError';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
 
 const { Title, Text, Paragraph } = Typography;
@@ -53,10 +54,10 @@ const ResearchPage: React.FC = () => {
     if (!paperSearch.trim()) return;
     setSearching(true);
     try { const r = await api.get('/papers/search', { params: { q: paperSearch, source: 'local', page_size: 10 } }); setSearchResults(r.data.items.filter((p: any) => p.id)); }
-    catch { } finally { setSearching(false); }
+    catch (error) { message.error(getApiErrorMessage(error, { fallback: '论文搜索失败' })); } finally { setSearching(false); }
   };
   const togglePaper = (id: string) => { setSelectedPaperIds(prev => prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]); };
-  const loadProjects = useCallback(async () => { setLoading(true); try { const r = await api.get('/research/projects'); setProjects(r.data); } catch { message.error('加载失败'); } finally { setLoading(false); } }, []);
+  const loadProjects = useCallback(async () => { setLoading(true); try { const r = await api.get('/research/projects'); setProjects(r.data); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '研究方向加载失败' })); } finally { setLoading(false); } }, []);
   const loadCollections = useCallback(async () => {
     try {
       const r = await api.get('/folders/');
@@ -67,7 +68,7 @@ const ResearchPage: React.FC = () => {
   }, []);
   useEffect(() => { loadProjects(); }, [loadProjects]);
   useEffect(() => { loadCollections(); }, [loadCollections]);
-  const handleDelete = async (id: string, name: string) => { try { await api.delete(`/research/projects/${id}`); message.success(`已删除「${name}」`); loadProjects(); } catch (e: any) { message.error(e.response?.data?.detail || '删除失败'); } };
+  const handleDelete = async (id: string, name: string) => { try { await api.delete(`/research/projects/${id}`); message.success(`已删除「${name}」`); loadProjects(); } catch (e: any) { message.error(getApiErrorMessage(e, { fallback: '删除研究方向失败' })); } };
   const handleCreate = async () => {
     if (!newProjectName.trim()) return;
     try {
@@ -82,7 +83,7 @@ const ResearchPage: React.FC = () => {
       message.success('项目已创建！'); setCreateModalOpen(false);
       setNewProjectName(''); setNewProjectDesc(''); setNewProjectKeywords(''); setSelectedPaperIds([]); setSelectedCollectionIds([]); setSearchResults([]); setPaperSearch('');
       loadProjects();
-    } catch (e: any) { message.error(e.response?.data?.detail || '创建失败'); }
+    } catch (e: any) { message.error(getApiErrorMessage(e, { fallback: '创建研究方向失败' })); }
   };
 
   const statusColors: Record<string, string> = { active: '#52c41a', completed: '#1677ff', archived: '#999' };

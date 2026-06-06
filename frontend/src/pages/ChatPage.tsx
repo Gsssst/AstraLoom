@@ -11,6 +11,7 @@ import {
 import { useChatSessionStore } from '../stores/useChatSessionStore';
 import { useThemeStore } from '../stores/useThemeStore';
 import api from '../services/api';
+import { getApiErrorMessage, getHttpErrorMessage } from '../services/apiError';
 import Markdown from '../components/Markdown';
 import ThinkingPanel from '../components/ThinkingPanel';
 
@@ -49,6 +50,22 @@ const formatSessionTime = (value: string) => {
     : date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
 };
 
+const appendAssistantError = (content: string) => {
+  useChatSessionStore.setState(s => ({
+    messages: [...s.messages, { role: 'assistant', content: `❌ ${content}`, created_at: new Date().toISOString() }],
+  }));
+};
+
+const parseStreamError = async (response: Response, fallback: string) => {
+  let data: unknown;
+  try {
+    data = await response.clone().json();
+  } catch {
+    try { data = await response.clone().text(); } catch { data = undefined; }
+  }
+  return getHttpErrorMessage(response.status, data, { fallback });
+};
+
 const ChatPage: React.FC = () => {
   const { token } = theme.useToken();
   const screens = Grid.useBreakpoint();
@@ -84,7 +101,7 @@ const ChatPage: React.FC = () => {
     setInitDone(true);
     (async () => {
       try { await loadSessions(); const s = useChatSessionStore.getState(); if (s.sessions.length === 0) await createSession(); else if (!s.currentSessionId) await selectSession(s.sessions[0].id); }
-      catch {} finally { setInitLoading(false); }
+      catch (error) { message.error(getApiErrorMessage(error, { fallback: '对话记录加载失败' })); } finally { setInitLoading(false); }
     })();
   }, [isAuthenticated, initDone]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, pendingMsg]);
@@ -187,7 +204,7 @@ const ChatPage: React.FC = () => {
     if (sendLock.current || (!input.trim() && attachedFiles.length === 0) || sending) return;
     if (!isAuthenticated) { message.warning('请先登录'); return; }
     if (attachedFiles.some(f => f.extracting)) { message.warning('文件还在解析中...'); return; }
-    let sid = currentSessionId; if (!sid) { sid = await createSession(); if (!sid) { message.error('创建对话失败'); return; } }
+    let sid = currentSessionId; if (!sid) { sid = await createSession(); if (!sid) { message.error('创建对话失败：请稍后重试'); return; } }
     sendLock.current = true;
     setStreamStatus(webSearch ? '正在检索知识库与网络来源...' : ragEnabled ? '正在检索知识库...' : '正在生成回答...');
     const text = input.trim(); setInput('');
@@ -209,9 +226,9 @@ const ChatPage: React.FC = () => {
         const t = localStorage.getItem('access_token');
         const prompt = text || `请分析文件: ${fileNames}`;
         const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: prompt, rag_enabled: ragEnabled, extra_context: allText || undefined, attachments: imageAttachments, web_search: webSearch, search_depth: searchDepth, show_thinking: showThinking }) });
-        if (!r.ok) throw new Error('fail');
+        if (!r.ok) throw new Error(await parseStreamError(r, '上传发送失败'));
         await consumeChatStream(r);
-      } catch (e: any) { useChatSessionStore.setState(s => ({ messages: [...s.messages, { role: 'assistant', content: `❌ ${e.message || '上传失败'}` }] })); }
+      } catch (e: any) { appendAssistantError(getApiErrorMessage(e, { fallback: '上传发送失败' })); }
       finally { setPendingMsg(null); setStreamStatus(null); sendLock.current = false; useChatSessionStore.setState({ sending: false }); }
       return;
     }
@@ -220,13 +237,36 @@ const ChatPage: React.FC = () => {
     try {
       const t = localStorage.getItem('access_token');
       const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: text, rag_enabled: ragEnabled, web_search: webSearch, search_depth: searchDepth, show_thinking: showThinking }) });
-      if (!r.ok) throw new Error('fail');
+      if (!r.ok) throw new Error(await parseStreamError(r, '发送失败'));
       await consumeChatStream(r);
-    } catch (e: any) { useChatSessionStore.setState(s => ({ messages: [...s.messages, { role: 'assistant', content: `❌ ${e.message || '发送失败'}` }] })); }
+    } catch (e: any) { appendAssistantError(getApiErrorMessage(e, { fallback: '发送失败' })); }
     finally { setPendingMsg(null); setStreamStatus(null); sendLock.current = false; useChatSessionStore.setState({ sending: false }); }
   };
 
   const filteredMessages = convSearch ? messages.filter(m => m.content.toLowerCase().includes(convSearch.toLowerCase())) : messages;
+  const handleCreateSession = async () => {
+    try {
+      await createSession();
+      if (isMobile) setDrawerOpen(false);
+    } catch (error) {
+      message.error(getApiErrorMessage(error, { fallback: '创建对话失败' }));
+    }
+  };
+  const handleSelectSession = async (id: string) => {
+    try {
+      await selectSession(id);
+      if (isMobile) setDrawerOpen(false);
+    } catch (error) {
+      message.error(getApiErrorMessage(error, { fallback: '加载会话失败' }));
+    }
+  };
+  const handleToggleRag = async (enabled: boolean) => {
+    try {
+      await toggleRag(enabled);
+    } catch (error) {
+      message.error(getApiErrorMessage(error, { fallback: '知识库模式切换失败' }));
+    }
+  };
   const handleExport = () => {
     const text = messages.map(m => `### ${m.role === 'user' ? '用户' : 'AI'}\n\n${m.content}\n\n`).join('---\n\n');
     const blob = new Blob([text], { type: 'text/markdown' });
@@ -248,8 +288,8 @@ const ChatPage: React.FC = () => {
           await api.delete(`/chat-sessions/${currentSessionId}/messages`);
           useChatSessionStore.setState({ messages: [] });
           message.success('已清空当前对话');
-        } catch {
-          message.error('清空失败');
+        } catch (error) {
+          message.error(getApiErrorMessage(error, { fallback: '清空失败' }));
         }
       },
     });
@@ -264,17 +304,17 @@ const ChatPage: React.FC = () => {
   };
   const sessionList = (
     <>
-      <div className="chat-session-create"><Button type="primary" icon={<PlusOutlined />} block onClick={() => { createSession(); if (isMobile) setDrawerOpen(false); }}>
+      <div className="chat-session-create"><Button type="primary" icon={<PlusOutlined />} block onClick={handleCreateSession}>
         <span style={{ fontSize: 14 }}>新对话</span>
       </Button></div>
       <div className="chat-session-scroll">
         <List loading={loading} dataSource={sessions} split={false} renderItem={s => {
           const isActive = s.id === currentSessionId;
           return (
-            <div className={`chat-session-item ${isActive ? 'is-active' : ''}`} onClick={() => { selectSession(s.id); if (isMobile) setDrawerOpen(false); }}>
+            <div className={`chat-session-item ${isActive ? 'is-active' : ''}`} onClick={() => handleSelectSession(s.id)}>
               <div className="chat-session-heading">
                 <Text strong={isActive} ellipsis className="chat-session-title" style={{ fontSize: 13 }}>{s.title}</Text>
-                <Popconfirm title="删除？" onConfirm={e => { e?.stopPropagation(); deleteSession(s.id); }}>
+                <Popconfirm title="删除？" onConfirm={async e => { e?.stopPropagation(); try { await deleteSession(s.id); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '删除会话失败' })); } }}>
                   <Button className="chat-session-delete" type="text" size="small" icon={<DeleteOutlined style={{ fontSize: 12 }} />} onClick={e => e.stopPropagation()} />
                 </Popconfirm>
               </div>
@@ -315,7 +355,7 @@ const ChatPage: React.FC = () => {
           </Space>
           <div className="chat-toolbar-actions" style={{ fontSize: 13, fontWeight: 500 }}>
             <Text className="chat-retrieval-strategy">{retrievalStrategy}</Text>
-            <Button className={`chat-control-pill ${ragEnabled ? 'is-active' : ''}`} type="text" size="small" icon={<DatabaseOutlined />} onClick={() => toggleRag(!ragEnabled)}>知识库</Button>
+            <Button className={`chat-control-pill ${ragEnabled ? 'is-active' : ''}`} type="text" size="small" icon={<DatabaseOutlined />} onClick={() => handleToggleRag(!ragEnabled)}>知识库</Button>
             <Tooltip title="联网增强可以和知识库同时使用">
               <Button className={`chat-control-pill ${webSearch ? 'is-active' : ''}`} type="text" size="small" icon={<GlobalOutlined />} onClick={handleWebSearchToggle}>联网增强</Button>
             </Tooltip>
@@ -357,18 +397,18 @@ const ChatPage: React.FC = () => {
                     <div style={{ display: 'flex', gap: 4, marginTop: 4, paddingLeft: 4, justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
                       {!msg._streaming && <Button type="text" size="small" icon={<span>💬</span>} onClick={() => setInput(`> ${msg.content.slice(0, 100)}${msg.content.length > 100 ? '...' : ''}\n\n`)} title="引用回复" style={{ fontSize: 11, color: token.colorTextQuaternary }} />}
                       {msg.role === 'user' && <Button type="text" size="small" icon={<EditOutlined />} onClick={() => setInput(msg.content)} style={{ fontSize: 11, color: token.colorTextQuaternary }} />}
-                      {!msg._streaming && msg.id && <Popconfirm title="删除此消息？" onConfirm={async () => { if (!msg.id || !currentSessionId) return; try { await api.delete(`/chat-sessions/${currentSessionId}/messages/${msg.id}`); useChatSessionStore.setState(s => ({ messages: s.messages.filter(m => m.id !== msg.id) })); } catch {} }}><Button type="text" size="small" icon={<DeleteOutlined />} style={{ fontSize: 11, color: '#ff4d4f40' }} /></Popconfirm>}
+                      {!msg._streaming && msg.id && <Popconfirm title="删除此消息？" onConfirm={async () => { if (!msg.id || !currentSessionId) return; try { await api.delete(`/chat-sessions/${currentSessionId}/messages/${msg.id}`); useChatSessionStore.setState(s => ({ messages: s.messages.filter(m => m.id !== msg.id) })); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '删除消息失败' })); } }}><Button type="text" size="small" icon={<DeleteOutlined />} style={{ fontSize: 11, color: '#ff4d4f40' }} /></Popconfirm>}
                       {msg.role === 'assistant' && !msg._streaming && <><Button type="text" size="small" icon={<CopyOutlined />} onClick={() => { navigator.clipboard.writeText(msg.content); message.success('已复制'); }} style={{ fontSize: 11, color: token.colorTextQuaternary }}>复制</Button>
                       <Dropdown menu={{ items: [
-                        { key: 'balanced', label: '🔄 平衡', onClick: () => { toggleRag(true); setInput('请重新回答'); setTimeout(()=>handleSend(),100); } },
-                        { key: 'creative', label: '💡 创意', onClick: () => { toggleRag(true); setInput('请用更有创意的角度回答'); setTimeout(()=>handleSend(),100); } },
-                        { key: 'precise', label: '🎯 精确', onClick: () => { toggleRag(true); setInput('请精确严谨地重新回答'); setTimeout(()=>handleSend(),100); } },
-                        { key: 'norag', label: '🧠 纯模型', onClick: () => { toggleRag(false); setInput('请重新回答'); setTimeout(()=>handleSend(),100); } },
+                        { key: 'balanced', label: '🔄 平衡', onClick: () => { handleToggleRag(true); setInput('请重新回答'); setTimeout(()=>handleSend(),100); } },
+                        { key: 'creative', label: '💡 创意', onClick: () => { handleToggleRag(true); setInput('请用更有创意的角度回答'); setTimeout(()=>handleSend(),100); } },
+                        { key: 'precise', label: '🎯 精确', onClick: () => { handleToggleRag(true); setInput('请精确严谨地重新回答'); setTimeout(()=>handleSend(),100); } },
+                        { key: 'norag', label: '🧠 纯模型', onClick: () => { handleToggleRag(false); setInput('请重新回答'); setTimeout(()=>handleSend(),100); } },
                       ]}} trigger={['click']}>
                         <Button type="text" size="small" icon={<RedoOutlined />} style={{ fontSize: 11, color: token.colorTextQuaternary }}>重新生成</Button>
                       </Dropdown>
-                      <Button type="text" size="small" onClick={async () => { if (msg.id) try { await api.post('/chat/feedback', { message_id: msg.id, rating: 'like' }); message.success('已反馈'); } catch {} }} style={{ fontSize: 11, color: token.colorTextQuaternary }}>👍</Button>
-                      <Button type="text" size="small" onClick={async () => { if (msg.id) try { await api.post('/chat/feedback', { message_id: msg.id, rating: 'dislike' }); message.success('已反馈'); } catch {} }} style={{ fontSize: 11, color: token.colorTextQuaternary }}>👎</Button></>}
+                      <Button type="text" size="small" onClick={async () => { if (msg.id) try { await api.post('/chat/feedback', { message_id: msg.id, rating: 'like' }); message.success('已反馈'); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '反馈提交失败' })); } }} style={{ fontSize: 11, color: token.colorTextQuaternary }}>👍</Button>
+                      <Button type="text" size="small" onClick={async () => { if (msg.id) try { await api.post('/chat/feedback', { message_id: msg.id, rating: 'dislike' }); message.success('已反馈'); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '反馈提交失败' })); } }} style={{ fontSize: 11, color: token.colorTextQuaternary }}>👎</Button></>}
                     </div>
                     {msg.references && msg.references.length > 0 && <div style={{ marginTop: 8, padding: '8px 12px', background: token.colorBgElevated, borderRadius: 12, border: `1px solid ${token.colorBorderSecondary}` }}><Text type="secondary" style={{ fontSize: 11 }}>📎 引用：</Text>{(msg.references as any[]).map((ref: any, ri: number) => <Tag key={`${ref.url || ref.arxiv_id || ref.title}-${ri}`} color={ref.source === 'web' ? 'cyan' : 'geekblue'} style={{ marginTop: 4, cursor: ref.url || ref.arxiv_id ? 'pointer' : 'default', borderRadius: 8 }} onClick={() => { if (ref.url) window.open(ref.url, '_blank', 'noopener,noreferrer'); else if (ref.arxiv_id) window.open(`https://arxiv.org/abs/${ref.arxiv_id.replace(/v\d+$/, '')}`, '_blank', 'noopener,noreferrer'); }}>[{ri + 1}] {ref.source === 'web' ? '网页 · ' : ''}{ref.title?.slice(0, 40)}{ref.title?.length > 40 ? '...' : ''}{ref.year ? ` (${ref.year})` : ''}</Tag>)}</div>}
                     <div style={{ fontSize: 11, color: token.colorTextQuaternary, marginTop: 4, textAlign: msg.role === 'user' ? 'right' : 'left', padding: '0 4px' }}>{msg.created_at ? new Date(msg.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : ''}</div>
@@ -405,7 +445,7 @@ const ChatPage: React.FC = () => {
               </div>
             )}
             <div className="chat-editor">
-              <Tooltip title="上传论文或图片"><Button className="chat-upload-button chat-tool-button" type="text" icon={<UploadOutlined />} onClick={() => { const el = document.createElement('input'); el.type = 'file'; el.accept = 'image/*,.pdf'; el.multiple = true; el.onchange = async () => { for (const f of Array.from(el.files || [])) { if (f.size > 10 * 1024 * 1024) { message.warning(`${f.name} 超过10MB`); continue; } const id = Math.random().toString(36).slice(2); setAttachedFiles(prev => [...prev, { file: f, text: '', extracting: true, id }]); const fd = new FormData(); fd.append('file', f); try { const res = await api.post('/chat-sessions/extract-file', fd, { headers: { 'Content-Type': 'multipart/form-data' } }); setAttachedFiles(prev => prev.map(p => p.id === id ? { ...p, text: res.data.extracted_text || '', extracting: false, dataUrl: res.data.data_url || undefined, mimeType: res.data.mime_type || undefined } : p)); } catch { setAttachedFiles(prev => prev.filter(p => p.id !== id)); message.error(`${f.name} 解析失败`); } } }; el.click(); }} /></Tooltip>
+              <Tooltip title="上传论文或图片"><Button className="chat-upload-button chat-tool-button" type="text" icon={<UploadOutlined />} onClick={() => { const el = document.createElement('input'); el.type = 'file'; el.accept = 'image/*,.pdf'; el.multiple = true; el.onchange = async () => { for (const f of Array.from(el.files || [])) { if (f.size > 10 * 1024 * 1024) { message.warning(`${f.name} 超过10MB`); continue; } const id = Math.random().toString(36).slice(2); setAttachedFiles(prev => [...prev, { file: f, text: '', extracting: true, id }]); const fd = new FormData(); fd.append('file', f); try { const res = await api.post('/chat-sessions/extract-file', fd, { headers: { 'Content-Type': 'multipart/form-data' } }); setAttachedFiles(prev => prev.map(p => p.id === id ? { ...p, text: res.data.extracted_text || '', extracting: false, dataUrl: res.data.data_url || undefined, mimeType: res.data.mime_type || undefined } : p)); } catch (error) { setAttachedFiles(prev => prev.filter(p => p.id !== id)); message.error(getApiErrorMessage(error, { fallback: `${f.name} 解析失败` })); } } }; el.click(); }} /></Tooltip>
               <div className="chat-input-wrap"><Input.TextArea className="chat-input" value={input} onChange={e => setInput(e.target.value)} onPressEnter={e => { if (!e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={ragEnabled ? '输入消息，Enter 发送，Shift+Enter 换行' : '输入消息...'} autoSize={{ minRows: 1, maxRows: 5 }} /></div>
               <Tooltip title="发送"><Button className="chat-send-button chat-tool-button" type="primary" shape="circle" icon={sending ? <LoadingOutlined /> : <SendOutlined />} onClick={handleSend} loading={sending} disabled={!input.trim() && attachedFiles.length === 0} /></Tooltip>
             </div>

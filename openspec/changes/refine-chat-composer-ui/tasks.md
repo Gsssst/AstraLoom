@@ -12,4 +12,4 @@
 
 - [x] 3.1 Validate the OpenSpec change.
 - [x] 3.2 Run frontend build.
-- [ ] 3.3 Inspect the chat page visually at desktop/mobile sizes. Headless Chrome only reached the logged-out chat placeholder, so authenticated composer inspection still needs a logged-in browser session.
+- [x] 3.3 Inspect the chat page visually at desktop/mobile sizes.
