@@ -41,13 +41,29 @@ test('paper workbench exposes official submission template profile panel', () =>
 
 test('paper workbench exposes consolidated project summary and next actions', () => {
   assert.match(writingPageSource, /workbench-summary/);
-  assert.match(writingPageSource, /写作工作台总览/);
+  assert.match(writingPageSource, /写作推进栏/);
   assert.match(writingPageSource, /建议下一步/);
   assert.match(writingPageSource, /章节进度/);
   assert.match(writingPageSource, /证据覆盖/);
   assert.match(writingPageSource, /引用风险/);
   assert.match(writingPageSource, /投稿模板/);
   assert.match(writingPageSource, /去处理/);
+});
+
+test('paper workbench exposes action-first stage strip and blockers', () => {
+  assert.match(writingPageSource, /workbenchStageSteps/);
+  assert.match(writingPageSource, /stageStepState/);
+  assert.match(writingPageSource, /workbenchTargetLabels/);
+  assert.match(writingPageSource, /workbenchPriorityLabels/);
+  assert.match(writingPageSource, /buildWorkbenchBlockers/);
+  assert.match(writingPageSource, /阶段路径/);
+  assert.match(writingPageSource, /阻塞项/);
+  assert.match(writingPageSource, /空章节/);
+  assert.match(writingPageSource, /偏短章节/);
+  assert.match(writingPageSource, /缺少证据卡/);
+  assert.match(writingPageSource, /未匹配引用/);
+  assert.match(writingPageSource, /未绑定官方模板/);
+  assert.match(writingPageSource, /快速跳转/);
 });
 
 test('citation recommendation UI exposes evidence decision loop', () => {

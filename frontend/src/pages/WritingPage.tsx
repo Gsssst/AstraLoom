@@ -73,6 +73,66 @@ const LoadingDots = () => (
   </Space>
 );
 
+const workbenchStageSteps = [
+  { key: 'setup', label: '结构', target: 'sections' },
+  { key: 'drafting', label: '初稿', target: 'sections' },
+  { key: 'evidence', label: '证据', target: 'evidence' },
+  { key: 'review', label: '校验', target: 'citations' },
+  { key: 'export', label: '导出', target: 'export' },
+];
+
+const workbenchTargetLabels: Record<string, string> = {
+  sections: '章节',
+  evidence: '证据',
+  'evidence-table': '证据表',
+  citations: '引用校验',
+  'submission-template': '投稿模板',
+  export: '导出',
+};
+
+const workbenchPriorityLabels: Record<string, string> = {
+  high: '高优先级',
+  medium: '建议处理',
+  low: '可稍后',
+};
+
+const stageStepState = (activeKey?: string) => {
+  const activeIndex = Math.max(0, workbenchStageSteps.findIndex(step => step.key === activeKey));
+  return workbenchStageSteps.map((step, index) => ({
+    ...step,
+    state: index < activeIndex ? 'done' : index === activeIndex ? 'current' : 'pending',
+  }));
+};
+
+const buildWorkbenchBlockers = (summary: any) => {
+  const blockers: { key: string; label: string; severity: 'high' | 'medium' | 'low'; target: string }[] = [];
+  const progress = summary?.progress || {};
+  const evidence = summary?.evidence || {};
+  const citations = summary?.citations || {};
+  const submission = summary?.submission || {};
+  const evidenceTotal = evidence.total || 0;
+  const localEvidence = evidence.local || 0;
+
+  if (progress.empty_sections > 0) {
+    blockers.push({ key: 'empty-sections', label: `空章节 ${progress.empty_sections}`, severity: 'high', target: 'sections' });
+  }
+  if (progress.short_sections > 0) {
+    blockers.push({ key: 'short-sections', label: `偏短章节 ${progress.short_sections}`, severity: 'medium', target: 'sections' });
+  }
+  if (evidenceTotal === 0) {
+    blockers.push({ key: 'missing-evidence', label: '缺少证据卡', severity: 'high', target: 'evidence' });
+  } else if (localEvidence < Math.max(1, Math.ceil(evidenceTotal * 0.5))) {
+    blockers.push({ key: 'weak-local-evidence', label: `本地证据 ${localEvidence}/${evidenceTotal}`, severity: 'high', target: 'evidence' });
+  }
+  if (citations.unmatched > 0) {
+    blockers.push({ key: 'unmatched-citations', label: `未匹配引用 ${citations.unmatched}`, severity: 'high', target: 'citations' });
+  }
+  if (!submission.template_status || submission.template_status === 'missing') {
+    blockers.push({ key: 'missing-template', label: '未绑定官方模板', severity: 'medium', target: 'submission-template' });
+  }
+  return blockers;
+};
+
 const WritingPage: React.FC = () => {
   const location = useLocation();
   const [assistantMode, setAssistantMode] = useState<'paper' | 'grant'>('paper');
@@ -160,6 +220,10 @@ const WritingPage: React.FC = () => {
     }
     if (target === 'evidence' || target === 'evidence-table') {
       document.getElementById('writing-evidence-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    if (target === 'citations') {
+      document.getElementById('writing-sections-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       return;
     }
     document.getElementById('writing-sections-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -694,87 +758,164 @@ const WritingPage: React.FC = () => {
 
   const workbenchOverviewPanel = selectedProject ? (
     <Card
-      title={<Space><RocketOutlined /> 写作工作台总览</Space>}
       loading={workbenchLoading}
       style={{ ...cardStyle, marginBottom: 16 }}
-      extra={workbenchSummary && (
-        <Space>
-          <Tag color={riskColor(workbenchSummary.risk_level)}>风险：{workbenchSummary.risk_level}</Tag>
-          <Tag color={exportStatusColor(workbenchSummary.status)}>{workbenchSummary.status_label}</Tag>
-        </Space>
-      )}
+      styles={{ body: { padding: 18 } }}
     >
-      {workbenchSummary ? (
-        <Space direction="vertical" size={14} style={{ width: '100%' }}>
-          <Alert
-            type={workbenchSummary.risk_level === 'high' ? 'warning' : 'info'}
-            showIcon
-            message={`${workbenchSummary.stage?.label || '写作推进'}：${workbenchSummary.stage?.description || '继续完善当前写作项目。'}`}
-            description="这里集中展示项目的章节、证据、引用和模板状态。下一步动作是规则化建议，不会替代人工判断。"
-            style={{ borderRadius: 10 }}
-          />
-          <Row gutter={[12, 12]}>
-            <Col xs={12} md={6}>
-              <Card size="small" style={{ borderRadius: 10 }}>
-                <Text type="secondary">章节进度</Text>
-                <Title level={4} style={{ margin: '4px 0' }}>{workbenchSummary.progress?.completed_sections || 0}/{workbenchSummary.progress?.total_sections || 0}</Title>
-                <Text type="secondary">{workbenchSummary.progress?.total_words || 0} 字</Text>
-              </Card>
-            </Col>
-            <Col xs={12} md={6}>
-              <Card size="small" style={{ borderRadius: 10 }}>
-                <Text type="secondary">证据覆盖</Text>
-                <Title level={4} style={{ margin: '4px 0' }}>{workbenchSummary.evidence?.local || 0}/{workbenchSummary.evidence?.total || 0}</Title>
-                <Text type="secondary">BibTeX {workbenchSummary.evidence?.bibtex_ready || 0}</Text>
-              </Card>
-            </Col>
-            <Col xs={12} md={6}>
-              <Card size="small" style={{ borderRadius: 10 }}>
-                <Text type="secondary">引用风险</Text>
-                <Title level={4} style={{ margin: '4px 0' }}>{workbenchSummary.citations?.unmatched || 0}</Title>
-                <Text type="secondary">未匹配 / {workbenchSummary.citations?.mentions || 0} 引用</Text>
-              </Card>
-            </Col>
-            <Col xs={12} md={6}>
-              <Card size="small" style={{ borderRadius: 10 }}>
-                <Text type="secondary">投稿模板</Text>
-                <Title level={5} style={{ margin: '6px 0' }}>{workbenchSummary.submission?.status_label || '未绑定官方模板'}</Title>
-                <Text type="secondary">{[workbenchSummary.submission?.venue, workbenchSummary.submission?.year].filter(Boolean).join(' ') || '待配置'}</Text>
-              </Card>
-            </Col>
-          </Row>
-          {workbenchSummary.warnings?.length > 0 && (
-            <Alert
-              type="warning"
-              showIcon
-              message="工作台提醒"
-              description={workbenchSummary.warnings.join(' ')}
-              style={{ borderRadius: 10 }}
-            />
-          )}
-          <div>
-            <Text strong>建议下一步</Text>
-            <List
-              size="small"
-              dataSource={workbenchSummary.next_actions || []}
-              renderItem={(action: any) => (
-                <List.Item
-                  actions={[
-                    <Button key="go" size="small" onClick={() => scrollToWorkbenchTarget(action.target)} style={{ borderRadius: 8 }}>
-                      去处理
-                    </Button>,
-                  ]}
-                >
-                  <List.Item.Meta
-                    title={<Space><Tag color={priorityColor(action.priority)}>{action.priority}</Tag><Text>{action.label}</Text></Space>}
-                    description={action.reason}
-                  />
-                </List.Item>
+      {workbenchSummary ? (() => {
+        const blockers = buildWorkbenchBlockers(workbenchSummary);
+        const stageSteps = stageStepState(workbenchSummary.stage?.key);
+        const primaryAction = (workbenchSummary.next_actions || [])[0];
+        return (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Row gutter={[12, 12]} align="middle">
+              <Col flex="auto">
+                <Space size={8} wrap>
+                  <Text strong style={{ fontSize: 16 }}>写作推进栏</Text>
+                  <Tag color={riskColor(workbenchSummary.risk_level)}>风险：{workbenchSummary.risk_level}</Tag>
+                  <Tag color={exportStatusColor(workbenchSummary.status)}>{workbenchSummary.status_label}</Tag>
+                </Space>
+                <Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 13 }}>
+                  {workbenchSummary.stage?.label || '写作推进'}：{workbenchSummary.stage?.description || '继续完善当前写作项目。'}
+                </Text>
+              </Col>
+              {primaryAction && (
+                <Col>
+                  <Button
+                    type="primary"
+                    icon={<RocketOutlined />}
+                    onClick={() => scrollToWorkbenchTarget(primaryAction.target)}
+                    style={{ borderRadius: 10 }}
+                  >
+                    {primaryAction.label}
+                  </Button>
+                </Col>
               )}
-            />
-          </div>
-        </Space>
-      ) : (
+            </Row>
+
+            <div>
+              <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 8 }}>阶段路径</Text>
+              <Space size={6} wrap>
+                {stageSteps.map(step => (
+                  <Button
+                    key={step.key}
+                    size="small"
+                    type={step.state === 'current' ? 'primary' : 'default'}
+                    onClick={() => scrollToWorkbenchTarget(step.target)}
+                    style={{
+                      borderRadius: 999,
+                      opacity: step.state === 'pending' ? 0.72 : 1,
+                    }}
+                  >
+                    {step.state === 'done' ? '✓ ' : ''}{step.label}
+                  </Button>
+                ))}
+              </Space>
+            </div>
+
+            <Row gutter={[12, 12]}>
+              <Col xs={24} md={14}>
+                <div style={{ padding: 12, borderRadius: 12, background: '#fafafa', border: '1px solid #f0f0f0' }}>
+                  <Row justify="space-between" align="middle" gutter={[8, 8]} style={{ marginBottom: 8 }}>
+                    <Col><Text strong>建议下一步</Text></Col>
+                    <Col><Text type="secondary" style={{ fontSize: 12 }}>按当前项目状态排序</Text></Col>
+                  </Row>
+                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                    {(workbenchSummary.next_actions || []).map((action: any) => (
+                      <div key={action.key} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 10px', borderRadius: 10, background: '#fff', border: '1px solid #f0f0f0' }}>
+                        <Tag color={priorityColor(action.priority)} style={{ marginTop: 1 }}>{workbenchPriorityLabels[action.priority] || action.priority}</Tag>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <Text strong style={{ display: 'block' }}>{action.label}</Text>
+                          <Text type="secondary" style={{ fontSize: 12 }}>{action.reason}</Text>
+                        </div>
+                        <Button size="small" onClick={() => scrollToWorkbenchTarget(action.target)} style={{ borderRadius: 8 }}>
+                          {workbenchTargetLabels[action.target] || '去处理'}
+                        </Button>
+                      </div>
+                    ))}
+                  </Space>
+                </div>
+              </Col>
+              <Col xs={24} md={10}>
+                <div style={{ padding: 12, borderRadius: 12, background: '#fff7e6', border: '1px solid #ffe7ba', minHeight: '100%' }}>
+                  <Row justify="space-between" align="middle" gutter={[8, 8]} style={{ marginBottom: 8 }}>
+                    <Col><Text strong>阻塞项</Text></Col>
+                    <Col><Tag color={blockers.length ? 'gold' : 'green'}>{blockers.length ? `${blockers.length} 项待处理` : '暂无明显阻塞'}</Tag></Col>
+                  </Row>
+                  {blockers.length ? (
+                    <Space size={6} wrap>
+                      {blockers.map(blocker => (
+                        <Tag
+                          key={blocker.key}
+                          color={priorityColor(blocker.severity)}
+                          style={{ borderRadius: 999, cursor: 'pointer', marginBottom: 4 }}
+                          onClick={() => scrollToWorkbenchTarget(blocker.target)}
+                        >
+                          {blocker.label}
+                        </Tag>
+                      ))}
+                    </Space>
+                  ) : (
+                    <Text type="secondary" style={{ fontSize: 13 }}>章节、证据、引用和模板没有检测到高优先级阻塞。</Text>
+                  )}
+                </div>
+              </Col>
+            </Row>
+
+            <Row gutter={[10, 10]}>
+              <Col xs={12} md={6}>
+                <div style={{ borderRadius: 10, border: '1px solid #f0f0f0', padding: 10 }}>
+                  <Text type="secondary">章节进度</Text>
+                  <Title level={4} style={{ margin: '4px 0' }}>{workbenchSummary.progress?.completed_sections || 0}/{workbenchSummary.progress?.total_sections || 0}</Title>
+                  <Text type="secondary">{workbenchSummary.progress?.total_words || 0} 字</Text>
+                </div>
+              </Col>
+              <Col xs={12} md={6}>
+                <div style={{ borderRadius: 10, border: '1px solid #f0f0f0', padding: 10 }}>
+                  <Text type="secondary">证据覆盖</Text>
+                  <Title level={4} style={{ margin: '4px 0' }}>{workbenchSummary.evidence?.local || 0}/{workbenchSummary.evidence?.total || 0}</Title>
+                  <Text type="secondary">BibTeX {workbenchSummary.evidence?.bibtex_ready || 0}</Text>
+                </div>
+              </Col>
+              <Col xs={12} md={6}>
+                <div style={{ borderRadius: 10, border: '1px solid #f0f0f0', padding: 10 }}>
+                  <Text type="secondary">引用风险</Text>
+                  <Title level={4} style={{ margin: '4px 0' }}>{workbenchSummary.citations?.unmatched || 0}</Title>
+                  <Text type="secondary">未匹配 / {workbenchSummary.citations?.mentions || 0}</Text>
+                </div>
+              </Col>
+              <Col xs={12} md={6}>
+                <div style={{ borderRadius: 10, border: '1px solid #f0f0f0', padding: 10 }}>
+                  <Text type="secondary">投稿模板</Text>
+                  <Title level={5} style={{ margin: '6px 0' }}>{workbenchSummary.submission?.status_label || '未绑定官方模板'}</Title>
+                  <Text type="secondary">{[workbenchSummary.submission?.venue, workbenchSummary.submission?.year].filter(Boolean).join(' ') || '待配置'}</Text>
+                </div>
+              </Col>
+            </Row>
+
+            {workbenchSummary.quick_links?.length > 0 && (
+              <Space size={8} wrap>
+                <Text type="secondary" style={{ fontSize: 12 }}>快速跳转</Text>
+                {workbenchSummary.quick_links.map((link: any) => (
+                  <Button key={link.key} size="small" onClick={() => scrollToWorkbenchTarget(link.target)} style={{ borderRadius: 999 }}>
+                    {link.label}
+                  </Button>
+                ))}
+              </Space>
+            )}
+
+            {workbenchSummary.warnings?.length > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                message="工作台提醒"
+                description={workbenchSummary.warnings.join(' ')}
+                style={{ borderRadius: 10 }}
+              />
+            )}
+          </Space>
+        );
+      })() : (
         <Alert
           type="info"
           showIcon
