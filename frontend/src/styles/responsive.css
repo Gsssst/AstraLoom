@@ -352,6 +352,56 @@
   background: rgba(117, 96, 196, 0.08);
 }
 
+.chat-model-status {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.chat-model-badge,
+.chat-status-chip,
+.chat-stream-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.chat-model-badge {
+  max-width: 230px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgba(37, 99, 235, 0.16);
+  border-radius: 12px;
+  color: #1d4ed8;
+  background: #eff6ff;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.chat-model-badge span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-status-chip {
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 11px;
+  color: #64748b;
+  background: #f1f5f9;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.chat-status-chip.is-active {
+  color: #166534;
+  background: #dcfce7;
+}
+
 .chat-control-pill {
   height: 28px;
   padding-inline: 9px !important;
@@ -480,6 +530,31 @@
 
 .chat-message-list {
   background: linear-gradient(180deg, #fbf9ff 0%, #f8f5ff 100%) !important;
+}
+
+.chat-stream-status {
+  padding: 12px 16px;
+  border-radius: 4px 16px 16px 16px;
+}
+
+.chat-stream-status-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.chat-stream-phase {
+  color: #6d55d9;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.chat-stream-status-text {
+  max-width: min(560px, 64vw);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .chat-empty-state {
@@ -887,6 +962,14 @@
   .chat-toolbar-actions {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .chat-model-status {
+    width: 100%;
+  }
+
+  .chat-model-badge {
+    max-width: 100%;
   }
 
   .chat-session-delete {

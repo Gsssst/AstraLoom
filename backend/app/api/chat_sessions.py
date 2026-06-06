@@ -201,6 +201,37 @@ def _build_llm_context_for_request(
     return [*context, multimodal_message]
 
 
+def _active_model_stream_metadata(
+    *,
+    rag_enabled: bool,
+    web_search_enabled: bool,
+    search_depth: str,
+    attachments: list[ChatImageAttachment] | None = None,
+) -> dict[str, Any]:
+    """Return frontend-safe model metadata for the current streamed turn."""
+    active_option = llm_service.get_active_option()
+    provider = str(active_option.get("provider") or "")
+    model = str(active_option.get("model") or "")
+    label = str(active_option.get("label") or model or provider or "当前模型")
+    supports_vision = provider == OPENAI_COMPATIBLE_PROVIDER
+    image_count = sum(1 for item in attachments or [] if item.mime_type.startswith("image/"))
+
+    return {
+        "provider": provider,
+        "label": label,
+        "model": model,
+        "configured": bool(active_option.get("configured")),
+        "capabilities": {
+            "rag": bool(rag_enabled),
+            "web_search": bool(web_search_enabled),
+            "thinking": bool(active_option.get("supports_thinking")),
+            "vision": supports_vision,
+        },
+        "search_depth": search_depth,
+        "image_attachments": image_count,
+    }
+
+
 def _retrieval_limits(search_depth: str) -> dict[str, int]:
     return RETRIEVAL_DEPTH_LIMITS.get(search_depth, RETRIEVAL_DEPTH_LIMITS["standard"])
 
@@ -581,7 +612,18 @@ async def send_message_stream(
                 retrieval_quality=retrieval_quality,
             ),
         )
-        yield _stream_event("meta", {"references": references})
+        yield _stream_event(
+            "meta",
+            {
+                "references": references,
+                "model": _active_model_stream_metadata(
+                    rag_enabled=rag_enabled,
+                    web_search_enabled=bool(req.web_search),
+                    search_depth=req.search_depth,
+                    attachments=req.attachments,
+                ),
+            },
+        )
         try:
             if req.show_thinking:
                 async for event in llm_service.chat_stream_with_thinking(messages=llm_context):

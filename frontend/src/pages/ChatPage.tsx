@@ -6,7 +6,7 @@ import {
   CopyOutlined, RedoOutlined, EditOutlined, SearchOutlined, MoreOutlined,
   DatabaseOutlined, GlobalOutlined, ExportOutlined, MessageOutlined,
   BulbOutlined, FileTextOutlined, ExperimentOutlined, SwapOutlined,
-  HighlightOutlined,
+  HighlightOutlined, EyeOutlined, ClockCircleOutlined,
 } from '@ant-design/icons';
 import { useChatSessionStore } from '../stores/useChatSessionStore';
 import { useThemeStore } from '../stores/useThemeStore';
@@ -41,6 +41,26 @@ interface AttachedFile {
   mimeType?: string;
 }
 
+interface ChatModelMetadata {
+  provider?: string;
+  label?: string;
+  model?: string;
+  configured?: boolean;
+  capabilities?: {
+    rag?: boolean;
+    web_search?: boolean;
+    thinking?: boolean;
+    vision?: boolean;
+  };
+  search_depth?: string;
+  image_attachments?: number;
+}
+
+interface StreamMetaContent {
+  references?: any[];
+  model?: ChatModelMetadata;
+}
+
 const formatSessionTime = (value: string) => {
   const date = new Date(value);
   const now = new Date();
@@ -66,6 +86,12 @@ const parseStreamError = async (response: Response, fallback: string) => {
   return getHttpErrorMessage(response.status, data, { fallback });
 };
 
+const formatElapsed = (ms: number) => {
+  const seconds = Math.max(0, ms) / 1000;
+  if (seconds < 10) return `${seconds.toFixed(1)}s`;
+  return `${Math.round(seconds)}s`;
+};
+
 const ChatPage: React.FC = () => {
   const { token } = theme.useToken();
   const screens = Grid.useBreakpoint();
@@ -79,6 +105,10 @@ const ChatPage: React.FC = () => {
   const [convSearch, setConvSearch] = useState('');
   const [pendingMsg, setPendingMsg] = useState<string | null>(null);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
+  const [activeModelInfo, setActiveModelInfo] = useState<ChatModelMetadata | null>(null);
+  const [sendStartedAt, setSendStartedAt] = useState<number | null>(null);
+  const [firstTokenAt, setFirstTokenAt] = useState<number | null>(null);
+  const [elapsedMs, setElapsedMs] = useState(0);
   const showThinking = useThemeStore((s) => s.showThinking ?? false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const sendLock = useRef(false);
@@ -92,6 +122,21 @@ const ChatPage: React.FC = () => {
       : ragEnabled
         ? '知识库检索'
         : '直接对话';
+  const modelDisplay = activeModelInfo?.label || activeModelInfo?.model || '当前模型';
+  const modelDetail = activeModelInfo
+    ? `${activeModelInfo.provider || 'provider'} / ${activeModelInfo.model || activeModelInfo.label || 'model'}`
+    : '发送消息后显示当前模型';
+  const hasImageAttachment = attachedFiles.some(file => file.file.type.startsWith('image/'));
+  const generationElapsedMs = firstTokenAt && sendStartedAt
+    ? Math.max(0, elapsedMs - (firstTokenAt - sendStartedAt))
+    : 0;
+  const streamPhaseLabel = sending && sendStartedAt
+    ? firstTokenAt
+      ? `生成中 ${formatElapsed(generationElapsedMs)}`
+      : streamStatus?.startsWith('正在检索')
+        ? `检索中 ${formatElapsed(elapsedMs)}`
+        : `等待首段 ${formatElapsed(elapsedMs)}`
+    : null;
 
   const [initDone, setInitDone] = useState(false);
   const [initLoading, setInitLoading] = useState(true);
@@ -106,6 +151,16 @@ const ChatPage: React.FC = () => {
   }, [isAuthenticated, initDone]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, pendingMsg]);
   useEffect(() => { setDrawerOpen(!isMobile); }, [isMobile, setDrawerOpen]);
+  useEffect(() => {
+    if (!sending || !sendStartedAt) {
+      setElapsedMs(0);
+      return;
+    }
+    const tick = () => setElapsedMs(Date.now() - sendStartedAt);
+    tick();
+    const timer = window.setInterval(tick, 250);
+    return () => window.clearInterval(timer);
+  }, [sending, sendStartedAt]);
 
   const appendStreamingReply = (content: string, references: any[] = []) => {
     useChatSessionStore.setState(s => {
@@ -144,6 +199,16 @@ const ChatPage: React.FC = () => {
       return { messages: msgs };
     });
   };
+  const markFirstToken = () => {
+    setFirstTokenAt(prev => prev ?? Date.now());
+  };
+  const resetStreamProgress = () => {
+    setPendingMsg(null);
+    setStreamStatus(null);
+    setSendStartedAt(null);
+    setFirstTokenAt(null);
+    setElapsedMs(0);
+  };
   const consumeChatStream = async (response: Response) => {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
@@ -161,14 +226,17 @@ const ChatPage: React.FC = () => {
       if (data === '[DONE]') return true;
 
       try {
-        const event = JSON.parse(data) as { type?: string; content?: string | { references?: any[] } };
+        const event = JSON.parse(data) as { type?: string; content?: string | StreamMetaContent };
         if (event.type === 'status') {
           setStreamStatus(typeof event.content === 'string' ? event.content : '正在生成回答...');
-        } else if (event.type === 'meta' && typeof event.content === 'object') {
+        } else if (event.type === 'meta' && event.content && typeof event.content === 'object') {
           references = event.content.references || [];
+          if (event.content.model) setActiveModelInfo(event.content.model);
         } else if (event.type === 'reasoning' && typeof event.content === 'string') {
+          markFirstToken();
           appendStreamingReasoning(event.content);
         } else if ((event.type === 'content' || event.type === 'error') && typeof event.content === 'string') {
+          markFirstToken();
           appendStreamingReply(event.content, references);
         } else if (event.type === 'done') {
           return true;
@@ -206,6 +274,9 @@ const ChatPage: React.FC = () => {
     if (attachedFiles.some(f => f.extracting)) { message.warning('文件还在解析中...'); return; }
     let sid = currentSessionId; if (!sid) { sid = await createSession(); if (!sid) { message.error('创建对话失败：请稍后重试'); return; } }
     sendLock.current = true;
+    setSendStartedAt(Date.now());
+    setFirstTokenAt(null);
+    setElapsedMs(0);
     setStreamStatus(webSearch ? '正在检索知识库与网络来源...' : ragEnabled ? '正在检索知识库...' : '正在生成回答...');
     const text = input.trim(); setInput('');
 
@@ -229,7 +300,7 @@ const ChatPage: React.FC = () => {
         if (!r.ok) throw new Error(await parseStreamError(r, '上传发送失败'));
         await consumeChatStream(r);
       } catch (e: any) { appendAssistantError(getApiErrorMessage(e, { fallback: '上传发送失败' })); }
-      finally { setPendingMsg(null); setStreamStatus(null); sendLock.current = false; useChatSessionStore.setState({ sending: false }); }
+      finally { resetStreamProgress(); sendLock.current = false; useChatSessionStore.setState({ sending: false }); }
       return;
     }
 
@@ -240,7 +311,7 @@ const ChatPage: React.FC = () => {
       if (!r.ok) throw new Error(await parseStreamError(r, '发送失败'));
       await consumeChatStream(r);
     } catch (e: any) { appendAssistantError(getApiErrorMessage(e, { fallback: '发送失败' })); }
-    finally { setPendingMsg(null); setStreamStatus(null); sendLock.current = false; useChatSessionStore.setState({ sending: false }); }
+    finally { resetStreamProgress(); sendLock.current = false; useChatSessionStore.setState({ sending: false }); }
   };
 
   const filteredMessages = convSearch ? messages.filter(m => m.content.toLowerCase().includes(convSearch.toLowerCase())) : messages;
@@ -354,6 +425,26 @@ const ChatPage: React.FC = () => {
             )}
           </Space>
           <div className="chat-toolbar-actions" style={{ fontSize: 13, fontWeight: 500 }}>
+            <div className="chat-model-status">
+              <Tooltip title={modelDetail}>
+                <span className="chat-model-badge">
+                  <RobotOutlined />
+                  <span>{modelDisplay}</span>
+                </span>
+              </Tooltip>
+              <Tooltip title={ragEnabled ? '知识库检索开启' : '知识库检索关闭'}>
+                <span className={`chat-status-chip ${ragEnabled ? 'is-active' : ''}`}><DatabaseOutlined />知识库</span>
+              </Tooltip>
+              <Tooltip title={webSearch ? '联网增强开启' : '联网增强关闭'}>
+                <span className={`chat-status-chip ${webSearch ? 'is-active' : ''}`}><GlobalOutlined />联网</span>
+              </Tooltip>
+              <Tooltip title={activeModelInfo?.capabilities?.thinking ? '当前模型支持思考展示' : '当前模型不支持思考展示'}>
+                <span className={`chat-status-chip ${activeModelInfo?.capabilities?.thinking ? 'is-active' : ''}`}><BulbOutlined />思考</span>
+              </Tooltip>
+              <Tooltip title={activeModelInfo?.capabilities?.vision ? '当前模型支持图片输入' : hasImageAttachment ? '当前模型不支持图片输入' : '当前模型未标记为视觉模型'}>
+                <span className={`chat-status-chip ${activeModelInfo?.capabilities?.vision ? 'is-active' : ''}`}><EyeOutlined />视觉</span>
+              </Tooltip>
+            </div>
             <Text className="chat-retrieval-strategy">{retrievalStrategy}</Text>
             <Button className={`chat-control-pill ${ragEnabled ? 'is-active' : ''}`} type="text" size="small" icon={<DatabaseOutlined />} onClick={() => handleToggleRag(!ragEnabled)}>知识库</Button>
             <Tooltip title="联网增强可以和知识库同时使用">
@@ -416,7 +507,7 @@ const ChatPage: React.FC = () => {
                 </div>
               ))}
               {pendingMsg && <div style={{ display: 'flex', gap: 10, marginBottom: 24, flexDirection: 'row-reverse' }}><Avatar size={32} icon={<UserOutlined />} style={{ background: 'linear-gradient(135deg,#667eea,#764ba2)' }} /><div style={{ maxWidth: '72%', padding: '12px 16px', borderRadius: '16px 4px 16px 16px', background: 'linear-gradient(135deg,#667eea,#764ba2)', color: '#fff', boxShadow: '0 2px 12px rgba(102,126,234,.3)', lineHeight: 1.7, fontSize: 14 }}>{pendingMsg}</div></div>}
-              {sending && <div style={{ display: 'flex', gap: 10, marginBottom: 24 }}><Avatar size={32} icon={<RobotOutlined />} style={{ background: 'linear-gradient(135deg,#12c2e9,#c471ed)' }} /><div style={{ padding: '12px 16px', borderRadius: '4px 16px 16px 16px', background: token.colorBgElevated, border: `1px solid ${token.colorBorderSecondary}` }}><Space size={8}><Space size={5}>{[0, 0.2, 0.4].map((d, i) => <div key={i} style={{ width: 7, height: 7, borderRadius: '50%', background: '#c471ed', animation: `bounce 1.4s infinite ease-in-out ${d}s` }} />)}</Space><Text type="secondary" style={{ fontSize: 12 }}>{streamStatus || '正在生成回答...'}</Text></Space></div></div>}
+              {sending && <div style={{ display: 'flex', gap: 10, marginBottom: 24 }}><Avatar size={32} icon={<RobotOutlined />} style={{ background: 'linear-gradient(135deg,#12c2e9,#c471ed)' }} /><div className="chat-stream-status" style={{ background: token.colorBgElevated, border: `1px solid ${token.colorBorderSecondary}` }}><Space size={8} align="start"><Space size={5} style={{ paddingTop: 5 }}>{[0, 0.2, 0.4].map((d, i) => <div key={i} style={{ width: 7, height: 7, borderRadius: '50%', background: '#c471ed', animation: `bounce 1.4s infinite ease-in-out ${d}s` }} />)}</Space><div className="chat-stream-status-copy">{streamPhaseLabel && <span className="chat-stream-phase"><ClockCircleOutlined />{streamPhaseLabel}</span>}<Text type="secondary" className="chat-stream-status-text">{streamStatus || '正在等待模型响应...'}</Text></div></Space></div></div>}
             </>
           )}
           <div ref={messagesEndRef} />
