@@ -79,3 +79,26 @@ test('research project generation status offers retry, restart, and proposal nex
   assert.match(researchProjectSource, /setActiveWorkbenchTab\('proposals'\)/);
   assert.match(researchProjectSource, /Tabs activeKey=\{activeWorkbenchTab\}/);
 });
+
+test('top proposal tab exposes ranking, filtering, and decision summary controls', () => {
+  assert.match(researchProjectSource, /type ProposalSortKey = 'review' \| 'novelty' \| 'feasibility' \| 'evidence' \| 'recent'/);
+  assert.match(researchProjectSource, /type ProposalFilterKey = 'all' \| 'draft' \| 'pinned' \| 'rejected' \| 'implemented'/);
+  assert.match(researchProjectSource, /proposalSortOptions/);
+  assert.match(researchProjectSource, /proposalFilterOptions/);
+  assert.match(researchProjectSource, /proposalDecisionCounts/);
+  assert.match(researchProjectSource, /proposalReviewScore/);
+  assert.match(researchProjectSource, /proposalEvidenceCount/);
+  assert.match(researchProjectSource, /visibleProposals/);
+  assert.match(researchProjectSource, /recommendedProposal/);
+});
+
+test('top proposal tab highlights recommendation and preserves visible proposal actions', () => {
+  assert.match(researchProjectSource, /推荐优先推进/);
+  assert.match(researchProjectSource, /当前筛选条件下没有 Proposal/);
+  assert.match(researchProjectSource, /value=\{proposalFilter\}/);
+  assert.match(researchProjectSource, /value=\{proposalSort\}/);
+  assert.match(researchProjectSource, /updateDecision\(idea\.id, 'pinned'\)/);
+  assert.match(researchProjectSource, /updateDecision\(idea\.id, 'rejected'\)/);
+  assert.match(researchProjectSource, /renderProposal\(idea\)/);
+  assert.match(researchProjectSource, /selectedIdeaIds\.includes\(idea\.id\)/);
+});

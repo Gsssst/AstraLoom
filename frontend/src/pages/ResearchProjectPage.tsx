@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Alert, Button, Card, Checkbox, Collapse, Col, Divider, Empty, Input, List, message,
-  Modal, Popconfirm, Progress, Row, Space, Spin, Steps, Switch, Tabs, Tag, Tooltip, Typography,
+  Modal, Popconfirm, Progress, Row, Select, Space, Spin, Steps, Switch, Tabs, Tag, Tooltip, Typography,
 } from 'antd';
 import {
   ArrowLeftOutlined, BulbOutlined, CodeOutlined, DeleteOutlined,
@@ -57,6 +57,7 @@ interface Idea {
   id: string; project_id: string; title: string; description: string | null;
   hypothesis?: string | null; approach?: string | null; novelty?: string | null;
   feasibility_score: number | null; novelty_score: number | null; status: string;
+  created_at?: string;
   generated_code: string | null; evidence_json?: { items?: Evidence[]; scope?: string; collection_sources?: { id: string; name: string; evidence_count: number }[] } | null;
   review_json?: Review | null; experiment_plan?: ExperimentPlan | null;
   parent_idea_id?: string | null; evolution_json?: { focus?: string; rationale?: string; round?: number; experiment_feedback?: ExperimentRecord } | null;
@@ -110,6 +111,22 @@ const sourceLabels: Record<string, string> = { local_library: '本地论文库',
 const statusLabels: Record<string, string> = { draft: '待筛选', pinned: '已收藏', rejected: '已淘汰', implemented: '已有代码' };
 const runStatusLabels: Record<string, string> = { pending: '等待中', running: '生成中', complete: '已完成', failed: '失败', cancelled: '已停止' };
 const runStatusColors: Record<string, string> = { pending: 'default', running: 'processing', complete: 'green', failed: 'red', cancelled: 'orange' };
+type ProposalSortKey = 'review' | 'novelty' | 'feasibility' | 'evidence' | 'recent';
+type ProposalFilterKey = 'all' | 'draft' | 'pinned' | 'rejected' | 'implemented';
+const proposalSortOptions: { value: ProposalSortKey; label: string }[] = [
+  { value: 'review', label: '综合评分优先' },
+  { value: 'novelty', label: '新颖性优先' },
+  { value: 'feasibility', label: '可行性优先' },
+  { value: 'evidence', label: '证据数量优先' },
+  { value: 'recent', label: '最新生成优先' },
+];
+const proposalFilterOptions: { value: ProposalFilterKey; label: string }[] = [
+  { value: 'all', label: '全部' },
+  { value: 'draft', label: '待筛选' },
+  { value: 'pinned', label: '已收藏' },
+  { value: 'rejected', label: '已淘汰' },
+  { value: 'implemented', label: '已有代码' },
+];
 const noveltyLabels: Record<string, string> = { likely_novel: '可能新颖', incremental: '增量改进', too_similar: '过于相似' };
 const noveltyColors: Record<string, string> = { likely_novel: 'green', incremental: 'gold', too_similar: 'red' };
 const adversarialLabels: Record<string, string> = { advance: '建议推进', revise: '需要修改', reject: '暂不推进' };
@@ -117,6 +134,25 @@ const adversarialColors: Record<string, string> = { advance: 'green', revise: 'o
 const readinessColors: Record<string, string> = { ready: 'green', needs_validation: 'orange', blocked: 'red' };
 const executionReadinessColors: Record<string, string> = { ready: 'green', needs_setup: 'orange', needs_iteration: 'purple' };
 const riskColors: Record<string, string> = { high: 'red', medium: 'orange', low: 'green' };
+
+const proposalEvidenceCount = (idea: Idea) => idea.evidence_json?.items?.length || 0;
+const proposalReviewScore = (idea: Idea) =>
+  idea.review_json?.aggregate_score
+  ?? (((idea.novelty_score || 0) + (idea.feasibility_score || 0)) / 2);
+const proposalSortValue = (idea: Idea, sortKey: ProposalSortKey) => {
+  if (sortKey === 'novelty') return idea.novelty_score || 0;
+  if (sortKey === 'feasibility') return idea.feasibility_score || 0;
+  if (sortKey === 'evidence') return proposalEvidenceCount(idea);
+  if (sortKey === 'recent') return idea.created_at ? new Date(idea.created_at).getTime() : 0;
+  return proposalReviewScore(idea);
+};
+const proposalDecisionCounts = (items: Idea[]) => ({
+  all: items.length,
+  draft: items.filter(idea => idea.status === 'draft').length,
+  pinned: items.filter(idea => idea.status === 'pinned').length,
+  rejected: items.filter(idea => idea.status === 'rejected').length,
+  implemented: items.filter(idea => idea.status === 'implemented').length,
+});
 
 const ResearchProjectPage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
@@ -136,6 +172,8 @@ const ResearchProjectPage: React.FC = () => {
   const [codeMap, setCodeMap] = useState<Record<string, { loading: boolean }>>({});
   const [externalSearch, setExternalSearch] = useState(true);
   const [selectedIdeaIds, setSelectedIdeaIds] = useState<string[]>([]);
+  const [proposalSort, setProposalSort] = useState<ProposalSortKey>('review');
+  const [proposalFilter, setProposalFilter] = useState<ProposalFilterKey>('all');
   const [compareIdeas, setCompareIdeas] = useState<Idea[]>([]);
   const [compareOpen, setCompareOpen] = useState(false);
   const [evolvingIdea, setEvolvingIdea] = useState<Idea | null>(null);
@@ -453,6 +491,11 @@ const ResearchProjectPage: React.FC = () => {
   const sourceErrors = evidenceMap.source_errors as Record<string, string> || {};
   const gaps = run?.gap_map?.gaps || [];
   const candidates = run?.candidate_pool || [];
+  const proposalCounts = proposalDecisionCounts(ideas);
+  const visibleProposals = ideas
+    .filter(idea => proposalFilter === 'all' || idea.status === proposalFilter)
+    .sort((a, b) => proposalSortValue(b, proposalSort) - proposalSortValue(a, proposalSort));
+  const recommendedProposal = visibleProposals.find(idea => idea.status !== 'rejected') || null;
   const stageIndex = Math.max(0, stageItems.findIndex(([key]) => key === run?.stage));
   const currentStageTitle = stageItems.find(([key]) => key === run?.stage)?.[1] || '尚未启动';
   const runStatus = generating ? 'running' : run?.status || 'idle';
@@ -761,19 +804,52 @@ const ResearchProjectPage: React.FC = () => {
   };
 
   const proposalTab = ideas.length === 0 ? <Empty description="评审完成后会保存 Top Proposal" /> : (
-    <Collapse accordion items={ideas.map(idea => ({
-      key: idea.id,
-      label: <Space wrap><BulbOutlined style={{ color: '#faad14' }} /><Text strong>{idea.title}</Text><Tag color={idea.status === 'pinned' ? 'green' : idea.status === 'rejected' ? 'red' : 'default'}>{statusLabels[idea.status] || idea.status}</Tag>{idea.parent_idea_id && <Tag color="cyan">第 {idea.evolution_json?.round || 2} 轮</Tag>}{idea.review_json?.aggregate_score != null && <Tag color="purple">综合 {idea.review_json.aggregate_score}</Tag>}</Space>,
-      extra: <Space onClick={event => event.stopPropagation()}>
-        <Checkbox checked={selectedIdeaIds.includes(idea.id)} onChange={event => toggleCompare(idea.id, event.target.checked)}>比较</Checkbox>
-        {idea.feasibility_score != null && <Tooltip title="可行性"><Tag icon={<RiseOutlined />} color="blue">{idea.feasibility_score}/10</Tag></Tooltip>}
-        {idea.novelty_score != null && <Tooltip title="新颖性"><Tag icon={<StarFilled />} color="gold">{idea.novelty_score}/10</Tag></Tooltip>}
-        <Popconfirm title="删除这个 Proposal？" onConfirm={async () => { await api.delete(`/research/ideas/${idea.id}`); setIdeas(previous => previous.filter(item => item.id !== idea.id)); }}>
-          <Button danger type="text" size="small" icon={<DeleteOutlined />} />
-        </Popconfirm>
-      </Space>,
-      children: renderProposal(idea),
-    }))} />
+    <Space direction="vertical" size={14} style={{ width: '100%' }}>
+      <Card size="small" style={{ borderRadius: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <Space wrap>
+            <Tag color="blue">全部 {proposalCounts.all}</Tag>
+            <Tag color="default">待筛选 {proposalCounts.draft}</Tag>
+            <Tag color="green">已收藏 {proposalCounts.pinned}</Tag>
+            <Tag color="red">已淘汰 {proposalCounts.rejected}</Tag>
+            <Tag color="purple">已有代码 {proposalCounts.implemented}</Tag>
+          </Space>
+          <Space wrap>
+            <Select size="small" value={proposalFilter} options={proposalFilterOptions} onChange={setProposalFilter} style={{ width: 122 }} />
+            <Select size="small" value={proposalSort} options={proposalSortOptions} onChange={setProposalSort} style={{ width: 150 }} />
+          </Space>
+        </div>
+        {recommendedProposal && (
+          <Alert
+            type="success"
+            showIcon
+            style={{ marginTop: 12 }}
+            message={<Space wrap><Text strong>推荐优先推进</Text><Tag color="green">{recommendedProposal.title}</Tag><Tag>综合 {proposalReviewScore(recommendedProposal).toFixed(1)}</Tag><Tag>证据 {proposalEvidenceCount(recommendedProposal)}</Tag></Space>}
+            description="基于当前排序和过滤条件，从未淘汰 Proposal 中选择最高分项。"
+          />
+        )}
+      </Card>
+      {visibleProposals.length === 0 ? <Empty description="当前筛选条件下没有 Proposal" /> : (
+        <Collapse accordion items={visibleProposals.map((idea, index) => {
+          const isRecommended = recommendedProposal?.id === idea.id;
+          return {
+            key: idea.id,
+            label: <Space wrap><BulbOutlined style={{ color: isRecommended ? '#52c41a' : '#faad14' }} /><Text strong>{idea.title}</Text>{isRecommended && <Tag color="green">推荐</Tag>}<Tag color={idea.status === 'pinned' ? 'green' : idea.status === 'rejected' ? 'red' : 'default'}>{statusLabels[idea.status] || idea.status}</Tag><Tag>#{index + 1}</Tag>{idea.parent_idea_id && <Tag color="cyan">第 {idea.evolution_json?.round || 2} 轮</Tag>}{idea.review_json?.aggregate_score != null && <Tag color="purple">综合 {idea.review_json.aggregate_score}</Tag>}<Tag>证据 {proposalEvidenceCount(idea)}</Tag></Space>,
+            extra: <Space onClick={event => event.stopPropagation()}>
+              <Checkbox checked={selectedIdeaIds.includes(idea.id)} onChange={event => toggleCompare(idea.id, event.target.checked)}>比较</Checkbox>
+              {idea.status !== 'pinned' && <Button size="small" type="text" icon={<PushpinOutlined />} onClick={() => updateDecision(idea.id, 'pinned')}>收藏</Button>}
+              {idea.status !== 'rejected' && <Button size="small" type="text" danger onClick={() => updateDecision(idea.id, 'rejected')}>淘汰</Button>}
+              {idea.feasibility_score != null && <Tooltip title="可行性"><Tag icon={<RiseOutlined />} color="blue">{idea.feasibility_score}/10</Tag></Tooltip>}
+              {idea.novelty_score != null && <Tooltip title="新颖性"><Tag icon={<StarFilled />} color="gold">{idea.novelty_score}/10</Tag></Tooltip>}
+              <Popconfirm title="删除这个 Proposal？" onConfirm={async () => { await api.delete(`/research/ideas/${idea.id}`); setIdeas(previous => previous.filter(item => item.id !== idea.id)); }}>
+                <Button danger type="text" size="small" icon={<DeleteOutlined />} />
+              </Popconfirm>
+            </Space>,
+            children: renderProposal(idea),
+          };
+        })} />
+      )}
+    </Space>
   );
 
   const experimentTab = experiments.length === 0 ? <Empty description="在 Proposal 中记录实验后，会在这里形成反馈闭环" /> : (
