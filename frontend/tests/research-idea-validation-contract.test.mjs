@@ -34,12 +34,24 @@ test('research project page exposes experiment execution pack', () => {
 });
 
 test('research project page does not block core loading on related paper recommendations', () => {
-  assert.match(researchProjectSource, /const loadRelatedPapers = async \(id: string\) =>/);
+  assert.match(researchProjectSource, /const loadRelatedPapers = async \(id: string, refresh = false\) =>/);
   assert.match(researchProjectSource, /loadRelatedPapers\(projectId\);/);
   assert.match(researchProjectSource, /setRelatedPapers\(\[\]\)/);
   assert.doesNotMatch(
     researchProjectSource,
     /Promise\.all\(\[[\s\S]*recommended-papers[\s\S]*\]\)\.catch/,
   );
-  assert.match(researchProjectSource, /<Card title="相关论文" loading=\{papersLoading\}/);
+  assert.match(researchProjectSource, /title=\{<Space><span>相关论文<\/span>/);
+  assert.match(researchProjectSource, /loading=\{papersLoading\}/);
+});
+
+test('research project related papers expose cache state and refresh control', () => {
+  assert.match(researchProjectSource, /papersCached/);
+  assert.match(researchProjectSource, /papersRefreshedAt/);
+  assert.match(researchProjectSource, /payload\.items/);
+  assert.match(researchProjectSource, /payload\.cached/);
+  assert.match(researchProjectSource, /payload\.refreshed_at/);
+  assert.match(researchProjectSource, /params: \{ refresh: refresh \|\| undefined \}/);
+  assert.match(researchProjectSource, /loadRelatedPapers\(projectId, true\)/);
+  assert.match(researchProjectSource, /已使用缓存/);
 });

@@ -1,6 +1,7 @@
 """科研 Pipeline API — 项目管理、Idea 工作台、讨论、代码生成。"""
 
 import asyncio
+import hashlib
 import json
 import logging
 from typing import Any, List, Optional
@@ -247,6 +248,21 @@ class WritingDraftResponse(BaseModel):
     local_paper_count: int
 
 
+class RelatedPaperRecommendation(BaseModel):
+    id: str
+    title: str
+    year: Optional[int] = None
+    arxiv_id: Optional[str] = None
+    source: str
+    score: float
+
+
+class RelatedPaperRecommendationResponse(BaseModel):
+    items: list[RelatedPaperRecommendation]
+    cached: bool
+    refreshed_at: Optional[str] = None
+
+
 def _idea_response(idea: ResearchIdea) -> IdeaResponse:
     return IdeaResponse(
         id=str(idea.id),
@@ -303,6 +319,37 @@ def _stream_event(event_type: str, data: Any = None) -> str:
     elif data is not None:
         payload["data"] = data
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _related_paper_cache_key(project: ResearchProject) -> str:
+    payload = {
+        "name": project.name or "",
+        "description": project.description or "",
+        "keywords": sorted(str(item) for item in (project.keywords or [])),
+        "paper_ids": sorted(str(item) for item in (project.paper_ids or [])),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _related_paper_cache(project: ResearchProject) -> dict[str, Any] | None:
+    metadata = project.metadata_json or {}
+    cache = metadata.get("related_paper_recommendations")
+    return cache if isinstance(cache, dict) else None
+
+
+def _serialize_related_papers(papers: list[tuple[Any, float, str]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": str(p.id) if getattr(p, "id", None) else f"ext:{p.arxiv_id}",
+            "title": p.title,
+            "year": p.year,
+            "arxiv_id": p.arxiv_id,
+            "source": src,
+            "score": round(score, 3),
+        }
+        for p, score, src in papers
+    ]
 
 
 # --- API ---
@@ -435,17 +482,44 @@ async def delete_project(project_id: str, db: AsyncSession = Depends(get_db), cu
     return {"deleted": True, "name": project_name}
 
 
-@router.get("/projects/{project_id}/recommended-papers")
-async def get_recommended_papers(project_id: str, db: AsyncSession = Depends(get_db), current_user=Depends(get_current_user)):
+@router.get("/projects/{project_id}/recommended-papers", response_model=RelatedPaperRecommendationResponse)
+async def get_recommended_papers(
+    project_id: str,
+    refresh: bool = Query(default=False, description="是否强制刷新推荐缓存"),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
     """获取推荐的论文（异步，不阻塞页面加载）。"""
     project = await _get_workspace_accessible_project(db, project_id, current_user)
+    cache_key = _related_paper_cache_key(project)
+    cache = _related_paper_cache(project)
+    if not refresh and cache and cache.get("key") == cache_key and isinstance(cache.get("items"), list):
+        return RelatedPaperRecommendationResponse(
+            items=cache["items"],
+            cached=True,
+            refreshed_at=cache.get("refreshed_at"),
+        )
+
     from app.services.paper_selection import PaperSelectionService
     selector = PaperSelectionService(db)
     papers = await selector.select_papers(
         topic_name=project.name, topic_description=project.description or "",
         keywords=project.keywords, manual_paper_ids=project.paper_ids, max_papers=8,
     )
-    return [{"id": str(p.id) if hasattr(p, 'id') else f"ext:{p.arxiv_id}", "title": p.title, "year": p.year, "arxiv_id": p.arxiv_id, "source": src, "score": round(score, 3)} for p, score, src in papers]
+    items = _serialize_related_papers(papers)
+    from datetime import datetime, timezone
+
+    refreshed_at = datetime.now(timezone.utc).isoformat()
+    project.metadata_json = {
+        **(project.metadata_json or {}),
+        "related_paper_recommendations": {
+            "key": cache_key,
+            "items": items,
+            "refreshed_at": refreshed_at,
+        },
+    }
+    await db.commit()
+    return RelatedPaperRecommendationResponse(items=items, cached=False, refreshed_at=refreshed_at)
 
 
 @router.post("/projects/{project_id}/generate-ideas", response_model=List[IdeaResponse])

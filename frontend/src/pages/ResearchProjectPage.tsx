@@ -126,6 +126,8 @@ const ResearchProjectPage: React.FC = () => {
   const [generating, setGenerating] = useState(false);
   const [relatedPapers, setRelatedPapers] = useState<any[]>([]);
   const [papersLoading, setPapersLoading] = useState(false);
+  const [papersCached, setPapersCached] = useState(false);
+  const [papersRefreshedAt, setPapersRefreshedAt] = useState<string | null>(null);
   const [discussMap, setDiscussMap] = useState<Record<string, { msg: string; log: any[]; loading: boolean }>>({});
   const [codeMap, setCodeMap] = useState<Record<string, { loading: boolean }>>({});
   const [externalSearch, setExternalSearch] = useState(true);
@@ -155,13 +157,20 @@ const ResearchProjectPage: React.FC = () => {
     setProject(response.data);
     setIdeas(response.data.ideas || []);
   };
-  const loadRelatedPapers = async (id: string) => {
+  const loadRelatedPapers = async (id: string, refresh = false) => {
     setPapersLoading(true);
     try {
-      const response = await api.get(`/research/projects/${id}/recommended-papers`);
-      setRelatedPapers((response.data as any[]).map(p => ({ ...p, similarity: p.score })));
+      const response = await api.get(`/research/projects/${id}/recommended-papers`, { params: { refresh: refresh || undefined } });
+      const payload = Array.isArray(response.data)
+        ? { items: response.data, cached: false, refreshed_at: null }
+        : response.data;
+      setRelatedPapers(((payload.items || []) as any[]).map(p => ({ ...p, similarity: p.score })));
+      setPapersCached(!!payload.cached);
+      setPapersRefreshedAt(payload.refreshed_at || null);
     } catch {
       setRelatedPapers([]);
+      setPapersCached(false);
+      setPapersRefreshedAt(null);
     } finally {
       setPapersLoading(false);
     }
@@ -171,6 +180,8 @@ const ResearchProjectPage: React.FC = () => {
     if (!projectId) return;
     setLoading(true);
     setRelatedPapers([]);
+    setPapersCached(false);
+    setPapersRefreshedAt(null);
     loadRelatedPapers(projectId);
     Promise.all([
       loadProject(),
@@ -399,6 +410,9 @@ const ResearchProjectPage: React.FC = () => {
   const gaps = run?.gap_map?.gaps || [];
   const candidates = run?.candidate_pool || [];
   const stageIndex = Math.max(0, stageItems.findIndex(([key]) => key === run?.stage));
+  const relatedPapersUpdatedText = papersRefreshedAt
+    ? new Date(papersRefreshedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : null;
 
   const evidenceTab = (
     <div>
@@ -762,7 +776,29 @@ const ResearchProjectPage: React.FC = () => {
           <div style={{ marginBottom: 14 }}>
             <WorkspaceResourceLinks resourceType="research_projects" resourceId={project.id} title="所属项目空间" />
           </div>
-          <Card title="相关论文" loading={papersLoading} style={{ borderRadius: 14 }}>
+          <Card
+            title={<Space><span>相关论文</span>{papersCached && <Tag color="green">缓存</Tag>}</Space>}
+            loading={papersLoading}
+            style={{ borderRadius: 14 }}
+            extra={
+              <Tooltip title={relatedPapersUpdatedText ? `上次刷新：${relatedPapersUpdatedText}` : '重新计算相关论文推荐'}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  loading={papersLoading}
+                  onClick={() => projectId && loadRelatedPapers(projectId, true)}
+                >
+                  刷新
+                </Button>
+              </Tooltip>
+            }
+          >
+            {relatedPapersUpdatedText && (
+              <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 8 }}>
+                {papersCached ? '已使用缓存' : '刚刚刷新'} · {relatedPapersUpdatedText}
+              </Text>
+            )}
             <List size="small" dataSource={relatedPapers} locale={{ emptyText: '暂无匹配论文' }} renderItem={paper => (
               <List.Item style={{ cursor: 'pointer' }} onClick={() => navigate(`/papers/${paper.id}`)}>
                 <List.Item.Meta title={<Text ellipsis>{paper.title}</Text>} description={<Space>{paper.year && <Tag>{paper.year}</Tag>}<Tag color="blue">{Math.round((paper.similarity || 0) * 100)}%</Tag></Space>} />
