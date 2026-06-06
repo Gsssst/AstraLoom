@@ -17,7 +17,7 @@
 | 数据库 | PostgreSQL 16 + pgvector |
 | 缓存 | Redis 7 |
 | 前端 | React 18, TypeScript, Vite, Ant Design |
-| LLM | DeepSeek V4 Pro (via LiteLLM) |
+| LLM | DeepSeek V4 Pro / OpenAI-compatible GPT-5.5 endpoint (via LiteLLM) |
 | 部署 | Docker Compose, Nginx |
 
 ## 快速开始
@@ -33,7 +33,7 @@ cd auto-Research-DS
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填入你的 DeepSeek API Key
+# 编辑 .env，填入你的 LLM API Key
 ```
 
 ### 3. 启动全部服务
@@ -78,6 +78,28 @@ auto-Research-DS/
 ```
 
 ## 开发
+
+### LLM 模型配置
+
+默认使用 DeepSeek：
+
+```bash
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=sk-your-deepseek-api-key
+DEEPSEEK_API_BASE=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-pro
+```
+
+如需使用 OpenAI Chat Completions 兼容端点，在 `.env` 中配置：
+
+```bash
+LLM_PROVIDER=openai-compatible
+OPENAI_COMPATIBLE_API_KEY=sk-your-compatible-api-key
+OPENAI_COMPATIBLE_API_BASE=https://your-compatible-endpoint/v1
+OPENAI_COMPATIBLE_MODEL=gpt-5.5
+```
+
+设置页的 API 栏可以切换当前运行时模型；重启后默认选择由 `.env` 中的 `LLM_PROVIDER` 决定。
 
 ### 后端开发
 

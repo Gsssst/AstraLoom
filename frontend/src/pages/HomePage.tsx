@@ -108,7 +108,7 @@ const HomePage: React.FC = () => {
           {/* Badge */}
           <div className="hero-badge">
             <StarFilled style={{ color: '#faad14', fontSize: 14 }} />
-            <span>由 DeepSeek V4 Pro 驱动</span>
+            <span>由可配置 AI 模型驱动</span>
             <FireOutlined style={{ color: '#ff4d4f', fontSize: 12, marginLeft: 6 }} />
             <span style={{ color: 'rgba(255,255,255,0.7)' }}>全新升级</span>
           </div>
@@ -195,7 +195,7 @@ const HomePage: React.FC = () => {
             </div>
             <Text strong>Auto-Research-DS</Text>
           </div>
-          <Text type="secondary" style={{ fontSize: 13 }}>© 2026 · 由 DeepSeek V4 Pro 驱动 · 为课题组打造的新一代 AI 科研平台</Text>
+          <Text type="secondary" style={{ fontSize: 13 }}>© 2026 · 由可配置 AI 模型驱动 · 为课题组打造的新一代 AI 科研平台</Text>
           <Space size={16} style={{ marginTop: 12 }}>
             {quickActions.map(a => <Button key={a.key} type="text" size="small" onClick={() => navigate(a.path)} style={{ color: '#888' }}>{a.label}</Button>)}
           </Space>

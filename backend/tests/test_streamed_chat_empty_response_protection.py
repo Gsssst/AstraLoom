@@ -4,7 +4,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.api import chat_sessions
+from app.api import settings as settings_api
 from app.services import llm as llm_module
+from app.services.usage_tracker import UsageTracker, set_usage_user
 
 
 def _chunk(*, content=None, reasoning_content=None):
@@ -72,3 +74,90 @@ def test_stream_failure_content_replaces_blank_reply_with_visible_fallback():
 
     assert full_content == chat_sessions.EMPTY_STREAM_FALLBACK
     assert appended == chat_sessions.EMPTY_STREAM_FALLBACK
+
+
+def test_llm_service_builds_openai_compatible_kwargs(monkeypatch, tmp_path):
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_KEY", "sk-compatible")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_BASE", "https://llm.example.com/v1")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_MODEL", "gpt-5.5")
+    monkeypatch.setattr(llm_module.settings, "LLM_RUNTIME_CONFIG_PATH", str(tmp_path / "llm.json"))
+
+    service = llm_module.LLMService()
+    selected = service.select_model("openai-compatible", "gpt-5.5")
+
+    assert selected["provider"] == "openai-compatible"
+    assert selected["configured"] is True
+    assert service._get_kwargs() == {
+        "model": "openai/gpt-5.5",
+        "api_key": "sk-compatible",
+        "api_base": "https://llm.example.com/v1",
+    }
+
+
+def test_llm_service_rejects_unconfigured_provider_without_changing_selection(monkeypatch, tmp_path):
+    monkeypatch.setattr(llm_module.settings, "DEEPSEEK_API_KEY", "sk-deepseek")
+    monkeypatch.setattr(llm_module.settings, "DEEPSEEK_API_BASE", "https://api.deepseek.com")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_KEY", "")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_BASE", "")
+    monkeypatch.setattr(llm_module.settings, "LLM_RUNTIME_CONFIG_PATH", str(tmp_path / "llm.json"))
+
+    service = llm_module.LLMService()
+
+    with pytest.raises(ValueError, match="API Base"):
+        service.select_model("openai-compatible", "gpt-5.5")
+
+    assert service.get_active_option()["provider"] == "deepseek"
+
+
+@pytest.mark.asyncio
+async def test_llm_usage_records_active_model(monkeypatch, tmp_path):
+    captured = []
+
+    async def fake_log_usage(**kwargs):
+        captured.append(kwargs)
+
+    monkeypatch.setattr(UsageTracker, "log_usage", fake_log_usage)
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_KEY", "sk-compatible")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_BASE", "https://llm.example.com/v1")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_MODEL", "gpt-5.5")
+    monkeypatch.setattr(llm_module.settings, "LLM_RUNTIME_CONFIG_PATH", str(tmp_path / "llm.json"))
+    set_usage_user(None)
+
+    service = llm_module.LLMService()
+    service.select_model("openai-compatible", "gpt-5.5")
+    await service._log_usage(prompt_tokens=1, completion_tokens=2, total_tokens=3)
+
+    assert captured[0]["model"] == "gpt-5.5"
+
+
+@pytest.mark.asyncio
+async def test_settings_api_config_lists_models_without_keys(monkeypatch, tmp_path):
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_KEY", "sk-compatible")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_BASE", "https://llm.example.com/v1")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_MODEL", "gpt-5.5")
+    monkeypatch.setattr(llm_module.settings, "LLM_RUNTIME_CONFIG_PATH", str(tmp_path / "llm.json"))
+    monkeypatch.setattr(settings_api.llm_service, "runtime_config_path", str(tmp_path / "llm.json"))
+
+    response = await settings_api.get_api_config(SimpleNamespace(id="user"))
+    payload = response.model_dump()
+
+    assert any(item["provider"] == "openai-compatible" for item in payload["options"])
+    assert "sk-compatible" not in json.dumps(payload)
+    assert payload["provider"] == "deepseek"
+
+
+@pytest.mark.asyncio
+async def test_settings_api_update_switches_openai_compatible_model(monkeypatch, tmp_path):
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_KEY", "sk-compatible")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_BASE", "https://llm.example.com/v1")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_MODEL", "gpt-5.5")
+    monkeypatch.setattr(settings_api.llm_service, "runtime_config_path", str(tmp_path / "llm.json"))
+
+    response = await settings_api.update_api_config(
+        settings_api.UpdateApiConfigRequest(provider="openai-compatible", model="gpt-5.5"),
+        SimpleNamespace(username="admin"),
+    )
+
+    assert response.provider == "openai-compatible"
+    assert response.model == "gpt-5.5"
+    assert response.configured is True

@@ -9,8 +9,9 @@ from sqlalchemy import select
 
 from app.db.session import get_db
 from app.db.models.user import User
-from app.core.security import get_current_user, hash_password, verify_password
+from app.core.security import get_current_user, hash_password, verify_password, require_admin
 from app.core.config import settings as app_settings
+from app.services.llm import llm_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/settings", tags=["设置"])
@@ -40,12 +41,32 @@ class ApiConfigResponse(BaseModel):
     model: str
     api_base: str
     has_api_key: bool
+    configured: bool = False
+    supports_thinking: bool = False
+    options: list[dict] = Field(default_factory=list)
     web_search_providers: list[str] = Field(default_factory=list)
 
 
 class UpdateApiConfigRequest(BaseModel):
-    api_key: Optional[str] = None
+    provider: str = Field(..., min_length=1)
     model: Optional[str] = None
+
+
+def _api_config_response() -> ApiConfigResponse:
+    from app.services.web_search import available_web_provider_names
+
+    active = llm_service.get_active_option()
+    options = llm_service.available_options()
+    return ApiConfigResponse(
+        provider=active["provider"],
+        model=active["model"],
+        api_base=active["api_base"],
+        has_api_key=active["has_api_key"],
+        configured=active["configured"],
+        supports_thinking=active["supports_thinking"],
+        options=options,
+        web_search_providers=available_web_provider_names(),
+    )
 
 
 class SystemInfoResponse(BaseModel):
@@ -106,15 +127,18 @@ async def change_password(req: ChangePasswordRequest, db: AsyncSession = Depends
 @router.get("/api-config", response_model=ApiConfigResponse)
 async def get_api_config(user: User = Depends(get_current_user)):
     """获取 API 配置信息（隐藏 API Key）。"""
-    from app.services.web_search import available_web_provider_names
+    return _api_config_response()
 
-    return ApiConfigResponse(
-        provider="deepseek",
-        model=app_settings.DEEPSEEK_MODEL,
-        api_base=app_settings.DEEPSEEK_API_BASE,
-        has_api_key=bool(app_settings.DEEPSEEK_API_KEY),
-        web_search_providers=available_web_provider_names(),
-    )
+
+@router.put("/api-config", response_model=ApiConfigResponse)
+async def update_api_config(req: UpdateApiConfigRequest, user: User = Depends(require_admin)):
+    """切换当前进程内生效的 LLM provider/model。API Key 仍由服务器环境变量配置。"""
+    try:
+        active = llm_service.select_model(req.provider, req.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info("LLM provider switched to %s/%s by %s", active["provider"], active["model"], user.username)
+    return _api_config_response()
 
 
 @router.get("/system-info", response_model=SystemInfoResponse)

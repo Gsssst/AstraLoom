@@ -43,10 +43,21 @@ class Settings(BaseSettings):
     # --- Redis ---
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # --- LLM (DeepSeek) ---
+    # --- LLM ---
+    LLM_PROVIDER: str = "deepseek"  # deepseek, openai-compatible
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_API_BASE: str = "https://api.deepseek.com"
     DEEPSEEK_MODEL: str = "deepseek-v4-pro"
+    OPENAI_COMPATIBLE_API_KEY: str = ""
+    OPENAI_COMPATIBLE_API_BASE: str = ""
+    OPENAI_COMPATIBLE_MODEL: str = "gpt-5.5"
+    LLM_RUNTIME_CONFIG_PATH: str = "./uploads/llm-runtime-config.json"
+    USAGE_DEEPSEEK_INPUT_CNY_PER_1M: float = 3.0
+    USAGE_DEEPSEEK_OUTPUT_CNY_PER_1M: float = 6.0
+    USAGE_OPENAI_COMPATIBLE_INPUT_CNY_PER_1M: float = 0.0
+    USAGE_OPENAI_COMPATIBLE_OUTPUT_CNY_PER_1M: float = 0.0
+    USAGE_FALLBACK_INPUT_CNY_PER_1M: float = 3.0
+    USAGE_FALLBACK_OUTPUT_CNY_PER_1M: float = 6.0
 
     # --- 联网搜索（可选；未配置时回退到 Bing + DuckDuckGo HTML） ---
     SEARXNG_API_URL: str = ""

@@ -1,13 +1,9 @@
-"""LLM 服务 — 通过 LiteLLM 统一封装 DeepSeek V4 Pro 调用。
-
-参考 DeepSeek 官方文档:
-- thinking_mode: https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
-- max_tokens 上限: 384K, 上下文: 1M
-- reasoning_content 与 content 共享 max_tokens 预算
+"""LLM 服务 — 通过 LiteLLM 统一封装可选 Chat Completions 兼容模型。
 """
 
 import json
 import logging
+import os
 from typing import AsyncIterator, Dict, Any, Optional, Union
 
 import litellm
@@ -23,14 +19,137 @@ DEFAULT_MAX_TOKENS = 16384
 LARGE_MAX_TOKENS = 32768
 MAX_MAX_TOKENS = 65536
 
+DEFAULT_PROVIDER = "deepseek"
+OPENAI_COMPATIBLE_PROVIDER = "openai-compatible"
+
+
+def _normalize_provider(value: Optional[str]) -> str:
+    provider = (value or DEFAULT_PROVIDER).strip().lower()
+    aliases = {
+        "deepseek": DEFAULT_PROVIDER,
+        "openai": OPENAI_COMPATIBLE_PROVIDER,
+        "openai_compatible": OPENAI_COMPATIBLE_PROVIDER,
+        "openai-compatible": OPENAI_COMPATIBLE_PROVIDER,
+        "gpt": OPENAI_COMPATIBLE_PROVIDER,
+        "gpt-5.5": OPENAI_COMPATIBLE_PROVIDER,
+    }
+    return aliases.get(provider, provider)
+
+
+def _litellm_model(model: str) -> str:
+    return model if model.startswith("openai/") else f"openai/{model}"
+
 
 class LLMService:
     """大语言模型调用服务。"""
 
     def __init__(self):
-        self.model = f"openai/{settings.DEEPSEEK_MODEL}"
-        self.api_key = settings.DEEPSEEK_API_KEY
-        self.api_base = settings.DEEPSEEK_API_BASE
+        self.runtime_config_path = settings.LLM_RUNTIME_CONFIG_PATH
+
+    def available_options(self) -> list[dict[str, Any]]:
+        """Return model options without exposing API keys."""
+        return [
+            {
+                "provider": DEFAULT_PROVIDER,
+                "label": "DeepSeek V4 Pro",
+                "model": settings.DEEPSEEK_MODEL,
+                "api_base": settings.DEEPSEEK_API_BASE,
+                "has_api_key": bool(settings.DEEPSEEK_API_KEY),
+                "configured": bool(settings.DEEPSEEK_API_KEY and settings.DEEPSEEK_API_BASE and settings.DEEPSEEK_MODEL),
+                "supports_thinking": True,
+                "api_key_env": "DEEPSEEK_API_KEY",
+                "api_base_env": "DEEPSEEK_API_BASE",
+                "model_env": "DEEPSEEK_MODEL",
+            },
+            {
+                "provider": OPENAI_COMPATIBLE_PROVIDER,
+                "label": "GPT-5.5（OpenAI 兼容）",
+                "model": settings.OPENAI_COMPATIBLE_MODEL,
+                "api_base": settings.OPENAI_COMPATIBLE_API_BASE,
+                "has_api_key": bool(settings.OPENAI_COMPATIBLE_API_KEY),
+                "configured": bool(
+                    settings.OPENAI_COMPATIBLE_API_KEY
+                    and settings.OPENAI_COMPATIBLE_API_BASE
+                    and settings.OPENAI_COMPATIBLE_MODEL
+                ),
+                "supports_thinking": False,
+                "api_key_env": "OPENAI_COMPATIBLE_API_KEY",
+                "api_base_env": "OPENAI_COMPATIBLE_API_BASE",
+                "model_env": "OPENAI_COMPATIBLE_MODEL",
+            },
+        ]
+
+    def get_active_option(self) -> dict[str, Any]:
+        provider, model_override = self._read_runtime_selection()
+        option = next((item for item in self.available_options() if item["provider"] == provider), None)
+        if not option:
+            provider = DEFAULT_PROVIDER
+            option = self.available_options()[0]
+        if model_override:
+            option = {**option, "model": model_override}
+        return option
+
+    @property
+    def active_provider(self) -> str:
+        return self._read_runtime_selection()[0]
+
+    @property
+    def model(self) -> str:
+        return self.get_active_option()["model"]
+
+    @property
+    def api_base(self) -> str:
+        return self.get_active_option()["api_base"]
+
+    @property
+    def api_key(self) -> str:
+        provider = self.active_provider
+        if provider == OPENAI_COMPATIBLE_PROVIDER:
+            return settings.OPENAI_COMPATIBLE_API_KEY
+        return settings.DEEPSEEK_API_KEY
+
+    def _read_runtime_selection(self) -> tuple[str, Optional[str]]:
+        provider = _normalize_provider(settings.LLM_PROVIDER)
+        model_override: Optional[str] = None
+        if not self.runtime_config_path:
+            return provider, model_override
+        try:
+            with open(self.runtime_config_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            provider = _normalize_provider(data.get("provider") or provider)
+            raw_model = data.get("model")
+            if isinstance(raw_model, str) and raw_model.strip():
+                model_override = raw_model.strip()
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.warning("读取 LLM 运行时配置失败，回退到环境变量: %s", exc)
+        return provider, model_override
+
+    def _write_runtime_selection(self, provider: str, model: str) -> None:
+        if not self.runtime_config_path:
+            return
+        directory = os.path.dirname(self.runtime_config_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        payload = {"provider": provider, "model": model}
+        tmp_path = f"{self.runtime_config_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, self.runtime_config_path)
+
+    def select_model(self, provider: str, model: Optional[str] = None) -> dict[str, Any]:
+        provider = _normalize_provider(provider)
+        option = next((item for item in self.available_options() if item["provider"] == provider), None)
+        if not option:
+            raise ValueError("不支持的 LLM 提供商")
+        selected_model = (model or option["model"]).strip()
+        if not selected_model:
+            raise ValueError("模型名称不能为空")
+        if not option["api_base"] or not option["has_api_key"]:
+            raise ValueError("该模型的 API Base 或 API Key 尚未在服务器环境变量中配置")
+        self._write_runtime_selection(provider, selected_model)
+        return self.get_active_option()
 
     def _get_kwargs(self) -> Dict[str, Any]:
         """获取通用调用参数。
@@ -39,7 +158,7 @@ class LLMService:
         LiteLLM openai provider 不兼容 extra_body，传了反而可能导致 400 错误。
         """
         return {
-            "model": self.model,
+            "model": _litellm_model(self.model),
             "api_key": self.api_key,
             "api_base": self.api_base,
         }
@@ -74,7 +193,7 @@ class LLMService:
                 if not content and reasoning and max_tokens < MAX_MAX_TOKENS:
                     next_limit = min(max_tokens * 2, MAX_MAX_TOKENS)
                     logger.info(
-                        f"V4 Pro 思考消耗了所有 token (reasoning={len(reasoning)}chars)，"
+                        f"模型思考消耗了所有 token (reasoning={len(reasoning)}chars)，"
                         f"以 {next_limit} max_tokens 重试"
                     )
                     return await self.chat(messages, temperature, max_tokens=next_limit)
@@ -86,6 +205,7 @@ class LLMService:
                         prompt_tokens=getattr(usage, "prompt_tokens", 0),
                         completion_tokens=getattr(usage, "completion_tokens", 0),
                         total_tokens=getattr(usage, "total_tokens", 0),
+                        model=self.model,
                     )
 
                 return content if content else ""
@@ -97,7 +217,13 @@ class LLMService:
                 else:
                     raise last_error
 
-    async def _log_usage(self, prompt_tokens: int = 0, completion_tokens: int = 0, total_tokens: int = 0):
+    async def _log_usage(
+        self,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+        model: Optional[str] = None,
+    ):
         """异步记录 Token 用量（后台静默）。"""
         try:
             from app.services.usage_tracker import UsageTracker, get_usage_user
@@ -105,7 +231,7 @@ class LLMService:
             await UsageTracker.log_usage(
                 user_id=usage_user.get("user_id"),
                 username=usage_user.get("username") or "system",
-                model=settings.DEEPSEEK_MODEL,
+                model=model or self.model,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
@@ -155,11 +281,11 @@ class LLMService:
 
             if emitted_content:
                 return
-            # V4 Pro 思考模式：推理消耗了所有 token → 渐进式增大
+            # 思考模式：推理消耗了所有 token → 渐进式增大
             # 16384 → 32768 → 65536 (DeepSeek 上限 384K)
             if reasoning_seen and token_limit < MAX_MAX_TOKENS:
                 token_limit = min(token_limit * 2, MAX_MAX_TOKENS)
-                logger.info(f"V4 Pro 流式思考耗尽 tokens，以 {token_limit} 重试")
+                logger.info(f"模型流式思考耗尽 tokens，以 {token_limit} 重试")
             elif not reasoning_seen and token_limit < MAX_MAX_TOKENS:
                 token_limit = min(token_limit * 2, MAX_MAX_TOKENS)
                 logger.info(f"V4 Pro 流式未返回内容，以 {token_limit} max_tokens 重试")
@@ -179,8 +305,8 @@ class LLMService:
         每个 chunk 是 dict: {"type": "reasoning"|"content", "content": "..."}
         前端可根据 type 分别渲染思考过程（可折叠）和最终回答。
 
-        参考 DeepSeek 官方 thinking_mode 文档：
-        https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
+        DeepSeek 等模型可能返回 reasoning_content；普通 OpenAI-compatible
+        模型通常只返回 content。
         """
         token_limit = max_tokens
         reasoning_total = ""
@@ -229,7 +355,7 @@ class LLMService:
             if token_limit < MAX_MAX_TOKENS:
                 token_limit = min(token_limit * 2, MAX_MAX_TOKENS)
                 reason = f"reasoning={len(reasoning_total)}chars" if emitted_reasoning else "无推理输出"
-                logger.info(f"V4 Pro 思考消耗了所有 token（{reason}），以 {token_limit} 重试")
+                logger.info(f"模型思考消耗了所有 token（{reason}），以 {token_limit} 重试")
             elif attempt == 0:
                 logger.warning("LLM 流式调用未返回可展示内容，重试一次")
             else:

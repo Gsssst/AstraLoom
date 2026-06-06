@@ -1,13 +1,12 @@
 """Token 用量追踪服务。"""
 
 import logging
-import time
 from contextvars import ContextVar
 from typing import Optional
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text
+from sqlalchemy import select, func
 from datetime import datetime, timedelta, timezone
 
+from app.core.config import settings
 from app.db.models.usage import TokenUsage
 from app.db.session import AsyncSessionLocal
 
@@ -30,6 +29,43 @@ def get_usage_user() -> dict | None:
     return _usage_user.get()
 
 
+def _normalize_model_name(model: str) -> str:
+    return (model or "").strip().lower().removeprefix("openai/")
+
+
+def _pricing_for_model(model: str) -> tuple[float, float]:
+    """Return input/output CNY-per-1M-token prices for a model name."""
+    normalized = _normalize_model_name(model)
+    if "gpt" in normalized or "openai" in normalized:
+        return (
+            settings.USAGE_OPENAI_COMPATIBLE_INPUT_CNY_PER_1M,
+            settings.USAGE_OPENAI_COMPATIBLE_OUTPUT_CNY_PER_1M,
+        )
+    if "deepseek" in normalized:
+        return (
+            settings.USAGE_DEEPSEEK_INPUT_CNY_PER_1M,
+            settings.USAGE_DEEPSEEK_OUTPUT_CNY_PER_1M,
+        )
+    return (
+        settings.USAGE_FALLBACK_INPUT_CNY_PER_1M,
+        settings.USAGE_FALLBACK_OUTPUT_CNY_PER_1M,
+    )
+
+
+def estimate_usage_cost(
+    *,
+    model: str,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+) -> float:
+    """Estimate CNY cost from model-specific input/output token prices."""
+    input_price, output_price = _pricing_for_model(model)
+    cost = (max(prompt_tokens, 0) / 1_000_000 * input_price) + (
+        max(completion_tokens, 0) / 1_000_000 * output_price
+    )
+    return round(cost, 6)
+
+
 class UsageTracker:
     """Token 用量记录器。"""
 
@@ -44,9 +80,11 @@ class UsageTracker:
         total_tokens: int = 0,
     ):
         """记录一次 API 调用。"""
-        # DeepSeek V4 价格估算 (CNY per 1M tokens)
-        # 输入（缓存未命中）: ¥3, 缓存命中: ¥0.025, 输出: ¥6
-        cost = (prompt_tokens / 1_000_000 * 3.0) + (completion_tokens / 1_000_000 * 6.0)
+        cost = estimate_usage_cost(
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
 
         try:
             async with AsyncSessionLocal() as session:

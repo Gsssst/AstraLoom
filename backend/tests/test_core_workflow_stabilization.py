@@ -33,7 +33,7 @@ async def test_non_streaming_llm_returns_content_and_tracks_usage(monkeypatch):
 
     assert result == "generated answer"
     assert tracked == [
-        {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8}
+        {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8, "model": service.model}
     ]
 
 
