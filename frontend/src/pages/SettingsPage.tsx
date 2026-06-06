@@ -37,6 +37,8 @@ const SettingsPage: React.FC = () => {
   const [selectedApiProvider, setSelectedApiProvider] = useState('');
   const [selectedApiModel, setSelectedApiModel] = useState('');
   const [savingApiConfig, setSavingApiConfig] = useState(false);
+  const [testingApiConfig, setTestingApiConfig] = useState(false);
+  const [apiConfigTestResult, setApiConfigTestResult] = useState<any>(null);
   const [myUsage, setMyUsage] = useState<any>(null);
   const [allUsage, setAllUsage] = useState<any>(null);
   const [usageTab, setUsageTab] = useState<string>('my');
@@ -158,11 +160,25 @@ const SettingsPage: React.FC = () => {
       setApiConfig(r.data);
       setSelectedApiProvider(r.data.provider);
       setSelectedApiModel(r.data.model);
+      setApiConfigTestResult(null);
       message.success('模型配置已切换');
     } catch (e: any) {
       message.error(getApiErrorMessage(e, { fallback: '模型配置保存失败' }));
     } finally {
       setSavingApiConfig(false);
+    }
+  };
+  const handleTestApiConfig = async () => {
+    setTestingApiConfig(true);
+    setApiConfigTestResult(null);
+    try {
+      const r = await api.post('/settings/api-config/test');
+      setApiConfigTestResult(r.data);
+      message.success(`模型连接测试成功：${r.data.latency_ms}ms`);
+    } catch (e: any) {
+      message.error(getApiErrorMessage(e, { fallback: '模型连接测试失败' }));
+    } finally {
+      setTestingApiConfig(false);
     }
   };
 
@@ -311,16 +327,37 @@ const SettingsPage: React.FC = () => {
           </Card>
         )}
 
-        <Button
-          type="primary"
-          icon={<SaveOutlined />}
-          loading={savingApiConfig}
-          disabled={profile?.role !== 'admin' || !selectedApiOption?.configured}
-          onClick={handleSaveApiConfig}
-          style={{ borderRadius: 10, width: 160 }}
-        >
-          保存模型
-        </Button>
+        <Space wrap>
+          <Button
+            type="primary"
+            icon={<SaveOutlined />}
+            loading={savingApiConfig}
+            disabled={profile?.role !== 'admin' || !selectedApiOption?.configured}
+            onClick={handleSaveApiConfig}
+            style={{ borderRadius: 10, width: 160 }}
+          >
+            保存模型
+          </Button>
+          <Button
+            icon={<ApiOutlined />}
+            loading={testingApiConfig}
+            disabled={profile?.role !== 'admin' || !apiConfig.configured}
+            onClick={handleTestApiConfig}
+            style={{ borderRadius: 10 }}
+          >
+            测试当前模型
+          </Button>
+        </Space>
+
+        {apiConfigTestResult && (
+          <Alert
+            type={apiConfigTestResult.ok ? 'success' : 'warning'}
+            showIcon
+            style={{ borderRadius: 10 }}
+            message={`连接测试完成：${apiConfigTestResult.provider} / ${apiConfigTestResult.model}`}
+            description={`耗时 ${apiConfigTestResult.latency_ms}ms；回复预览：${apiConfigTestResult.preview || '无内容'}`}
+          />
+        )}
 
         <Alert
           type="info"

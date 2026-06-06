@@ -1,6 +1,7 @@
 """系统设置 API。"""
 
 import logging
+import time
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional
@@ -50,6 +51,15 @@ class ApiConfigResponse(BaseModel):
 class UpdateApiConfigRequest(BaseModel):
     provider: str = Field(..., min_length=1)
     model: Optional[str] = None
+
+
+class ApiConfigTestResponse(BaseModel):
+    provider: str
+    model: str
+    configured: bool
+    ok: bool
+    latency_ms: int
+    preview: str
 
 
 def _api_config_response() -> ApiConfigResponse:
@@ -139,6 +149,36 @@ async def update_api_config(req: UpdateApiConfigRequest, user: User = Depends(re
         raise HTTPException(status_code=400, detail=str(exc))
     logger.info("LLM provider switched to %s/%s by %s", active["provider"], active["model"], user.username)
     return _api_config_response()
+
+
+@router.post("/api-config/test", response_model=ApiConfigTestResponse)
+async def test_api_config(user: User = Depends(require_admin)):
+    """测试当前 LLM provider/model 是否可用。"""
+    active = llm_service.get_active_option()
+    if not active.get("configured"):
+        raise HTTPException(status_code=400, detail="当前模型的 API Base 或 API Key 尚未在服务器环境变量中配置")
+
+    started = time.perf_counter()
+    try:
+        reply = await llm_service.chat(
+            messages=[{"role": "user", "content": "请用一句中文回复：模型连接测试成功。"}],
+            temperature=0.1,
+            max_tokens=32,
+        )
+    except Exception as exc:
+        logger.warning("LLM connection test failed for %s/%s: %s", active["provider"], active["model"], exc)
+        raise HTTPException(status_code=502, detail=f"模型连接测试失败: {exc}")
+
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    preview = (reply or "").strip()
+    return ApiConfigTestResponse(
+        provider=active["provider"],
+        model=active["model"],
+        configured=True,
+        ok=bool(preview),
+        latency_ms=latency_ms,
+        preview=preview[:200],
+    )
 
 
 @router.get("/system-info", response_model=SystemInfoResponse)
