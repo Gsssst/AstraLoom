@@ -1,5 +1,5 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Input, Button, List, Tag, Select, Space, Typography, Spin, Badge,
   Card, message, Modal, Checkbox, Row, Col, Alert, Progress,
@@ -13,6 +13,7 @@ import {
   RocketOutlined, EyeOutlined, RedoOutlined, LinkOutlined,
   BellOutlined, PlayCircleOutlined, CheckCircleOutlined, RollbackOutlined,
   FolderOutlined, FolderAddOutlined, DatabaseOutlined,
+  CaretDownOutlined, CaretRightOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import { useAuthStore } from '../stores/useAuthStore';
@@ -71,6 +72,8 @@ type RecommendationKind = 'classic' | 'recent' | 'gap' | 'related';
 type DiagnosticTab = 'hybrid' | 'bm25' | 'dense';
 
 const heroGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+const remoteSearchSources = ['scholarly', 'arxiv', 'semantic_scholar', 'openalex', 'google_scholar'];
+const paperSearchSources = ['local', 'saved', 'collection', 'reading', 'maintenance', ...remoteSearchSources];
 const readingStatusMeta = {
   unread: { label: '待读', color: 'default' as const },
   reading: { label: '阅读中', color: 'processing' as const },
@@ -111,10 +114,19 @@ const providerGuidance: Record<string, { label: string; providers: string[]; des
 
 const PapersPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const initialSearchParams = new URLSearchParams(location.search);
+  const initialSearchQuery = initialSearchParams.get('q')?.trim() || '';
+  const initialSourceParam = initialSearchParams.get('source')?.trim() || '';
+  const initialSource = initialSearchQuery
+    ? (paperSearchSources.includes(initialSourceParam) ? initialSourceParam : 'scholarly')
+    : 'local';
   const [papers, setPapers] = useState<PaperItem[]>([]);
   const [loading, setLoading] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [source, setSource] = useState<string>('local');
+  const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
+  const [source, setSource] = useState<string>(initialSource);
+  const [urlSearchRevision, setUrlSearchRevision] = useState(0);
+  const lastAppliedUrlSearchRef = useRef(location.search);
   const [ingesting, setIngesting] = useState(false);
   const [ingestQuery, setIngestQuery] = useState('');
   const [sort, setSort] = useState<string>('created_desc');
@@ -140,6 +152,8 @@ const PapersPage: React.FC = () => {
   const [targetCollectionId, setTargetCollectionId] = useState<string | undefined>();
   const [creatingCollection, setCreatingCollection] = useState(false);
   const [addingCollection, setAddingCollection] = useState(false);
+  const [deleteCollectionModal, setDeleteCollectionModal] = useState<{ open: boolean; collection: PaperCollection | null }>({ open: false, collection: null });
+  const [deletingCollection, setDeletingCollection] = useState(false);
   const [collectionDiagnostics, setCollectionDiagnostics] = useState<CollectionDiagnostics | null>(null);
   const [collectionCoverage, setCollectionCoverage] = useState<CollectionCoverage | null>(null);
   const [recommendationKind, setRecommendationKind] = useState<RecommendationKind>('gap');
@@ -154,9 +168,10 @@ const PapersPage: React.FC = () => {
   const [kbDiagnostics, setKbDiagnostics] = useState<any>(null);
   const [kbDiagTab, setKbDiagTab] = useState<DiagnosticTab>('hybrid');
   const [kbDiagLoading, setKbDiagLoading] = useState(false);
+  const [showCoverage, setShowCoverage] = useState(false);
   const isAuthenticated = !!localStorage.getItem('access_token');
   const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
-  const isRemoteSource = ['scholarly', 'arxiv', 'semantic_scholar', 'openalex', 'google_scholar'].includes(source);
+  const isRemoteSource = remoteSearchSources.includes(source);
   const remoteGuidance = isRemoteSource ? providerGuidance[source] : null;
   const yearOptions = Array.from({ length: new Date().getFullYear() - 1899 }, (_, index) => {
     const year = new Date().getFullYear() - index;
@@ -189,6 +204,29 @@ const PapersPage: React.FC = () => {
     }
   }, [isAuthenticated]);
 
+  useEffect(() => {
+    if (location.search === lastAppliedUrlSearchRef.current) return;
+    lastAppliedUrlSearchRef.current = location.search;
+    const params = new URLSearchParams(location.search);
+    const queryFromUrl = params.get('q')?.trim();
+    if (!queryFromUrl) {
+      setSearchQuery('');
+      setSource('local');
+      setRemotePage(1);
+      setUrlSearchRevision(value => value + 1);
+      return;
+    }
+
+    const sourceFromUrl = params.get('source')?.trim();
+    const nextSource = sourceFromUrl && paperSearchSources.includes(sourceFromUrl)
+      ? sourceFromUrl
+      : 'scholarly';
+    setSearchQuery(queryFromUrl);
+    setSource(nextSource);
+    setRemotePage(1);
+    setUrlSearchRevision(value => value + 1);
+  }, [location.search]);
+
   const handleSearch = useCallback(async (requestedRemotePage = 1) => {
     if (yearFrom && yearTo && yearFrom > yearTo) {
       message.warning('起始年份不能晚于截止年份');
@@ -220,7 +258,7 @@ const PapersPage: React.FC = () => {
     } catch (e: any) { setPapers([]); message.error(e.response?.data?.detail || (e.code === 'ECONNABORTED' ? '远程学术检索超时，请稍后重试' : '搜索失败')); } finally { setLoading(false); }
   }, [isRemoteSource, readingStatus, searchQuery, selectedCollectionId, source, sort, yearFrom, yearTo]);
 
-  useEffect(() => { handleSearch(1); }, [source, sort, readingStatus, selectedCollectionId]);
+  useEffect(() => { handleSearch(1); }, [source, sort, readingStatus, selectedCollectionId, urlSearchRevision]);
 
   useEffect(() => { fetchReadingCounts(); }, [fetchReadingCounts, source]);
 
@@ -387,6 +425,40 @@ const PapersPage: React.FC = () => {
       setAddingCollection(false);
     }
   }, [fetchCollections, handleSearch, selectedCollectionId, selectedIds, source, targetCollectionId]);
+
+  const handleDeleteCollectionClick = useCallback(() => {
+    const collection = collections.find(item => item.id === selectedCollectionId) || null;
+    if (!collection) {
+      message.warning('请先选择一个分类');
+      return;
+    }
+    setDeleteCollectionModal({ open: true, collection });
+  }, [collections, selectedCollectionId]);
+
+  const confirmDeleteCollection = useCallback(async () => {
+    const collection = deleteCollectionModal.collection;
+    if (!collection) return;
+    setDeletingCollection(true);
+    try {
+      await api.delete(`/folders/${collection.id}`);
+      const remainingCollections = collections.filter(item => item.id !== collection.id);
+      const nextCollectionId = remainingCollections[0]?.id;
+      setCollections(remainingCollections);
+      setSelectedCollectionId(nextCollectionId);
+      setTargetCollectionId(prev => prev === collection.id ? nextCollectionId : prev);
+      setPapers([]);
+      setCollectionDiagnostics(null);
+      setCollectionCoverage(null);
+      setRecommendationPapers([]);
+      setRecommendationMeta(null);
+      setDeleteCollectionModal({ open: false, collection: null });
+      message.success('分类已删除，论文仍保留在论文库中');
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || '删除分类失败');
+    } finally {
+      setDeletingCollection(false);
+    }
+  }, [collections, deleteCollectionModal.collection]);
 
   const handleFetchRecommendations = useCallback(async (kind: RecommendationKind, query?: string) => {
     if (!selectedCollectionId) {
@@ -706,14 +778,14 @@ const PapersPage: React.FC = () => {
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', height: 'calc(100vh - 110px)', display: 'flex', flexDirection: 'column' }}>
       {/* ── Hero ── */}
-      <div style={{ background: heroGradient, borderRadius: 16, padding: '18px 28px', marginBottom: 12, color: '#fff', position: 'relative', overflow: 'hidden', flexShrink: 0 }}>
-        <div style={{ position: 'absolute', right: -10, top: -30, fontSize: 140, opacity: 0.08 }}>📚</div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-          <Space size={12}>
-            <div style={{ width: 48, height: 48, borderRadius: 14, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}><BookOutlined /></div>
+      <div style={{ background: heroGradient, borderRadius: 16, padding: '10px 24px', marginBottom: 10, color: '#fff', position: 'relative', overflow: 'hidden', flexShrink: 0 }}>
+        <div style={{ position: 'absolute', right: -10, top: -30, fontSize: 120, opacity: 0.08 }}>📚</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+          <Space size={10}>
+            <div style={{ width: 36, height: 36, borderRadius: 12, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}><BookOutlined /></div>
             <div>
-              <Title level={3} style={{ color: '#fff', margin: 0 }}>论文知识库</Title>
-              <Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: 13 }}>{stats || '搜索、发现、管理你的学术论文'}</Text>
+              <Text strong style={{ color: '#fff', fontSize: 16 }}>论文知识库</Text>
+              <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, display: 'block' }}>{stats || '搜索、发现、管理你的学术论文'}</Text>
             </div>
           </Space>
           <Space size={8} wrap>
@@ -743,6 +815,8 @@ const PapersPage: React.FC = () => {
         title="论文库下一步"
         subtitle="先把论文资料变得可用，再整理成分类并交给研究方向。"
         style={{ marginBottom: 12, flexShrink: 0 }}
+        collapsible
+        defaultCollapsed
         steps={[
           {
             key: 'maintenance',
@@ -775,7 +849,7 @@ const PapersPage: React.FC = () => {
       />
 
       {/* ── 搜索栏 ── */}
-      <Card style={{ borderRadius: 14, marginBottom: 12, border: '1px solid #f0f0f0', flexShrink: 0 }} styles={{ body: { padding: '10px 20px' } }}>
+      <Card style={{ borderRadius: 14, marginBottom: 10, border: '1px solid #f0f0f0', flexShrink: 0 }} styles={{ body: { padding: '8px 16px' } }}>
         <Row gutter={[8, 8]} align="middle">
           <Col xs={24} sm={4}><Select value={source} onChange={setSource} style={{ width: '100%', borderRadius: 10 }}
             options={[
@@ -817,6 +891,16 @@ const PapersPage: React.FC = () => {
                 />
                 <Button icon={<FolderAddOutlined />} loading={creatingCollection} onClick={handleCreateCollection} style={{ borderRadius: 8 }}>
                   新建分类
+                </Button>
+                <Button
+                  danger
+                  icon={<DeleteOutlined />}
+                  disabled={!selectedCollectionId}
+                  loading={deletingCollection}
+                  onClick={handleDeleteCollectionClick}
+                  style={{ borderRadius: 8 }}
+                >
+                  删除分类
                 </Button>
               </Space>
             </Col>
@@ -875,103 +959,121 @@ const PapersPage: React.FC = () => {
           <Card
             size="small"
             style={{ marginTop: 10, borderRadius: 12, border: '1px solid #efe7ff', background: '#fbfaff' }}
-            styles={{ body: { padding: 12 } }}
+            styles={{ body: { padding: showCoverage ? 12 : 8 } }}
           >
-            <Space direction="vertical" size={10} style={{ width: '100%' }}>
-              <Space size={8} wrap>
-                <Text strong>主题覆盖分析</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>{collectionCoverage.summary}</Text>
-              </Space>
-              <Space size={6} wrap>
-                {collectionCoverage.topic_terms?.slice(0, 8).map(term => (
-                  <Tag key={term} color="purple" style={{ borderRadius: 10 }}>{term}</Tag>
-                ))}
-              </Space>
-              <Space size={6} wrap>
-                {collectionCoverage.topics?.slice(0, 8).map(topic => {
-                  const meta = topicStatusMeta(topic.status);
-                  return (
-                    <Tag key={`${topic.label}-${topic.query}`} color={meta.color} style={{ borderRadius: 10 }}>
-                      {topic.label} · {meta.label} ({topic.matched_count})
-                    </Tag>
-                  );
-                })}
-              </Space>
-              <Space size={8} wrap>
-                <Text type="secondary" style={{ fontSize: 13 }}>补论文推荐</Text>
-                <Button
-                  size="small"
-                  type={recommendationKind === 'classic' ? 'primary' : 'default'}
-                  loading={recommendationLoading && recommendationKind === 'classic'}
-                  onClick={() => handleFetchRecommendations('classic', collectionCoverage.recommended_queries?.classic)}
-                  style={{ borderRadius: 8 }}
-                >
-                  补经典
-                </Button>
-                <Button
-                  size="small"
-                  type={recommendationKind === 'recent' ? 'primary' : 'default'}
-                  loading={recommendationLoading && recommendationKind === 'recent'}
-                  onClick={() => handleFetchRecommendations('recent', collectionCoverage.recommended_queries?.recent)}
-                  style={{ borderRadius: 8 }}
-                >
-                  补近期
-                </Button>
-                <Button
-                  size="small"
-                  type={recommendationKind === 'gap' ? 'primary' : 'default'}
-                  loading={recommendationLoading && recommendationKind === 'gap'}
-                  onClick={() => handleFetchRecommendations('gap', collectionCoverage.recommended_queries?.gap)}
-                  style={{ borderRadius: 8 }}
-                >
-                  补缺口
-                </Button>
-                {recommendationMeta && <Text type="secondary" style={{ fontSize: 12 }}>检索式：{recommendationMeta.query}</Text>}
-              </Space>
-              {recommendationMeta && <Text type="secondary" style={{ fontSize: 12 }}>{recommendationMeta.reason}</Text>}
-              {recommendationPapers.length > 0 && (
-                <Row gutter={[8, 8]}>
-                  {recommendationPapers.map(paper => {
-                    const remoteKey = `${paper.source}:${paper.remote_id}`;
+            {/* 折叠头 */}
+            <Row
+              align="middle"
+              justify="space-between"
+              style={{ cursor: 'pointer' }}
+              onClick={() => setShowCoverage(!showCoverage)}
+            >
+              <Col>
+                <Space size={8} wrap>
+                  <Text strong style={{ fontSize: 13 }}>主题覆盖分析</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{collectionCoverage.summary}</Text>
+                </Space>
+              </Col>
+              <Col>
+                <Tag color={showCoverage ? 'default' : 'purple'} style={{ borderRadius: 999, cursor: 'pointer' }}>
+                  {showCoverage ? '收起' : '展开详情'}
+                  {showCoverage ? <CaretDownOutlined /> : <CaretRightOutlined />}
+                </Tag>
+              </Col>
+            </Row>
+            {showCoverage && (
+              <Space direction="vertical" size={10} style={{ width: '100%', marginTop: 10 }}>
+                <Space size={6} wrap>
+                  {collectionCoverage.topic_terms?.slice(0, 8).map(term => (
+                    <Tag key={term} color="purple" style={{ borderRadius: 10 }}>{term}</Tag>
+                  ))}
+                </Space>
+                <Space size={6} wrap>
+                  {collectionCoverage.topics?.slice(0, 8).map(topic => {
+                    const meta = topicStatusMeta(topic.status);
                     return (
-                      <Col xs={24} md={12} key={remoteKey || paper.title}>
-                        <Card size="small" hoverable onClick={() => setDetailPaper(paper)} style={{ borderRadius: 12 }}>
-                          <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                            <Text strong ellipsis>{paper.title}</Text>
-                            <Space size={4} wrap>
-                              {paper.year && <Tag icon={<CalendarOutlined />} color="blue">{paper.year}</Tag>}
-                              <Tag color={sc(paper.source)}>{sl(paper.source)}</Tag>
-                              {paper.arxiv_id && <Tag color="#b31b1b">arXiv:{paper.arxiv_id}</Tag>}
-                              {paper.citation_count > 0 && <Tag icon={<RiseOutlined />} color="orange">引用 {paper.citation_count}</Tag>}
-                            </Space>
-                            {paper.abstract && <Paragraph type="secondary" ellipsis={{ rows: 2 }} style={{ margin: 0, fontSize: 12 }}>{paper.abstract}</Paragraph>}
-                            <Space size={6} wrap>
-                              <Button type="link" size="small" icon={<EyeOutlined />} onClick={e => handleOpenAbstract(e, paper)} style={{ paddingInline: 0 }}>详情</Button>
-                              {paper.pdf_url && <Button type="link" size="small" icon={<FileTextOutlined />} href={paper.pdf_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ paddingInline: 0 }}>PDF</Button>}
-                              {ingestedRemoteIds.has(remoteKey)
-                                ? <Tag color="green">已加入当前分类</Tag>
-                                : (
-                                  <Button
-                                    size="small"
-                                    type="primary"
-                                    ghost
-                                    icon={<ImportOutlined />}
-                                    loading={ingestingIds.has(remoteKey)}
-                                    onClick={e => handleIngestOne(e, paper, selectedCollectionId)}
-                                    style={{ borderRadius: 8 }}
-                                  >
-                                    入库并加入当前分类
-                                  </Button>
-                                )}
-                            </Space>
-                          </Space>
-                        </Card>
-                      </Col>
+                      <Tag key={`${topic.label}-${topic.query}`} color={meta.color} style={{ borderRadius: 10 }}>
+                        {topic.label} · {meta.label} ({topic.matched_count})
+                      </Tag>
                     );
                   })}
-                </Row>
-              )}
-            </Space>
+                </Space>
+                <Space size={8} wrap>
+                  <Text type="secondary" style={{ fontSize: 13 }}>补论文推荐</Text>
+                  <Button
+                    size="small"
+                    type={recommendationKind === 'classic' ? 'primary' : 'default'}
+                    loading={recommendationLoading && recommendationKind === 'classic'}
+                    onClick={() => handleFetchRecommendations('classic', collectionCoverage.recommended_queries?.classic)}
+                    style={{ borderRadius: 8 }}
+                  >
+                    补经典
+                  </Button>
+                  <Button
+                    size="small"
+                    type={recommendationKind === 'recent' ? 'primary' : 'default'}
+                    loading={recommendationLoading && recommendationKind === 'recent'}
+                    onClick={() => handleFetchRecommendations('recent', collectionCoverage.recommended_queries?.recent)}
+                    style={{ borderRadius: 8 }}
+                  >
+                    补近期
+                  </Button>
+                  <Button
+                    size="small"
+                    type={recommendationKind === 'gap' ? 'primary' : 'default'}
+                    loading={recommendationLoading && recommendationKind === 'gap'}
+                    onClick={() => handleFetchRecommendations('gap', collectionCoverage.recommended_queries?.gap)}
+                    style={{ borderRadius: 8 }}
+                  >
+                    补缺口
+                  </Button>
+                  {recommendationMeta && <Text type="secondary" style={{ fontSize: 12 }}>检索式：{recommendationMeta.query}</Text>}
+                </Space>
+                {recommendationMeta && <Text type="secondary" style={{ fontSize: 12 }}>{recommendationMeta.reason}</Text>}
+                {recommendationPapers.length > 0 && (
+                  <Row gutter={[8, 8]}>
+                    {recommendationPapers.map(paper => {
+                      const remoteKey = `${paper.source}:${paper.remote_id}`;
+                      return (
+                        <Col xs={24} md={12} key={remoteKey || paper.title}>
+                          <Card size="small" hoverable onClick={() => setDetailPaper(paper)} style={{ borderRadius: 12 }}>
+                            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                              <Text strong ellipsis>{paper.title}</Text>
+                              <Space size={4} wrap>
+                                {paper.year && <Tag icon={<CalendarOutlined />} color="blue">{paper.year}</Tag>}
+                                <Tag color={sc(paper.source)}>{sl(paper.source)}</Tag>
+                                {paper.arxiv_id && <Tag color="#b31b1b">arXiv:{paper.arxiv_id}</Tag>}
+                                {paper.citation_count > 0 && <Tag icon={<RiseOutlined />} color="orange">引用 {paper.citation_count}</Tag>}
+                              </Space>
+                              {paper.abstract && <Paragraph type="secondary" ellipsis={{ rows: 2 }} style={{ margin: 0, fontSize: 12 }}>{paper.abstract}</Paragraph>}
+                              <Space size={6} wrap>
+                                <Button type="link" size="small" icon={<EyeOutlined />} onClick={e => handleOpenAbstract(e, paper)} style={{ paddingInline: 0 }}>详情</Button>
+                                {paper.pdf_url && <Button type="link" size="small" icon={<FileTextOutlined />} href={paper.pdf_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ paddingInline: 0 }}>PDF</Button>}
+                                {ingestedRemoteIds.has(remoteKey)
+                                  ? <Tag color="green">已加入当前分类</Tag>
+                                  : (
+                                    <Button
+                                      size="small"
+                                      type="primary"
+                                      ghost
+                                      icon={<ImportOutlined />}
+                                      loading={ingestingIds.has(remoteKey)}
+                                      onClick={e => handleIngestOne(e, paper, selectedCollectionId)}
+                                      style={{ borderRadius: 8 }}
+                                    >
+                                      入库并加入当前分类
+                                    </Button>
+                                  )}
+                              </Space>
+                            </Space>
+                          </Card>
+                        </Col>
+                      );
+                    })}
+                  </Row>
+                )}
+              </Space>
+            )}
           </Card>
         )}
         {source !== 'maintenance' && <Row gutter={[8, 8]} align="middle" style={{ marginTop: 8 }}>
@@ -1155,6 +1257,23 @@ const PapersPage: React.FC = () => {
         footer={[<Button key="cancel" onClick={() => setDeleteModal({ open: false, paper: null })}>取消</Button>, <Button key="coll" onClick={() => confirmDelete(false)} loading={deleting}>仅从收藏移除</Button>, ...(isAdmin ? [<Button key="global" type="primary" danger onClick={() => confirmDelete(true)} loading={deleting}>从总库删除</Button>] : [])]}>
         <p>确定删除 <Text strong>"{deleteModal.paper?.title?.slice(0, 60)}..."</Text>？</p>
         <p><Text type="secondary">「仅从收藏移除」：其他用户仍可看到</Text><br /><Text type="danger">「从总库删除」：所有人无法再访问</Text></p>
+      </Modal>
+
+      <Modal
+        title={<span><ExclamationCircleOutlined style={{ color: '#faad14' }} /> 删除分类</span>}
+        open={deleteCollectionModal.open}
+        onCancel={() => setDeleteCollectionModal({ open: false, collection: null })}
+        footer={[
+          <Button key="cancel" onClick={() => setDeleteCollectionModal({ open: false, collection: null })}>取消</Button>,
+          <Button key="delete" type="primary" danger loading={deletingCollection} onClick={confirmDeleteCollection}>删除分类</Button>,
+        ]}
+      >
+        <p>确定删除分类 <Text strong>"{deleteCollectionModal.collection?.name}"</Text>？</p>
+        <p>
+          <Text type="secondary">
+            删除后该分类会从列表中移除，分类里的论文仍保留在论文库、收藏和阅读状态中。
+          </Text>
+        </p>
       </Modal>
 
       <Modal title="生成组会报告" open={reportModalOpen} onCancel={() => setReportModalOpen(false)}

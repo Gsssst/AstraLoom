@@ -1,7 +1,9 @@
 """Regression tests for the usable in-app arXiv digest center."""
 
+from datetime import datetime
 from types import SimpleNamespace
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException
@@ -11,6 +13,7 @@ from app.db.models.notification import Notification
 from app.services.digest_service import DigestService
 from app.services.paper_search import ArxivSearchService, PaperResult
 from app.tasks.celery_app import celery_app
+from app.tasks import daily_digest
 
 
 class _ScalarResult:
@@ -298,10 +301,78 @@ async def test_manual_test_endpoint_uses_saved_keywords_and_updates_delivery_tim
     assert session.committed is True
 
 
+@pytest.mark.asyncio
+async def test_daily_digest_only_dispatches_due_subscription_hour(monkeypatch):
+    due_user = uuid4()
+    skipped_user = uuid4()
+    subscriptions = [
+        SimpleNamespace(user_id=due_user, keywords=["video grounding"], push_enabled=True, frequency="daily", send_hour=9, last_sent_at=None),
+        SimpleNamespace(user_id=skipped_user, keywords=["llm"], push_enabled=True, frequency="daily", send_hour=8, last_sent_at=None),
+    ]
+    session = _Session(subscriptions)
+    calls = []
+
+    class _SessionFactory:
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def fake_dispatch(self, **kwargs):
+        calls.append(kwargs)
+        return {"delivered": True}
+
+    monkeypatch.setattr(daily_digest, "AsyncSessionLocal", lambda: _SessionFactory())
+    monkeypatch.setattr(DigestService, "dispatch_in_app_digest", fake_dispatch)
+
+    result = await daily_digest._run_digest(datetime(2026, 6, 5, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+
+    assert result["due"] == 1
+    assert result["notified"] == 1
+    assert calls == [{"user_id": due_user, "keywords": ["video grounding"], "notify_on_empty": True}]
+    assert subscriptions[0].last_sent_at.date().isoformat() == "2026-06-05"
+    assert subscriptions[1].last_sent_at is None
+
+
+@pytest.mark.asyncio
+async def test_daily_digest_skips_subscription_already_sent_today(monkeypatch):
+    subscription = SimpleNamespace(
+        user_id=uuid4(),
+        keywords=["video grounding"],
+        push_enabled=True,
+        frequency="daily",
+        send_hour=9,
+        last_sent_at=datetime(2026, 6, 5, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+    session = _Session([subscription])
+    calls = []
+
+    class _SessionFactory:
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def fake_dispatch(self, **kwargs):
+        calls.append(kwargs)
+        return {"delivered": True}
+
+    monkeypatch.setattr(daily_digest, "AsyncSessionLocal", lambda: _SessionFactory())
+    monkeypatch.setattr(DigestService, "dispatch_in_app_digest", fake_dispatch)
+
+    result = await daily_digest._run_digest(datetime(2026, 6, 5, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+
+    assert result["due"] == 0
+    assert result["notified"] == 0
+    assert calls == []
+
+
 def test_celery_registers_daily_digest_and_beijing_morning_schedule():
     assert "app.tasks.daily_digest" in celery_app.conf.include
     celery_app.loader.import_default_modules()
     assert "daily_arxiv_digest" in celery_app.tasks
     schedule = celery_app.conf.beat_schedule["daily-arxiv-digest"]
     assert schedule["task"] == "daily_arxiv_digest"
-    assert str(schedule["schedule"]) == "<crontab: 0 8 * * * (m/h/dM/MY/d)>"
+    assert str(schedule["schedule"]) == "<crontab: 0 * * * * (m/h/dM/MY/d)>"

@@ -91,6 +91,8 @@ async def get_current_user(
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已禁用")
 
+    from app.services.usage_tracker import set_usage_user
+    set_usage_user(user)
     return user
 
 
@@ -114,7 +116,11 @@ async def get_optional_user(
     from uuid import UUID
 
     result = await db.execute(select(User).where(User.id == UUID(user_id)))
-    return result.scalar_one_or_none()
+    user = result.scalar_one_or_none()
+    if user:
+        from app.services.usage_tracker import set_usage_user
+        set_usage_user(user)
+    return user
 
 
 async def require_admin(user=Depends(get_current_user)):

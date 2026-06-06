@@ -100,9 +100,11 @@ class LLMService:
     async def _log_usage(self, prompt_tokens: int = 0, completion_tokens: int = 0, total_tokens: int = 0):
         """异步记录 Token 用量（后台静默）。"""
         try:
-            from app.services.usage_tracker import UsageTracker
+            from app.services.usage_tracker import UsageTracker, get_usage_user
+            usage_user = get_usage_user() or {}
             await UsageTracker.log_usage(
-                username="system",
+                user_id=usage_user.get("user_id"),
+                username=usage_user.get("username") or "system",
                 model=settings.DEEPSEEK_MODEL,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,

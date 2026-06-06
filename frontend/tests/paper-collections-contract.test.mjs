@@ -28,6 +28,11 @@ test('paper library exposes user collections as a first-class source', () => {
   assert.match(papersPageSource, /补经典/);
   assert.match(papersPageSource, /补近期/);
   assert.match(papersPageSource, /补缺口/);
+  assert.match(papersPageSource, /删除分类/);
+  assert.match(papersPageSource, /confirmDeleteCollection/);
+  assert.match(papersPageSource, /api\.delete\(`\/folders\/\$\{collection\.id\}`\)/);
+  assert.match(papersPageSource, /论文仍保留在论文库/);
+  assert.match(papersPageSource, /setSelectedCollectionId\(nextCollectionId\)/);
   assert.match(papersPageSource, /api\.post\(`\/folders\/\$\{targetCollectionId\}\/papers`/);
   assert.match(papersPageSource, /入库并加入当前分类/);
   assert.match(papersPageSource, /api\.delete\(`\/folders\/\$\{selectedCollectionId\}\/papers\/\$\{paper\.id\}`/);
@@ -50,6 +55,11 @@ test('paper library exposes a first-class maintenance center', () => {
 
 test('paper library makes external search and ingest transparent', () => {
   assert.match(papersPageSource, /providerGuidance/);
+  assert.match(papersPageSource, /useLocation/);
+  assert.match(papersPageSource, /initialSearchParams\.get\('q'\)/);
+  assert.match(papersPageSource, /initialSourceParam/);
+  assert.match(papersPageSource, /setSource\(nextSource\)/);
+  assert.match(papersPageSource, /setUrlSearchRevision/);
   assert.match(papersPageSource, /综合学术检索/);
   assert.match(papersPageSource, /Semantic Scholar/);
   assert.match(papersPageSource, /OpenAlex/);

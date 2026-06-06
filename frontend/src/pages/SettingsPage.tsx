@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   Alert, Card, Button, Input, Typography, Space, message, Tabs,
   Descriptions, Divider, Tag, Statistic, Row, Col, Switch, Radio, Avatar,
-  Progress, List, Empty, Segmented,
+  Progress, List, Empty, Segmented, Select,
 } from 'antd';
 import {
   UserOutlined, BellOutlined, SettingOutlined,
@@ -44,6 +44,7 @@ const SettingsPage: React.FC = () => {
   const [subLoaded, setSubLoaded] = useState(false);
   const [subEmailAvailable, setSubEmailAvailable] = useState(false);
   const [subLastSentAt, setSubLastSentAt] = useState<string | null>(null);
+  const [subSendHour, setSubSendHour] = useState(8);
   const [subTestResult, setSubTestResult] = useState<any>(null);
   const [kbHealth, setKbHealth] = useState<any>(null);
   const [kbLoading, setKbLoading] = useState(false);
@@ -65,7 +66,7 @@ const SettingsPage: React.FC = () => {
     api.get('/settings/profile').then(res => { setProfile(res.data); setEmail(res.data.email); if (res.data.role === 'admin') api.get('/usage/all-stats').then(r => setAllUsage(r.data)).catch(() => {}); }).catch(() => {});
     api.get('/settings/api-config').then(res => setApiConfig(res.data)).catch(() => {});
     api.get('/usage/my-stats').then(res => setMyUsage(res.data)).catch(() => {});
-    api.get('/notifications/subscription').then(res => { setSubKeywords((res.data.keywords || []).join(', ')); setSubEmail(res.data.email_enabled); setSubPush(res.data.push_enabled); setSubEmailAvailable(res.data.email_available); setSubLastSentAt(res.data.last_sent_at); setSubLoaded(true); }).catch(() => {});
+    api.get('/notifications/subscription').then(res => { setSubKeywords((res.data.keywords || []).join(', ')); setSubEmail(res.data.email_enabled); setSubPush(res.data.push_enabled); setSubEmailAvailable(res.data.email_available); setSubLastSentAt(res.data.last_sent_at); setSubSendHour(res.data.send_hour ?? 8); setSubLoaded(true); }).catch(() => {});
   }, [isAuthenticated, navigate]);
 
   const fetchKbHealth = async () => {
@@ -119,8 +120,8 @@ const SettingsPage: React.FC = () => {
     }
   };
 
-  const subscriptionPayload = () => ({ keywords: subKeywords.split(/[,，]/).map(k => k.trim()).filter(Boolean), email_enabled: subEmail, push_enabled: subPush, frequency: 'daily' });
-  const syncSubscription = (data: any) => { setSubKeywords((data.keywords || []).join(', ')); setSubEmail(data.email_enabled); setSubPush(data.push_enabled); setSubEmailAvailable(data.email_available); setSubLastSentAt(data.last_sent_at); };
+  const subscriptionPayload = () => ({ keywords: subKeywords.split(/[,，]/).map(k => k.trim()).filter(Boolean), email_enabled: subEmail, push_enabled: subPush, frequency: 'daily', send_hour: subSendHour });
+  const syncSubscription = (data: any) => { setSubKeywords((data.keywords || []).join(', ')); setSubEmail(data.email_enabled); setSubPush(data.push_enabled); setSubEmailAvailable(data.email_available); setSubLastSentAt(data.last_sent_at); setSubSendHour(data.send_hour ?? 8); };
   const handleSaveSub = async () => { setSubSaving(true); try { const r = await api.put('/notifications/subscription', subscriptionPayload()); syncSubscription(r.data); message.success('订阅已更新'); } catch (e: any) { message.error(e.response?.data?.detail || '保存失败'); } finally { setSubSaving(false); } };
   const handleTestSub = async () => {
     setSubTesting(true);
@@ -483,7 +484,7 @@ const SettingsPage: React.FC = () => {
         <BellOutlined style={{ color: '#faad14', fontSize: 18 }} />
         <Title level={5} style={{ margin: 0 }}>arXiv 每日推送</Title>
       </Space>
-      <Text type="secondary">设置关注关键词。系统会在每天 08:00 自动检索最新 arXiv 论文，并通过站内通知发送摘要。</Text>
+      <Text type="secondary">设置关注关键词和每日推送时间。系统会按北京时间自动检索最新论文，并通过站内通知发送摘要。</Text>
       <Alert
         type="info"
         showIcon
@@ -494,6 +495,13 @@ const SettingsPage: React.FC = () => {
       <div style={{ marginTop: 20 }}>
         <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>关键词（逗号分隔）</Text>
         <TextArea style={{ ...inputStyle, marginBottom: 20 }} rows={3} placeholder="例如：large language model, RLHF, multimodal alignment" value={subKeywords} onChange={e => setSubKeywords(e.target.value)} />
+        <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>每日推送时间（北京时间）</Text>
+        <Select
+          value={subSendHour}
+          onChange={setSubSendHour}
+          style={{ width: 180, marginBottom: 20 }}
+          options={Array.from({ length: 24 }, (_, hour) => ({ value: hour, label: `${String(hour).padStart(2, '0')}:00` }))}
+        />
         <Space direction="vertical" size={12}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <Switch checked={subPush} onChange={setSubPush} />

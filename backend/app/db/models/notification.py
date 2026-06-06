@@ -23,6 +23,7 @@ class DigestSubscription(Base, TimestampMixin):
     email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     push_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     frequency: Mapped[str] = mapped_column(String(20), default="daily")  # daily, weekly
+    send_hour: Mapped[int] = mapped_column(default=8)
     last_sent_at: Mapped[Optional[str]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

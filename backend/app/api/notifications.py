@@ -22,6 +22,7 @@ class SubscriptionUpdate(BaseModel):
     email_enabled: Optional[bool] = None
     push_enabled: Optional[bool] = None
     frequency: Optional[str] = None
+    send_hour: Optional[int] = Field(default=None, ge=0, le=23)
 
 
 class SubscriptionResponse(BaseModel):
@@ -30,6 +31,7 @@ class SubscriptionResponse(BaseModel):
     email_available: bool = False
     push_enabled: bool
     frequency: str
+    send_hour: int = 8
     last_sent_at: Optional[str]
 
 
@@ -57,6 +59,7 @@ def _subscription_response(sub: DigestSubscription) -> SubscriptionResponse:
         email_available=False,
         push_enabled=sub.push_enabled,
         frequency=sub.frequency,
+        send_hour=getattr(sub, "send_hour", 8) or 8,
         last_sent_at=sub.last_sent_at.isoformat() if sub.last_sent_at else None,
     )
 
@@ -72,7 +75,7 @@ async def get_subscription(user: User = Depends(get_current_user), db: AsyncSess
     if not sub:
         return SubscriptionResponse(
             keywords=[], email_enabled=False, push_enabled=False,
-            email_available=False, frequency="daily", last_sent_at=None,
+            email_available=False, frequency="daily", send_hour=8, last_sent_at=None,
         )
 
     return _subscription_response(sub)
@@ -106,6 +109,8 @@ async def update_subscription(
         if req.frequency != "daily":
             raise HTTPException(status_code=400, detail="当前仅支持每日推送")
         sub.frequency = req.frequency
+    if req.send_hour is not None:
+        sub.send_hour = req.send_hour
 
     if sub.push_enabled and not sub.keywords:
         raise HTTPException(status_code=400, detail="请至少填写一个关注关键词后再开启站内推送")

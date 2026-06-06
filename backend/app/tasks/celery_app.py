@@ -29,7 +29,7 @@ celery_app.conf.update(
     beat_schedule={
         "daily-arxiv-digest": {
             "task": "daily_arxiv_digest",
-            "schedule": crontab(hour=8, minute=0),
+            "schedule": crontab(minute=0),
             "options": {"expires": 3600},
         },
     },

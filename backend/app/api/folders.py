@@ -558,4 +558,4 @@ async def delete_folder(folder_id: str, db: AsyncSession = Depends(get_db), user
     )).scalar_one_or_none()
     if not f: raise HTTPException(status_code=404, detail="文件夹未找到")
     await db.delete(f); await db.commit()
-    return {"deleted": True}
+    return {"deleted": True, "folder_id": str(fid)}

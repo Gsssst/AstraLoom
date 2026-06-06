@@ -2,6 +2,7 @@
 
 import logging
 import time
+from contextvars import ContextVar
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, text
@@ -11,6 +12,22 @@ from app.db.models.usage import TokenUsage
 from app.db.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
+
+_usage_user: ContextVar[dict | None] = ContextVar("usage_user", default=None)
+
+
+def set_usage_user(user) -> None:
+    """Store the authenticated user for token attribution in the current request context."""
+    if not user:
+        _usage_user.set(None)
+        return
+    visible_name = getattr(user, "display_name", None) or getattr(user, "username", None) or "user"
+    _usage_user.set({"user_id": str(user.id), "username": visible_name})
+
+
+def get_usage_user() -> dict | None:
+    """Return the current request's usage attribution context, if any."""
+    return _usage_user.get()
 
 
 class UsageTracker:

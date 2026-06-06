@@ -9,7 +9,8 @@ from fastapi import HTTPException
 from app.api import folders, research, usage
 from app.core.security import get_current_user, require_admin
 from app.main import app
-from app.services.usage_tracker import UsageTracker
+from app.services.llm import LLMService
+from app.services.usage_tracker import UsageTracker, set_usage_user
 
 
 class _ScalarResult:
@@ -28,6 +29,19 @@ class _RecordingSession:
     async def execute(self, statement):
         self.statements.append(statement)
         return _ScalarResult(self.value)
+
+
+class _FolderDeleteSession(_RecordingSession):
+    def __init__(self, value=None):
+        super().__init__(value)
+        self.deleted = None
+        self.committed = False
+
+    async def delete(self, item):
+        self.deleted = item
+
+    async def commit(self):
+        self.committed = True
 
 
 def _route(path: str, method: str):
@@ -105,6 +119,40 @@ async def test_admin_history_keeps_requested_user_filter(monkeypatch):
     )
 
     assert captured == [(requested_user_id, 8)]
+
+
+@pytest.mark.asyncio
+async def test_llm_usage_uses_authenticated_usage_context(monkeypatch):
+    captured = []
+    user = SimpleNamespace(id=uuid4(), username="gst", display_name="Gst")
+
+    async def fake_log_usage(**kwargs):
+        captured.append(kwargs)
+
+    monkeypatch.setattr(UsageTracker, "log_usage", fake_log_usage)
+    set_usage_user(user)
+
+    await LLMService()._log_usage(prompt_tokens=10, completion_tokens=20, total_tokens=30)
+
+    assert captured[0]["user_id"] == str(user.id)
+    assert captured[0]["username"] == "Gst"
+    assert captured[0]["total_tokens"] == 30
+
+
+@pytest.mark.asyncio
+async def test_llm_usage_falls_back_to_system_without_context(monkeypatch):
+    captured = []
+
+    async def fake_log_usage(**kwargs):
+        captured.append(kwargs)
+
+    monkeypatch.setattr(UsageTracker, "log_usage", fake_log_usage)
+    set_usage_user(None)
+
+    await LLMService()._log_usage(prompt_tokens=1, completion_tokens=2, total_tokens=3)
+
+    assert captured[0]["user_id"] is None
+    assert captured[0]["username"] == "system"
 
 
 @pytest.mark.parametrize(
@@ -226,7 +274,25 @@ def test_folder_coverage_surfaces_topic_gaps_for_collection():
 
 
 def test_personal_collection_delete_remains_available_to_authenticated_users():
-    dependencies = _dependency_calls("/api/papers/{paper_id}", "DELETE")
+    dependencies = _dependency_calls("/api/folders/{folder_id}", "DELETE")
 
     assert get_current_user in dependencies
     assert require_admin not in dependencies
+
+
+@pytest.mark.asyncio
+async def test_delete_folder_returns_deleted_folder_id_and_commits():
+    owner_id = uuid4()
+    folder_id = uuid4()
+    folder = SimpleNamespace(id=folder_id, user_id=owner_id)
+    db = _FolderDeleteSession(folder)
+
+    response = await folders.delete_folder(
+        str(folder_id),
+        db=db,
+        user=SimpleNamespace(id=owner_id),
+    )
+
+    assert response == {"deleted": True, "folder_id": str(folder_id)}
+    assert db.deleted is folder
+    assert db.committed is True

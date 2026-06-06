@@ -16,8 +16,12 @@ async def init_db() -> None:
             # 启用 pgvector 扩展
             await session.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             await session.execute(text("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\""))
+            await session.execute(text(
+                "ALTER TABLE IF EXISTS digest_subscriptions "
+                "ADD COLUMN IF NOT EXISTS send_hour INTEGER NOT NULL DEFAULT 8"
+            ))
             await session.commit()
-            logger.info("✅ pgvector 和 uuid-ossp 扩展已启用")
+            logger.info("✅ pgvector、uuid-ossp 与兼容字段已就绪")
         async with engine.begin() as conn:
             await conn.run_sync(ProjectSpace.metadata.create_all, tables=[
                 ProjectSpace.__table__,
