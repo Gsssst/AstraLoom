@@ -6,6 +6,7 @@ import logging
 import os
 from typing import AsyncIterator, Dict, Any, Optional, Union
 
+import httpx
 import litellm
 from app.core.config import settings
 
@@ -40,6 +41,41 @@ def _litellm_model(model: str) -> str:
     return model if model.startswith("openai/") else f"openai/{model}"
 
 
+def _responses_model(model: str) -> str:
+    return model.removeprefix("openai/")
+
+
+def _responses_content(content: Any) -> Any:
+    """Convert Chat Completions style content parts to Responses API content."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+
+    parts: list[dict[str, Any]] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        part_type = part.get("type")
+        if part_type == "text":
+            parts.append({"type": "input_text", "text": part.get("text", "")})
+        elif part_type == "image_url":
+            image_url = part.get("image_url") or {}
+            if isinstance(image_url, dict) and image_url.get("url"):
+                parts.append({"type": "input_image", "image_url": image_url["url"]})
+    return parts or ""
+
+
+def _responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    inputs: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role") or "user"
+        if role not in {"user", "assistant", "system", "developer"}:
+            role = "user"
+        inputs.append({"role": role, "content": _responses_content(message.get("content", ""))})
+    return inputs
+
+
 class LLMService:
     """大语言模型调用服务。"""
 
@@ -72,7 +108,7 @@ class LLMService:
                     and settings.OPENAI_COMPATIBLE_API_BASE
                     and settings.OPENAI_COMPATIBLE_MODEL
                 ),
-                "supports_thinking": False,
+                "supports_thinking": True,
                 "api_key_env": "OPENAI_COMPATIBLE_API_KEY",
                 "api_base_env": "OPENAI_COMPATIBLE_API_BASE",
                 "model_env": "OPENAI_COMPATIBLE_MODEL",
@@ -162,6 +198,9 @@ class LLMService:
             "api_key": self.api_key,
             "api_base": self.api_base,
         }
+
+    def _responses_api_url(self) -> str:
+        return f"{self.api_base.rstrip('/')}/responses"
 
     async def chat(
         self,
@@ -300,14 +339,22 @@ class LLMService:
         temperature: float = 0.7,
         max_tokens: int = LARGE_MAX_TOKENS,
     ) -> AsyncIterator[Dict[str, str]]:
-        """流式对话 — 返回结构化事件，包含思考过程和可见内容。
+        """流式对话 — 返回结构化事件，包含思考摘要/过程和可见内容。
 
         每个 chunk 是 dict: {"type": "reasoning"|"content", "content": "..."}
         前端可根据 type 分别渲染思考过程（可折叠）和最终回答。
 
-        DeepSeek 等模型可能返回 reasoning_content；普通 OpenAI-compatible
-        模型通常只返回 content。
+        DeepSeek 等模型可能返回 reasoning_content；OpenAI-compatible
+        provider 在支持 Responses API 时返回 reasoning summary。
         """
+        if self.active_provider == OPENAI_COMPATIBLE_PROVIDER:
+            async for event in self.chat_stream_responses_with_reasoning_summary(
+                messages=messages,
+                max_tokens=max_tokens,
+            ):
+                yield event
+            return
+
         token_limit = max_tokens
         reasoning_total = ""
         content_total = ""
@@ -360,6 +407,84 @@ class LLMService:
                 logger.warning("LLM 流式调用未返回可展示内容，重试一次")
             else:
                 raise RuntimeError("模型未返回可展示内容")
+
+    async def chat_stream_responses_with_reasoning_summary(
+        self,
+        messages,
+        max_tokens: int = LARGE_MAX_TOKENS,
+        reasoning_effort: str = "medium",
+        reasoning_summary: str = "auto",
+    ) -> AsyncIterator[Dict[str, str]]:
+        """Stream OpenAI Responses API output text and reasoning summary deltas."""
+        payload = {
+            "model": _responses_model(self.model),
+            "input": _responses_input(messages),
+            "reasoning": {"effort": reasoning_effort, "summary": reasoning_summary},
+            "max_output_tokens": max_tokens,
+            "stream": True,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        emitted_content = False
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                self._responses_api_url(),
+                headers=headers,
+                json=payload,
+            ) as response:
+                if response.status_code >= 400:
+                    detail = await response.aread()
+                    raise RuntimeError(f"Responses API 调用失败 ({response.status_code}): {detail.decode('utf-8', errors='ignore')[:500]}")
+
+                data_lines: list[str] = []
+                async for raw_line in response.aiter_lines():
+                    line = raw_line.strip()
+                    if not line:
+                        event = self._parse_responses_sse_data(data_lines)
+                        data_lines = []
+                        if not event:
+                            continue
+                        event_type = event.get("type")
+                        delta = event.get("delta")
+                        if event_type == "response.reasoning_summary_text.delta" and isinstance(delta, str):
+                            yield {"type": "reasoning", "content": delta}
+                        elif event_type == "response.output_text.delta" and isinstance(delta, str):
+                            emitted_content = True
+                            yield {"type": "content", "content": delta}
+                        elif event_type == "response.error":
+                            error = event.get("error") or event
+                            raise RuntimeError(f"Responses API 返回错误: {error}")
+                        elif event_type in {"response.completed", "response.output_text.done"}:
+                            continue
+                        continue
+                    if line.startswith("data:"):
+                        data_lines.append(line[5:].strip())
+
+                event = self._parse_responses_sse_data(data_lines)
+                if event and event.get("type") == "response.output_text.delta" and isinstance(event.get("delta"), str):
+                    emitted_content = True
+                    yield {"type": "content", "content": event["delta"]}
+
+        if not emitted_content:
+            raise RuntimeError("Responses API 未返回可展示内容")
+
+    @staticmethod
+    def _parse_responses_sse_data(data_lines: list[str]) -> dict[str, Any] | None:
+        if not data_lines:
+            return None
+        data = "\n".join(data_lines)
+        if data == "[DONE]":
+            return None
+        try:
+            parsed = json.loads(data)
+        except json.JSONDecodeError:
+            logger.debug("忽略无法解析的 Responses SSE 数据: %s", data[:200])
+            return None
+        return parsed if isinstance(parsed, dict) else None
 
     async def summarize_paper(
         self,

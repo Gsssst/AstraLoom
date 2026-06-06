@@ -12,7 +12,7 @@ def test_active_model_stream_metadata_exposes_safe_status(monkeypatch):
             "label": "GPT-5.5（OpenAI 兼容）",
             "model": "gpt-5.5",
             "configured": True,
-            "supports_thinking": False,
+            "supports_thinking": True,
             "api_base": "https://secret.example.com/v1",
             "has_api_key": True,
             "api_key_env": "OPENAI_COMPATIBLE_API_KEY",
@@ -40,7 +40,7 @@ def test_active_model_stream_metadata_exposes_safe_status(monkeypatch):
     assert metadata["capabilities"] == {
         "rag": True,
         "web_search": True,
-        "thinking": False,
+        "thinking": True,
         "vision": True,
     }
     assert metadata["search_depth"] == "deep"
