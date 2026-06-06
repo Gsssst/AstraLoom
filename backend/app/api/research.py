@@ -428,10 +428,11 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_db), curre
 async def delete_project(project_id: str, db: AsyncSession = Depends(get_db), current_user=Depends(get_current_user)):
     """删除研究方向及其所有 Idea。"""
     project = await _get_owned_project(db, project_id, current_user)
+    project_name = project.name
 
     await db.delete(project)
     await db.commit()
-    return {"deleted": True, "name": project.name}
+    return {"deleted": True, "name": project_name}
 
 
 @router.get("/projects/{project_id}/recommended-papers")

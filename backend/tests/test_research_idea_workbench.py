@@ -8,6 +8,7 @@ import pytest
 from app.services.research_idea_workbench import ResearchIdeaWorkbenchService
 from app.services.digest_service import ExperimentService
 from app.api.research import ExternalEvidenceImportRequest, import_external_evidence
+from app.db.models.research import ResearchIdeaRun, ResearchProject
 
 
 class _Session:
@@ -532,3 +533,17 @@ def test_fallback_candidates_remain_diverse_after_deduplication():
     unique, _duplicates = ResearchIdeaWorkbenchService.deduplicate_candidates(candidates)
 
     assert len(unique) >= 3
+
+
+def test_research_project_delete_cascades_workbench_rows():
+    project_ideas = ResearchProject.ideas.property
+    project_runs = ResearchProject.idea_runs.property
+    run_ideas = ResearchIdeaRun.ideas.property
+
+    assert "delete" in project_ideas.cascade
+    assert "delete-orphan" in project_ideas.cascade
+    assert project_ideas.passive_deletes is True
+    assert "delete" in project_runs.cascade
+    assert "delete-orphan" in project_runs.cascade
+    assert project_runs.passive_deletes is True
+    assert run_ideas.passive_deletes is True

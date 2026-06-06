@@ -67,7 +67,7 @@ const ResearchPage: React.FC = () => {
   }, []);
   useEffect(() => { loadProjects(); }, [loadProjects]);
   useEffect(() => { loadCollections(); }, [loadCollections]);
-  const handleDelete = async (id: string, name: string) => { try { await api.delete(`/research/projects/${id}`); message.success(`已删除「${name}」`); loadProjects(); } catch { message.error('删除失败'); } };
+  const handleDelete = async (id: string, name: string) => { try { await api.delete(`/research/projects/${id}`); message.success(`已删除「${name}」`); loadProjects(); } catch (e: any) { message.error(e.response?.data?.detail || '删除失败'); } };
   const handleCreate = async () => {
     if (!newProjectName.trim()) return;
     try {
