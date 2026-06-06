@@ -38,6 +38,10 @@ Thumbs.db
 # Docker
 .docker/
 
+# Celery Beat runtime state
+celerybeat-schedule*
+backend/celerybeat-schedule*
+
 # Uploads
 uploads/
 

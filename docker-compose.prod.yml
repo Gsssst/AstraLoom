@@ -26,7 +26,7 @@ services:
     environment:
       DEBUG: "false"
       LOG_LEVEL: "WARNING"
-    command: celery -A app.tasks.celery_app beat --loglevel=warning
+    command: celery -A app.tasks.celery_app beat --loglevel=warning --schedule=/tmp/celerybeat-schedule
     volumes: []
 
   frontend:
