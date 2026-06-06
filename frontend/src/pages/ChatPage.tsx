@@ -283,8 +283,10 @@ const ChatPage: React.FC = () => {
     finishStreamingMessages();
   };
 
-  const handleSend = async () => {
-    if (sendLock.current || (!input.trim() && attachedFiles.length === 0) || sending) return;
+  const handleSend = async (overrideContent?: string) => {
+    const hasOverride = typeof overrideContent === 'string';
+    const text = (hasOverride ? overrideContent : input).trim();
+    if (sendLock.current || (!text && attachedFiles.length === 0) || sending) return;
     if (!isAuthenticated) { message.warning('请先登录'); return; }
     if (attachedFiles.some(f => f.extracting)) { message.warning('文件还在解析中...'); return; }
     let sid = currentSessionId; if (!sid) { sid = await createSession(); if (!sid) { message.error('创建对话失败：请稍后重试'); return; } }
@@ -296,7 +298,7 @@ const ChatPage: React.FC = () => {
     setFirstTokenAt(null);
     setElapsedMs(0);
     setStreamStatus(webSearch ? '正在检索知识库与网络来源...' : ragEnabled ? '正在检索知识库...' : '正在生成回答...');
-    const text = input.trim(); setInput('');
+    if (!hasOverride) setInput('');
 
     if (attachedFiles.length > 0) {
       const files = [...attachedFiles]; setAttachedFiles([]);
@@ -509,10 +511,10 @@ const ChatPage: React.FC = () => {
                       {!msg._streaming && msg.id && <Popconfirm title="删除此消息？" onConfirm={async () => { if (!msg.id || !currentSessionId) return; try { await api.delete(`/chat-sessions/${currentSessionId}/messages/${msg.id}`); useChatSessionStore.setState(s => ({ messages: s.messages.filter(m => m.id !== msg.id) })); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '删除消息失败' })); } }}><Button type="text" size="small" icon={<DeleteOutlined />} style={{ fontSize: 11, color: '#ff4d4f40' }} /></Popconfirm>}
                       {msg.role === 'assistant' && !msg._streaming && <><Button type="text" size="small" icon={<CopyOutlined />} onClick={() => { navigator.clipboard.writeText(msg.content); message.success('已复制'); }} style={{ fontSize: 11, color: token.colorTextQuaternary }}>复制</Button>
                       <Dropdown menu={{ items: [
-                        { key: 'balanced', label: '🔄 平衡', onClick: () => { handleToggleRag(true); setInput('请重新回答'); setTimeout(()=>handleSend(),100); } },
-                        { key: 'creative', label: '💡 创意', onClick: () => { handleToggleRag(true); setInput('请用更有创意的角度回答'); setTimeout(()=>handleSend(),100); } },
-                        { key: 'precise', label: '🎯 精确', onClick: () => { handleToggleRag(true); setInput('请精确严谨地重新回答'); setTimeout(()=>handleSend(),100); } },
-                        { key: 'norag', label: '🧠 纯模型', onClick: () => { handleToggleRag(false); setInput('请重新回答'); setTimeout(()=>handleSend(),100); } },
+                        { key: 'balanced', label: '🔄 平衡', onClick: () => { handleToggleRag(true); handleSend('请重新回答'); } },
+                        { key: 'creative', label: '💡 创意', onClick: () => { handleToggleRag(true); handleSend('请用更有创意的角度回答'); } },
+                        { key: 'precise', label: '🎯 精确', onClick: () => { handleToggleRag(true); handleSend('请精确严谨地重新回答'); } },
+                        { key: 'norag', label: '🧠 纯模型', onClick: () => { handleToggleRag(false); handleSend('请重新回答'); } },
                       ]}} trigger={['click']}>
                         <Button type="text" size="small" icon={<RedoOutlined />} style={{ fontSize: 11, color: token.colorTextQuaternary }}>重新生成</Button>
                       </Dropdown>
@@ -559,7 +561,7 @@ const ChatPage: React.FC = () => {
               {sending ? (
                 <Tooltip title="停止生成"><Button className="chat-stop-button chat-tool-button" type="text" icon={<StopOutlined />} onClick={handleStopGeneration} /></Tooltip>
               ) : (
-                <Tooltip title="发送"><Button className="chat-send-button chat-tool-button" type="primary" shape="circle" icon={<SendOutlined />} onClick={handleSend} disabled={!input.trim() && attachedFiles.length === 0} /></Tooltip>
+                <Tooltip title="发送"><Button className="chat-send-button chat-tool-button" type="primary" shape="circle" icon={<SendOutlined />} onClick={() => handleSend()} disabled={!input.trim() && attachedFiles.length === 0} /></Tooltip>
               )}
             </div>
           </div>
