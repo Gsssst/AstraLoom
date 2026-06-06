@@ -67,13 +67,27 @@ test('paper library makes external search and ingest transparent', () => {
   assert.match(papersPageSource, /开放 PDF/);
   assert.match(papersPageSource, /未返回 PDF/);
   assert.match(papersPageSource, /来源页/);
-  assert.match(papersPageSource, /可一键入库/);
-  assert.match(papersPageSource, /缺少远程 ID/);
+  assert.match(papersPageSource, /可入库/);
+  assert.match(papersPageSource, /缺远程 ID/);
   assert.match(papersPageSource, /入库目标：论文库/);
   assert.match(papersPageSource, /这次外部检索没有返回论文/);
   assert.match(papersPageSource, /放宽年份/);
   assert.match(papersPageSource, /换一批/);
   assert.match(papersPageSource, /做检索诊断/);
+});
+
+test('paper library exposes search result import-readiness filters', () => {
+  assert.match(papersPageSource, /type PaperResultStateFilter = 'all' \| 'local' \| 'importable' \| 'imported' \| 'open_pdf' \| 'missing_remote_id'/);
+  assert.match(papersPageSource, /paperResultStateOptions/);
+  assert.match(papersPageSource, /paperRemoteKey/);
+  assert.match(papersPageSource, /paperResultState/);
+  assert.match(papersPageSource, /paperResultStateCounts/);
+  assert.match(papersPageSource, /resultStateFilter/);
+  assert.match(papersPageSource, /setResultStateFilter\('all'\)/);
+  assert.match(papersPageSource, /filteredPapers/);
+  assert.match(papersPageSource, /结果状态/);
+  assert.match(papersPageSource, /当前状态筛选下没有结果/);
+  assert.match(papersPageSource, /查看全部状态/);
 });
 
 test('research direction creation can import collection paper ids as seeds', () => {

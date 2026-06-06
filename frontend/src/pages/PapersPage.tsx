@@ -71,6 +71,7 @@ interface CollectionCoverage {
 
 type RecommendationKind = 'classic' | 'recent' | 'gap' | 'related';
 type DiagnosticTab = 'hybrid' | 'bm25' | 'dense';
+type PaperResultStateFilter = 'all' | 'local' | 'importable' | 'imported' | 'open_pdf' | 'missing_remote_id';
 
 const heroGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
 const remoteSearchSources = ['scholarly', 'arxiv', 'semantic_scholar', 'openalex', 'google_scholar'];
@@ -112,6 +113,31 @@ const providerGuidance: Record<string, { label: string; providers: string[]; des
     retry: '如果不可用，优先使用综合学术、OpenAlex 或 Semantic Scholar。',
   },
 };
+const paperResultStateOptions: { value: PaperResultStateFilter; label: string }[] = [
+  { value: 'all', label: '全部状态' },
+  { value: 'local', label: '已在库' },
+  { value: 'importable', label: '可入库' },
+  { value: 'imported', label: '本次已加入' },
+  { value: 'open_pdf', label: '开放 PDF' },
+  { value: 'missing_remote_id', label: '缺远程 ID' },
+];
+
+const paperRemoteKey = (paper: PaperItem) => paper.remote_id ? `${paper.source}:${paper.remote_id}` : '';
+const paperResultState = (paper: PaperItem, ingestedRemoteIds: Set<string>) => {
+  const remoteKey = paperRemoteKey(paper);
+  if (paper.id) return { key: 'local' as const, label: '已在库', color: 'green' };
+  if (remoteKey && ingestedRemoteIds.has(remoteKey)) return { key: 'imported' as const, label: '本次已加入', color: 'success' };
+  if (paper.remote_id) return { key: 'importable' as const, label: '可入库', color: 'geekblue' };
+  return { key: 'missing_remote_id' as const, label: '缺远程 ID', color: 'default' };
+};
+const paperResultStateCounts = (items: PaperItem[], ingestedRemoteIds: Set<string>) => {
+  const counts = { all: items.length, local: 0, importable: 0, imported: 0, open_pdf: 0, missing_remote_id: 0 };
+  items.forEach(item => {
+    counts[paperResultState(item, ingestedRemoteIds).key] += 1;
+    if (item.pdf_url) counts.open_pdf += 1;
+  });
+  return counts;
+};
 
 const PapersPage: React.FC = () => {
   const navigate = useNavigate();
@@ -126,6 +152,7 @@ const PapersPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
   const [source, setSource] = useState<string>(initialSource);
+  const [resultStateFilter, setResultStateFilter] = useState<PaperResultStateFilter>('all');
   const [urlSearchRevision, setUrlSearchRevision] = useState(0);
   const lastAppliedUrlSearchRef = useRef(location.search);
   const [ingesting, setIngesting] = useState(false);
@@ -179,6 +206,11 @@ const PapersPage: React.FC = () => {
     return { value: year, label: `${year}` };
   });
 
+  const updateSource = useCallback((nextSource: string) => {
+    setSource(nextSource);
+    setResultStateFilter('all');
+  }, []);
+
   const fetchReadingCounts = useCallback(async () => {
     if (!isAuthenticated) return;
     try {
@@ -213,6 +245,7 @@ const PapersPage: React.FC = () => {
     if (!queryFromUrl) {
       setSearchQuery('');
       setSource('local');
+      setResultStateFilter('all');
       setRemotePage(1);
       setUrlSearchRevision(value => value + 1);
       return;
@@ -224,6 +257,7 @@ const PapersPage: React.FC = () => {
       : 'scholarly';
     setSearchQuery(queryFromUrl);
     setSource(nextSource);
+    setResultStateFilter('all');
     setRemotePage(1);
     setUrlSearchRevision(value => value + 1);
   }, [location.search]);
@@ -394,7 +428,7 @@ const PapersPage: React.FC = () => {
       const response = await api.post('/folders/', { name: name.trim() });
       message.success('分类已创建');
       await fetchCollections();
-      setSource('collection');
+      updateSource('collection');
       setSelectedCollectionId(response.data.id);
       setTargetCollectionId(response.data.id);
     } catch (e: any) {
@@ -402,7 +436,7 @@ const PapersPage: React.FC = () => {
     } finally {
       setCreatingCollection(false);
     }
-  }, [fetchCollections, isAuthenticated]);
+  }, [fetchCollections, isAuthenticated, updateSource]);
 
   const handleAddSelectedToCollection = useCallback(async () => {
     if (!targetCollectionId) {
@@ -626,6 +660,12 @@ const PapersPage: React.FC = () => {
     />
   );
 
+  const resultStateCounts = paperResultStateCounts(papers, ingestedRemoteIds);
+  const filteredPapers = papers.filter(paper => {
+    if (resultStateFilter === 'all') return true;
+    if (resultStateFilter === 'open_pdf') return !!paper.pdf_url;
+    return paperResultState(paper, ingestedRemoteIds).key === resultStateFilter;
+  });
   const stats = papers.length > 0 ? `共 ${papers.length} 篇论文` : '';
   const collectionOptions = collections.map(item => {
     const diagnostics = item.diagnostics;
@@ -826,7 +866,7 @@ const PapersPage: React.FC = () => {
             actionLabel: '打开维护中心',
             status: 'recommended',
             icon: <DatabaseOutlined />,
-            onClick: () => setSource('maintenance'),
+            onClick: () => updateSource('maintenance'),
           },
           {
             key: 'collections',
@@ -835,7 +875,7 @@ const PapersPage: React.FC = () => {
             actionLabel: '管理分类',
             status: 'ready',
             icon: <FolderOutlined />,
-            onClick: () => setSource('collection'),
+            onClick: () => updateSource('collection'),
           },
           {
             key: 'research',
@@ -852,7 +892,7 @@ const PapersPage: React.FC = () => {
       {/* ── 搜索栏 ── */}
       <Card style={{ borderRadius: 14, marginBottom: 10, border: '1px solid #f0f0f0', flexShrink: 0 }} styles={{ body: { padding: '8px 16px' } }}>
         <Row gutter={[8, 8]} align="middle">
-          <Col xs={24} sm={4}><Select value={source} onChange={setSource} style={{ width: '100%', borderRadius: 10 }}
+          <Col xs={24} sm={4}><Select value={source} onChange={updateSource} style={{ width: '100%', borderRadius: 10 }}
             options={[
               { value: 'local', label: '📚 全部论文' },
               { value: 'saved', label: '⭐ 收藏' },
@@ -1096,6 +1136,30 @@ const PapersPage: React.FC = () => {
             </Col>
           )}
         </Row>}
+        {source !== 'maintenance' && papers.length > 0 && (
+          <Row gutter={[8, 8]} align="middle" style={{ marginTop: 8 }}>
+            <Col flex="auto">
+              <Space size={6} wrap>
+                <Text type="secondary" style={{ fontSize: 13 }}>结果状态</Text>
+                <Tag color="blue">全部 {resultStateCounts.all}</Tag>
+                <Tag color="green">已在库 {resultStateCounts.local}</Tag>
+                <Tag color="geekblue">可入库 {resultStateCounts.importable}</Tag>
+                <Tag color="success">本次已加入 {resultStateCounts.imported}</Tag>
+                <Tag color="cyan">开放 PDF {resultStateCounts.open_pdf}</Tag>
+                <Tag>缺远程 ID {resultStateCounts.missing_remote_id}</Tag>
+              </Space>
+            </Col>
+            <Col>
+              <Select
+                size="small"
+                value={resultStateFilter}
+                onChange={setResultStateFilter}
+                options={paperResultStateOptions}
+                style={{ width: 132 }}
+              />
+            </Col>
+          </Row>
+        )}
         {source === 'reading' && (
           <Row style={{ marginTop: 10 }}>
             <Col span={24}>
@@ -1122,8 +1186,11 @@ const PapersPage: React.FC = () => {
       <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, paddingRight: 4 }}>
       {source === 'maintenance' ? maintenanceView : (
       <Spin spinning={loading}>
-        {papers.length > 0 ? (
-          <List dataSource={papers} renderItem={(paper, idx) => (
+        {filteredPapers.length > 0 ? (
+          <List dataSource={filteredPapers} renderItem={(paper, idx) => {
+            const remoteKey = paperRemoteKey(paper);
+            const resultState = paperResultState(paper, ingestedRemoteIds);
+            return (
             <Card hoverable size="small" style={{ marginBottom: 10, borderRadius: 12, border: '1px solid #f0f0f0', overflow: 'hidden' }}
               onClick={() => handleViewDetail(paper)}
               extra={paper.id ? <Checkbox checked={selectedIds.has(paper.id)} onChange={e => { e.stopPropagation(); setSelectedIds(prev => { const n = new Set(prev); e.target.checked ? n.add(paper.id) : n.delete(paper.id); return n; }); }} onClick={e => e.stopPropagation()} /> : null}>
@@ -1142,9 +1209,9 @@ const PapersPage: React.FC = () => {
                       {paper.authors?.slice(0, 2).map((a, i) => <Tag key={i} icon={<UserOutlined />} style={{ borderRadius: 6 }}>{a}</Tag>)}
                       {paper.arxiv_id && <Tag color="#b31b1b" style={{ borderRadius: 6 }}>arXiv:{paper.arxiv_id}</Tag>}
                       <Tag color={sc(paper.source)} style={{ borderRadius: 6 }}>{sl(paper.source)}</Tag>
+                      <Tag color={resultState.color} style={{ borderRadius: 6 }}>{resultState.label}</Tag>
                       {paper.read_status && <Tag color={readingStatusMeta[paper.read_status].color} style={{ borderRadius: 6 }}>{readingStatusMeta[paper.read_status].label}</Tag>}
                       {paper.citation_count > 0 && <Tag icon={<RiseOutlined />} color="orange" style={{ borderRadius: 6 }}>引用 {paper.citation_count}</Tag>}
-                      {!paper.id && <Tag color={paper.remote_id ? 'geekblue' : 'default'} style={{ borderRadius: 6 }}>{paper.remote_id ? '可一键入库' : '缺少远程 ID'}</Tag>}
                       {!paper.id && <Tag color={paper.pdf_url ? 'green' : 'default'} style={{ borderRadius: 6 }}>{paper.pdf_url ? '开放 PDF' : '未返回 PDF'}</Tag>}
                       {!paper.id && paper.source_url && <Tag color="cyan" style={{ borderRadius: 6 }}>有来源页</Tag>}
                       <Button type="link" size="small" icon={<EyeOutlined />} onClick={e => handleOpenAbstract(e, paper)} style={{ height: 24, paddingInline: 4 }}>查看摘要</Button>
@@ -1152,11 +1219,11 @@ const PapersPage: React.FC = () => {
                       {paper.source_url && <Button type="link" size="small" icon={<LinkOutlined />} href={paper.source_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ height: 24, paddingInline: 4 }}>来源页</Button>}
                       {source === 'collection' && selectedCollectionId && <Button type="link" danger size="small" onClick={e => handleRemoveFromCollection(e, paper)} style={{ height: 24, paddingInline: 4 }}>移出分类</Button>}
                       {!paper.id && isAuthenticated && paper.remote_id ? (
-                        ingestedRemoteIds.has(`${paper.source}:${paper.remote_id}`)
+                        resultState.key === 'imported'
                           ? <Tag color="green" style={{ borderRadius: 6 }}>已加入论文库</Tag>
-                          : <Button size="small" type="primary" ghost icon={<ImportOutlined />} loading={ingestingIds.has(`${paper.source}:${paper.remote_id}`)}
+                          : <Button size="small" type="primary" ghost icon={<ImportOutlined />} loading={ingestingIds.has(remoteKey)}
                             onClick={e => handleIngestOne(e, paper)} style={{ borderRadius: 8, height: 24 }}>{targetCollectionId ? '入库并加入分类' : '加入论文库'}</Button>
-                      ) : paper.id ? <Tag color="green" style={{ borderRadius: 6 }}>已入库</Tag> : null}
+                      ) : null}
                     </Space>
                   </div>
                   {!paper.id && targetCollectionId && (
@@ -1177,14 +1244,20 @@ const PapersPage: React.FC = () => {
                 )}
               </Row>
             </Card>
-          )} />
+          );
+          }} />
         ) : (
           <Card style={{ borderRadius: 16, textAlign: 'center', padding: 60, border: '2px dashed #e8e8e8' }}>
             <div style={{ width: 80, height: 80, borderRadius: 20, background: '#f0f2ff', margin: '0 auto 20px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <BookOutlined style={{ fontSize: 36, color: '#667eea' }} />
             </div>
-            <Title level={4}>{isRemoteSource ? '这次外部检索没有返回论文' : '暂无论文'}</Title>
-            {isRemoteSource ? (
+            <Title level={4}>{papers.length > 0 ? '当前状态筛选下没有结果' : isRemoteSource ? '这次外部检索没有返回论文' : '暂无论文'}</Title>
+            {papers.length > 0 ? (
+              <Space direction="vertical" size={10} style={{ width: '100%', alignItems: 'center' }}>
+                <Text type="secondary" style={{ fontSize: 14 }}>当前结果中没有符合「{paperResultStateOptions.find(option => option.value === resultStateFilter)?.label}」状态的论文。</Text>
+                <Button onClick={() => setResultStateFilter('all')} style={{ borderRadius: 10 }}>查看全部状态</Button>
+              </Space>
+            ) : isRemoteSource ? (
               <Space direction="vertical" size={10} style={{ width: '100%', alignItems: 'center' }}>
                 <Text type="secondary" style={{ fontSize: 14 }}>
                   可能是关键词过窄、年份限制过紧、当前 provider 不可用，或该来源没有开放元数据。
@@ -1192,10 +1265,10 @@ const PapersPage: React.FC = () => {
                 <Space wrap style={{ justifyContent: 'center' }}>
                   <Button onClick={() => { setYearFrom(undefined); setYearTo(undefined); }} style={{ borderRadius: 10 }}>放宽年份</Button>
                   <Button icon={<RedoOutlined />} loading={loading} onClick={() => handleSearch(remotePage + 1)} style={{ borderRadius: 10 }}>换一批</Button>
-                  <Button onClick={() => setSource(source === 'scholarly' ? 'openalex' : 'scholarly')} style={{ borderRadius: 10 }}>
+                  <Button onClick={() => updateSource(source === 'scholarly' ? 'openalex' : 'scholarly')} style={{ borderRadius: 10 }}>
                     {source === 'scholarly' ? '切到 OpenAlex' : '切到综合学术'}
                   </Button>
-                  {isAdmin && <Button icon={<DatabaseOutlined />} onClick={() => setSource('maintenance')} style={{ borderRadius: 10 }}>做检索诊断</Button>}
+                  {isAdmin && <Button icon={<DatabaseOutlined />} onClick={() => updateSource('maintenance')} style={{ borderRadius: 10 }}>做检索诊断</Button>}
                 </Space>
                 {remoteGuidance && <Text type="secondary" style={{ fontSize: 12 }}>{remoteGuidance.retry}</Text>}
               </Space>
