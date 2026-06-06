@@ -24,10 +24,18 @@ class ResearchProject(BaseModel):
     paper_ids: Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)  # 手动添加的论文 ID
 
     ideas: Mapped[List["ResearchIdea"]] = relationship(
-        back_populates="project", lazy="selectin", order_by="ResearchIdea.created_at.desc()"
+        back_populates="project",
+        lazy="selectin",
+        order_by="ResearchIdea.created_at.desc()",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
     idea_runs: Mapped[List["ResearchIdeaRun"]] = relationship(
-        back_populates="project", lazy="selectin", order_by="ResearchIdeaRun.created_at.desc()"
+        back_populates="project",
+        lazy="selectin",
+        order_by="ResearchIdeaRun.created_at.desc()",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
 
@@ -51,7 +59,11 @@ class ResearchIdeaRun(BaseModel):
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     project: Mapped["ResearchProject"] = relationship(back_populates="idea_runs")
-    ideas: Mapped[List["ResearchIdea"]] = relationship(back_populates="generation_run", lazy="selectin")
+    ideas: Mapped[List["ResearchIdea"]] = relationship(
+        back_populates="generation_run",
+        lazy="selectin",
+        passive_deletes=True,
+    )
 
 
 class ResearchIdea(BaseModel):
@@ -86,3 +98,13 @@ class ResearchIdea(BaseModel):
 
     project: Mapped["ResearchProject"] = relationship(back_populates="ideas")
     generation_run: Mapped[Optional["ResearchIdeaRun"]] = relationship(back_populates="ideas")
+    parent: Mapped[Optional["ResearchIdea"]] = relationship(
+        "ResearchIdea",
+        remote_side=lambda: [ResearchIdea.id],
+        back_populates="children",
+    )
+    children: Mapped[List["ResearchIdea"]] = relationship(
+        "ResearchIdea",
+        back_populates="parent",
+        passive_deletes=True,
+    )
