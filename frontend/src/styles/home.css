@@ -395,15 +395,6 @@
 .chat-upload-button { font-size: 20px; color: #999; }
 .chat-upload-button:hover { color: #667eea; }
 
-/* 工具栏 pills */
-.chat-toolbar { backdrop-filter: blur(8px); }
-.chat-retrieval-strategy {
-  color: #667eea; font-size: 12px; padding: 2px 10px;
-  background: #667eea10; border-radius: 8px;
-}
-.chat-control-pill { border-radius: 8px !important; transition: all 0.2s; }
-.chat-control-pill.is-active { background: #667eea15 !important; color: #667eea !important; }
-
 /* 底部输入框 */
 .chat-composer-panel {
   background: #fff; border-radius: 16px;

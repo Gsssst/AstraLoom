@@ -155,16 +155,26 @@ const ResearchProjectPage: React.FC = () => {
     setProject(response.data);
     setIdeas(response.data.ideas || []);
   };
+  const loadRelatedPapers = async (id: string) => {
+    setPapersLoading(true);
+    try {
+      const response = await api.get(`/research/projects/${id}/recommended-papers`);
+      setRelatedPapers((response.data as any[]).map(p => ({ ...p, similarity: p.score })));
+    } catch {
+      setRelatedPapers([]);
+    } finally {
+      setPapersLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!projectId) return;
     setLoading(true);
+    setRelatedPapers([]);
+    loadRelatedPapers(projectId);
     Promise.all([
       loadProject(),
       api.get(`/research/projects/${projectId}/idea-runs/latest`).then(response => setRun(response.data)).catch(() => {}),
-      api.get(`/research/projects/${projectId}/recommended-papers`).then(response => {
-        setRelatedPapers((response.data as any[]).map(p => ({ ...p, similarity: p.score })));
-      }).catch(() => {}).finally(() => setPapersLoading(false)),
       api.get(`/research/projects/${projectId}/experiments`).then(response => setExperiments(response.data)).catch(() => {}),
     ]).catch(() => message.error('加载研究工作台失败')).finally(() => setLoading(false));
   }, [projectId]);

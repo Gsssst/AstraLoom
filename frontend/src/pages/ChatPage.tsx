@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Input, Button, Tag, Typography, Space, Empty, message, List, Popconfirm, Avatar, Tooltip, theme, Image, Select, Skeleton, Dropdown, Drawer, Grid, Modal } from 'antd';
+import { Input, Button, Tag, Typography, Space, Empty, message, List, Popconfirm, Avatar, Tooltip, theme, Image, Select, Skeleton, Dropdown, Drawer, Grid, Modal, Popover } from 'antd';
 import {
   SendOutlined, PlusOutlined, DeleteOutlined, UserOutlined, RobotOutlined,
   MenuOutlined, UploadOutlined, FilePdfOutlined, CloseOutlined,
@@ -7,6 +7,7 @@ import {
   DatabaseOutlined, GlobalOutlined, ExportOutlined, MessageOutlined,
   BulbOutlined, FileTextOutlined, ExperimentOutlined, SwapOutlined,
   HighlightOutlined, EyeOutlined, ClockCircleOutlined, StopOutlined,
+  InfoCircleOutlined,
 } from '@ant-design/icons';
 import { useChatSessionStore } from '../stores/useChatSessionStore';
 import { useThemeStore } from '../stores/useThemeStore';
@@ -117,13 +118,6 @@ const ChatPage: React.FC = () => {
   const isAuthenticated = !!localStorage.getItem('access_token');
   const currentSession = sessions.find(s => s.id === currentSessionId);
   const ragEnabled = currentSession?.rag_enabled ?? true;
-  const retrievalStrategy = webSearch && ragEnabled
-    ? '混合检索'
-    : webSearch
-      ? '联网检索'
-      : ragEnabled
-        ? '知识库检索'
-        : '直接对话';
   const modelDisplay = activeModelInfo?.label || activeModelInfo?.model || '当前模型';
   const modelDetail = activeModelInfo
     ? `${activeModelInfo.provider || 'provider'} / ${activeModelInfo.model || activeModelInfo.label || 'model'}`
@@ -393,6 +387,51 @@ const ChatPage: React.FC = () => {
       message.info('已开启联网增强，并自动切换为深度检索');
     }
   };
+  const statusRows = [
+    { key: 'rag', icon: <DatabaseOutlined />, label: '知识库', active: ragEnabled, detail: ragEnabled ? '参与当前回答检索' : '当前为纯模型或网络回答' },
+    { key: 'web', icon: <GlobalOutlined />, label: '联网', active: webSearch, detail: webSearch ? `启用${searchDepth === 'deep' ? '深度' : searchDepth === 'quick' ? '快速' : '标准'}联网增强` : '不检索网络来源' },
+    { key: 'thinking', icon: <BulbOutlined />, label: '思考', active: !!activeModelInfo?.capabilities?.thinking, detail: activeModelInfo?.capabilities?.thinking ? '当前模型可返回思考摘要' : '当前模型未声明思考展示能力' },
+    { key: 'vision', icon: <EyeOutlined />, label: '视觉', active: !!activeModelInfo?.capabilities?.vision, detail: activeModelInfo?.capabilities?.vision ? '当前模型可接收图片输入' : hasImageAttachment ? '当前模型未声明图片输入能力' : '未检测到视觉能力标记' },
+  ];
+  const statusPopoverContent = (
+    <div className="chat-status-popover">
+      <div className="chat-status-popover-head">
+        <Text strong>{modelDisplay}</Text>
+        <Text type="secondary">{modelDetail}</Text>
+      </div>
+      <div className="chat-status-popover-list">
+        {statusRows.map(item => (
+          <div className="chat-status-popover-row" key={item.key}>
+            <span className={`chat-status-row-icon ${item.active ? 'is-active' : ''}`}>{item.icon}</span>
+            <div className="chat-status-row-copy">
+              <Text strong>{item.label}</Text>
+              <Text type="secondary">{item.detail}</Text>
+            </div>
+            <span className={`chat-status-row-state ${item.active ? 'is-active' : ''}`}>{item.active ? '开启' : '关闭'}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+  const searchPopoverContent = (
+    <div className="chat-toolbar-search-panel">
+      <Input
+        size="middle"
+        prefix={<SearchOutlined />}
+        placeholder="搜索当前对话"
+        value={convSearch}
+        onChange={e => setConvSearch(e.target.value)}
+        allowClear
+      />
+      <Text type="secondary">
+        {convSearch ? `已筛选 ${filteredMessages.length}/${messages.length} 条消息` : '输入关键词后只显示匹配消息'}
+      </Text>
+    </div>
+  );
+  const toolbarMenuItems = [
+    { key: 'export', icon: <ExportOutlined />, label: '导出对话', onClick: handleExport },
+    ...(currentSessionId ? [{ key: 'clear', icon: <DeleteOutlined />, label: '清空当前对话', danger: true, onClick: handleClearMessages }] : []),
+  ];
   const sessionList = (
     <>
       <div className="chat-session-create"><Button type="primary" icon={<PlusOutlined />} block onClick={handleCreateSession}>
@@ -444,35 +483,35 @@ const ChatPage: React.FC = () => {
               </Dropdown>
             )}
           </Space>
-          <div className="chat-toolbar-actions" style={{ fontSize: 13, fontWeight: 500 }}>
-            <div className="chat-model-status">
-              <Tooltip title={modelDetail}>
-                <span className="chat-model-badge">
-                  <RobotOutlined />
-                  <span>{modelDisplay}</span>
-                </span>
-              </Tooltip>
-              <Tooltip title={ragEnabled ? '知识库检索开启' : '知识库检索关闭'}>
-                <span className={`chat-status-chip ${ragEnabled ? 'is-active' : ''}`}><DatabaseOutlined />知识库</span>
-              </Tooltip>
-              <Tooltip title={webSearch ? '联网增强开启' : '联网增强关闭'}>
-                <span className={`chat-status-chip ${webSearch ? 'is-active' : ''}`}><GlobalOutlined />联网</span>
-              </Tooltip>
-              <Tooltip title={activeModelInfo?.capabilities?.thinking ? '当前模型支持思考展示' : '当前模型不支持思考展示'}>
-                <span className={`chat-status-chip ${activeModelInfo?.capabilities?.thinking ? 'is-active' : ''}`}><BulbOutlined />思考</span>
-              </Tooltip>
-              <Tooltip title={activeModelInfo?.capabilities?.vision ? '当前模型支持图片输入' : hasImageAttachment ? '当前模型不支持图片输入' : '当前模型未标记为视觉模型'}>
-                <span className={`chat-status-chip ${activeModelInfo?.capabilities?.vision ? 'is-active' : ''}`}><EyeOutlined />视觉</span>
-              </Tooltip>
-            </div>
-            <Text className="chat-retrieval-strategy">{retrievalStrategy}</Text>
-            <Button className={`chat-control-pill ${ragEnabled ? 'is-active' : ''}`} type="text" size="small" icon={<DatabaseOutlined />} onClick={() => handleToggleRag(!ragEnabled)}>知识库</Button>
-            <Tooltip title="联网增强可以和知识库同时使用">
-              <Button className={`chat-control-pill ${webSearch ? 'is-active' : ''}`} type="text" size="small" icon={<GlobalOutlined />} onClick={handleWebSearchToggle}>联网增强</Button>
+          <div className="chat-toolbar-actions">
+            <Tooltip title={modelDetail}>
+              <span className="chat-model-badge">
+                <RobotOutlined />
+                <span>{modelDisplay}</span>
+              </span>
             </Tooltip>
-            <Select className="chat-depth-select" size="small" value={searchDepth} onChange={setSearchDepth} variant="borderless" style={{ width: 68, fontSize: 13 }} options={[{ value: 'quick', label: '快速' }, { value: 'standard', label: '标准' }, { value: 'deep', label: '深度' }]} />
-            <Button className="chat-control-pill" type="text" size="small" icon={<ExportOutlined />} onClick={handleExport}>导出</Button>
-            <Input className="chat-toolbar-search" size="small" prefix={<SearchOutlined />} placeholder="搜索..." value={convSearch} onChange={e => setConvSearch(e.target.value)} style={{ width: 120 }} allowClear />
+            <div className="chat-toolbar-primary-controls">
+              <Button className={`chat-control-pill ${ragEnabled ? 'is-active' : ''}`} type="text" size="small" icon={<DatabaseOutlined />} onClick={() => handleToggleRag(!ragEnabled)}>
+                <span className="chat-control-label">知识库</span>
+              </Button>
+              <Tooltip title="联网增强可以和知识库同时使用">
+                <Button className={`chat-control-pill ${webSearch ? 'is-active' : ''}`} type="text" size="small" icon={<GlobalOutlined />} onClick={handleWebSearchToggle}>
+                  <span className="chat-control-label">联网</span>
+                </Button>
+              </Tooltip>
+              <Select className="chat-depth-select" size="small" value={searchDepth} onChange={setSearchDepth} variant="borderless" options={[{ value: 'quick', label: '快速' }, { value: 'standard', label: '标准' }, { value: 'deep', label: '深度' }]} />
+            </div>
+            <Popover content={statusPopoverContent} trigger="click" placement="bottomRight">
+              <Button className="chat-icon-pill" type="text" size="small" icon={<InfoCircleOutlined />}>
+                <span className="chat-control-label">状态</span>
+              </Button>
+            </Popover>
+            <Popover content={searchPopoverContent} trigger="click" placement="bottomRight">
+              <Button className={`chat-icon-pill ${convSearch ? 'is-active' : ''}`} type="text" size="small" icon={<SearchOutlined />} />
+            </Popover>
+            <Dropdown menu={{ items: toolbarMenuItems }} trigger={['click']}>
+              <Button className="chat-icon-pill" type="text" size="small" icon={<MoreOutlined />} title="更多操作" />
+            </Dropdown>
           </div>
         </div>
         <div className="chat-message-list" style={{ flex: 1, overflowY: 'auto', padding: '24px 20px', background: token.colorBgLayout }}>

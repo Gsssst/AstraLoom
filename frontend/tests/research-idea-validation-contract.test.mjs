@@ -32,3 +32,14 @@ test('research project page exposes experiment execution pack', () => {
   assert.match(researchProjectSource, /从 Proposal 到实验的执行路线/);
   assert.match(researchProjectSource, /executionData\.next_actions/);
 });
+
+test('research project page does not block core loading on related paper recommendations', () => {
+  assert.match(researchProjectSource, /const loadRelatedPapers = async \(id: string\) =>/);
+  assert.match(researchProjectSource, /loadRelatedPapers\(projectId\);/);
+  assert.match(researchProjectSource, /setRelatedPapers\(\[\]\)/);
+  assert.doesNotMatch(
+    researchProjectSource,
+    /Promise\.all\(\[[\s\S]*recommended-papers[\s\S]*\]\)\.catch/,
+  );
+  assert.match(researchProjectSource, /<Card title="相关论文" loading=\{papersLoading\}/);
+});
