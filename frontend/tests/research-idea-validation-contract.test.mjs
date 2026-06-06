@@ -55,3 +55,27 @@ test('research project related papers expose cache state and refresh control', (
   assert.match(researchProjectSource, /loadRelatedPapers\(projectId, true\)/);
   assert.match(researchProjectSource, /已使用缓存/);
 });
+
+test('research project generation stream can be stopped and persisted as cancelled', () => {
+  assert.match(researchProjectSource, /generationAbortRef = useRef<AbortController \| null>\(null\)/);
+  assert.match(researchProjectSource, /generationCancelRequestedRef = useRef\(false\)/);
+  assert.match(researchProjectSource, /new AbortController\(\)/);
+  assert.match(researchProjectSource, /signal: controller\.signal/);
+  assert.match(researchProjectSource, /handleStopGeneration/);
+  assert.match(researchProjectSource, /generationAbortRef\.current\?\.abort\(\)/);
+  assert.match(researchProjectSource, /\/research\/projects\/\$\{projectId\}\/idea-runs\/\$\{run\.id\}\/cancel/);
+  assert.match(researchProjectSource, /停止当前生成/);
+});
+
+test('research project generation status offers retry, restart, and proposal next action', () => {
+  assert.match(researchProjectSource, /runStatusLabels/);
+  assert.match(researchProjectSource, /runStatusColors/);
+  assert.match(researchProjectSource, /currentStageTitle/);
+  assert.match(researchProjectSource, /runHasTerminalError/);
+  assert.match(researchProjectSource, /runWasCancelled/);
+  assert.match(researchProjectSource, /重新开始生成/);
+  assert.match(researchProjectSource, /重试生成/);
+  assert.match(researchProjectSource, /Top Proposal 已就绪/);
+  assert.match(researchProjectSource, /setActiveWorkbenchTab\('proposals'\)/);
+  assert.match(researchProjectSource, /Tabs activeKey=\{activeWorkbenchTab\}/);
+});

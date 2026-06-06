@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 from typing import Any, List, Optional
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -321,6 +321,22 @@ def _stream_event(event_type: str, data: Any = None) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+async def _cancel_idea_run(
+    db: AsyncSession,
+    run: ResearchIdeaRun,
+    *,
+    message: str = "已停止生成候选 Proposal",
+) -> ResearchIdeaRun:
+    if run.status not in {"pending", "running"}:
+        return run
+    run.status = "cancelled"
+    run.message = message
+    run.error = None
+    await db.commit()
+    await db.refresh(run)
+    return run
+
+
 def _related_paper_cache_key(project: ResearchProject) -> str:
     payload = {
         "name": project.name or "",
@@ -559,6 +575,7 @@ async def create_idea_run(
 @router.post("/projects/{project_id}/idea-runs/stream")
 async def create_idea_run_stream(
     project_id: str,
+    request: Request,
     req: GenerateIdeasRequest = GenerateIdeasRequest(),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
@@ -578,6 +595,10 @@ async def create_idea_run_stream(
             try:
                 ideas = await service.execute(project, run, num_ideas=req.num_ideas, on_progress=push)
                 await queue.put({"type": "done", "run": _run_response(run, ideas).model_dump(), "ideas": [_idea_response(idea).model_dump() for idea in ideas]})
+            except asyncio.CancelledError:
+                await _cancel_idea_run(db, run)
+                await queue.put({"type": "cancelled", "run": _run_response(run).model_dump(), "ideas": []})
+                raise
             except Exception:
                 await queue.put({"type": "done", "run": _run_response(run).model_dump(), "ideas": []})
 
@@ -585,18 +606,43 @@ async def create_idea_run_stream(
         try:
             yield _stream_event("run", {"run": _run_response(run).model_dump()})
             while True:
+                if request and await request.is_disconnected():
+                    task.cancel()
+                    break
                 event = await queue.get()
                 yield _stream_event(event.get("type", "message"), event)
-                if event.get("type") == "done":
+                if event.get("type") in {"done", "cancelled"}:
                     break
         finally:
-            await task
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            await _cancel_idea_run(db, run)
 
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/projects/{project_id}/idea-runs/{run_id}/cancel", response_model=IdeaRunResponse)
+async def cancel_idea_run(
+    project_id: str,
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """停止一个项目所有者正在运行的 Idea 工作台任务。"""
+    project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
+    run = await _get_owned_run(db, run_id, current_user)
+    if run.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Idea 工作台运行未找到")
+    run = await _cancel_idea_run(db, run)
+    return _run_response(run)
 
 
 @router.get("/projects/{project_id}/idea-runs/latest", response_model=Optional[IdeaRunResponse])

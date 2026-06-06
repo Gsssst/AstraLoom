@@ -47,7 +47,7 @@ class ResearchIdeaRun(BaseModel):
     project_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("research_projects.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, running, complete, failed
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, running, complete, failed, cancelled
     stage: Mapped[str] = mapped_column(String(40), default="briefing")
     progress: Mapped[int] = mapped_column(Integer, default=0)
     message: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)

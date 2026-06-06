@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Alert, Button, Card, Checkbox, Collapse, Col, Divider, Empty, Input, List, message,
@@ -8,7 +8,7 @@ import {
   ArrowLeftOutlined, BulbOutlined, CodeOutlined, DeleteOutlined,
   ExperimentOutlined, FileSearchOutlined, FileTextOutlined, MessageOutlined, NodeIndexOutlined,
   HistoryOutlined, ImportOutlined, PlusOutlined, PushpinOutlined, ReloadOutlined, RiseOutlined, RobotOutlined, RocketOutlined, SendOutlined,
-  ShareAltOutlined, StarFilled, ThunderboltOutlined, UserOutlined,
+  ShareAltOutlined, StarFilled, StopOutlined, ThunderboltOutlined, UserOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
@@ -108,6 +108,8 @@ const categoryColors = { seed: 'purple', background: 'blue', inspiration: 'cyan'
 const pathLabels: Record<string, string> = { grounded: 'Gap 推导', inspiration: '跨论文启发', seed_refinement: '种子优化' };
 const sourceLabels: Record<string, string> = { local_library: '本地论文库', arxiv: 'arXiv', semantic_scholar: 'Semantic Scholar' };
 const statusLabels: Record<string, string> = { draft: '待筛选', pinned: '已收藏', rejected: '已淘汰', implemented: '已有代码' };
+const runStatusLabels: Record<string, string> = { pending: '等待中', running: '生成中', complete: '已完成', failed: '失败', cancelled: '已停止' };
+const runStatusColors: Record<string, string> = { pending: 'default', running: 'processing', complete: 'green', failed: 'red', cancelled: 'orange' };
 const noveltyLabels: Record<string, string> = { likely_novel: '可能新颖', incremental: '增量改进', too_similar: '过于相似' };
 const noveltyColors: Record<string, string> = { likely_novel: 'green', incremental: 'gold', too_similar: 'red' };
 const adversarialLabels: Record<string, string> = { advance: '建议推进', revise: '需要修改', reject: '暂不推进' };
@@ -124,6 +126,8 @@ const ResearchProjectPage: React.FC = () => {
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [run, setRun] = useState<IdeaRun | null>(null);
   const [generating, setGenerating] = useState(false);
+  const generationAbortRef = useRef<AbortController | null>(null);
+  const generationCancelRequestedRef = useRef(false);
   const [relatedPapers, setRelatedPapers] = useState<any[]>([]);
   const [papersLoading, setPapersLoading] = useState(false);
   const [papersCached, setPapersCached] = useState(false);
@@ -150,6 +154,7 @@ const ResearchProjectPage: React.FC = () => {
   const [lineage, setLineage] = useState<Idea[]>([]);
   const [validationMap, setValidationMap] = useState<Record<string, { loading: boolean; data?: IdeaValidation }>>({});
   const [executionPackMap, setExecutionPackMap] = useState<Record<string, { loading: boolean; data?: ExperimentExecutionPack }>>({});
+  const [activeWorkbenchTab, setActiveWorkbenchTab] = useState('evidence');
 
   const loadProject = async () => {
     if (!projectId) return;
@@ -203,15 +208,22 @@ const ResearchProjectPage: React.FC = () => {
       setRun(event.run);
       setIdeas(event.ideas || event.run.ideas || []);
     }
+    if (event.type === 'cancelled' && event.run) setRun(event.run);
   };
 
   const handleGenerate = async () => {
     if (!projectId || generating) return;
+    generationCancelRequestedRef.current = false;
+    const controller = new AbortController();
+    generationAbortRef.current = controller;
     setGenerating(true);
     try {
       const token = localStorage.getItem('access_token');
+      let finalRunStatus: string | null = null;
+      let finalRunError: string | null = null;
       const response = await fetch(`/api/research/projects/${projectId}/idea-runs/stream`, {
         method: 'POST',
+        signal: controller.signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ num_ideas: 3, external_search: externalSearch }),
       });
@@ -227,16 +239,48 @@ const ResearchProjectPage: React.FC = () => {
         buffer = packets.pop() || '';
         packets.forEach(packet => {
           const line = packet.split('\n').find(item => item.startsWith('data: '));
-          if (line) applyStreamEvent(JSON.parse(line.slice(6)));
+          if (line) {
+            const event = JSON.parse(line.slice(6));
+            applyStreamEvent(event);
+            if ((event.type === 'done' || event.type === 'cancelled') && event.run) {
+              finalRunStatus = event.run.status || null;
+              finalRunError = event.run.error || null;
+            }
+          }
         });
       }
       await loadProject();
-      message.success('Idea 工作台已生成新的 Proposal');
+      if (!generationCancelRequestedRef.current && finalRunStatus === 'complete') {
+        setActiveWorkbenchTab('proposals');
+        message.success('Idea 工作台已生成新的 Proposal');
+      } else if (!generationCancelRequestedRef.current && finalRunStatus === 'failed') {
+        message.error(finalRunError || 'Idea 工作台运行失败');
+      }
     } catch (error: any) {
-      message.error(error?.message || '生成失败');
+      if (!generationCancelRequestedRef.current && error?.name !== 'AbortError') {
+        message.error(error?.message || '生成失败');
+      }
     } finally {
       setGenerating(false);
+      generationAbortRef.current = null;
+      generationCancelRequestedRef.current = false;
     }
+  };
+
+  const handleStopGeneration = async () => {
+    if (!projectId || !generating) return;
+    generationCancelRequestedRef.current = true;
+    generationAbortRef.current?.abort();
+    setGenerating(false);
+    if (run?.id) {
+      try {
+        const response = await api.post(`/research/projects/${projectId}/idea-runs/${run.id}/cancel`);
+        setRun(response.data);
+      } catch {
+        setRun(previous => previous ? { ...previous, status: 'cancelled', message: '已停止生成候选 Proposal', error: undefined } : previous);
+      }
+    }
+    message.info('已停止生成候选 Proposal');
   };
 
   const getDiscuss = (ideaId: string) => discussMap[ideaId] || { msg: '', log: [], loading: false };
@@ -410,6 +454,13 @@ const ResearchProjectPage: React.FC = () => {
   const gaps = run?.gap_map?.gaps || [];
   const candidates = run?.candidate_pool || [];
   const stageIndex = Math.max(0, stageItems.findIndex(([key]) => key === run?.stage));
+  const currentStageTitle = stageItems.find(([key]) => key === run?.stage)?.[1] || '尚未启动';
+  const runStatus = generating ? 'running' : run?.status || 'idle';
+  const runStatusLabel = runStatus === 'idle' ? '尚未启动' : runStatusLabels[runStatus] || runStatus;
+  const runStatusColor = runStatus === 'idle' ? 'default' : runStatusColors[runStatus] || 'default';
+  const runHasTerminalError = run?.status === 'failed' && !!run.error;
+  const runWasCancelled = run?.status === 'cancelled';
+  const runCompleted = run?.status === 'complete';
   const relatedPapersUpdatedText = papersRefreshedAt
     ? new Date(papersRefreshedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     : null;
@@ -751,18 +802,37 @@ const ResearchProjectPage: React.FC = () => {
               <Text style={{ color: '#fff' }}>联网补充文献</Text>
               <Switch checked={externalSearch} onChange={setExternalSearch} />
             </Space>
-            <Button type="primary" icon={generating ? <ReloadOutlined spin /> : <ThunderboltOutlined />} loading={generating} onClick={handleGenerate}>生成候选 Proposal</Button>
+            {generating ? (
+              <Button danger icon={<StopOutlined />} onClick={handleStopGeneration}>停止生成</Button>
+            ) : (
+              <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate}>生成候选 Proposal</Button>
+            )}
           </Space>
         </div>
       </div>
 
       <Card style={{ borderRadius: 14, marginBottom: 18 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 10 }}>
-          <div><Text strong>Research Idea Workbench</Text><br /><Text type="secondary">{run?.message || '从证据开始，而不是让模型直接猜一个 Idea'}</Text></div>
+          <div>
+            <Space wrap style={{ marginBottom: 4 }}>
+              <Text strong>Research Idea Workbench</Text>
+              <Tag color={runStatusColor}>{runStatusLabel}</Tag>
+              {run && <Tag>当前阶段：{currentStageTitle}</Tag>}
+            </Space>
+            <br />
+            <Text type="secondary">{run?.message || '从证据开始，而不是让模型直接猜一个 Idea'}</Text>
+          </div>
           <Progress type="circle" size={54} percent={run?.progress || 0} />
         </div>
         <Steps current={stageIndex} size="small" responsive items={stageItems.map(([, title]) => ({ title }))} />
-        {run?.error && <Alert type="error" showIcon message="最近一次运行失败" description={run.error} style={{ marginTop: 12 }} />}
+        <Space wrap style={{ marginTop: 12 }}>
+          {generating && <Button danger icon={<StopOutlined />} onClick={handleStopGeneration}>停止当前生成</Button>}
+          {!generating && (runHasTerminalError || runWasCancelled) && <Button type="primary" icon={<ReloadOutlined />} onClick={handleGenerate}>{runWasCancelled ? '重新开始生成' : '重试生成'}</Button>}
+          {runCompleted && ideas.length > 0 && <Button type="primary" ghost icon={<ExperimentOutlined />} onClick={() => setActiveWorkbenchTab('proposals')}>查看 Top Proposal</Button>}
+        </Space>
+        {runHasTerminalError && <Alert type="error" showIcon message="最近一次运行失败" description={<Space direction="vertical" size={4}><Text>{run.error}</Text><Text type="secondary">最后阶段：{currentStageTitle}</Text></Space>} style={{ marginTop: 12 }} />}
+        {runWasCancelled && <Alert type="warning" showIcon message="生成已停止" description={`已保留 ${currentStageTitle} 阶段之前的进度和中间产物，可随时重新开始。`} style={{ marginTop: 12 }} />}
+        {runCompleted && ideas.length > 0 && <Alert type="success" showIcon message="Top Proposal 已就绪" description={`已保存 ${ideas.length} 个 Proposal，可以进入 Top Proposal 继续筛选、比较、验证或生成写作草稿。`} style={{ marginTop: 12 }} />}
       </Card>
 
       <Row gutter={[18, 18]}>
@@ -808,7 +878,7 @@ const ResearchProjectPage: React.FC = () => {
         </Col>
         <Col xs={24} lg={18}>
           <Card style={{ borderRadius: 14 }} styles={{ body: { paddingTop: 8 } }}>
-            <Tabs items={[
+            <Tabs activeKey={activeWorkbenchTab} onChange={setActiveWorkbenchTab} items={[
               { key: 'evidence', label: <Space><FileSearchOutlined />证据地图 <Tag>{evidenceItems.length}</Tag></Space>, children: evidenceTab },
               { key: 'gaps', label: <Space><NodeIndexOutlined />Gap Map <Tag>{gaps.length}</Tag></Space>, children: gapTab },
               { key: 'candidates', label: <Space><BulbOutlined />候选池 <Tag>{candidates.length}</Tag></Space>, children: candidateTab },

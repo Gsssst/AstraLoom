@@ -180,6 +180,7 @@ def test_system_wide_routes_require_admin(path, method):
         ("/api/research/projects/{project_id}/generate-ideas", "POST"),
         ("/api/research/projects/{project_id}/idea-runs", "POST"),
         ("/api/research/projects/{project_id}/idea-runs/stream", "POST"),
+        ("/api/research/projects/{project_id}/idea-runs/{run_id}/cancel", "POST"),
         ("/api/research/projects/{project_id}/idea-runs/latest", "GET"),
         ("/api/research/idea-runs/{run_id}", "GET"),
         ("/api/research/ideas/compare", "POST"),
