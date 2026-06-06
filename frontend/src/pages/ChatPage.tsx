@@ -392,20 +392,22 @@ const ChatPage: React.FC = () => {
               ))}
             </div>
             {attachedFiles.length > 0 && (
-              <div className="chat-attachments" style={{ background: token.colorBgElevated, border: `1px solid ${token.colorBorderSecondary}` }}>
+              <div className="chat-attachments">
                 {attachedFiles.map(af => (
-                  <div key={af.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', background: token.colorFillSecondary, borderRadius: 8 }}>
-                    {af.file.type.startsWith('image/') ? <Image src={URL.createObjectURL(af.file)} width={32} height={32} style={{ borderRadius: 4, objectFit: 'cover' }} preview={false} /> : <FilePdfOutlined style={{ fontSize: 20, color: '#ff4d4f' }} />}
-                    <span style={{ fontSize: 12, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{af.extracting ? '解析中...' : af.text ? '✅' : '⚠️'} {af.file.name}</span>
-                    <Button type="text" size="small" icon={<CloseOutlined />} onClick={() => setAttachedFiles(prev => prev.filter(f => f.id !== af.id))} />
+                  <div key={af.id} className="chat-attachment-chip">
+                    {af.file.type.startsWith('image/')
+                      ? <Image className="chat-attachment-thumb" src={URL.createObjectURL(af.file)} width={32} height={32} preview={false} />
+                      : <span className="chat-attachment-file-icon"><FilePdfOutlined /></span>}
+                    <span className="chat-attachment-name">{af.extracting ? '解析中' : af.text ? '就绪' : '异常'} · {af.file.name}</span>
+                    <Button className="chat-attachment-remove" type="text" size="small" icon={<CloseOutlined />} onClick={() => setAttachedFiles(prev => prev.filter(f => f.id !== af.id))} />
                   </div>
                 ))}
               </div>
             )}
             <div className="chat-editor">
-              <Tooltip title="上传论文或图片"><Button className="chat-upload-button" type="text" icon={<UploadOutlined />} onClick={() => { const el = document.createElement('input'); el.type = 'file'; el.accept = 'image/*,.pdf'; el.multiple = true; el.onchange = async () => { for (const f of Array.from(el.files || [])) { if (f.size > 10 * 1024 * 1024) { message.warning(`${f.name} 超过10MB`); continue; } const id = Math.random().toString(36).slice(2); setAttachedFiles(prev => [...prev, { file: f, text: '', extracting: true, id }]); const fd = new FormData(); fd.append('file', f); try { const res = await api.post('/chat-sessions/extract-file', fd, { headers: { 'Content-Type': 'multipart/form-data' } }); setAttachedFiles(prev => prev.map(p => p.id === id ? { ...p, text: res.data.extracted_text || '', extracting: false, dataUrl: res.data.data_url || undefined, mimeType: res.data.mime_type || undefined } : p)); } catch { setAttachedFiles(prev => prev.filter(p => p.id !== id)); message.error(`${f.name} 解析失败`); } } }; el.click(); }} /></Tooltip>
+              <Tooltip title="上传论文或图片"><Button className="chat-upload-button chat-tool-button" type="text" icon={<UploadOutlined />} onClick={() => { const el = document.createElement('input'); el.type = 'file'; el.accept = 'image/*,.pdf'; el.multiple = true; el.onchange = async () => { for (const f of Array.from(el.files || [])) { if (f.size > 10 * 1024 * 1024) { message.warning(`${f.name} 超过10MB`); continue; } const id = Math.random().toString(36).slice(2); setAttachedFiles(prev => [...prev, { file: f, text: '', extracting: true, id }]); const fd = new FormData(); fd.append('file', f); try { const res = await api.post('/chat-sessions/extract-file', fd, { headers: { 'Content-Type': 'multipart/form-data' } }); setAttachedFiles(prev => prev.map(p => p.id === id ? { ...p, text: res.data.extracted_text || '', extracting: false, dataUrl: res.data.data_url || undefined, mimeType: res.data.mime_type || undefined } : p)); } catch { setAttachedFiles(prev => prev.filter(p => p.id !== id)); message.error(`${f.name} 解析失败`); } } }; el.click(); }} /></Tooltip>
               <div className="chat-input-wrap"><Input.TextArea className="chat-input" value={input} onChange={e => setInput(e.target.value)} onPressEnter={e => { if (!e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={ragEnabled ? '输入消息，Enter 发送，Shift+Enter 换行' : '输入消息...'} autoSize={{ minRows: 1, maxRows: 5 }} /></div>
-              <Tooltip title="发送"><Button className="chat-send-button" type="primary" shape="circle" icon={sending ? <LoadingOutlined /> : <SendOutlined />} onClick={handleSend} loading={sending} disabled={!input.trim() && attachedFiles.length === 0} /></Tooltip>
+              <Tooltip title="发送"><Button className="chat-send-button chat-tool-button" type="primary" shape="circle" icon={sending ? <LoadingOutlined /> : <SendOutlined />} onClick={handleSend} loading={sending} disabled={!input.trim() && attachedFiles.length === 0} /></Tooltip>
             </div>
           </div>
         </div>
