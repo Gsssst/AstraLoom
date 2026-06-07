@@ -29,7 +29,18 @@ test('workspace detail renders assistant panel with prompts messages and referen
   assert.match(detailSource, /assistantPrompts\.map/);
   assert.match(detailSource, /assistantMessages\.map/);
   assert.match(detailSource, /item\.references\.slice\(0, 6\)/);
-  assert.match(detailSource, /assistantReferences\.slice\(0, 8\)/);
   assert.match(detailSource, /发送给空间助手/);
   assert.match(detailSource, /基于当前空间的论文、研究方向、写作草稿和活动记录回答/);
+});
+
+test('workspace assistant keeps context compact and renders assistant markdown', () => {
+  assert.match(detailSource, /import Markdown from '..\/components\/Markdown'/);
+  assert.match(detailSource, /assistantContextOpen/);
+  assert.match(detailSource, /setAssistantContextOpen\(open => !open\)/);
+  assert.match(detailSource, /当前上下文 \{assistantReferences\.length\} 项/);
+  assert.match(detailSource, /assistantContextOpen \? '收起' : '展开'/);
+  assert.match(detailSource, /<Markdown content=\{item\.content\} \/>/);
+  assert.match(detailSource, /assistantReferences\.slice\(0, 12\)/);
+  assert.match(detailSource, /textOverflow: 'ellipsis'/);
+  assert.match(detailSource, /maxWidth: '100%'/);
 });

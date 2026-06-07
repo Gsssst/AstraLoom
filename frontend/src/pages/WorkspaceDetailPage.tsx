@@ -11,6 +11,7 @@ import api from '../services/api';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
 import PageShell from '../components/PageShell';
 import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
+import Markdown from '../components/Markdown';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -80,6 +81,7 @@ const WorkspaceDetailPage: React.FC = () => {
   const [assistantMessages, setAssistantMessages] = useState<WorkspaceAssistantMessage[]>([]);
   const [assistantPrompts, setAssistantPrompts] = useState<string[]>([]);
   const [assistantReferences, setAssistantReferences] = useState<any[]>([]);
+  const [assistantContextOpen, setAssistantContextOpen] = useState(false);
   const [workspaceActionError, setWorkspaceActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
 
   const fetchSpace = async () => {
@@ -337,14 +339,26 @@ const WorkspaceDetailPage: React.FC = () => {
                 >
                   <Space direction="vertical" size={6} style={{ width: '100%' }}>
                     <Text strong style={{ fontSize: 12 }}>{item.role === 'user' ? '你' : 'AI 助手'}</Text>
-                    <Paragraph style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{item.content}</Paragraph>
+                    {item.role === 'assistant' ? (
+                      <div style={{ maxWidth: '100%', overflow: 'hidden' }}>
+                        <Markdown content={item.content} />
+                      </div>
+                    ) : (
+                      <Paragraph style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{item.content}</Paragraph>
+                    )}
                     {!!item.references?.length && (
                       <Space wrap size={4}>
                         {item.references.slice(0, 6).map((reference: any, index: number) => (
                           <Tag
                             key={`${reference.resource_type || 'ref'}-${reference.resource_id || index}`}
                             color="geekblue"
-                            style={{ cursor: reference.path ? 'pointer' : 'default' }}
+                            style={{
+                              maxWidth: '100%',
+                              cursor: reference.path ? 'pointer' : 'default',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
                             onClick={() => reference.path && navigate(reference.path)}
                           >
                             {reference.source_label || '空间引用'}：{reference.title || reference.resource_type}
@@ -362,17 +376,35 @@ const WorkspaceDetailPage: React.FC = () => {
         </div>
 
         {!!assistantReferences.length && (
-          <Space wrap size={4}>
-            <Text type="secondary" style={{ fontSize: 12 }}>当前上下文：</Text>
-            {assistantReferences.slice(0, 8).map((reference: any, index: number) => (
-              <Tag
-                key={`${reference.resource_type || 'ctx'}-${reference.resource_id || index}`}
-                onClick={() => reference.path && navigate(reference.path)}
-                style={{ cursor: reference.path ? 'pointer' : 'default' }}
-              >
-                {reference.title || reference.source_label}
-              </Tag>
-            ))}
+          <Space direction="vertical" size={6} style={{ width: '100%' }}>
+            <Button
+              type="text"
+              size="small"
+              onClick={() => setAssistantContextOpen(open => !open)}
+              style={{ alignSelf: 'flex-start', padding: 0, height: 24, color: '#667085' }}
+            >
+              当前上下文 {assistantReferences.length} 项 · {assistantContextOpen ? '收起' : '展开'}
+            </Button>
+            {assistantContextOpen && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxWidth: '100%', overflow: 'hidden' }}>
+                {assistantReferences.slice(0, 12).map((reference: any, index: number) => (
+                  <Tag
+                    key={`${reference.resource_type || 'ctx'}-${reference.resource_id || index}`}
+                    onClick={() => reference.path && navigate(reference.path)}
+                    title={reference.title || reference.source_label}
+                    style={{
+                      maxWidth: '100%',
+                      cursor: reference.path ? 'pointer' : 'default',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {reference.title || reference.source_label}
+                  </Tag>
+                ))}
+              </div>
+            )}
           </Space>
         )}
 
