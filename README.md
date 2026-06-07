@@ -47,12 +47,25 @@ docker compose up -d
 - 前端界面：http://localhost
 - API 文档：http://localhost/api/docs
 - 健康检查：http://localhost/api/health
+- 数据库迁移健康检查：http://localhost/api/health/db
 
 ### 5. 数据库迁移
 
+Docker 后端容器启动时会先执行 Alembic 迁移：
+
+```bash
+docker compose up -d backend
+```
+
+如果你在开发中遇到数据库字段缺失、Alembic 版本不一致等问题，可以手动排查：
+
 ```bash
 docker compose exec backend alembic upgrade head
+docker compose exec backend alembic current
+curl http://127.0.0.1:8000/api/health/db
 ```
+
+临时排障时可通过 `RUN_DB_MIGRATIONS=false` 跳过容器启动迁移，但正常开发和部署建议保持默认自动迁移。
 
 ## 项目结构
 

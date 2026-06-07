@@ -7,7 +7,7 @@ services:
       DEBUG: "false"
       APP_ENV: "production"
       LOG_LEVEL: "WARNING"
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+    command: ./scripts/docker-start-backend.sh uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
     # 生产环境不挂载源码（使用镜像中的代码）
     volumes:
       - uploads_data:/app/uploads

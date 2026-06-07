@@ -34,6 +34,8 @@ async def lifespan(app: FastAPI):
     from app.db.init_db import init_db
     await init_db()
     logger.info("✅ 数据库初始化完成")
+    from app.services.database_health import log_database_migration_status
+    await log_database_migration_status()
 
     yield
 
@@ -79,6 +81,19 @@ async def health_check():
             "version": "0.1.0",
         }
     )
+
+
+@app.get("/api/health/db", tags=["系统"])
+async def database_health_check():
+    """数据库迁移健康检查端点。"""
+    from app.db.session import AsyncSessionLocal
+    from app.services.database_health import get_database_migration_status
+
+    async with AsyncSessionLocal() as db:
+        status = await get_database_migration_status(db)
+
+    http_status = 200 if status.status == "ok" else 503
+    return JSONResponse(content=status.to_dict(), status_code=http_status)
 
 
 # --- 注册路由 ---

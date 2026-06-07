@@ -15,6 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 应用代码
 COPY . .
 
+RUN chmod +x /app/scripts/docker-start-backend.sh
+
 # 静态文件上传目录
 RUN mkdir -p /app/uploads
 

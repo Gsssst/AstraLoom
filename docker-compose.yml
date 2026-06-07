@@ -96,7 +96,7 @@ services:
     volumes:
       - ./backend:/app
       - uploads_data:/app/uploads
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --reload --timeout-keep-alive 30
+    command: ./scripts/docker-start-backend.sh uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --reload --timeout-keep-alive 30
     networks:
       - ars-network
 
