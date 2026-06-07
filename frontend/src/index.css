@@ -348,6 +348,19 @@ body {
   overflow-wrap: anywhere;
 }
 
+.gap-selection-panel,
+.gap-selection-signal {
+  border-radius: 8px;
+  background: #fbfaff;
+}
+
+.gap-selection-panel .ant-typography,
+.gap-selection-signal .ant-typography,
+.gap-selection-signal .ant-tag {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .code-project-empty-preview {
   min-height: 240px;
   display: flex;

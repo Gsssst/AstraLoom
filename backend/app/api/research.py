@@ -194,6 +194,24 @@ class GenerateIdeasRequest(BaseModel):
     external_search: bool = True
 
 
+class GapSelectionRequest(BaseModel):
+    selected_gap_titles: list[str] = Field(default_factory=list)
+    blocked_gap_titles: list[str] = Field(default_factory=list)
+    focus_note: str = ""
+
+
+class GenerationConstraintsRequest(BaseModel):
+    research_mode: Literal["balanced", "theory", "experiment", "system", "application"] = "balanced"
+    risk_appetite: Literal["conservative", "balanced", "high_risk"] = "balanced"
+    resource_budget: Literal["low_compute", "reproducible", "large_model"] = "reproducible"
+
+
+class ContinueGapReviewRequest(BaseModel):
+    num_ideas: int = Field(default=3, ge=1, le=5)
+    gap_selection: GapSelectionRequest = Field(default_factory=GapSelectionRequest)
+    generation_constraints: GenerationConstraintsRequest = Field(default_factory=GenerationConstraintsRequest)
+
+
 class IdeaRunResponse(BaseModel):
     id: str
     project_id: str
@@ -716,6 +734,47 @@ async def create_idea_run(
     service = ResearchIdeaWorkbenchService(db)
     run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search)
     ideas = await service.execute(project, run, num_ideas=req.num_ideas)
+    return _run_response(run, ideas)
+
+
+@router.post("/projects/{project_id}/idea-runs/gap-preview", response_model=IdeaRunResponse, status_code=201)
+async def create_gap_preview_run(
+    project_id: str,
+    req: GenerateIdeasRequest = GenerateIdeasRequest(),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """创建一次停在 Gap Map 选择阶段的工作台运行。"""
+    project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
+    service = ResearchIdeaWorkbenchService(db)
+    run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search)
+    run = await service.execute_gap_preview(project, run)
+    return _run_response(run)
+
+
+@router.post("/projects/{project_id}/idea-runs/{run_id}/continue-from-gaps", response_model=IdeaRunResponse)
+async def continue_idea_run_from_gaps(
+    project_id: str,
+    run_id: str,
+    req: ContinueGapReviewRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """从已预览的 Gap Map 和用户约束继续生成 Proposal。"""
+    project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
+    run = await _get_owned_run(db, run_id, current_user)
+    if run.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Idea 工作台运行未找到")
+    if not run.gap_map:
+        raise HTTPException(status_code=400, detail="当前运行还没有可继续的 Gap Map")
+    service = ResearchIdeaWorkbenchService(db)
+    ideas = await service.continue_from_gap_review(
+        project,
+        run,
+        gap_selection=req.gap_selection.model_dump(),
+        generation_constraints=req.generation_constraints.model_dump(),
+        num_ideas=req.num_ideas,
+    )
     return _run_response(run, ideas)
 
 

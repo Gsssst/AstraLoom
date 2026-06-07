@@ -59,6 +59,84 @@ async def test_stage_transition_is_persisted_and_emitted():
     }]
 
 
+@pytest.mark.asyncio
+async def test_gap_preview_stops_after_gap_map(monkeypatch):
+    session = _Session()
+    service = ResearchIdeaWorkbenchService(session)
+    project = SimpleNamespace(id=uuid4(), name="Grounded QA", description="", keywords=[], metadata_json={}, paper_ids=[])
+    run = SimpleNamespace(
+        status="pending",
+        stage="briefing",
+        progress=0,
+        message="",
+        config_json={"external_search": False},
+        evidence_map=None,
+        gap_map=None,
+        error=None,
+    )
+    evidence = {"scope": "local_library", "seed": [], "background": [], "inspiration": []}
+    gap_map = {"summary": "Gaps", "gaps": [{"title": "Gap A", "limitation": "L", "opportunity": "O", "research_question": "Q", "evidence_ids": [], "uncertainty": "U"}]}
+
+    async def fake_collect(*_args, **_kwargs):
+        return evidence
+
+    async def fake_gap(*_args, **_kwargs):
+        return gap_map
+
+    monkeypatch.setattr(service, "collect_evidence", fake_collect)
+    monkeypatch.setattr(service, "extract_gap_map", fake_gap)
+
+    result = await service.execute_gap_preview(project, run)
+
+    assert result.stage == "gap_review"
+    assert result.status == "pending"
+    assert result.gap_map == gap_map
+    assert result.evidence_map == evidence
+
+
+@pytest.mark.asyncio
+async def test_continue_from_gap_review_applies_selection_and_constraints(monkeypatch):
+    session = _Session()
+    service = ResearchIdeaWorkbenchService(session)
+    project = SimpleNamespace(id=uuid4(), name="Grounded QA", description="", keywords=[], metadata_json={}, paper_ids=[])
+    run = SimpleNamespace(
+        status="pending",
+        stage="gap_review",
+        progress=48,
+        message="",
+        config_json={"external_search": False},
+        evidence_map={"scope": "local_library", "seed": [], "background": [], "inspiration": []},
+        gap_map={"summary": "Gaps", "gaps": [
+            {"title": "Gap A", "limitation": "L1", "opportunity": "O1", "research_question": "Q1", "evidence_ids": [], "uncertainty": "U1"},
+            {"title": "Gap B", "limitation": "L2", "opportunity": "O2", "research_question": "Q2", "evidence_ids": [], "uncertainty": "U2"},
+        ]},
+        error=None,
+    )
+    captured = {}
+
+    async def fake_execute(_project, _run, _brief, _evidence, constrained_gap_map, _num_ideas, **_kwargs):
+        captured["gap_map"] = constrained_gap_map
+        captured["config"] = _run.config_json
+        return []
+
+    monkeypatch.setattr(service, "_execute_from_gap_map", fake_execute)
+
+    ideas = await service.continue_from_gap_review(
+        project,
+        run,
+        gap_selection={"selected_gap_titles": ["Gap B"], "blocked_gap_titles": ["Gap A"], "focus_note": "prefer low compute"},
+        generation_constraints={"research_mode": "experiment", "risk_appetite": "conservative", "resource_budget": "low_compute"},
+        num_ideas=2,
+    )
+
+    assert ideas == []
+    assert run.status == "complete"
+    assert captured["gap_map"]["gaps"][0]["title"] == "Gap B"
+    assert captured["gap_map"]["blocked_gaps"][0]["title"] == "Gap A"
+    assert captured["config"]["generation_constraints"]["resource_budget"] == "low_compute"
+    assert captured["config"]["gap_selection"]["focus_note"] == "prefer low compute"
+
+
 def test_duplicate_candidates_are_merged_by_hypothesis_overlap():
     candidates = [
         {"title": "Adaptive pruning", "hypothesis": "adaptive pruning improves efficient inference"},
@@ -900,6 +978,7 @@ async def test_top_proposal_persists_evidence_review_and_minimum_experiment():
         "selection_score": 8.8,
         "diversity_facets": ["path:grounded", "dataset:benchmark"],
         "suppressed_duplicates": [{"title": "Duplicate", "reason": "diversity_near_duplicate"}],
+        "gap_selection": {"selected_gap_titles": ["Gap A"], "focus_note": "prefer low compute"},
         "review": {
             "scores": {"novelty": 8, "evidence_grounding": 9, "feasibility": 9, "testability": 9, "impact": 8, "clarity": 8},
             "rationale": "The hypothesis is falsifiable.",
@@ -927,6 +1006,7 @@ async def test_top_proposal_persists_evidence_review_and_minimum_experiment():
     assert ideas[0].review_json["selection_score"] == 8.8
     assert ideas[0].review_json["diversity_facets"] == ["path:grounded", "dataset:benchmark"]
     assert ideas[0].review_json["suppressed_duplicates"][0]["title"] == "Duplicate"
+    assert ideas[0].review_json["gap_selection"]["selected_gap_titles"] == ["Gap A"]
     assert ideas[0].experiment_plan == experiment
 
 

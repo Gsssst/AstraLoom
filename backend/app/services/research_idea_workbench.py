@@ -32,6 +32,7 @@ STAGES = {
     "briefing": (4, "正在整理研究简报"),
     "retrieving": (18, "正在从论文库收集背景与灵感证据"),
     "mapping_gaps": (38, "正在提取可验证的研究空白"),
+    "gap_review": (48, "Gap Map 已就绪，等待选择推进方向"),
     "generating": (56, "正在通过多条路径生成候选假设"),
     "deduplicating": (68, "正在合并重复方向"),
     "reviewing": (82, "正在进行六维评审"),
@@ -103,66 +104,15 @@ class ResearchIdeaWorkbenchService:
             gap_map = await self.extract_gap_map(brief, evidence_map)
             await self._save_artifact(run, "gap_map", gap_map, on_progress)
 
-            await self._transition(run, "generating", callback=on_progress)
-            candidates = await self.generate_candidates(brief, evidence_map, gap_map, num_ideas)
-            tree_candidates, tree_summary = await self.expand_candidate_tree(
-                candidates,
+            ideas = await self._execute_from_gap_map(
+                project,
+                run,
                 brief,
                 evidence_map,
                 gap_map,
-                rounds=2,
-                beam_width=max(num_ideas * 2, 4),
+                num_ideas,
+                on_progress=on_progress,
             )
-            await self._emit(
-                on_progress,
-                {"type": "artifact", "artifact": "search_tree", "data": tree_summary},
-            )
-
-            await self._transition(run, "deduplicating", callback=on_progress)
-            unique_candidates, duplicate_groups = self.deduplicate_candidates(tree_candidates)
-            run.candidate_pool = unique_candidates
-            await self.session.commit()
-            await self._emit(
-                on_progress,
-                {"type": "artifact", "artifact": "candidate_pool", "data": unique_candidates},
-            )
-
-            await self._transition(run, "reviewing", callback=on_progress)
-            reviewed = await self.review_candidates(brief, evidence_map, unique_candidates)
-            similar_work_context = await self.collect_similar_work(
-                brief,
-                evidence_map,
-                reviewed,
-                external_search=bool((run.config_json or {}).get("external_search", True)),
-            )
-            novelty_checked = self.novelty_check_candidates(
-                reviewed,
-                evidence_map,
-                similar_work_pool=similar_work_context["items"],
-                source_coverage=similar_work_context["source_coverage"],
-            )
-            adversarial_reviewed = self.adversarial_review_candidates(novelty_checked)
-            reviewed = self.apply_quality_adjustments(adversarial_reviewed)
-            selected, diversity_summary = self.select_diverse_proposals(reviewed, num_ideas)
-            run.candidate_pool = reviewed
-            run.review_summary = {
-                "rubric": REVIEW_WEIGHTS,
-                "duplicates": duplicate_groups,
-                "search_tree": tree_summary,
-                "reviewed_count": len(reviewed),
-                "novelty": self._summarize_novelty(reviewed),
-                "adversarial": self._summarize_adversarial(reviewed),
-                "source_coverage": similar_work_context["source_coverage"],
-                "diversity_selection": diversity_summary,
-            }
-            await self.session.commit()
-            await self._emit(
-                on_progress,
-                {"type": "artifact", "artifact": "review_summary", "data": run.review_summary},
-            )
-
-            await self._transition(run, "selecting", callback=on_progress)
-            ideas = await self.persist_top_proposals(run, selected, evidence_map, num_ideas)
             await self._transition(run, "complete", status="complete", callback=on_progress)
             return ideas
         except Exception as exc:
@@ -176,6 +126,182 @@ class ResearchIdeaWorkbenchService:
                 {"type": "error", "message": run.message, "detail": run.error},
             )
             raise
+
+    async def execute_gap_preview(
+        self,
+        project: ResearchProject,
+        run: ResearchIdeaRun,
+        on_progress: ProgressCallback | None = None,
+    ) -> ResearchIdeaRun:
+        """Execute through Gap Map extraction and pause for user selection."""
+        try:
+            await self._transition(run, "briefing", status="running", callback=on_progress)
+            brief = self._project_brief(project)
+
+            await self._transition(run, "retrieving", callback=on_progress)
+            evidence_map = await self.collect_evidence(
+                project,
+                brief,
+                external_search=bool((run.config_json or {}).get("external_search", True)),
+            )
+            await self._save_artifact(run, "evidence_map", evidence_map, on_progress)
+
+            await self._transition(run, "mapping_gaps", callback=on_progress)
+            gap_map = await self.extract_gap_map(brief, evidence_map)
+            await self._save_artifact(run, "gap_map", gap_map, on_progress)
+
+            await self._transition(run, "gap_review", status="pending", callback=on_progress)
+            return run
+        except Exception as exc:
+            logger.exception("Research Idea Workbench gap preview failed: %s", exc)
+            run.status = "failed"
+            run.error = str(exc)
+            run.message = "Gap Map 预览失败，请稍后重试"
+            await self.session.commit()
+            await self._emit(
+                on_progress,
+                {"type": "error", "message": run.message, "detail": run.error},
+            )
+            raise
+
+    async def continue_from_gap_review(
+        self,
+        project: ResearchProject,
+        run: ResearchIdeaRun,
+        *,
+        gap_selection: dict[str, Any] | None = None,
+        generation_constraints: dict[str, Any] | None = None,
+        num_ideas: int = 3,
+        on_progress: ProgressCallback | None = None,
+    ) -> list[ResearchIdea]:
+        """Continue a persisted Gap Map run after user selection."""
+        try:
+            brief = self._project_brief(project)
+            evidence_map = run.evidence_map or await self.collect_evidence(
+                project,
+                brief,
+                external_search=bool((run.config_json or {}).get("external_search", True)),
+            )
+            if not run.evidence_map:
+                await self._save_artifact(run, "evidence_map", evidence_map, on_progress)
+            gap_map = run.gap_map or await self.extract_gap_map(brief, evidence_map)
+            if not run.gap_map:
+                await self._save_artifact(run, "gap_map", gap_map, on_progress)
+            selection = self.normalize_gap_selection(gap_map, gap_selection, generation_constraints)
+            config = dict(run.config_json or {})
+            config["num_ideas"] = num_ideas
+            config["gap_selection"] = selection["gap_selection"]
+            config["generation_constraints"] = selection["generation_constraints"]
+            run.config_json = config
+            await self.session.commit()
+
+            constrained_gap_map = self.apply_gap_selection(gap_map, selection)
+            run.gap_map = constrained_gap_map
+            await self.session.commit()
+            await self._emit(on_progress, {"type": "artifact", "artifact": "gap_map", "data": constrained_gap_map})
+
+            await self._transition(run, "generating", status="running", callback=on_progress)
+            ideas = await self._execute_from_gap_map(
+                project,
+                run,
+                brief,
+                evidence_map,
+                constrained_gap_map,
+                num_ideas,
+                on_progress=on_progress,
+            )
+            await self._transition(run, "complete", status="complete", callback=on_progress)
+            return ideas
+        except Exception as exc:
+            logger.exception("Research Idea Workbench continuation failed: %s", exc)
+            run.status = "failed"
+            run.error = str(exc)
+            run.message = "Gap Map 继续生成失败，请稍后重试"
+            await self.session.commit()
+            await self._emit(
+                on_progress,
+                {"type": "error", "message": run.message, "detail": run.error},
+            )
+            raise
+
+    async def _execute_from_gap_map(
+        self,
+        project: ResearchProject,
+        run: ResearchIdeaRun,
+        brief: dict[str, Any],
+        evidence_map: dict[str, Any],
+        gap_map: dict[str, Any],
+        num_ideas: int,
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> list[ResearchIdea]:
+        generation_context = self.generation_context_from_run(run, gap_map)
+        if run.stage != "generating":
+            await self._transition(run, "generating", callback=on_progress)
+        candidates = await self.generate_candidates(brief, evidence_map, gap_map, num_ideas, generation_context=generation_context)
+        tree_candidates, tree_summary = await self.expand_candidate_tree(
+            candidates,
+            brief,
+            evidence_map,
+            gap_map,
+            generation_context=generation_context,
+            rounds=2,
+            beam_width=max(num_ideas * 2, 4),
+        )
+        await self._emit(
+            on_progress,
+            {"type": "artifact", "artifact": "search_tree", "data": tree_summary},
+        )
+
+        await self._transition(run, "deduplicating", callback=on_progress)
+        unique_candidates, duplicate_groups = self.deduplicate_candidates(tree_candidates)
+        run.candidate_pool = unique_candidates
+        await self.session.commit()
+        await self._emit(
+            on_progress,
+            {"type": "artifact", "artifact": "candidate_pool", "data": unique_candidates},
+        )
+
+        await self._transition(run, "reviewing", callback=on_progress)
+        reviewed = await self.review_candidates(brief, evidence_map, unique_candidates)
+        similar_work_context = await self.collect_similar_work(
+            brief,
+            evidence_map,
+            reviewed,
+            external_search=bool((run.config_json or {}).get("external_search", True)),
+        )
+        novelty_checked = self.novelty_check_candidates(
+            reviewed,
+            evidence_map,
+            similar_work_pool=similar_work_context["items"],
+            source_coverage=similar_work_context["source_coverage"],
+        )
+        adversarial_reviewed = self.adversarial_review_candidates(novelty_checked)
+        reviewed = self.apply_quality_adjustments(adversarial_reviewed)
+        selected, diversity_summary = self.select_diverse_proposals(reviewed, num_ideas)
+        selected = [{**candidate, "gap_selection": generation_context.get("gap_selection")} for candidate in selected]
+        run.candidate_pool = reviewed
+        run.review_summary = {
+            "rubric": REVIEW_WEIGHTS,
+            "duplicates": duplicate_groups,
+            "search_tree": tree_summary,
+            "reviewed_count": len(reviewed),
+            "novelty": self._summarize_novelty(reviewed),
+            "adversarial": self._summarize_adversarial(reviewed),
+            "source_coverage": similar_work_context["source_coverage"],
+            "diversity_selection": diversity_summary,
+            "gap_selection": generation_context.get("gap_selection"),
+            "generation_constraints": generation_context.get("generation_constraints"),
+        }
+        await self.session.commit()
+        await self._emit(
+            on_progress,
+            {"type": "artifact", "artifact": "review_summary", "data": run.review_summary},
+        )
+
+        await self._transition(run, "selecting", callback=on_progress)
+        ideas = await self.persist_top_proposals(run, selected, evidence_map, num_ideas)
+        return ideas
 
     async def _transition(
         self,
@@ -502,14 +628,121 @@ class ResearchIdeaWorkbenchService:
             "gaps": [self._normalize_gap(gap, brief, evidence_map) for gap in gaps[:5]],
         }
 
+    def normalize_gap_selection(
+        self,
+        gap_map: dict[str, Any],
+        gap_selection: dict[str, Any] | None,
+        generation_constraints: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        gaps = gap_map.get("gaps") or []
+        available_titles = [str(gap.get("title") or "") for gap in gaps if isinstance(gap, dict)]
+        requested_selected = self._string_list((gap_selection or {}).get("selected_gap_titles"), limit=8)
+        requested_blocked = self._string_list((gap_selection or {}).get("blocked_gap_titles"), limit=8)
+        available = set(available_titles)
+        selected = [title for title in requested_selected if title in available]
+        blocked = [title for title in requested_blocked if title in available and title not in selected]
+        if not selected:
+            selected = [title for title in available_titles if title not in blocked] or available_titles
+        constraints = self._normalize_generation_constraints(generation_constraints)
+        focus_note = str((gap_selection or {}).get("focus_note") or "").strip()[:600]
+        return {
+            "gap_selection": {
+                "selected_gap_titles": selected,
+                "blocked_gap_titles": blocked,
+                "focus_note": focus_note,
+                "selection_mode": "user_selected" if requested_selected or blocked or focus_note else "default_all_gaps",
+            },
+            "generation_constraints": constraints,
+        }
+
+    @staticmethod
+    def _normalize_generation_constraints(value: dict[str, Any] | None) -> dict[str, str]:
+        data = value if isinstance(value, dict) else {}
+
+        def choice(key: str, allowed: set[str], default: str) -> str:
+            raw = str(data.get(key) or default).strip()
+            return raw if raw in allowed else default
+
+        return {
+            "research_mode": choice("research_mode", {"balanced", "theory", "experiment", "system", "application"}, "balanced"),
+            "risk_appetite": choice("risk_appetite", {"conservative", "balanced", "high_risk"}, "balanced"),
+            "resource_budget": choice("resource_budget", {"low_compute", "reproducible", "large_model"}, "reproducible"),
+        }
+
+    @staticmethod
+    def _string_list(value: Any, *, limit: int = 8) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value[:limit] if str(item).strip()]
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        return []
+
+    @staticmethod
+    def _format_generation_constraints(context: dict[str, Any] | None) -> str:
+        data = context if isinstance(context, dict) else {}
+        selection = data.get("gap_selection") or {}
+        constraints = data.get("generation_constraints") or {}
+        return json.dumps({
+            "selected_gap_titles": selection.get("selected_gap_titles") or [],
+            "blocked_gap_titles": selection.get("blocked_gap_titles") or [],
+            "focus_note": selection.get("focus_note") or "",
+            "research_mode": constraints.get("research_mode") or "balanced",
+            "risk_appetite": constraints.get("risk_appetite") or "balanced",
+            "resource_budget": constraints.get("resource_budget") or "reproducible",
+        }, ensure_ascii=False)
+
+    def apply_gap_selection(self, gap_map: dict[str, Any], selection: dict[str, Any]) -> dict[str, Any]:
+        gap_selection = selection.get("gap_selection") or {}
+        selected_titles = set(gap_selection.get("selected_gap_titles") or [])
+        blocked_titles = set(gap_selection.get("blocked_gap_titles") or [])
+        selected_gaps = []
+        blocked_gaps = []
+        for gap in gap_map.get("gaps") or []:
+            title = str(gap.get("title") or "")
+            annotated = {
+                **gap,
+                "selection_status": "selected" if title in selected_titles else "blocked" if title in blocked_titles else "unselected",
+            }
+            if title in selected_titles:
+                selected_gaps.append(annotated)
+            elif title in blocked_titles:
+                blocked_gaps.append(annotated)
+        if not selected_gaps:
+            selected_gaps = [
+                {**gap, "selection_status": "selected"}
+                for gap in (gap_map.get("gaps") or [])
+                if str(gap.get("title") or "") not in blocked_titles
+            ]
+        return {
+            **gap_map,
+            "gaps": selected_gaps,
+            "blocked_gaps": blocked_gaps,
+            "selection": gap_selection,
+            "generation_constraints": selection.get("generation_constraints") or {},
+            "summary": f"{gap_map.get('summary') or 'Gap Map'}（已按用户选择约束生成）",
+        }
+
+    def generation_context_from_run(self, run: ResearchIdeaRun, gap_map: dict[str, Any]) -> dict[str, Any]:
+        config = dict(run.config_json or {})
+        if config.get("gap_selection") or config.get("generation_constraints"):
+            return {
+                "gap_selection": config.get("gap_selection") or self.normalize_gap_selection(gap_map, None, None)["gap_selection"],
+                "generation_constraints": config.get("generation_constraints") or self._normalize_generation_constraints(None),
+            }
+        normalized = self.normalize_gap_selection(gap_map, None, None)
+        return normalized
+
     async def generate_candidates(
         self,
         brief: dict[str, Any],
         evidence_map: dict[str, Any],
         gap_map: dict[str, Any],
         num_ideas: int,
+        *,
+        generation_context: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         requested = max(num_ideas * 3, 8)
+        constraints_text = self._format_generation_constraints(generation_context)
         prompt = f"""你是研究 Idea 工作台。基于 Gap Map 与证据生成 {requested} 个候选假设。
 候选必须来自多条路径：grounded（从 gap 推导）、inspiration（跨论文组合）、seed_refinement（优化用户种子想法；若无种子则可省略）。
 输出严格 JSON：
@@ -521,15 +754,16 @@ class ResearchIdeaWorkbenchService:
 
 研究简报：{json.dumps(brief, ensure_ascii=False)}
 Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
+用户选择与生成约束：{constraints_text}
 证据：{self._format_evidence(evidence_map, limit=10)}
 """
         data = await self._chat_json(prompt)
         candidates = data.get("candidates") if isinstance(data, dict) else None
         if not isinstance(candidates, list) or not candidates:
-            candidates = self._fallback_candidates(brief, evidence_map, gap_map, requested)
+            candidates = self._fallback_candidates(brief, evidence_map, gap_map, requested, generation_context=generation_context)
         normalized = [self._normalize_candidate(item, brief, evidence_map, index) for index, item in enumerate(candidates)]
         if len(normalized) < requested:
-            normalized.extend(self._fallback_candidates(brief, evidence_map, gap_map, requested - len(normalized), offset=len(normalized)))
+            normalized.extend(self._fallback_candidates(brief, evidence_map, gap_map, requested - len(normalized), offset=len(normalized), generation_context=generation_context))
         return normalized[:requested]
 
     @classmethod
@@ -578,6 +812,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         brief: dict[str, Any] | None = None,
         evidence_map: dict[str, Any] | None = None,
         gap_map: dict[str, Any] | None = None,
+        generation_context: dict[str, Any] | None = None,
         *,
         rounds: int = 2,
         beam_width: int = 6,
@@ -594,6 +829,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                 brief or {},
                 evidence_map or {},
                 gap_map or {},
+                generation_context or {},
                 round_number=round_number,
                 target_count=max(beam_width, len(frontier[:beam_width])),
             )
@@ -632,12 +868,14 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         brief: dict[str, Any],
         evidence_map: dict[str, Any],
         gap_map: dict[str, Any],
+        generation_context: dict[str, Any],
         *,
         round_number: int,
         target_count: int,
     ) -> list[dict[str, Any]]:
         if not frontier or target_count <= 0:
             return []
+        constraints_text = self._format_generation_constraints(generation_context)
         prompt = f"""你是科研 Idea 树搜索中的审稿人与改写者。请 critique 当前候选，并演化出最多 {target_count} 个更强且彼此不同的候选。
 可用 operator：mechanism_shift、strong_baseline、failure_mode、cost_aware、cross_domain_transfer。
 输出严格 JSON：
@@ -650,6 +888,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
 
 研究简报：{json.dumps(brief, ensure_ascii=False)}
 Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
+用户选择与生成约束：{constraints_text}
 证据：{self._format_evidence(evidence_map, limit=8)}
 父候选：{json.dumps(frontier, ensure_ascii=False)}
 """
@@ -1218,6 +1457,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                     "selection_score": candidate.get("selection_score"),
                     "diversity_facets": candidate.get("diversity_facets", []),
                     "suppressed_duplicates": candidate.get("suppressed_duplicates", []),
+                    "gap_selection": candidate.get("gap_selection"),
                 },
                 experiment_plan=candidate["minimum_experiment"],
                 status="draft",
@@ -1917,9 +2157,16 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         count: int,
         *,
         offset: int = 0,
+        generation_context: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         evidence_ids = list(ResearchIdeaWorkbenchService._available_evidence_ids(evidence_map))
         gaps = gap_map.get("gaps") or [{}]
+        context = generation_context or {}
+        selection = context.get("gap_selection") or {}
+        constraints = context.get("generation_constraints") or {}
+        focus_note = selection.get("focus_note") or ""
+        budget = constraints.get("resource_budget") or "reproducible"
+        mode = constraints.get("research_mode") or "balanced"
         strategies = [
             ("边界条件审计", "构建边界条件切片与失败模式分析，定位收益出现和消失的区域。"),
             ("轻量校准模块", "加入单一可替换的校准模块，在统一预算下验证可靠性收益。"),
@@ -1927,6 +2174,13 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             ("跨场景泛化验证", "在分布变化和低资源设置中复测强基线，验证改进是否可迁移。"),
             ("反事实消融协议", "通过反事实替换和逐组件消融排除训练预算、数据泄漏等混杂因素。"),
         ]
+        if mode == "theory":
+            strategies.insert(0, ("机制假设建模", "明确关键变量之间的机制假设，并设计可证伪的理论或合成实验。"))
+        elif mode == "system":
+            strategies.insert(0, ("系统化管线改造", "把核心假设落到可替换系统模块，并记录端到端可靠性与成本。"))
+        elif mode == "application":
+            strategies.insert(0, ("应用场景验证", "围绕真实应用约束设置任务切片，评估收益是否可迁移。"))
+        dataset = "低算力公开基准" if budget == "low_compute" else "可复现实验基准" if budget == "reproducible" else "大模型或高资源基准"
         candidates = []
         for step in range(count):
             index = offset + step
@@ -1938,13 +2192,13 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                     "title": f"{brief['name']}：{strategy_title}",
                     "path": path,
                     "gap": gap.get("limitation") or "现有方法缺少边界验证。",
-                    "hypothesis": f"针对「{gap.get('title') or brief['name']}」采用{strategy_title}后，可在统一实验条件下获得可复现的改进信号。",
-                    "approach": f"先复现强基线，再{strategy}",
+                    "hypothesis": f"针对「{gap.get('title') or brief['name']}」采用{strategy_title}后，可在{dataset}上获得可复现的改进信号。",
+                    "approach": f"先复现强基线，再{strategy}" + (f" 用户关注：{focus_note}" if focus_note else ""),
                     "evidence_ids": gap.get("evidence_ids") or evidence_ids[:2],
                     "risks": ["收益可能来自训练预算差异", "本地论文覆盖不足"],
                     "falsification_test": "统一训练和推理预算后，若主要指标和效率指标均未稳定改善，则否定假设。",
                     "minimum_experiment": {
-                        "dataset": "选择与课题匹配的公开基准",
+                        "dataset": dataset,
                         "baselines": ["可复现强基线", "无改动消融"],
                         "metrics": ["主要任务指标", "推理成本", "稳定性"],
                         "steps": ["复现基线", "实现最小模块", "统一预算对比", "误差分析"],

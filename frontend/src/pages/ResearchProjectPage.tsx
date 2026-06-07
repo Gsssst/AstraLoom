@@ -50,6 +50,7 @@ interface Review {
   selection_score?: number | null;
   diversity_facets?: string[];
   suppressed_duplicates?: Array<{ title?: string; kept?: string; reason?: string; similarity?: number }>;
+  gap_selection?: GapSelection | null;
   novelty_check?: {
     status: 'likely_novel' | 'incremental' | 'too_similar';
     score: number; max_similarity: number; rationale: string;
@@ -234,12 +235,24 @@ interface IdeaRun {
   id: string; project_id: string; status: string; stage: string; progress: number;
   message?: string; error?: string; evidence_map?: Record<string, Evidence[] | string | object>;
   gap_map?: { summary?: string; gaps?: Gap[] }; candidate_pool?: Candidate[];
+  config_json?: { gap_selection?: GapSelection; generation_constraints?: GenerationConstraints; [key: string]: unknown };
   review_summary?: Record<string, unknown>; ideas?: Idea[];
+}
+interface GapSelection {
+  selected_gap_titles?: string[];
+  blocked_gap_titles?: string[];
+  focus_note?: string;
+  selection_mode?: string;
+}
+interface GenerationConstraints {
+  research_mode?: 'balanced' | 'theory' | 'experiment' | 'system' | 'application';
+  risk_appetite?: 'conservative' | 'balanced' | 'high_risk';
+  resource_budget?: 'low_compute' | 'reproducible' | 'large_model';
 }
 
 const stageItems = [
   ['briefing', '研究简报'], ['retrieving', '证据收集'], ['mapping_gaps', 'Gap Map'],
-  ['generating', '候选生成'], ['deduplicating', '语义去重'], ['reviewing', '六维评审'],
+  ['gap_review', '选择 Gap'], ['generating', '候选生成'], ['deduplicating', '语义去重'], ['reviewing', '六维评审'],
   ['selecting', 'Proposal'], ['complete', '完成'],
 ];
 const scoreLabels: Record<string, string> = {
@@ -253,6 +266,23 @@ const sourceLabels: Record<string, string> = { local_library: '本地论文库',
 const statusLabels: Record<string, string> = { draft: '待筛选', pinned: '已收藏', rejected: '已淘汰', implemented: '已有代码' };
 const runStatusLabels: Record<string, string> = { pending: '等待中', running: '生成中', complete: '已完成', failed: '失败', cancelled: '已停止' };
 const runStatusColors: Record<string, string> = { pending: 'default', running: 'processing', complete: 'green', failed: 'red', cancelled: 'orange' };
+const researchModeOptions = [
+  { value: 'balanced', label: '均衡' },
+  { value: 'theory', label: '偏理论' },
+  { value: 'experiment', label: '偏实验' },
+  { value: 'system', label: '偏系统' },
+  { value: 'application', label: '偏应用' },
+] as const;
+const riskAppetiteOptions = [
+  { value: 'conservative', label: '保守增量' },
+  { value: 'balanced', label: '中等创新' },
+  { value: 'high_risk', label: '高风险高收益' },
+] as const;
+const resourceBudgetOptions = [
+  { value: 'low_compute', label: '低算力' },
+  { value: 'reproducible', label: '可复现' },
+  { value: 'large_model', label: '大模型实验' },
+] as const;
 type ProposalSortKey = 'review' | 'novelty' | 'feasibility' | 'evidence' | 'recent';
 type ProposalFilterKey = 'all' | 'draft' | 'pinned' | 'rejected' | 'implemented';
 const proposalSortOptions: { value: ProposalSortKey; label: string }[] = [
@@ -413,6 +443,14 @@ const ResearchProjectPage: React.FC = () => {
   const [validationMap, setValidationMap] = useState<Record<string, { loading: boolean; data?: IdeaValidation }>>({});
   const [executionPackMap, setExecutionPackMap] = useState<Record<string, { loading: boolean; data?: ExperimentExecutionPack }>>({});
   const [activeWorkbenchTab, setActiveWorkbenchTab] = useState('evidence');
+  const [gapPreviewing, setGapPreviewing] = useState(false);
+  const [gapContinuing, setGapContinuing] = useState(false);
+  const [selectedGapTitles, setSelectedGapTitles] = useState<string[]>([]);
+  const [blockedGapTitles, setBlockedGapTitles] = useState<string[]>([]);
+  const [gapFocusNote, setGapFocusNote] = useState('');
+  const [researchMode, setResearchMode] = useState<GenerationConstraints['research_mode']>('balanced');
+  const [riskAppetite, setRiskAppetite] = useState<GenerationConstraints['risk_appetite']>('balanced');
+  const [resourceBudget, setResourceBudget] = useState<GenerationConstraints['resource_budget']>('reproducible');
   const [pageActionError, setPageActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
 
   const showPageError = (title: string, error: unknown, fallback = title) => {
@@ -549,6 +587,23 @@ const ResearchProjectPage: React.FC = () => {
     ]).then(() => setPageActionError(null)).catch(error => showPageError('加载研究工作台失败', error, '加载研究工作台失败')).finally(() => setLoading(false));
   }, [projectId]);
 
+  useEffect(() => {
+    const gapTitles = run?.gap_map?.gaps?.map(gap => gap.title).filter(Boolean) || [];
+    if (gapTitles.length === 0) {
+      setSelectedGapTitles([]);
+      setBlockedGapTitles([]);
+      return;
+    }
+    const savedSelection = run?.config_json?.gap_selection;
+    setSelectedGapTitles(savedSelection?.selected_gap_titles?.filter(title => gapTitles.includes(title)) || gapTitles);
+    setBlockedGapTitles(savedSelection?.blocked_gap_titles?.filter(title => gapTitles.includes(title)) || []);
+    setGapFocusNote(savedSelection?.focus_note || '');
+    const savedConstraints = run?.config_json?.generation_constraints || {};
+    setResearchMode(savedConstraints.research_mode || 'balanced');
+    setRiskAppetite(savedConstraints.risk_appetite || 'balanced');
+    setResourceBudget(savedConstraints.resource_budget || 'reproducible');
+  }, [run?.id, run?.gap_map]);
+
   const applyStreamEvent = (event: any) => {
     if (event.type === 'run' && event.run) setRun(event.run);
     if (event.type === 'stage') {
@@ -620,6 +675,56 @@ const ResearchProjectPage: React.FC = () => {
       setGenerating(false);
       generationAbortRef.current = null;
       generationCancelRequestedRef.current = false;
+    }
+  };
+
+  const handleGapPreview = async () => {
+    if (!projectId || gapPreviewing || generating) return;
+    setGapPreviewing(true);
+    try {
+      const response = await api.post(`/research/projects/${projectId}/idea-runs/gap-preview`, {
+        num_ideas: 3,
+        external_search: externalSearch,
+      });
+      setRun(response.data);
+      setActiveWorkbenchTab('gaps');
+      setPageActionError(null);
+      message.success('Gap Map 已生成，可以先选择要推进的研究空白');
+    } catch (error) {
+      showPageError('Gap Map 预览失败', error, 'Gap Map 预览失败');
+    } finally {
+      setGapPreviewing(false);
+    }
+  };
+
+  const handleContinueFromGaps = async () => {
+    if (!projectId || !run?.id || gapContinuing) return;
+    setGapContinuing(true);
+    try {
+      const response = await api.post(`/research/projects/${projectId}/idea-runs/${run.id}/continue-from-gaps`, {
+        num_ideas: 3,
+        gap_selection: {
+          selected_gap_titles: selectedGapTitles,
+          blocked_gap_titles: blockedGapTitles,
+          focus_note: gapFocusNote,
+        },
+        generation_constraints: {
+          research_mode: researchMode,
+          risk_appetite: riskAppetite,
+          resource_budget: resourceBudget,
+        },
+      });
+      setRun(response.data);
+      setIdeas(response.data.ideas || []);
+      await loadProject();
+      await loadProposalBoard();
+      setActiveWorkbenchTab('proposal-board');
+      setPageActionError(null);
+      message.success('已按选择的 Gap Map 生成 Proposal');
+    } catch (error) {
+      showPageError('按 Gap Map 继续生成失败', error, '按 Gap Map 继续生成失败');
+    } finally {
+      setGapContinuing(false);
     }
   };
 
@@ -1038,12 +1143,73 @@ const ResearchProjectPage: React.FC = () => {
       title="Gap Map 尚未形成"
       description="工作台完成证据收集后，会把现有限制、研究机会和可验证问题沉淀到这里。"
       icon={<NodeIndexOutlined />}
-      action={<Button type="primary" icon={<RocketOutlined />} onClick={handleGenerate}>继续生成 Gap Map</Button>}
+      action={<Button type="primary" icon={<NodeIndexOutlined />} loading={gapPreviewing} onClick={handleGapPreview}>预览 Gap Map</Button>}
     />
   ) : (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Card size="small" className="gap-selection-panel">
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Space wrap>
+            <Tag color={run?.stage === 'gap_review' ? 'purple' : 'blue'}>{run?.stage === 'gap_review' ? '等待选择' : 'Gap Map 已生成'}</Tag>
+            <Text type="secondary">先选择要推进的研究空白，再让系统生成候选 Proposal。</Text>
+          </Space>
+          <Row gutter={[10, 10]}>
+            <Col xs={24} md={8}>
+              <Text type="secondary">研究模式</Text>
+              <Select style={{ width: '100%', marginTop: 6 }} value={researchMode} options={[...researchModeOptions]} onChange={setResearchMode} />
+            </Col>
+            <Col xs={24} md={8}>
+              <Text type="secondary">风险偏好</Text>
+              <Select style={{ width: '100%', marginTop: 6 }} value={riskAppetite} options={[...riskAppetiteOptions]} onChange={setRiskAppetite} />
+            </Col>
+            <Col xs={24} md={8}>
+              <Text type="secondary">资源预算</Text>
+              <Select style={{ width: '100%', marginTop: 6 }} value={resourceBudget} options={[...resourceBudgetOptions]} onChange={setResourceBudget} />
+            </Col>
+          </Row>
+          <TextArea
+            rows={2}
+            value={gapFocusNote}
+            onChange={event => setGapFocusNote(event.target.value)}
+            placeholder="可选：写下你更想推进的角度，例如偏低算力、偏理论证明、偏系统落地或避开某类方法。"
+          />
+          <Space wrap>
+            <Button
+              type="primary"
+              icon={<RocketOutlined />}
+              loading={gapContinuing}
+              disabled={!run?.id || selectedGapTitles.length === 0}
+              onClick={handleContinueFromGaps}
+            >
+              按选择继续生成 Proposal
+            </Button>
+            <Button icon={<ReloadOutlined />} loading={gapPreviewing} onClick={handleGapPreview}>重新提取 Gap Map</Button>
+            <Text type="secondary">已选择 {selectedGapTitles.length} 个，屏蔽 {blockedGapTitles.length} 个</Text>
+          </Space>
+        </Space>
+      </Card>
       {gaps.map((gap, index) => (
         <Card key={`${gap.title}-${index}`} size="small" title={<Space><NodeIndexOutlined style={{ color: '#8b5cf6' }} /><Text strong>{gap.title}</Text></Space>} style={{ borderRadius: 12 }}>
+          <Space wrap style={{ marginBottom: 10 }}>
+            <Checkbox
+              checked={selectedGapTitles.includes(gap.title)}
+              onChange={event => {
+                setSelectedGapTitles(previous => event.target.checked ? Array.from(new Set([...previous, gap.title])) : previous.filter(title => title !== gap.title));
+                if (event.target.checked) setBlockedGapTitles(previous => previous.filter(title => title !== gap.title));
+              }}
+            >
+              推进
+            </Checkbox>
+            <Checkbox
+              checked={blockedGapTitles.includes(gap.title)}
+              onChange={event => {
+                setBlockedGapTitles(previous => event.target.checked ? Array.from(new Set([...previous, gap.title])) : previous.filter(title => title !== gap.title));
+                if (event.target.checked) setSelectedGapTitles(previous => previous.filter(title => title !== gap.title));
+              }}
+            >
+              暂不考虑
+            </Checkbox>
+          </Space>
           <Paragraph><Text strong>现有限制：</Text>{gap.limitation}</Paragraph>
           <Paragraph><Text strong>研究机会：</Text>{gap.opportunity}</Paragraph>
           <Paragraph style={{ marginBottom: 6 }}><Text strong>可验证问题：</Text>{gap.research_question}</Paragraph>
@@ -1345,6 +1511,7 @@ const ResearchProjectPage: React.FC = () => {
     const collisionRisk = novelty?.collision_risk || (novelty?.status === 'too_similar' ? 'high' : novelty?.status === 'incremental' ? 'medium' : novelty?.status === 'likely_novel' ? 'low' : undefined);
     const similarWork = novelty?.similar_work || [];
     const diversityFacets = review?.diversity_facets || [];
+    const appliedGapSelection = review?.gap_selection;
     return (
       <div>
         {idea.hypothesis && <Alert type="success" showIcon message="可证伪假设" description={idea.hypothesis} style={{ marginBottom: 14 }} />}
@@ -1359,9 +1526,20 @@ const ResearchProjectPage: React.FC = () => {
           </Row>
           <Paragraph style={{ marginTop: 12 }}><Text strong>评审理由：</Text>{review.rationale}</Paragraph>
           <Text type="secondary">主要不确定性：{review.uncertainty}</Text>
-          {(review.novelty_check || review.adversarial_review || review.search_tree || review.selection_rationale) && <>
+          {(review.novelty_check || review.adversarial_review || review.search_tree || review.selection_rationale || appliedGapSelection) && <>
             <Divider>v3 质量信号</Divider>
             <Space direction="vertical" size={10} style={{ width: '100%' }}>
+              {appliedGapSelection && (
+                <Card size="small" className="gap-selection-signal">
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <Space wrap>
+                      <Tag color="purple">Gap 约束</Tag>
+                      {(appliedGapSelection.selected_gap_titles || []).slice(0, 3).map(title => <Tag color="geekblue" key={title}>{title}</Tag>)}
+                    </Space>
+                    {appliedGapSelection.focus_note && <Text type="secondary">关注点：{appliedGapSelection.focus_note}</Text>}
+                  </Space>
+                </Card>
+              )}
               {review.selection_rationale && (
                 <Card size="small" className="proposal-selection-signal">
                   <Space direction="vertical" size={6} style={{ width: '100%' }}>
@@ -2015,6 +2193,7 @@ const ResearchProjectPage: React.FC = () => {
             <Text>联网补充文献</Text>
             <Switch checked={externalSearch} onChange={setExternalSearch} />
           </Space>
+          <Button icon={<NodeIndexOutlined />} loading={gapPreviewing} onClick={handleGapPreview} style={{ borderRadius: 10 }}>预览 Gap Map</Button>
           {generating ? (
             <Button danger icon={<StopOutlined />} onClick={handleStopGeneration} style={{ borderRadius: 10 }}>停止生成</Button>
           ) : (
