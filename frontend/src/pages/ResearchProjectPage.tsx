@@ -5,8 +5,8 @@ import {
   Modal, Popconfirm, Row, Select, Space, Steps, Switch, Tabs, Tag, Timeline, Tooltip, Typography,
 } from 'antd';
 import {
-  ArrowLeftOutlined, BulbOutlined, CodeOutlined, DeleteOutlined,
-  ExperimentOutlined, FileSearchOutlined, FileTextOutlined, MessageOutlined, NodeIndexOutlined,
+  ArrowLeftOutlined, BulbOutlined, CodeOutlined, CopyOutlined, DeleteOutlined, DownloadOutlined,
+  ExperimentOutlined, FileOutlined, FileSearchOutlined, FileTextOutlined, FolderOutlined, MessageOutlined, NodeIndexOutlined,
   HistoryOutlined, ImportOutlined, PlusOutlined, PushpinOutlined, ReloadOutlined, RiseOutlined, RobotOutlined, RocketOutlined, SendOutlined,
   ShareAltOutlined, StarFilled, StopOutlined, ThunderboltOutlined, UserOutlined,
 } from '@ant-design/icons';
@@ -75,6 +75,7 @@ interface CodeProjectManifest {
   safety_notes: string[];
   files: CodeProjectFile[];
 }
+interface CodeProjectFolderGroup { folder: string; files: CodeProjectFile[]; }
 interface Idea {
   id: string; project_id: string; title: string; description: string | null;
   hypothesis?: string | null; approach?: string | null; novelty?: string | null;
@@ -287,6 +288,27 @@ const proposalDecisionCounts = (items: Idea[]) => ({
   rejected: items.filter(idea => idea.status === 'rejected').length,
   implemented: items.filter(idea => idea.status === 'implemented').length,
 });
+const normalizeCodeProjectFiles = (projectPackage: CodeProjectManifest) =>
+  [...(projectPackage.files || [])].sort((first, second) => first.path.localeCompare(second.path));
+const codeProjectDefaultFilePath = (projectPackage: CodeProjectManifest) => {
+  const files = normalizeCodeProjectFiles(projectPackage);
+  return (
+    files.find(file => file.path.toLowerCase() === 'readme.md')?.path
+    || files.find(file => projectPackage.entrypoints?.some(entrypoint => entrypoint.path === file.path))?.path
+    || files[0]?.path
+    || ''
+  );
+};
+const codeProjectLineCount = (content = '') => content.length === 0 ? 0 : content.split(/\r\n|\r|\n/).length;
+const codeProjectFolderGroups = (projectPackage: CodeProjectManifest): CodeProjectFolderGroup[] => {
+  const groups = new Map<string, CodeProjectFile[]>();
+  normalizeCodeProjectFiles(projectPackage).forEach(file => {
+    const parts = file.path.split('/');
+    const folder = parts.length > 1 ? parts.slice(0, -1).join('/') : '根目录';
+    groups.set(folder, [...(groups.get(folder) || []), file]);
+  });
+  return Array.from(groups.entries()).map(([folder, files]) => ({ folder, files }));
+};
 
 const ResearchProjectPage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
@@ -341,6 +363,10 @@ const ResearchProjectPage: React.FC = () => {
     const detail = getApiErrorDetails(error, { fallback });
     setPageActionError({ title, detail });
     message.warning(detail.message);
+  };
+  const copyCodeProjectText = async (text: string, successMessage = '已复制') => {
+    await navigator.clipboard.writeText(text);
+    message.success(successMessage);
   };
 
   const loadProject = async () => {
@@ -567,7 +593,7 @@ const ResearchProjectPage: React.FC = () => {
     try {
       const response = await api.post(`/research/ideas/${ideaId}/generate-code?framework=pytorch`);
       const projectPackage = response.data.code_project as CodeProjectManifest | undefined;
-      const defaultPath = projectPackage?.files?.find(file => file.path === 'README.md')?.path || projectPackage?.files?.[0]?.path;
+      const defaultPath = projectPackage ? codeProjectDefaultFilePath(projectPackage) : '';
       if (defaultPath) {
         setCodeProjectSelectedFile(previous => ({ ...previous, [ideaId]: defaultPath }));
       }
@@ -925,8 +951,13 @@ const ResearchProjectPage: React.FC = () => {
               message="这个 Proposal 只有旧版单文件代码"
               description="可以重新生成结构化实验项目包，获得 README、配置、训练、评估和分析脚本。"
             />
-            <pre style={{ background: '#1e1e1e', color: '#d4d4d4', padding: 16, borderRadius: 8, maxHeight: 320, overflow: 'auto' }}>{idea.generated_code}</pre>
-            <Button icon={<CodeOutlined />} loading={codeMap[idea.id]?.loading} onClick={() => handleGenCode(idea.id)}>重新生成实验项目包</Button>
+            <div className="code-project-preview legacy-code-preview">
+              <pre>{idea.generated_code}</pre>
+            </div>
+            <Space wrap>
+              <Button icon={<CopyOutlined />} onClick={() => copyCodeProjectText(idea.generated_code || '', '旧版实验代码已复制')}>复制代码</Button>
+              <Button icon={<CodeOutlined />} loading={codeMap[idea.id]?.loading} onClick={() => handleGenCode(idea.id)}>重新生成实验项目包</Button>
+            </Space>
           </Space>
         </Card>
       );
@@ -938,71 +969,130 @@ const ResearchProjectPage: React.FC = () => {
         </Button>
       );
     }
-    const selectedPath = codeProjectSelectedFile[idea.id] || projectPackage.files.find(file => file.path === 'README.md')?.path || projectPackage.files[0]?.path || '';
-    const selectedFile = projectPackage.files.find(file => file.path === selectedPath) || projectPackage.files[0];
+    const files = normalizeCodeProjectFiles(projectPackage);
+    const selectedPath = codeProjectSelectedFile[idea.id] || codeProjectDefaultFilePath(projectPackage);
+    const selectedFile = files.find(file => file.path === selectedPath) || files[0];
+    const folderGroups = codeProjectFolderGroups(projectPackage);
+    const entrypointPaths = new Set((projectPackage.entrypoints || []).map(entrypoint => entrypoint.path));
+    const selectProjectFile = (path: string) => setCodeProjectSelectedFile(previous => ({ ...previous, [idea.id]: path }));
     return (
       <Card
         size="small"
-        title={<Space wrap><CodeOutlined /><Text strong>实验项目包</Text><Tag color="blue">{projectPackage.framework}</Tag><Tag>{projectPackage.files.length} 文件</Tag></Space>}
-        extra={<Space wrap><Button size="small" icon={<ReloadOutlined />} loading={codeMap[idea.id]?.loading} onClick={() => handleGenCode(idea.id)}>重新生成</Button><Button size="small" type="primary" icon={<CodeOutlined />} onClick={() => downloadCodeProject(idea)}>下载 ZIP</Button></Space>}
+        title={<Space wrap><CodeOutlined /><Text strong>实验项目包</Text><Tag color="blue">{projectPackage.framework}</Tag><Tag>{files.length} 文件</Tag></Space>}
         style={{ borderRadius: 8, marginTop: 14 }}
       >
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <div>
-            <Text strong>{projectPackage.name}</Text>
-            <Paragraph style={{ marginBottom: 0, marginTop: 4 }}>{projectPackage.summary}</Paragraph>
+        <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <div className="code-project-summary">
+            <div className="code-project-summary-main">
+              <Space wrap size={8}>
+                <Text strong>{projectPackage.name}</Text>
+                <Tag color="geekblue">{projectPackage.framework}</Tag>
+                <Tag>{files.length} files</Tag>
+              </Space>
+              <Paragraph style={{ marginBottom: 0, marginTop: 6 }}>{projectPackage.summary}</Paragraph>
+            </div>
+            <div className="code-project-actions">
+              <Button size="small" icon={<ReloadOutlined />} loading={codeMap[idea.id]?.loading} onClick={() => handleGenCode(idea.id)}>重新生成</Button>
+              <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => downloadCodeProject(idea)}>下载 ZIP</Button>
+            </div>
           </div>
-          <Row gutter={[12, 12]}>
-            <Col xs={24} md={8}>
-              <Card size="small" title="文件" style={{ borderRadius: 8 }}>
-                <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                  {projectPackage.files.map(file => (
-                    <Button
-                      key={file.path}
-                      block
-                      size="small"
-                      type={file.path === selectedFile?.path ? 'primary' : 'default'}
-                      style={{ justifyContent: 'flex-start', textAlign: 'left' }}
-                      onClick={() => setCodeProjectSelectedFile(previous => ({ ...previous, [idea.id]: file.path }))}
-                    >
-                      {file.path}
-                    </Button>
-                  ))}
-                </Space>
-              </Card>
-            </Col>
-            <Col xs={24} md={16}>
-              <Card
-                size="small"
-                title={selectedFile ? <Space wrap><Text>{selectedFile.path}</Text><Tag>{selectedFile.language}</Tag></Space> : '文件预览'}
-                style={{ borderRadius: 8 }}
-              >
-                {selectedFile ? (
-                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                    {selectedFile.purpose && <Text type="secondary">{selectedFile.purpose}</Text>}
-                    <pre style={{ background: '#111827', color: '#e5e7eb', padding: 14, borderRadius: 8, maxHeight: 420, overflow: 'auto', margin: 0 }}>{selectedFile.content}</pre>
-                  </Space>
-                ) : <Text type="secondary">没有可预览文件</Text>}
-              </Card>
-            </Col>
-          </Row>
-          <Row gutter={[12, 12]}>
-            <Col xs={24} md={8}>
-              <Card size="small" title="安装" style={{ borderRadius: 8, height: '100%' }}>
-                <Space direction="vertical" size={6}>{projectPackage.setup.map(command => <Text code key={command}>{command}</Text>)}</Space>
-              </Card>
-            </Col>
-            <Col xs={24} md={8}>
-              <Card size="small" title="运行" style={{ borderRadius: 8, height: '100%' }}>
-                <Space direction="vertical" size={6}>{projectPackage.run_commands.map(command => <Text code key={command}>{command}</Text>)}</Space>
-              </Card>
-            </Col>
-            <Col xs={24} md={8}>
-              <Card size="small" title="安全说明" style={{ borderRadius: 8, height: '100%' }}>
-                <Space direction="vertical" size={6}>{projectPackage.safety_notes.map(note => <Text type="secondary" key={note}>{note}</Text>)}</Space>
-              </Card>
-            </Col>
-          </Row>
+          <div className="code-project-meta-grid">
+            <section className="code-project-meta-panel">
+              <Text strong>安装</Text>
+              <Space direction="vertical" size={6} style={{ width: '100%', marginTop: 8 }}>
+                {(projectPackage.setup || []).length > 0 ? projectPackage.setup.map(command => (
+                  <div className="code-project-command" key={command}>
+                    <Text code>{command}</Text>
+                    <Tooltip title="复制命令"><Button type="text" size="small" icon={<CopyOutlined />} onClick={() => copyCodeProjectText(command, '安装命令已复制')} /></Tooltip>
+                  </div>
+                )) : <Text type="secondary">暂无安装命令</Text>}
+              </Space>
+            </section>
+            <section className="code-project-meta-panel">
+              <Text strong>运行</Text>
+              <Space direction="vertical" size={6} style={{ width: '100%', marginTop: 8 }}>
+                {(projectPackage.run_commands || []).length > 0 ? projectPackage.run_commands.map(command => (
+                  <div className="code-project-command" key={command}>
+                    <Text code>{command}</Text>
+                    <Tooltip title="复制命令"><Button type="text" size="small" icon={<CopyOutlined />} onClick={() => copyCodeProjectText(command, '运行命令已复制')} /></Tooltip>
+                  </div>
+                )) : <Text type="secondary">暂无运行命令</Text>}
+              </Space>
+            </section>
+            <section className="code-project-meta-panel">
+              <Text strong>入口</Text>
+              <Space direction="vertical" size={6} style={{ width: '100%', marginTop: 8 }}>
+                {(projectPackage.entrypoints || []).length > 0 ? projectPackage.entrypoints.map(entrypoint => (
+                  <button className="code-project-entrypoint" type="button" key={`${entrypoint.name}-${entrypoint.path}`} onClick={() => selectProjectFile(entrypoint.path)}>
+                    <span>{entrypoint.name}</span>
+                    <Text type="secondary">{entrypoint.path}</Text>
+                  </button>
+                )) : <Text type="secondary">暂无入口文件</Text>}
+              </Space>
+            </section>
+            <section className="code-project-meta-panel">
+              <Text strong>安全说明</Text>
+              <Space direction="vertical" size={6} style={{ width: '100%', marginTop: 8 }}>
+                {(projectPackage.safety_notes || []).length > 0 ? projectPackage.safety_notes.map(note => <Text type="secondary" key={note}>{note}</Text>) : <Text type="secondary">暂无安全说明</Text>}
+              </Space>
+            </section>
+          </div>
+          <div className="code-project-browser">
+            <aside className="code-project-file-tree" aria-label="generated code project file tree">
+              <div className="code-project-panel-title">
+                <FolderOutlined />
+                <Text strong>项目文件</Text>
+              </div>
+              <div className="code-project-tree-groups">
+                {folderGroups.map(group => (
+                  <div className="code-project-tree-group" key={group.folder}>
+                    <div className="code-project-folder-row"><FolderOutlined /><Text type="secondary">{group.folder}</Text></div>
+                    {group.files.map(file => (
+                      <button
+                        className={`code-project-file-row${file.path === selectedFile?.path ? ' is-selected' : ''}`}
+                        type="button"
+                        key={file.path}
+                        onClick={() => selectProjectFile(file.path)}
+                        title={file.path}
+                      >
+                        <FileOutlined />
+                        <span>{file.path.split('/').pop()}</span>
+                        {entrypointPaths.has(file.path) && <Tag color="purple">entry</Tag>}
+                      </button>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </aside>
+            <section className="code-project-preview-panel">
+              {selectedFile ? (
+                <>
+                  <div className="code-project-preview-toolbar">
+                    <div className="code-project-preview-heading">
+                      <Text strong>{selectedFile.path}</Text>
+                      <Space wrap size={6}>
+                        <Tag>{selectedFile.language || 'text'}</Tag>
+                        <Tag>{codeProjectLineCount(selectedFile.content)} 行</Tag>
+                        {entrypointPaths.has(selectedFile.path) && <Tag color="purple">入口</Tag>}
+                      </Space>
+                    </div>
+                    <Tooltip title="复制文件内容">
+                      <Button size="small" icon={<CopyOutlined />} onClick={() => copyCodeProjectText(selectedFile.content, '文件内容已复制')}>复制</Button>
+                    </Tooltip>
+                  </div>
+                  {selectedFile.purpose && <Text type="secondary" className="code-project-file-purpose">{selectedFile.purpose}</Text>}
+                  <div className="code-project-preview">
+                    <pre>{selectedFile.content}</pre>
+                  </div>
+                </>
+              ) : (
+                <div className="code-project-empty-preview">
+                  <FileTextOutlined />
+                  <Text type="secondary">没有可预览文件</Text>
+                </div>
+              )}
+            </section>
+          </div>
         </Space>
       </Card>
     );
