@@ -34,6 +34,22 @@ const adminSource = readFileSync(
   new URL('../src/pages/AdminPage.tsx', import.meta.url),
   'utf8',
 );
+const papersSource = readFileSync(
+  new URL('../src/pages/PapersPage.tsx', import.meta.url),
+  'utf8',
+);
+const researchSource = readFileSync(
+  new URL('../src/pages/ResearchPage.tsx', import.meta.url),
+  'utf8',
+);
+const researchProjectSource = readFileSync(
+  new URL('../src/pages/ResearchProjectPage.tsx', import.meta.url),
+  'utf8',
+);
+const writingSource = readFileSync(
+  new URL('../src/pages/WritingPage.tsx', import.meta.url),
+  'utf8',
+);
 
 test('page shell exposes stable layout class hooks', () => {
   for (const className of [
@@ -131,4 +147,51 @@ test('admin page adopts page shell with recovery guidance', () => {
   assert.match(adminSource, /adminActionError\.detail\.recovery/);
   assert.match(adminSource, /需先处理条件/);
   assert.doesNotMatch(adminSource, /heroGradient/);
+});
+
+test('papers page adopts page shell while preserving paper workflows', () => {
+  assert.match(papersSource, /import PageShell from '\.\.\/components\/PageShell'/);
+  assert.match(papersSource, /<PageShell/);
+  assert.match(papersSource, /title="论文库"/);
+  assert.match(papersSource, /maxWidth=\{1100\}/);
+  assert.match(papersSource, /论文推送/);
+  assert.match(papersSource, /维护中心/);
+  assert.match(papersSource, /<WorkflowStepGuide/);
+  assert.match(papersSource, /<Input\.Search/);
+  assert.doesNotMatch(papersSource, /heroGradient/);
+});
+
+test('research page adopts page shell while preserving direction workflows', () => {
+  assert.match(researchSource, /import PageShell from '\.\.\/components\/PageShell'/);
+  assert.match(researchSource, /<PageShell/);
+  assert.match(researchSource, /title="研究方向"/);
+  assert.match(researchSource, /maxWidth=\{1100\}/);
+  assert.match(researchSource, /新建方向/);
+  assert.match(researchSource, /setCreateModalOpen\(true\)/);
+  assert.match(researchSource, /<WorkflowStepGuide/);
+  assert.match(researchSource, /<Modal title=\{<span><ExperimentOutlined/);
+  assert.doesNotMatch(researchSource, /heroGradient/);
+});
+
+test('research project page adopts page shell while preserving workbench workflows', () => {
+  assert.match(researchProjectSource, /import PageShell from '\.\.\/components\/PageShell'/);
+  assert.match(researchProjectSource, /<PageShell/);
+  assert.match(researchProjectSource, /title=\{project\?\.name \|\| '研究工作台'\}/);
+  assert.match(researchProjectSource, /maxWidth=\{1280\}/);
+  assert.match(researchProjectSource, /返回研究方向/);
+  assert.match(researchProjectSource, /生成 Proposal/);
+  assert.match(researchProjectSource, /<Tabs activeKey=\{activeWorkbenchTab\}/);
+  assert.doesNotMatch(researchProjectSource, /heroGradient/);
+});
+
+test('writing page adopts page shell while preserving assistant modes and tabs', () => {
+  assert.match(writingSource, /import PageShell from '\.\.\/components\/PageShell'/);
+  assert.match(writingSource, /<PageShell/);
+  assert.match(writingSource, /title=\{assistantMode === 'paper' \? '写作工作台' : '基金申请助手'\}/);
+  assert.match(writingSource, /maxWidth=\{assistantMode === 'paper' && activeTab === 'project' \? 1360 : 980\}/);
+  assert.match(writingSource, /<Segmented/);
+  assert.match(writingSource, /value=\{assistantMode\}/);
+  assert.match(writingSource, /<Tabs[\s\S]*activeKey=\{activeTab\}/);
+  assert.match(writingSource, /<WorkflowStepGuide/);
+  assert.doesNotMatch(writingSource, /heroGradient/);
 });

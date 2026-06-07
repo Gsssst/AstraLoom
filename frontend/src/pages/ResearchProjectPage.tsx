@@ -12,10 +12,10 @@ import {
 } from '@ant-design/icons';
 import api from '../services/api';
 import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
+import PageShell from '../components/PageShell';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
-const heroGradient = 'linear-gradient(135deg, #5b6ee1 0%, #8b5cf6 56%, #c471ed 100%)';
 
 interface Project {
   id: string; name: string; description: string | null;
@@ -864,29 +864,28 @@ const ResearchProjectPage: React.FC = () => {
   );
 
   return (
-    <div style={{ maxWidth: 1280, margin: '0 auto' }}>
-      <div style={{ background: heroGradient, borderRadius: 18, padding: '22px 28px', marginBottom: 20, color: '#fff' }}>
-        <div style={{ display: 'flex', gap: 16, justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap' }}>
-          <Space align="start">
-            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/research')} style={{ background: 'rgba(255,255,255,.18)', color: '#fff', border: 'none' }}>返回</Button>
-            <div><Title level={3} style={{ color: '#fff', margin: 0 }}>{project.name}</Title><Paragraph style={{ color: 'rgba(255,255,255,.8)', margin: '6px 0 0' }}>{project.description || '把一个研究方向逐步收敛为可验证的 Proposal'}</Paragraph></div>
+    <PageShell
+      title={project?.name || '研究工作台'}
+      subtitle={project?.description || '把一个研究方向逐步收敛为可验证的 Proposal。'}
+      icon={<ExperimentOutlined />}
+      maxWidth={1280}
+      actions={(
+        <>
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/research')} style={{ borderRadius: 10 }}>返回研究方向</Button>
+          <Button icon={<ShareAltOutlined />} onClick={handleShare} style={{ borderRadius: 10 }}>分享</Button>
+          <Button disabled={selectedIdeaIds.length < 2} onClick={openComparison} style={{ borderRadius: 10 }}>比较 Proposal ({selectedIdeaIds.length})</Button>
+          <Space style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #f0f0f0', background: '#fff' }}>
+            <Text>联网补充文献</Text>
+            <Switch checked={externalSearch} onChange={setExternalSearch} />
           </Space>
-          <Space wrap>
-            <Button icon={<ShareAltOutlined />} onClick={handleShare}>分享</Button>
-            <Button disabled={selectedIdeaIds.length < 2} onClick={openComparison}>比较 Proposal ({selectedIdeaIds.length})</Button>
-            <Space style={{ padding: '4px 10px', borderRadius: 8, background: 'rgba(255,255,255,.16)' }}>
-              <Text style={{ color: '#fff' }}>联网补充文献</Text>
-              <Switch checked={externalSearch} onChange={setExternalSearch} />
-            </Space>
-            {generating ? (
-              <Button danger icon={<StopOutlined />} onClick={handleStopGeneration}>停止生成</Button>
-            ) : (
-              <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate}>生成候选 Proposal</Button>
-            )}
-          </Space>
-        </div>
-      </div>
-
+          {generating ? (
+            <Button danger icon={<StopOutlined />} onClick={handleStopGeneration} style={{ borderRadius: 10 }}>停止生成</Button>
+          ) : (
+            <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate} style={{ borderRadius: 10 }}>生成 Proposal</Button>
+          )}
+        </>
+      )}
+    >
       <Card style={{ borderRadius: 14, marginBottom: 18 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 10 }}>
           <div>
@@ -999,7 +998,7 @@ const ResearchProjectPage: React.FC = () => {
           description: idea.evolution_json?.rationale || '初始 Proposal',
         }))} />
       </Modal>
-    </div>
+    </PageShell>
   );
 };
 

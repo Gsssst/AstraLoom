@@ -12,11 +12,10 @@ import {
 import api from '../services/api';
 import { getApiErrorMessage } from '../services/apiError';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
+import PageShell from '../components/PageShell';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
-
-const heroGradient = 'linear-gradient(135deg, #f5576c 0%, #ff9671 100%)';
 
 interface Project {
   id: string; name: string; description: string | null;
@@ -93,22 +92,17 @@ const ResearchPage: React.FC = () => {
     .flatMap(item => (item.diagnostics?.warnings || []).map(warning => `${item.name}: ${warning}`));
 
   return (
-    <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-      {/* ── Hero ── */}
-      <div style={{ background: heroGradient, borderRadius: 16, padding: '28px 36px', marginBottom: 24, color: '#fff', position: 'relative', overflow: 'hidden' }}>
-        <div style={{ position: 'absolute', right: -10, top: -20, fontSize: 130, opacity: 0.1 }}>🔬</div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <Space size={12}>
-            <div style={{ width: 48, height: 48, borderRadius: 14, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}><ExperimentOutlined /></div>
-            <div>
-              <Title level={3} style={{ color: '#fff', margin: 0 }}>研究方向</Title>
-              <Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: 14 }}>创建研究方向，让 AI 分析论文、生成 Idea、构建实验代码</Text>
-            </div>
-          </Space>
-          <Button type="primary" size="large" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)} style={{ borderRadius: 12, height: 44, background: '#fff', color: '#f5576c', border: 'none', fontWeight: 600 }}>新建方向</Button>
-        </div>
-      </div>
-
+    <PageShell
+      title="研究方向"
+      subtitle="创建研究方向，让 AI 分析论文、生成 Idea、构建实验代码。"
+      icon={<ExperimentOutlined />}
+      maxWidth={1100}
+      actions={(
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)} style={{ borderRadius: 10 }}>
+          新建方向
+        </Button>
+      )}
+    >
       <WorkflowStepGuide
         title="研究方向下一步"
         subtitle="从论文种子到 idea，再把成熟方向沉淀成写作项目。"
@@ -248,7 +242,7 @@ const ResearchPage: React.FC = () => {
           {(selectedPaperIds.length > 0 || selectedCollectionIds.length > 0) && <Text type="secondary" style={{ fontSize: 12 }}>✅ 手动选择 {selectedPaperIds.length} 篇，分类导入 {selectedCollectionIds.length} 组论文</Text>}
         </Space>
       </Modal>
-    </div>
+    </PageShell>
   );
 };
 

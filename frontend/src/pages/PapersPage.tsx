@@ -19,6 +19,7 @@ import api from '../services/api';
 import { getApiErrorMessage } from '../services/apiError';
 import { useAuthStore } from '../stores/useAuthStore';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
+import PageShell from '../components/PageShell';
 
 const { Text, Paragraph, Title } = Typography;
 
@@ -73,7 +74,6 @@ type RecommendationKind = 'classic' | 'recent' | 'gap' | 'related';
 type DiagnosticTab = 'hybrid' | 'bm25' | 'dense';
 type PaperResultStateFilter = 'all' | 'local' | 'importable' | 'imported' | 'open_pdf' | 'missing_remote_id';
 
-const heroGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
 const remoteSearchSources = ['scholarly', 'arxiv', 'semantic_scholar', 'openalex', 'google_scholar'];
 const paperSearchSources = ['local', 'saved', 'collection', 'reading', 'maintenance', ...remoteSearchSources];
 const readingStatusMeta = {
@@ -817,27 +817,21 @@ const PapersPage: React.FC = () => {
   );
 
   return (
-    <div style={{ maxWidth: 1100, margin: '0 auto', height: 'calc(100vh - 110px)', display: 'flex', flexDirection: 'column' }}>
-      {/* ── Hero ── */}
-      <div style={{ background: heroGradient, borderRadius: 16, padding: '10px 24px', marginBottom: 10, color: '#fff', position: 'relative', overflow: 'hidden', flexShrink: 0 }}>
-        <div style={{ position: 'absolute', right: -10, top: -30, fontSize: 120, opacity: 0.08 }}>📚</div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-          <Space size={10}>
-            <div style={{ width: 36, height: 36, borderRadius: 12, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}><BookOutlined /></div>
-            <div>
-              <Text strong style={{ color: '#fff', fontSize: 16 }}>论文知识库</Text>
-              <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, display: 'block' }}>{stats || '搜索、发现、管理你的学术论文'}</Text>
-            </div>
-          </Space>
-          <Space size={8} wrap>
+    <PageShell
+      title="论文库"
+      subtitle={stats || '搜索、发现、管理你的学术论文。'}
+      icon={<BookOutlined />}
+      maxWidth={1100}
+      actions={(
+        <>
             {isAuthenticated && (
               <Badge count={digestUnreadCount} size="small">
-                <Button icon={<BellOutlined />} onClick={() => navigate('/papers/digests')} style={{ borderRadius: 10, background: 'rgba(255,255,255,0.2)', color: '#fff', border: 'none' }}>论文推送</Button>
+                <Button icon={<BellOutlined />} onClick={() => navigate('/papers/digests')} style={{ borderRadius: 10 }}>论文推送</Button>
               </Badge>
             )}
             {isAdmin && <>
-              <Button icon={<ImportOutlined />} loading={ingesting} onClick={handleIngest} style={{ borderRadius: 10, background: 'rgba(255,255,255,0.2)', color: '#fff', border: 'none' }}>一键入库</Button>
-              <Button icon={<FileTextOutlined />} onClick={() => (document.getElementById('import-file') as HTMLInputElement)?.click()} style={{ borderRadius: 10, background: 'rgba(255,255,255,0.2)', color: '#fff', border: 'none' }}>导入</Button>
+              <Button icon={<ImportOutlined />} loading={ingesting} onClick={handleIngest} style={{ borderRadius: 10 }}>一键入库</Button>
+              <Button icon={<FileTextOutlined />} onClick={() => (document.getElementById('import-file') as HTMLInputElement)?.click()} style={{ borderRadius: 10 }}>导入</Button>
               <input type="file" accept=".csv,.bib" style={{ display: 'none' }} id="import-file" onChange={async (e) => {
                 const f = e.target.files?.[0]; if (!f) return;
                 const ep = f.name.endsWith('.bib') ? '/api/papers/import-bibtex' : '/api/papers/import-zotero';
@@ -845,12 +839,16 @@ const PapersPage: React.FC = () => {
                 try { const r = await api.post(ep, fd, { headers: { 'Content-Type': 'multipart/form-data' } }); message.success(`导入: ${r.data.imported} 新增, ${r.data.skipped} 跳过`); handleSearch(); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '导入失败' })); }
               }} />
             </>}
-            <Button icon={<FileTextOutlined />} disabled={selectedIds.size === 0} onClick={() => setReportModalOpen(true)} style={{ borderRadius: 10, background: 'rgba(255,255,255,0.2)', color: '#fff', border: 'none' }}>
+            <Button icon={<FileTextOutlined />} disabled={selectedIds.size === 0} onClick={() => setReportModalOpen(true)} style={{ borderRadius: 10 }}>
               组会报告 ({selectedIds.size})
             </Button>
-          </Space>
-        </div>
-      </div>
+            <Button icon={<DatabaseOutlined />} onClick={() => updateSource('maintenance')} style={{ borderRadius: 10 }}>
+              维护中心
+            </Button>
+        </>
+      )}
+    >
+      <div style={{ height: 'calc(100vh - 170px)', display: 'flex', flexDirection: 'column' }}>
 
       <WorkflowStepGuide
         title="论文库下一步"
@@ -1287,7 +1285,7 @@ const PapersPage: React.FC = () => {
       {/* ── 底部选择栏 ── */}
       {selectedIds.size > 0 && (
         <div style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 100, background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(10px)', borderRadius: 16, boxShadow: '0 8px 32px rgba(0,0,0,0.12)', padding: '10px 24px', display: 'flex', gap: 12, alignItems: 'center', border: '1px solid #e8e8e8' }}>
-          <div style={{ background: heroGradient, color: '#fff', borderRadius: 10, padding: '2px 12px', fontWeight: 600, fontSize: 13 }}>已选 {selectedIds.size} 篇</div>
+          <div style={{ background: '#667eea', color: '#fff', borderRadius: 10, padding: '2px 12px', fontWeight: 600, fontSize: 13 }}>已选 {selectedIds.size} 篇</div>
           <Select
             size="small"
             placeholder="加入分类"
@@ -1360,7 +1358,8 @@ const PapersPage: React.FC = () => {
           <Input placeholder="报告标题" value={reportTitle} onChange={e => setReportTitle(e.target.value)} style={{ borderRadius: 10 }} />
         </Space>
       </Modal>
-    </div>
+      </div>
+    </PageShell>
   );
 };
 

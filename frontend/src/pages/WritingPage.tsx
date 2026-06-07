@@ -15,13 +15,13 @@ import api from '../services/api';
 import Markdown from '../components/Markdown';
 import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
+import PageShell from '../components/PageShell';
 import { DiffViewer, PipelineProgress, WritingProjectPanel, SectionEditor } from '../components/writing';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
 
 // ───────────────── 样式常量 ─────────────────
-const heroGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
 const cardStyle = { borderRadius: 12, border: '1px solid #f0f0f0', transition: 'all 0.3s' };
 const inputStyle = { borderRadius: 10, fontSize: 14 };
 const primaryBtn = { borderRadius: 10, height: 40, fontWeight: 500 };
@@ -66,7 +66,7 @@ const LoadingDots = () => (
     {[0, 0.15, 0.3].map((d, i) => (
       <div key={i} style={{
         width: 8, height: 8, borderRadius: '50%',
-        background: 'linear-gradient(135deg, #667eea, #764ba2)',
+        background: '#667eea',
         animation: `bounce 1.4s infinite ease-in-out ${d}s`,
       }} />
     ))}
@@ -674,7 +674,7 @@ const WritingPage: React.FC = () => {
     <ToolCard icon={<BookOutlined />} color="#f5576c" title="Related Work" desc="输入研究方向，AI 基于知识库检索论文并撰写规范的 Related Work 章节">
       <Input size="large" style={{ ...inputStyle, marginBottom: 12 }} placeholder="研究方向，如：Video Grounding、多模态大语言模型的偏好对齐" value={rwTopic} onChange={e => setRwTopic(e.target.value)} prefix={<BulbOutlined style={{ color: '#f5576c' }} />} />
       <Row gutter={12}>
-        <Col flex="auto"><Button type="primary" icon={<RocketOutlined />} loading={rwLoading} onClick={handleRelatedWork} style={{ ...primaryBtn, width: '100%', background: 'linear-gradient(135deg, #f5576c, #ff6b81)', border: 'none' }}>生成 Related Work</Button></Col>
+        <Col flex="auto"><Button type="primary" icon={<RocketOutlined />} loading={rwLoading} onClick={handleRelatedWork} style={{ ...primaryBtn, width: '100%' }}>生成 Related Work</Button></Col>
         <Col><Button icon={<SwapOutlined />} loading={rwTableLoading} onClick={handleRelatedWorkTable} style={{ ...primaryBtn, borderColor: '#f5576c', color: '#f5576c' }}>生成对比表</Button></Col>
       </Row>
       {(rwLoading || rwTableLoading) && <div style={{ textAlign: 'center', marginTop: 16 }}><LoadingDots /></div>}
@@ -689,7 +689,7 @@ const WritingPage: React.FC = () => {
         options={[{ value: 'academic', label: '📝 学术化' }, { value: 'concise', label: '📐 简洁化' }, { value: 'fluent', label: '🌊 流畅性' }, { value: 'english', label: '🌍 翻译成英语' }]} />
       <TextArea rows={5} style={{ ...inputStyle, marginBottom: 12 }} placeholder="输入需要润色的学术文本..." value={polishText} onChange={e => setPolishText(e.target.value)} />
       <Row gutter={12}>
-        <Col flex="auto"><Button type="primary" icon={<RocketOutlined />} loading={polishLoading} onClick={handlePolish} style={{ ...primaryBtn, width: '100%', background: 'linear-gradient(135deg, #11998e, #38ef7d)', border: 'none' }}>一键润色</Button></Col>
+        <Col flex="auto"><Button type="primary" icon={<RocketOutlined />} loading={polishLoading} onClick={handlePolish} style={{ ...primaryBtn, width: '100%' }}>一键润色</Button></Col>
         <Col><Button icon={<SwapOutlined />} loading={diffLoading} onClick={handleDiffPolish} style={{ ...primaryBtn, borderColor: '#11998e', color: '#11998e' }}>Diff 模式</Button></Col>
       </Row>
       {polishLoading && <div style={{ textAlign: 'center', marginTop: 16 }}><LoadingDots /></div>}
@@ -702,7 +702,7 @@ const WritingPage: React.FC = () => {
     <ToolCard icon={<FileTextOutlined />} color="#f093fb" title="摘要生成" desc="基于标题和关键要点，生成符合顶会标准的学术摘要">
       <Input size="large" style={{ ...inputStyle, marginBottom: 12 }} placeholder="论文标题" prefix={<FileTextOutlined style={{ color: '#f093fb' }} />} value={absTitle} onChange={e => setAbsTitle(e.target.value)} />
       <TextArea rows={4} style={{ ...inputStyle, marginBottom: 12 }} placeholder="论文关键要点：研究问题、方法概述、主要结果..." value={absKeyPoints} onChange={e => setAbsKeyPoints(e.target.value)} />
-      <Button type="primary" icon={<RocketOutlined />} loading={absLoading} onClick={handleAbstract} style={{ ...primaryBtn, width: '100%', background: 'linear-gradient(135deg, #f093fb, #f5576c)', border: 'none' }}>生成摘要</Button>
+      <Button type="primary" icon={<RocketOutlined />} loading={absLoading} onClick={handleAbstract} style={{ ...primaryBtn, width: '100%' }}>生成摘要</Button>
       {absLoading && <div style={{ textAlign: 'center', marginTop: 16 }}><LoadingDots /></div>}
       {absResult && <ResultCard onCopy={() => handleCopy(absResult)}><Markdown content={absResult} /></ResultCard>}
     </ToolCard>
@@ -711,7 +711,7 @@ const WritingPage: React.FC = () => {
   const litReviewTab = (
     <ToolCard icon={<ReadOutlined />} color="#4facfe" title="文献综述" desc="AI 自动检索、分析、分类，生成包含对比表格和研究空白的完整综述">
       <Input size="large" style={{ ...inputStyle, marginBottom: 12 }} placeholder="研究方向，如：Large Language Model Alignment Techniques" prefix={<ReadOutlined style={{ color: '#4facfe' }} />} value={lrTopic} onChange={e => setLrTopic(e.target.value)} />
-      <Button type="primary" icon={<RocketOutlined />} loading={lrLoading} onClick={handleLitReview} style={{ ...primaryBtn, width: '100%', background: 'linear-gradient(135deg, #4facfe, #00f2fe)', border: 'none' }}>生成文献综述</Button>
+      <Button type="primary" icon={<RocketOutlined />} loading={lrLoading} onClick={handleLitReview} style={{ ...primaryBtn, width: '100%' }}>生成文献综述</Button>
       {lrLoading && <div style={{ textAlign: 'center', marginTop: 16 }}><LoadingDots /></div>}
       {lrResult && (
         <ResultCard onCopy={() => handleCopy(lrResult.content)}
@@ -727,7 +727,7 @@ const WritingPage: React.FC = () => {
   const compareTab = (
     <ToolCard icon={<SwapOutlined />} color="#fa709a" title="论文对比" desc="输入论文 ID（从详情页 URL 复制），AI 自动对比方法、数据集和实验结果">
       <TextArea rows={3} style={{ ...inputStyle, marginBottom: 12 }} placeholder="粘贴论文 ID，逗号或换行分隔&#10;例如：d995a02d-b87a-43c4-aa04-5731e23c8225, 62c7cdd1-81ba-465a-b6a7" value={compareIds} onChange={e => setCompareIds(e.target.value)} />
-      <Button type="primary" icon={<RocketOutlined />} loading={compareLoading} onClick={handleCompare} style={{ ...primaryBtn, width: '100%', background: 'linear-gradient(135deg, #fa709a, #fee140)', border: 'none' }}>对比分析</Button>
+      <Button type="primary" icon={<RocketOutlined />} loading={compareLoading} onClick={handleCompare} style={{ ...primaryBtn, width: '100%' }}>对比分析</Button>
       {compareLoading && <div style={{ textAlign: 'center', marginTop: 16 }}><LoadingDots /></div>}
       {compareResult && <ResultCard onCopy={() => handleCopy(compareResult)}><Markdown content={compareResult} /></ResultCard>}
     </ToolCard>
@@ -741,7 +741,7 @@ const WritingPage: React.FC = () => {
       </Row>
       <TextArea rows={3} style={{ ...inputStyle, marginTop: 12 }} placeholder="项目背景/摘要（有助于提高生成质量）" value={grantBg} onChange={e => setGrantBg(e.target.value)} />
       <Space style={{ marginTop: 12 }}>
-        <Button type="primary" icon={<RocketOutlined />} loading={grantLoading} onClick={handleGrantWrite} style={{ ...primaryBtn, background: 'linear-gradient(135deg, #a18cd1, #f5576c)', border: 'none' }}>生成 {grantSection}</Button>
+        <Button type="primary" icon={<RocketOutlined />} loading={grantLoading} onClick={handleGrantWrite} style={primaryBtn}>生成 {grantSection}</Button>
         <Button icon={<AuditOutlined />} loading={grantReviewing} onClick={handleGrantReview} style={primaryBtn}>模拟评审</Button>
         <Button icon={<BulbOutlined />} loading={grantInnovLoading} onClick={handleGrantInnov} style={primaryBtn}>提炼创新点</Button>
       </Space>
@@ -1223,45 +1223,26 @@ const WritingPage: React.FC = () => {
   ];
 
   return (
-    <div style={{ maxWidth: assistantMode === 'paper' && activeTab === 'project' ? 1360 : 980, margin: '0 auto' }}>
-      {/* ── Hero 头部 ── */}
-      <div style={{
-        background: heroGradient, borderRadius: 16, padding: '28px 36px', marginBottom: 24,
-        color: '#fff', position: 'relative', overflow: 'hidden',
-      }}>
-        <div style={{ position: 'absolute', right: -20, top: -30, fontSize: 140, opacity: 0.1 }}>✍️</div>
-        <Row justify="space-between" align="middle" gutter={[16, 16]}>
-          <Col xs={24} md={14}>
-            <Space align="center" size={12}>
-              <div style={{ width: 48, height: 48, borderRadius: 14, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>
-                <EditOutlined />
-              </div>
-              <div>
-                <Title level={3} style={{ color: '#fff', margin: 0 }}>AI 写作工作台</Title>
-                <Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: 14 }}>
-                  以项目为中心管理论文、本子、证据、引用校验和导出预检
-                </Text>
-              </div>
-            </Space>
-          </Col>
-          <Col xs={24} md={10} style={{ textAlign: 'right' }}>
-            <Segmented
-              value={assistantMode}
-              onChange={(value) => {
-                const mode = value as 'paper' | 'grant';
-                setAssistantMode(mode);
-                if (mode === 'paper') setActiveTab('project');
-              }}
-              options={[
-                { label: '写论文助手', value: 'paper', icon: <FileTextOutlined /> },
-                { label: '写本子助手', value: 'grant', icon: <AuditOutlined /> },
-              ]}
-              style={{ background: 'rgba(255,255,255,0.18)', padding: 4 }}
-            />
-          </Col>
-        </Row>
-      </div>
-
+    <PageShell
+      title={assistantMode === 'paper' ? '写作工作台' : '基金申请助手'}
+      subtitle="以项目为中心管理论文、本子、证据、引用校验和导出预检。"
+      icon={<EditOutlined />}
+      maxWidth={assistantMode === 'paper' && activeTab === 'project' ? 1360 : 980}
+      actions={(
+        <Segmented
+          value={assistantMode}
+          onChange={(value) => {
+            const mode = value as 'paper' | 'grant';
+            setAssistantMode(mode);
+            if (mode === 'paper') setActiveTab('project');
+          }}
+          options={[
+            { label: '写论文助手', value: 'paper', icon: <FileTextOutlined /> },
+            { label: '写本子助手', value: 'grant', icon: <AuditOutlined /> },
+          ]}
+        />
+      )}
+    >
       <WorkflowStepGuide
         title="写作工作台下一步"
         subtitle="把研究方向、证据、引用和投稿模板收束到同一个写作流程。"
@@ -1342,7 +1323,7 @@ const WritingPage: React.FC = () => {
           40% { transform: scale(1); opacity: 1; }
         }
       `}</style>
-    </div>
+    </PageShell>
   );
 };
 
