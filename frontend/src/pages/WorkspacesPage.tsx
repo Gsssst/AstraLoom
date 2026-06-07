@@ -7,6 +7,7 @@ import {
   AppstoreOutlined, PlusOutlined, TeamOutlined, BookOutlined, ExperimentOutlined, EditOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
+import PageShell from '../components/PageShell';
 
 const { Title, Text, Paragraph } = Typography;
 const launchpadResourceMeta = [
@@ -54,40 +55,17 @@ const WorkspacesPage: React.FC = () => {
   };
 
   return (
-    <div style={{ maxWidth: 1180, margin: '0 auto' }}>
-      <Card
-        style={{
-          borderRadius: 18,
-          marginBottom: 20,
-          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-          color: '#fff',
-          overflow: 'hidden',
-        }}
-        styles={{ body: { padding: 28 } }}
-      >
-        <Row align="middle" justify="space-between" gutter={[16, 16]}>
-          <Col>
-            <Space size={14}>
-              <div style={{
-                width: 56, height: 56, borderRadius: 16, background: 'rgba(255,255,255,0.18)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26,
-              }}>
-                <AppstoreOutlined />
-              </div>
-              <div>
-                <Title level={2} style={{ color: '#fff', margin: 0 }}>项目空间</Title>
-                <Text style={{ color: 'rgba(255,255,255,0.78)' }}>把论文、研究方向、写作草稿和团队成员放进同一个科研工作台</Text>
-              </div>
-            </Space>
-          </Col>
-          <Col>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)} style={{ borderRadius: 10, background: '#fff', color: '#667eea' }}>
-              新建空间
-            </Button>
-          </Col>
-        </Row>
-      </Card>
-
+    <PageShell
+      title="项目空间"
+      subtitle="把论文、研究方向、写作草稿和团队成员放进同一个科研工作台。"
+      icon={<AppstoreOutlined />}
+      maxWidth={1180}
+      actions={(
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)} style={{ borderRadius: 10 }}>
+          新建空间
+        </Button>
+      )}
+    >
       <Card style={{ borderRadius: 16 }} loading={loading}>
         {spaces.length ? (
           <List
@@ -153,7 +131,7 @@ const WorkspacesPage: React.FC = () => {
           </Form.Item>
         </Form>
       </Modal>
-    </div>
+    </PageShell>
   );
 };
 

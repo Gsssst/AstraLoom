@@ -14,6 +14,10 @@ const settingsSource = readFileSync(
   new URL('../src/pages/SettingsPage.tsx', import.meta.url),
   'utf8',
 );
+const workspacesSource = readFileSync(
+  new URL('../src/pages/WorkspacesPage.tsx', import.meta.url),
+  'utf8',
+);
 
 test('page shell exposes stable layout class hooks', () => {
   for (const className of [
@@ -47,4 +51,16 @@ test('settings page adopts the shared page shell without replacing tabs', () => 
   assert.match(settingsSource, /maxWidth=\{860\}/);
   assert.match(settingsSource, /<Tabs activeKey=\{undefined\} defaultActiveKey="profile" items=\{tabs\}/);
   assert.doesNotMatch(settingsSource, /heroGradient/);
+});
+
+test('workspaces page adopts page shell with create action', () => {
+  assert.match(workspacesSource, /import PageShell from '\.\.\/components\/PageShell'/);
+  assert.match(workspacesSource, /<PageShell/);
+  assert.match(workspacesSource, /title="项目空间"/);
+  assert.match(workspacesSource, /maxWidth=\{1180\}/);
+  assert.match(workspacesSource, /actions=\{\(/);
+  assert.match(workspacesSource, /新建空间/);
+  assert.match(workspacesSource, /setModalOpen\(true\)/);
+  assert.match(workspacesSource, /<Modal title="新建项目空间"/);
+  assert.doesNotMatch(workspacesSource, /linear-gradient\(135deg, #667eea 0%, #764ba2 100%\)/);
 });
