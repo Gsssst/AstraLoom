@@ -18,6 +18,10 @@ const workspacesSource = readFileSync(
   new URL('../src/pages/WorkspacesPage.tsx', import.meta.url),
   'utf8',
 );
+const actionCenterSource = readFileSync(
+  new URL('../src/pages/ActionCenterPage.tsx', import.meta.url),
+  'utf8',
+);
 
 test('page shell exposes stable layout class hooks', () => {
   for (const className of [
@@ -63,4 +67,14 @@ test('workspaces page adopts page shell with create action', () => {
   assert.match(workspacesSource, /setModalOpen\(true\)/);
   assert.match(workspacesSource, /<Modal title="新建项目空间"/);
   assert.doesNotMatch(workspacesSource, /linear-gradient\(135deg, #667eea 0%, #764ba2 100%\)/);
+});
+
+test('action center adopts page shell with summary content', () => {
+  assert.match(actionCenterSource, /import PageShell from '\.\.\/components\/PageShell'/);
+  assert.match(actionCenterSource, /<PageShell/);
+  assert.match(actionCenterSource, /title="行动中心"/);
+  assert.match(actionCenterSource, /maxWidth=\{1280\}/);
+  assert.match(actionCenterSource, /<Statistic title="行动项"/);
+  assert.match(actionCenterSource, /<Statistic title="高优先级"/);
+  assert.doesNotMatch(actionCenterSource, /linear-gradient\(135deg, #667eea 0%, #764ba2 100%\)/);
 });

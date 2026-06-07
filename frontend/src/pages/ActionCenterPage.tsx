@@ -8,8 +8,10 @@ import {
   RightOutlined, ThunderboltOutlined, AppstoreOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
+import PageShell from '../components/PageShell';
+import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
 
-const { Title, Text, Paragraph } = Typography;
+const { Text, Paragraph } = Typography;
 
 const groupConfig: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
   papers: { label: '论文与知识库', icon: <BookOutlined />, color: '#4f7cff' },
@@ -40,6 +42,7 @@ const ActionCenterPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [runningActionId, setRunningActionId] = useState<string | null>(null);
   const [lastActionResult, setLastActionResult] = useState<{ title: string; detail: string } | null>(null);
+  const [lastActionError, setLastActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
   const [data, setData] = useState<any>({ summary: {}, actions: [] });
 
   const fetchActions = async () => {
@@ -48,7 +51,9 @@ const ActionCenterPage: React.FC = () => {
       const response = await api.get('/workflow/actions');
       setData(response.data || { summary: {}, actions: [] });
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '行动中心加载失败');
+      const detail = getApiErrorDetails(error, { fallback: '行动中心加载失败' });
+      setLastActionError({ title: '行动中心加载失败', detail });
+      message.warning(detail.message);
     } finally {
       setLoading(false);
     }
@@ -67,6 +72,7 @@ const ActionCenterPage: React.FC = () => {
     }
     setRunningActionId(item.id);
     setLastActionResult(null);
+    setLastActionError(null);
     try {
       const response = await api.request({
         method: item.method || 'POST',
@@ -77,9 +83,9 @@ const ActionCenterPage: React.FC = () => {
       message.success(`${item.action_label || '维护动作'}已完成`);
       await fetchActions();
     } catch (error: any) {
-      const detail = error.response?.data?.detail || '动作执行失败，请稍后重试或进入设置页处理。';
-      setLastActionResult({ title: item.title, detail });
-      message.error(detail);
+      const detail = getApiErrorDetails(error, { fallback: '动作执行失败，请稍后重试或进入设置页处理。' });
+      setLastActionError({ title: item.title, detail });
+      message.warning(detail.message);
     } finally {
       setRunningActionId(null);
     }
@@ -98,56 +104,24 @@ const ActionCenterPage: React.FC = () => {
   const hasActions = (data.actions || []).length > 0;
 
   return (
-    <div style={{ maxWidth: 1280, margin: '0 auto' }}>
-      <Card
-        style={{
-          borderRadius: 22,
-          marginBottom: 18,
-          overflow: 'hidden',
-          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-          color: '#fff',
-        }}
-        styles={{ body: { padding: 28 } }}
-      >
-        <Row justify="space-between" align="middle" gutter={[16, 16]}>
-          <Col xs={24} md={16}>
-            <Space size={14} align="center">
-              <div style={{
-                width: 58,
-                height: 58,
-                borderRadius: 18,
-                background: 'rgba(255,255,255,0.18)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 28,
-              }}>
-                <ThunderboltOutlined />
-              </div>
-              <div>
-                <Title level={2} style={{ color: '#fff', margin: 0 }}>行动中心</Title>
-                <Text style={{ color: 'rgba(255,255,255,0.78)' }}>
-                  把论文、研究方向、写作和项目空间的下一步集中到一个科研推进面板。
-                </Text>
-              </div>
-            </Space>
-          </Col>
-          <Col xs={24} md={8}>
-            <Row gutter={12}>
-              <Col span={12}>
-                <Card style={{ borderRadius: 14, background: 'rgba(255,255,255,0.16)', borderColor: 'rgba(255,255,255,0.22)' }} styles={{ body: { padding: 14 } }}>
-                  <Statistic title={<span style={{ color: 'rgba(255,255,255,0.75)' }}>行动项</span>} value={summary.total || 0} valueStyle={{ color: '#fff' }} />
-                </Card>
-              </Col>
-              <Col span={12}>
-                <Card style={{ borderRadius: 14, background: 'rgba(255,255,255,0.16)', borderColor: 'rgba(255,255,255,0.22)' }} styles={{ body: { padding: 14 } }}>
-                  <Statistic title={<span style={{ color: 'rgba(255,255,255,0.75)' }}>高优先级</span>} value={summary.high_priority || 0} valueStyle={{ color: '#fff' }} />
-                </Card>
-              </Col>
-            </Row>
-          </Col>
-        </Row>
-      </Card>
+    <PageShell
+      title="行动中心"
+      subtitle="把论文、研究方向、写作和项目空间的下一步集中到一个科研推进面板。"
+      icon={<ThunderboltOutlined />}
+      maxWidth={1280}
+    >
+      <Row gutter={[12, 12]} style={{ marginBottom: 18 }}>
+        <Col xs={12} md={6}>
+          <Card style={{ borderRadius: 14 }} styles={{ body: { padding: 14 } }}>
+            <Statistic title="行动项" value={summary.total || 0} />
+          </Card>
+        </Col>
+        <Col xs={12} md={6}>
+          <Card style={{ borderRadius: 14 }} styles={{ body: { padding: 14 } }}>
+            <Statistic title="高优先级" value={summary.high_priority || 0} />
+          </Card>
+        </Col>
+      </Row>
 
       <Alert
         type="info"
@@ -164,6 +138,28 @@ const ActionCenterPage: React.FC = () => {
           onClose={() => setLastActionResult(null)}
           style={{ borderRadius: 12, marginBottom: 18 }}
           message={`${lastActionResult.title}：${lastActionResult.detail}`}
+        />
+      ) : null}
+      {lastActionError ? (
+        <Alert
+          type={lastActionError.detail.severity === 'error' ? 'error' : 'warning'}
+          showIcon
+          closable
+          onClose={() => setLastActionError(null)}
+          style={{ borderRadius: 12, marginBottom: 18 }}
+          message={`${lastActionError.title}：${lastActionError.detail.message}`}
+          description={(
+            <Space direction="vertical" size={6}>
+              <Text>{lastActionError.detail.recovery}</Text>
+              <Space size={6} wrap>
+                <Tag color="orange">{lastActionError.detail.category}</Tag>
+                <Tag color={lastActionError.detail.retryable ? 'blue' : 'default'}>
+                  {lastActionError.detail.retryable ? '可重试' : '需先处理条件'}
+                </Tag>
+                {lastActionError.detail.status && <Tag>HTTP {lastActionError.detail.status}</Tag>}
+              </Space>
+            </Space>
+          )}
         />
       ) : null}
 
@@ -248,7 +244,7 @@ const ActionCenterPage: React.FC = () => {
           </Row>
         )}
       </Spin>
-    </div>
+    </PageShell>
   );
 };
 
