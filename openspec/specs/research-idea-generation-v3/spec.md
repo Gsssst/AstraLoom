@@ -4,7 +4,7 @@
 TBD - created by archiving change research-idea-generation-v3. Update Purpose after archive.
 ## Requirements
 ### Requirement: Candidate Search Tree
-The system SHALL refine generated research candidates through a traceable bounded search tree that can use LLM-assisted critique-and-evolution with deterministic fallback expansion and user-selected gap constraints.
+The system SHALL refine generated research candidates through a traceable bounded search tree that can use LLM-assisted critique-and-evolution with deterministic fallback expansion, user-selected gap constraints, and user-provided Gap Map feedback.
 
 #### Scenario: Candidate lineage is recorded
 - **WHEN** the workbench expands generated candidates
@@ -21,6 +21,10 @@ The system SHALL refine generated research candidates through a traceable bounde
 #### Scenario: Candidate generation respects gap constraints
 - **WHEN** the run includes selected gaps and generation constraints
 - **THEN** generated and evolved candidates are prompted and selected using those gaps, focus notes, research mode, risk appetite, and resource budget.
+
+#### Scenario: Candidate generation respects gap feedback
+- **WHEN** selected gaps include user edits, ratings, feedback labels, or notes
+- **THEN** generated and evolved candidates use that feedback as guidance and avoid rejected or misaligned gaps when alternatives are available.
 
 ### Requirement: Novelty Check
 The system SHALL evaluate candidate novelty against available evidence and ranked similar work gathered from local and configured external scholarly sources.
@@ -45,7 +49,7 @@ The system SHALL generate adversarial review signals for each candidate before f
 - **THEN** the adversarial review includes objections and a non-zero penalty.
 
 ### Requirement: Persist Quality Signals
-The system SHALL persist search tree, novelty check, similar-work collision details, adversarial review data, diversity-aware selection metadata, and gap-selection metadata on selected Ideas.
+The system SHALL persist search tree, novelty check, similar-work collision details, adversarial review data, diversity-aware selection metadata, gap-selection metadata, and Gap Map feedback metadata on selected Ideas or their originating run.
 
 #### Scenario: Selected proposal stores v3 signals
 - **WHEN** a candidate is persisted as a Research Idea
@@ -54,6 +58,10 @@ The system SHALL persist search tree, novelty check, similar-work collision deta
 #### Scenario: Diverse proposal selection records rationale
 - **WHEN** final proposals are selected from reviewed candidates
 - **THEN** the run records selected candidate titles, suppressed near-duplicates, selected gap constraints, and diversity rationale in the review summary.
+
+#### Scenario: Gap feedback is preserved for generation audit
+- **WHEN** proposal generation continues from a Gap Map with user feedback
+- **THEN** the run review summary records a concise summary of the gap ratings, labels, notes, and refined gap titles used during generation.
 
 ### Requirement: Show Quality Signals In UI
 The frontend SHALL show novelty and adversarial review signals in Proposal details.

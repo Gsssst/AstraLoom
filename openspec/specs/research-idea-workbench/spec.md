@@ -37,7 +37,7 @@ The system SHALL construct an inspectable evidence map from project-attached pap
 - **THEN** the item includes its paper identity, title, abstract excerpt, category, and relevance explanation
 
 ### Requirement: Structured Gap Map
-The system SHALL extract and persist a structured Gap Map before hypothesis generation and SHALL allow users to review selected gaps before continuing proposal generation.
+The system SHALL extract and persist a structured Gap Map before hypothesis generation, SHALL allow users to review selected gaps before continuing proposal generation, and SHALL persist user feedback and refinements on individual gaps.
 
 #### Scenario: Inspect extracted research gaps
 - **WHEN** evidence retrieval completes
@@ -50,6 +50,18 @@ The system SHALL extract and persist a structured Gap Map before hypothesis gene
 #### Scenario: Continue from selected gaps
 - **WHEN** a project editor submits selected gaps and generation constraints for a reviewed Gap Map run
 - **THEN** the system continues proposal generation using those selections and persists the selection metadata on the run.
+
+#### Scenario: Update gap feedback
+- **WHEN** a project editor updates one Gap Map item with edited text, quality rating, labels, notes, or evidence references
+- **THEN** the system persists the normalized feedback on that gap without creating proposals or recomputing unrelated artifacts.
+
+#### Scenario: Refine one gap
+- **WHEN** a project editor requests refinement for one Gap Map item with a focus note
+- **THEN** the system updates only that gap using the current evidence and feedback and preserves the run in a reviewable state.
+
+#### Scenario: Inspect gap evidence rationale
+- **WHEN** a gap references evidence papers from the Evidence Map
+- **THEN** the system exposes enough linked evidence metadata for the interface to show why the gap was extracted.
 
 ### Requirement: Multi-path candidate pool
 The system SHALL generate a candidate hypothesis pool through gap-grounded, cross-paper inspiration, and user-seed refinement paths.
@@ -89,7 +101,7 @@ The system SHALL select and persist top proposals as enriched research ideas com
 - **THEN** the validation summary includes those similar works as related-work candidates before falling back to generic evidence ranking.
 
 ### Requirement: Research Idea Workbench interface
-The system SHALL present the research project page as a workbench that exposes pipeline progress, Evidence Map, Gap Map, candidate pool, selected proposals, proposal-level collision evidence, selection rationale, and Gap Map selection controls.
+The system SHALL present the research project page as a workbench that exposes pipeline progress, Evidence Map, Gap Map, candidate pool, selected proposals, proposal-level collision evidence, selection rationale, Gap Map selection controls, and Gap Map feedback controls.
 
 #### Scenario: Inspect intermediate artifacts
 - **WHEN** a user opens a project with a completed or running workbench run
@@ -110,6 +122,18 @@ The system SHALL present the research project page as a workbench that exposes p
 #### Scenario: Choose gaps and constraints
 - **WHEN** a Gap Map preview run is ready for review
 - **THEN** the interface lets the user choose gaps, enter a focus note, and set research mode, risk appetite, and resource budget before continuing generation.
+
+#### Scenario: Edit and label gaps
+- **WHEN** a user reviews a Gap Map item
+- **THEN** the interface lets the user edit the gap fields, choose quality feedback labels, add notes, and save the feedback.
+
+#### Scenario: Refine gap from user feedback
+- **WHEN** a user asks to refine a single Gap Map item
+- **THEN** the interface sends that gap and focus note for refinement and refreshes the displayed Gap Map without leaving the review flow.
+
+#### Scenario: View linked evidence for a gap
+- **WHEN** a Gap Map item has evidence references
+- **THEN** the interface displays linked evidence titles, source categories, and relevance snippets within the gap review context.
 
 ### Requirement: Research Workflows Show Persistent API Recovery
 The research direction list and research project workbench frontends SHALL show persistent structured recovery guidance for failed project, idea, proposal, evidence, experiment, validation, and generation operations.
