@@ -162,6 +162,70 @@
   max-width: calc(100vw - 24px);
 }
 
+.paper-bulk-action-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 100;
+  display: flex;
+  max-width: min(1180px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 14px 38px rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(14px);
+}
+
+.paper-bulk-action-count {
+  display: inline-flex;
+  min-width: 118px;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: #f3f6ff;
+}
+
+.paper-bulk-action-count .ant-typography {
+  line-height: 18px;
+}
+
+.paper-bulk-action-section {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding-left: 10px;
+  border-left: 1px solid #eef0f4;
+}
+
+.paper-bulk-action-section-wide {
+  flex: 1 1 360px;
+}
+
+.paper-bulk-action-label {
+  flex: 0 0 auto;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.paper-bulk-action-select {
+  width: min(240px, 26vw);
+}
+
+.paper-bulk-action-bar .ant-btn {
+  border-radius: 8px;
+}
+
+.paper-bulk-action-clear {
+  flex: 0 0 auto;
+}
+
 .paper-detail-page {
   height: calc(100vh - 96px);
   min-height: 0;
@@ -1116,6 +1180,58 @@
     width: calc(100vw - 24px);
     justify-content: center;
     flex-wrap: wrap;
+  }
+
+  .paper-bulk-action-bar {
+    bottom: 12px;
+    width: calc(100vw - 20px);
+    max-height: min(58vh, 360px);
+    align-items: stretch;
+    flex-wrap: wrap;
+    overflow-y: auto;
+    padding: 10px;
+    gap: 8px;
+  }
+
+  .paper-bulk-action-count {
+    width: 100%;
+    min-width: 0;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .paper-bulk-action-section {
+    width: 100%;
+    flex-wrap: wrap;
+    padding-left: 0;
+    padding-top: 8px;
+    border-left: 0;
+    border-top: 1px solid #eef0f4;
+  }
+
+  .paper-bulk-action-label {
+    width: 64px;
+  }
+
+  .paper-bulk-action-select {
+    width: 100% !important;
+    flex: 1 1 160px;
+  }
+
+  .paper-bulk-action-bar .ant-btn {
+    flex: 1 1 auto;
+  }
+
+  .paper-bulk-action-clear {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    padding: 0;
+    flex: 0 0 auto !important;
   }
 
   .paper-detail-page {

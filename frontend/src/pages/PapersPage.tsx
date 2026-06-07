@@ -14,6 +14,7 @@ import {
   BellOutlined, PlayCircleOutlined, CheckCircleOutlined, RollbackOutlined,
   FolderOutlined, FolderAddOutlined, DatabaseOutlined,
   CaretDownOutlined, CaretRightOutlined,
+  TagsOutlined, DownloadOutlined, CloseOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
@@ -33,7 +34,7 @@ interface PaperItem {
   remote_ingest_token?: string | null;
   pdf_url?: string | null;
   source_url?: string | null;
-  read_status?: 'unread' | 'reading' | 'completed' | null;
+  read_status?: ReadingStatus | null;
   recommendation_kind?: string;
   recommendation_reason?: string;
 }
@@ -72,16 +73,18 @@ interface CollectionCoverage {
   recommended_queries: Record<'classic' | 'recent' | 'gap' | 'related', string>;
 }
 
+type ReadingStatus = 'unread' | 'reading' | 'completed';
+type SelectedExportFormat = 'bibtex' | 'markdown' | 'json';
 type RecommendationKind = 'classic' | 'recent' | 'gap' | 'related';
 type DiagnosticTab = 'hybrid' | 'bm25' | 'dense';
 type PaperResultStateFilter = 'all' | 'local' | 'importable' | 'imported' | 'open_pdf' | 'missing_remote_id';
 
 const remoteSearchSources = ['scholarly', 'arxiv', 'semantic_scholar', 'openalex', 'google_scholar'];
 const paperSearchSources = ['local', 'saved', 'collection', 'reading', 'maintenance', ...remoteSearchSources];
-const readingStatusMeta = {
-  unread: { label: '待读', color: 'default' as const },
-  reading: { label: '阅读中', color: 'processing' as const },
-  completed: { label: '已完成', color: 'success' as const },
+const readingStatusMeta: Record<ReadingStatus, { label: string; color: 'default' | 'processing' | 'success' }> = {
+  unread: { label: '待读', color: 'default' },
+  reading: { label: '阅读中', color: 'processing' },
+  completed: { label: '已完成', color: 'success' },
 };
 const providerGuidance: Record<string, { label: string; providers: string[]; description: string; retry: string }> = {
   scholarly: {
@@ -139,6 +142,88 @@ const paperResultStateCounts = (items: PaperItem[], ingestedRemoteIds: Set<strin
     if (item.pdf_url) counts.open_pdf += 1;
   });
   return counts;
+};
+
+const escapeBibtexValue = (value: unknown) => String(value || '')
+  .replace(/[{}]/g, '')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const buildBibtexKey = (paper: PaperItem, index: number) => {
+  const firstAuthor = Array.isArray(paper.authors) && paper.authors[0]
+    ? paper.authors[0].split(/\s+/).slice(-1)[0]
+    : 'paper';
+  const year = paper.year || 'nd';
+  return `${firstAuthor}${year}_${index + 1}`.replace(/[^a-zA-Z0-9_:-]/g, '');
+};
+
+const buildSelectedBibtex = (items: PaperItem[]) => items.map((paper, index) => {
+  const entryType = paper.arxiv_id ? 'misc' : 'article';
+  const fields = [
+    `  title = {${escapeBibtexValue(paper.title)}}`,
+    paper.authors?.length ? `  author = {${escapeBibtexValue(paper.authors.join(' and '))}}` : '',
+    paper.year ? `  year = {${paper.year}}` : '',
+    paper.arxiv_id ? `  eprint = {${escapeBibtexValue(paper.arxiv_id)}}` : '',
+    paper.arxiv_id ? '  archivePrefix = {arXiv}' : '',
+    paper.doi ? `  doi = {${escapeBibtexValue(paper.doi)}}` : '',
+    paper.source_url ? `  url = {${escapeBibtexValue(paper.source_url)}}` : '',
+  ].filter(Boolean).join(',\n');
+  return `@${entryType}{${buildBibtexKey(paper, index)},\n${fields}\n}`;
+}).join('\n\n');
+
+const buildSelectedMarkdown = (items: PaperItem[]) => [
+  '# Selected Papers',
+  '',
+  `Exported at: ${new Date().toISOString()}`,
+  '',
+  ...items.flatMap((paper, index) => [
+    `## ${index + 1}. ${paper.title}`,
+    '',
+    `- Authors: ${paper.authors?.length ? paper.authors.join(', ') : 'N/A'}`,
+    `- Year: ${paper.year || 'N/A'}`,
+    `- Source: ${paper.source || 'N/A'}`,
+    `- arXiv: ${paper.arxiv_id || 'N/A'}`,
+    `- DOI: ${paper.doi || 'N/A'}`,
+    `- Read status: ${paper.read_status ? readingStatusMeta[paper.read_status].label : 'N/A'}`,
+    '',
+    paper.abstract_full || paper.abstract || 'No abstract available.',
+    '',
+  ]),
+].join('\n');
+
+const buildSelectedJson = (items: PaperItem[]) => JSON.stringify({
+  exported_at: new Date().toISOString(),
+  count: items.length,
+  papers: items.map(paper => ({
+    id: paper.id,
+    title: paper.title,
+    authors: paper.authors,
+    year: paper.year,
+    abstract: paper.abstract_full || paper.abstract,
+    arxiv_id: paper.arxiv_id,
+    doi: paper.doi,
+    source: paper.source,
+    citation_count: paper.citation_count,
+    read_status: paper.read_status,
+    source_url: paper.source_url,
+    pdf_url: paper.pdf_url,
+  })),
+}, null, 2);
+
+const selectedExportConfig: Record<SelectedExportFormat, { label: string; extension: string; mime: string; build: (items: PaperItem[]) => string }> = {
+  bibtex: { label: 'BibTeX', extension: 'bib', mime: 'text/x-bibtex;charset=utf-8', build: buildSelectedBibtex },
+  markdown: { label: 'Markdown', extension: 'md', mime: 'text/markdown;charset=utf-8', build: buildSelectedMarkdown },
+  json: { label: 'JSON', extension: 'json', mime: 'application/json;charset=utf-8', build: buildSelectedJson },
+};
+
+const downloadTextFile = (content: string, filename: string, type = 'text/plain;charset=utf-8') => {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 };
 
 const PapersPage: React.FC = () => {
@@ -477,6 +562,98 @@ const PapersPage: React.FC = () => {
     }
   }, [fetchCollections, handleSearch, selectedCollectionId, selectedIds, showPageError, source, targetCollectionId]);
 
+  const handleExportSelected = useCallback((format: SelectedExportFormat) => {
+    if (selectedIds.size === 0) {
+      message.warning('请先选择论文');
+      return;
+    }
+    const loadedSelectedPapers = papers.filter(paper => paper.id && selectedIds.has(paper.id));
+    if (loadedSelectedPapers.length === 0) {
+      message.warning('当前列表中没有可导出的已选论文，请调整视图或清空选择后重试');
+      return;
+    }
+    const config = selectedExportConfig[format];
+    const today = new Date().toISOString().slice(0, 10);
+    downloadTextFile(
+      config.build(loadedSelectedPapers),
+      `selected-papers-${today}.${config.extension}`,
+      config.mime,
+    );
+    setPageActionError(null);
+    const missingCount = selectedIds.size - loadedSelectedPapers.length;
+    message.success(`${config.label} 已导出 ${loadedSelectedPapers.length} 篇${missingCount > 0 ? `，${missingCount} 篇不在当前列表` : ''}`);
+  }, [papers, selectedIds]);
+
+  const handleBulkReadStatus = useCallback(async (status: ReadingStatus) => {
+    if (!isAuthenticated) {
+      message.warning('请先登录');
+      return;
+    }
+    if (selectedIds.size === 0) {
+      message.warning('请先选择论文');
+      return;
+    }
+    const loadedSelectedPapers = papers.filter(paper => paper.id && selectedIds.has(paper.id));
+    if (loadedSelectedPapers.length === 0) {
+      message.warning('当前列表中没有可更新的已选论文，请调整视图或清空选择后重试');
+      return;
+    }
+    const targetIds = loadedSelectedPapers.map(paper => paper.id);
+    setUpdatingStatusIds(prev => new Set([...prev, ...targetIds]));
+    try {
+      const results = await Promise.allSettled(
+        loadedSelectedPapers.map(paper => api.put(`/papers/${paper.id}/read-status`, { status })),
+      );
+      const successfulIds = new Set<string>();
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') successfulIds.add(loadedSelectedPapers[index].id);
+      });
+      const successCount = successfulIds.size;
+      const failedCount = loadedSelectedPapers.length - successCount;
+      if (successCount > 0) {
+        setSavedIds(prev => new Set([...prev, ...successfulIds]));
+        setPapers(prev => prev
+          .map(item => successfulIds.has(item.id) ? { ...item, read_status: status } : item)
+          .filter(item => source !== 'reading' || !successfulIds.has(item.id) || status === readingStatus));
+        await fetchReadingCounts();
+        setPageActionError(null);
+      }
+      const missingCount = selectedIds.size - loadedSelectedPapers.length;
+      if (failedCount > 0 || missingCount > 0) {
+        message.warning(`阅读状态更新完成：成功 ${successCount} 篇，失败 ${failedCount} 篇${missingCount > 0 ? `，${missingCount} 篇不在当前列表` : ''}`);
+      } else {
+        message.success(`已将 ${successCount} 篇标记为${readingStatusMeta[status].label}`);
+      }
+    } catch (error) {
+      showPageError('批量阅读状态更新失败', error, '批量阅读状态更新失败');
+    } finally {
+      setUpdatingStatusIds(prev => {
+        const next = new Set(prev);
+        targetIds.forEach(id => next.delete(id));
+        return next;
+      });
+    }
+  }, [fetchReadingCounts, isAuthenticated, papers, readingStatus, selectedIds, showPageError, source]);
+
+  const handleBatchTagSelected = useCallback(async () => {
+    if (selectedIds.size === 0) {
+      message.warning('请先选择论文');
+      return;
+    }
+    const tagInput = window.prompt('输入标签，多个标签用英文逗号分隔');
+    const tags = tagInput?.split(',').map(tag => tag.trim()).filter(Boolean) || [];
+    if (tags.length === 0) return;
+    try {
+      await api.post('/papers/batch-tag', { paper_ids: Array.from(selectedIds), tags });
+      setPageActionError(null);
+      message.success(`已添加 ${tags.length} 个标签`);
+      setSelectedIds(new Set());
+      handleSearch();
+    } catch (error) {
+      showPageError('批量标签失败', error, '批量标签失败');
+    }
+  }, [handleSearch, selectedIds, showPageError]);
+
   const handleDeleteCollectionClick = useCallback(() => {
     const collection = collections.find(item => item.id === selectedCollectionId) || null;
     if (!collection) {
@@ -689,6 +866,8 @@ const PapersPage: React.FC = () => {
     if (resultStateFilter === 'open_pdf') return !!paper.pdf_url;
     return paperResultState(paper, ingestedRemoteIds).key === resultStateFilter;
   });
+  const selectedPapers = papers.filter(paper => paper.id && selectedIds.has(paper.id));
+  const selectedCount = selectedIds.size;
   const stats = papers.length > 0 ? `共 ${papers.length} 篇论文` : '';
   const collectionOptions = collections.map(item => {
     const diagnostics = item.diagnostics;
@@ -1318,24 +1497,75 @@ const PapersPage: React.FC = () => {
       )}
       </div>
 
-      {/* ── 底部选择栏 ── */}
-      {selectedIds.size > 0 && (
-        <div style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 100, background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(10px)', borderRadius: 16, boxShadow: '0 8px 32px rgba(0,0,0,0.12)', padding: '10px 24px', display: 'flex', gap: 12, alignItems: 'center', border: '1px solid #e8e8e8' }}>
-          <div style={{ background: '#667eea', color: '#fff', borderRadius: 10, padding: '2px 12px', fontWeight: 600, fontSize: 13 }}>已选 {selectedIds.size} 篇</div>
-          <Select
+      {/* ── 批量操作栏 ── */}
+      {selectedCount > 0 && (
+        <div className="paper-bulk-action-bar" role="toolbar" aria-label="已选论文批量操作">
+          <div className="paper-bulk-action-count">
+            <Text strong>已选 {selectedCount} 篇</Text>
+            {selectedPapers.length !== selectedCount && (
+              <Text type="secondary">{selectedPapers.length} 篇在当前列表</Text>
+            )}
+          </div>
+
+          <div className="paper-bulk-action-section paper-bulk-action-section-wide">
+            <Text className="paper-bulk-action-label" type="secondary">分类</Text>
+            <Select
+              size="small"
+              placeholder="选择分类"
+              value={targetCollectionId}
+              onChange={setTargetCollectionId}
+              options={collectionOptions}
+              className="paper-bulk-action-select"
+              suffixIcon={<FolderOutlined />}
+            />
+            <Button size="small" icon={<FolderAddOutlined />} loading={addingCollection} onClick={handleAddSelectedToCollection}>
+              加入分类
+            </Button>
+            <Button size="small" icon={<FolderAddOutlined />} loading={creatingCollection} onClick={handleCreateCollection}>
+              新建分类
+            </Button>
+          </div>
+
+          <div className="paper-bulk-action-section">
+            <Text className="paper-bulk-action-label" type="secondary">阅读状态</Text>
+            <Button size="small" icon={<RollbackOutlined />} loading={updatingStatusIds.size > 0} onClick={() => handleBulkReadStatus('unread')}>
+              待读
+            </Button>
+            <Button size="small" icon={<PlayCircleOutlined />} loading={updatingStatusIds.size > 0} onClick={() => handleBulkReadStatus('reading')}>
+              阅读中
+            </Button>
+            <Button size="small" icon={<CheckCircleOutlined />} loading={updatingStatusIds.size > 0} onClick={() => handleBulkReadStatus('completed')}>
+              已完成
+            </Button>
+          </div>
+
+          <div className="paper-bulk-action-section">
+            <Text className="paper-bulk-action-label" type="secondary">导出</Text>
+            <Button size="small" icon={<DownloadOutlined />} onClick={() => handleExportSelected('bibtex')}>BibTeX</Button>
+            <Button size="small" onClick={() => handleExportSelected('markdown')}>Markdown</Button>
+            <Button size="small" onClick={() => handleExportSelected('json')}>JSON</Button>
+          </div>
+
+          <div className="paper-bulk-action-section">
+            <Text className="paper-bulk-action-label" type="secondary">后续任务</Text>
+            <Button size="small" icon={<FileTextOutlined />} onClick={() => setReportModalOpen(true)}>
+              组会报告
+            </Button>
+            {isAdmin && (
+              <Button size="small" icon={<TagsOutlined />} onClick={handleBatchTagSelected}>
+                标签
+              </Button>
+            )}
+          </div>
+
+          <Button
             size="small"
-            placeholder="加入分类"
-            value={targetCollectionId}
-            onChange={setTargetCollectionId}
-            options={collectionOptions}
-            style={{ width: 180 }}
-            suffixIcon={<FolderOutlined />}
+            type="text"
+            icon={<CloseOutlined />}
+            aria-label="清空选择"
+            onClick={() => setSelectedIds(new Set())}
+            className="paper-bulk-action-clear"
           />
-          <Button size="small" icon={<FolderAddOutlined />} loading={addingCollection} onClick={handleAddSelectedToCollection} style={{ borderRadius: 8 }}>加入分类</Button>
-          <Button size="small" icon={<FolderAddOutlined />} loading={creatingCollection} onClick={handleCreateCollection} style={{ borderRadius: 8 }}>新建分类</Button>
-          {isAdmin && <Button size="small" onClick={() => { const t = prompt('输入标签'); if (t) { api.post('/papers/batch-tag', { paper_ids: Array.from(selectedIds), tags: t.split(',').map(x => x.trim()).filter(Boolean) }).then(() => { setPageActionError(null); message.success('已添加'); setSelectedIds(new Set()); handleSearch(); }).catch(error => showPageError('批量标签失败', error, '批量标签失败')); } }} style={{ borderRadius: 8 }}>🏷️ 标签</Button>}
-          <Button size="small" onClick={async () => { try { const r = await api.post('/writing/export', { format: 'bibtex', paper_ids: Array.from(selectedIds) }); const b = new Blob([r.data.data], { type: 'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'selected.bib'; a.click(); setPageActionError(null); } catch (error) { showPageError('导出失败', error, '导出失败'); } }} style={{ borderRadius: 8 }}>📥 导出</Button>
-          <Button size="small" onClick={() => setSelectedIds(new Set())} style={{ borderRadius: 8 }}>✕</Button>
         </div>
       )}
 
