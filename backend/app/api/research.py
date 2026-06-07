@@ -254,6 +254,25 @@ class FeedbackEvolveRequest(BaseModel):
     focus: str = Field(default="", max_length=1000)
 
 
+class IdeaTimelineEvent(BaseModel):
+    id: str
+    type: str
+    title: str
+    summary: str
+    timestamp: str
+    severity: str = "info"
+    tags: list[str] = []
+    details: dict[str, Any] = {}
+
+
+class IdeaTimelineResponse(BaseModel):
+    idea_id: str
+    project_id: str
+    title: str
+    summary: dict[str, Any]
+    events: list[IdeaTimelineEvent]
+
+
 class WritingDraftResponse(BaseModel):
     project: dict
     evidence_status: str
@@ -848,6 +867,27 @@ async def get_idea_lineage(idea_id: str, db: AsyncSession = Depends(get_db), cur
         descendants.append(child)
         queue.extend(children.get(child.id, []))
     return [_idea_response(item) for item in [*reversed(ancestors), idea, *descendants]]
+
+
+@router.get("/ideas/{idea_id}/timeline", response_model=IdeaTimelineResponse)
+async def get_idea_iteration_timeline(
+    idea_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """返回 Proposal 从创建、讨论、验证、实验反馈到版本演化的只读时间线。"""
+    idea = await _get_owned_idea(db, idea_id, current_user)
+    project = await _get_owned_project(db, str(idea.project_id), current_user)
+    result = await db.execute(select(ResearchIdea).where(ResearchIdea.project_id == idea.project_id))
+    project_ideas = list(result.scalars().all())
+    experiments = await ExperimentService(db).get_experiments(str(project.id))
+    timeline = ResearchPipelineService(db).build_iteration_timeline(
+        idea,
+        project,
+        project_ideas=project_ideas,
+        experiments=experiments,
+    )
+    return IdeaTimelineResponse(**timeline)
 
 
 @router.patch("/ideas/{idea_id}/decision", response_model=IdeaResponse)

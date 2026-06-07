@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Alert, Button, Card, Checkbox, Collapse, Col, Divider, Drawer, Input, List, message,
-  Modal, Popconfirm, Row, Select, Space, Steps, Switch, Tabs, Tag, Tooltip, Typography,
+  Modal, Popconfirm, Row, Select, Space, Steps, Switch, Tabs, Tag, Timeline, Tooltip, Typography,
 } from 'antd';
 import {
   ArrowLeftOutlined, BulbOutlined, CodeOutlined, DeleteOutlined,
@@ -121,6 +121,23 @@ interface ExperimentExecutionPack {
   risks: { level: string; message: string }[];
   next_actions: string[];
 }
+interface TimelineEvent {
+  id: string;
+  type: string;
+  title: string;
+  summary: string;
+  timestamp: string;
+  severity: 'success' | 'warning' | 'danger' | 'info' | string;
+  tags: string[];
+  details: Record<string, any>;
+}
+interface IdeaTimeline {
+  idea_id: string;
+  project_id: string;
+  title: string;
+  summary: { event_count: number; discussion_milestones: number; experiment_count: number; child_version_count: number; latest_event_type?: string };
+  events: TimelineEvent[];
+}
 interface IdeaRun {
   id: string; project_id: string; status: string; stage: string; progress: number;
   message?: string; error?: string; evidence_map?: Record<string, Evidence[] | string | object>;
@@ -167,6 +184,21 @@ const adversarialColors: Record<string, string> = { advance: 'green', revise: 'o
 const readinessColors: Record<string, string> = { ready: 'green', needs_validation: 'orange', blocked: 'red' };
 const executionReadinessColors: Record<string, string> = { ready: 'green', needs_setup: 'orange', needs_iteration: 'purple' };
 const riskColors: Record<string, string> = { high: 'red', medium: 'orange', low: 'green' };
+const timelineTypeLabels: Record<string, string> = {
+  created: '创建',
+  evolution: '演化来源',
+  validation: '验证',
+  execution: '实验推进',
+  discussion: 'Copilot',
+  experiment: '实验反馈',
+  child_version: '下一版',
+};
+const timelineSeverityColors: Record<string, string> = {
+  success: 'green',
+  warning: 'orange',
+  danger: 'red',
+  info: 'blue',
+};
 const copilotModeOptions: { value: CopilotMode; label: string }[] = [
   { value: 'mentor', label: '导师' },
   { value: 'skeptic', label: '审稿人' },
@@ -236,6 +268,10 @@ const ResearchProjectPage: React.FC = () => {
   const [experimentNotes, setExperimentNotes] = useState('');
   const [lineageOpen, setLineageOpen] = useState(false);
   const [lineage, setLineage] = useState<Idea[]>([]);
+  const [timelineOpen, setTimelineOpen] = useState(false);
+  const [timelineIdea, setTimelineIdea] = useState<Idea | null>(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineData, setTimelineData] = useState<IdeaTimeline | null>(null);
   const [validationMap, setValidationMap] = useState<Record<string, { loading: boolean; data?: IdeaValidation }>>({});
   const [executionPackMap, setExecutionPackMap] = useState<Record<string, { loading: boolean; data?: ExperimentExecutionPack }>>({});
   const [activeWorkbenchTab, setActiveWorkbenchTab] = useState('evidence');
@@ -549,6 +585,21 @@ const ResearchProjectPage: React.FC = () => {
       setLineageOpen(true);
       setPageActionError(null);
     } catch (error) { showPageError('加载演化谱系失败', error, '加载演化谱系失败'); }
+  };
+  const openTimeline = async (idea: Idea) => {
+    setTimelineIdea(idea);
+    setTimelineOpen(true);
+    setTimelineLoading(true);
+    try {
+      const response = await api.get(`/research/ideas/${idea.id}/timeline`);
+      setTimelineData(response.data);
+      setPageActionError(null);
+    } catch (error) {
+      showPageError('加载迭代轨迹失败', error, '加载迭代轨迹失败');
+      setTimelineData(null);
+    } finally {
+      setTimelineLoading(false);
+    }
   };
   const openExperiment = (idea: Idea) => {
     setExperimentIdea(idea);
@@ -956,6 +1007,7 @@ const ResearchProjectPage: React.FC = () => {
           {(idea.status === 'pinned' || idea.status === 'rejected') && <Button onClick={() => updateDecision(idea.id, 'draft')}>恢复待筛选</Button>}
           <Button type="primary" ghost onClick={() => { setEvolvingIdea(idea); setEvolutionFocus(''); }}>演化新版本</Button>
           <Button icon={<HistoryOutlined />} onClick={() => openLineage(idea)}>查看谱系</Button>
+          <Button icon={<HistoryOutlined />} onClick={() => openTimeline(idea)}>迭代轨迹</Button>
           <Button icon={<ExperimentOutlined />} onClick={() => openExperiment(idea)}>记录实验反馈</Button>
           <Button icon={<ExperimentOutlined />} loading={executionPack?.loading} onClick={() => loadExecutionPack(idea.id)}>实验推进包</Button>
           <Button icon={<FileSearchOutlined />} loading={validation?.loading} onClick={() => loadIdeaValidation(idea.id)}>验证闭环</Button>
@@ -1071,7 +1123,10 @@ const ResearchProjectPage: React.FC = () => {
         width={720}
         open={!!copilotIdea}
         onClose={() => setCopilotIdea(null)}
-        extra={<Button type="primary" ghost icon={<HistoryOutlined />} onClick={() => openLineage(copilotIdea)}>查看谱系</Button>}
+        extra={<Space>
+          <Button type="primary" ghost icon={<HistoryOutlined />} onClick={() => openTimeline(copilotIdea)}>迭代轨迹</Button>
+          <Button type="primary" ghost icon={<HistoryOutlined />} onClick={() => openLineage(copilotIdea)}>查看谱系</Button>
+        </Space>}
       >
         <Space direction="vertical" size={14} style={{ width: '100%' }}>
           <Card size="small" style={{ borderRadius: 12, background: '#fbfcff' }}>
@@ -1172,6 +1227,72 @@ const ResearchProjectPage: React.FC = () => {
       </Drawer>
     );
   };
+  const renderTimelineDrawer = () => (
+    <Drawer
+      title={<Space wrap><HistoryOutlined style={{ color: '#1677ff' }} /><Text strong>Proposal 迭代轨迹</Text>{timelineData && <Tag color="blue">{timelineData.summary.event_count} 个事件</Tag>}</Space>}
+      width={720}
+      open={timelineOpen}
+      onClose={() => setTimelineOpen(false)}
+      extra={timelineIdea && <Button type="primary" ghost icon={<ReloadOutlined />} loading={timelineLoading} onClick={() => openTimeline(timelineIdea)}>刷新</Button>}
+    >
+      {timelineLoading ? (
+        <WorkflowLoadingState
+          title="正在加载迭代轨迹"
+          description="正在汇总创建、讨论、验证、实验反馈和演化版本。"
+          icon={<HistoryOutlined />}
+        />
+      ) : timelineData ? (
+        <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <Card size="small" style={{ borderRadius: 12, background: '#fbfcff' }}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Text strong>{timelineData.title}</Text>
+              <Space wrap>
+                <Tag color="blue">事件 {timelineData.summary.event_count}</Tag>
+                <Tag color="purple">讨论 {timelineData.summary.discussion_milestones}</Tag>
+                <Tag color="green">实验 {timelineData.summary.experiment_count}</Tag>
+                <Tag color="cyan">子版本 {timelineData.summary.child_version_count}</Tag>
+                {timelineData.summary.latest_event_type && <Tag>{timelineTypeLabels[timelineData.summary.latest_event_type] || timelineData.summary.latest_event_type}</Tag>}
+              </Space>
+            </Space>
+          </Card>
+          <Timeline
+            mode="left"
+            items={timelineData.events.map(event => ({
+              color: timelineSeverityColors[event.severity] || 'blue',
+              label: new Date(event.timestamp).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+              children: (
+                <Card size="small" style={{ borderRadius: 12 }}>
+                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                    <Space wrap>
+                      <Tag color={timelineSeverityColors[event.severity] || 'blue'}>{timelineTypeLabels[event.type] || event.type}</Tag>
+                      <Text strong>{event.title}</Text>
+                    </Space>
+                    <Paragraph style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>{event.summary}</Paragraph>
+                    {event.tags.length > 0 && <Space wrap>{event.tags.map(tag => <Tag key={tag}>{tag}</Tag>)}</Space>}
+                    {event.details?.next_actions?.length > 0 && (
+                      <Space wrap>{event.details.next_actions.slice(0, 5).map((item: string) => <Tag color="purple" key={item}>{item}</Tag>)}</Space>
+                    )}
+                    {event.details?.risks?.length > 0 && (
+                      <Space wrap>{event.details.risks.slice(0, 5).map((item: any, index: number) => <Tag color="orange" key={`${event.id}-risk-${index}`}>{typeof item === 'string' ? item : item.message || item.type || '风险'}</Tag>)}</Space>
+                    )}
+                    {event.details?.evolution_focus && <Alert type="info" showIcon message="演化焦点" description={event.details.evolution_focus} />}
+                    {event.details?.rationale && <Alert type="info" showIcon message="演化说明" description={event.details.rationale} />}
+                    {event.details?.results && Object.keys(event.details.results).length > 0 && <Text code>{JSON.stringify(event.details.results)}</Text>}
+                  </Space>
+                </Card>
+              ),
+            }))}
+          />
+        </Space>
+      ) : (
+        <WorkflowEmptyState
+          title="暂无迭代轨迹"
+          description="轨迹会从 Proposal 创建、Copilot 讨论、验证闭环、实验反馈和演化版本中自动汇总。"
+          icon={<HistoryOutlined />}
+        />
+      )}
+    </Drawer>
+  );
 
   return (
     <PageShell
@@ -1339,6 +1460,7 @@ const ResearchProjectPage: React.FC = () => {
         }))} />
       </Modal>
       {renderCopilotPanel()}
+      {renderTimelineDrawer()}
     </PageShell>
   );
 };

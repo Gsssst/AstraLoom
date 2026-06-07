@@ -294,6 +294,79 @@ def test_discussion_evolve_request_accepts_optional_focus():
     assert req.focus == ""
 
 
+def test_iteration_timeline_derives_lifecycle_events_from_existing_data():
+    service = ResearchPipelineService(_Session())
+    idea = _copilot_idea()
+    idea.created_at = "2026-06-07T01:00:00+00:00"
+    idea.discussion_log = []
+    for index in range(10):
+        idea.discussion_log.append({"role": "user", "content": f"question {index}"})
+        idea.discussion_log.append({
+            "role": "assistant",
+            "content": f"assistant milestone {index}",
+            "mode": "skeptic",
+            "metadata": {
+                "risks": [f"risk {index}"],
+                "next_actions": [f"action {index}"],
+                "suggested_questions": [f"follow up {index}"],
+                "evolution_focus": f"focus {index}",
+            },
+        })
+    child = SimpleNamespace(
+        id=uuid4(),
+        parent_idea_id=idea.id,
+        title="Child proposal",
+        status="draft",
+        created_at="2026-06-07T03:00:00+00:00",
+        evolution_json={"round": 2, "rationale": "Child rationale", "focus": "Child focus"},
+    )
+    experiments = [{
+        "experiment_id": "exp-1",
+        "idea_id": str(idea.id),
+        "name": "Baseline",
+        "dataset": "Bench",
+        "results": {"score": 0.82},
+        "notes": "Useful feedback",
+        "timestamp": "2026-06-07T02:00:00+00:00",
+    }]
+
+    timeline = service.build_iteration_timeline(
+        idea,
+        SimpleNamespace(id=idea.project_id, name="Grounded QA", description="", keywords=[]),
+        project_ideas=[idea, child],
+        experiments=experiments,
+    )
+
+    event_types = [event["type"] for event in timeline["events"]]
+    assert "created" in event_types
+    assert "validation" in event_types
+    assert "execution" in event_types
+    assert "experiment" in event_types
+    assert "child_version" in event_types
+    assert timeline["summary"]["discussion_milestones"] == 8
+    assert timeline["summary"]["experiment_count"] == 1
+    assert timeline["summary"]["child_version_count"] == 1
+    assert any(event["details"].get("evolution_focus") == "focus 9" for event in timeline["events"])
+
+
+def test_iteration_timeline_sparse_proposal_still_has_core_events():
+    service = ResearchPipelineService(_Session())
+    idea = _copilot_idea()
+    idea.evidence_json = {"scope": "local_library", "items": []}
+    idea.review_json = {}
+    idea.experiment_plan = {}
+    idea.discussion_log = []
+
+    timeline = service.build_iteration_timeline(idea, project_ideas=[], experiments=[])
+
+    event_types = [event["type"] for event in timeline["events"]]
+    assert event_types[0] == "created"
+    assert {"validation", "execution"}.issubset(set(event_types))
+    assert timeline["summary"]["discussion_milestones"] == 0
+    assert timeline["summary"]["experiment_count"] == 0
+    assert timeline["summary"]["event_count"] >= 3
+
+
 def test_experiment_execution_pack_explains_missing_setup():
     service = ResearchIdeaWorkbenchService(_Session())
     idea = SimpleNamespace(

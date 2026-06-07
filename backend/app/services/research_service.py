@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -406,6 +407,223 @@ class ResearchPipelineService:
             if focus:
                 return focus
         return ""
+
+    def build_iteration_timeline(
+        self,
+        idea: ResearchIdea,
+        project: Optional[ResearchProject] = None,
+        *,
+        project_ideas: Optional[list[ResearchIdea]] = None,
+        experiments: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        """Derive a bounded read-only Proposal lifecycle timeline."""
+        workbench = ResearchIdeaWorkbenchService(self.session)
+        validation = workbench.validate_idea(idea, project)
+        execution = workbench.build_experiment_execution_pack(idea, project, experiments=experiments or [])
+        created_at = self._iso_timestamp(getattr(idea, "created_at", None))
+        events: list[dict[str, Any]] = [{
+            "id": f"{idea.id}:created",
+            "type": "created",
+            "title": "Proposal 创建",
+            "summary": idea.title,
+            "timestamp": created_at,
+            "severity": "info",
+            "tags": self._timeline_tags([
+                f"状态 {idea.status}",
+                f"证据 {len((idea.evidence_json or {}).get('items', []) or [])}",
+                f"可行性 {idea.feasibility_score}/10" if idea.feasibility_score is not None else "",
+                f"新颖性 {idea.novelty_score}/10" if idea.novelty_score is not None else "",
+            ]),
+            "details": {
+                "description": idea.description,
+                "hypothesis": idea.hypothesis,
+                "approach": idea.approach,
+            },
+        }]
+
+        if idea.parent_idea_id or idea.evolution_json:
+            evolution = idea.evolution_json or {}
+            events.append({
+                "id": f"{idea.id}:evolution",
+                "type": "evolution",
+                "title": "由上一版演化而来",
+                "summary": evolution.get("rationale") or "该 Proposal 保留父版本并生成了可追溯子版本。",
+                "timestamp": created_at,
+                "severity": "info",
+                "tags": self._timeline_tags([
+                    f"第 {evolution.get('round') or 2} 轮",
+                    "实验反馈驱动" if evolution.get("experiment_feedback") else "",
+                    f"父版本 {idea.parent_idea_id}" if idea.parent_idea_id else "",
+                ]),
+                "details": {
+                    "focus": evolution.get("focus"),
+                    "parent_idea_id": str(idea.parent_idea_id) if idea.parent_idea_id else evolution.get("parent_idea_id"),
+                    "experiment_feedback": evolution.get("experiment_feedback"),
+                },
+            })
+
+        readiness = validation.get("writing_readiness") or {}
+        collision = validation.get("collision_risk") or {}
+        events.append({
+            "id": f"{idea.id}:validation",
+            "type": "validation",
+            "title": "验证闭环状态",
+            "summary": validation.get("summary") or readiness.get("label") or "已生成验证摘要。",
+            "timestamp": created_at,
+            "severity": self._timeline_severity(readiness.get("status"), collision.get("level")),
+            "tags": self._timeline_tags([
+                readiness.get("label"),
+                collision.get("label"),
+                f"实验完整度 {round(float((validation.get('coverage') or {}).get('experiment_completeness') or 0) * 100)}%",
+            ]),
+            "details": {
+                "next_actions": validation.get("next_actions") or [],
+                "feasibility_risks": validation.get("feasibility_risks") or [],
+                "related_work": (validation.get("related_work") or [])[:5],
+            },
+        })
+
+        execution_readiness = execution.get("readiness") or {}
+        events.append({
+            "id": f"{idea.id}:execution",
+            "type": "execution",
+            "title": "实验推进状态",
+            "summary": execution.get("summary") or execution_readiness.get("label") or "已生成实验推进摘要。",
+            "timestamp": created_at,
+            "severity": "success" if execution_readiness.get("status") == "ready" else "warning",
+            "tags": self._timeline_tags([
+                execution_readiness.get("label"),
+                f"推进度 {round(float(execution_readiness.get('score') or 0) * 100)}%",
+                f"反馈 {(execution.get('feedback') or {}).get('count') or 0}",
+            ]),
+            "details": {
+                "minimum_tasks": execution.get("minimum_tasks") or [],
+                "success_metrics": execution.get("success_metrics") or [],
+                "next_actions": execution.get("next_actions") or [],
+                "risks": execution.get("risks") or [],
+            },
+        })
+
+        events.extend(self._discussion_timeline_events(idea, created_at))
+        events.extend(self._experiment_timeline_events(idea, experiments or [], created_at))
+        events.extend(self._child_version_timeline_events(idea, project_ideas or [], created_at))
+
+        events = sorted(events, key=lambda event: (event.get("timestamp") or "", event.get("id") or ""))
+        return {
+            "idea_id": str(idea.id),
+            "project_id": str(idea.project_id),
+            "title": idea.title,
+            "summary": {
+                "event_count": len(events),
+                "discussion_milestones": len([event for event in events if event["type"] == "discussion"]),
+                "experiment_count": len([event for event in events if event["type"] == "experiment"]),
+                "child_version_count": len([event for event in events if event["type"] == "child_version"]),
+                "latest_event_type": events[-1]["type"] if events else None,
+            },
+            "events": events,
+        }
+
+    def _discussion_timeline_events(self, idea: ResearchIdea, fallback_timestamp: str) -> list[dict[str, Any]]:
+        assistant_entries = [
+            item for item in (idea.discussion_log or [])
+            if isinstance(item, dict) and item.get("role") == "assistant" and item.get("content")
+        ][-8:]
+        events = []
+        for index, item in enumerate(assistant_entries, start=1):
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            mode = item.get("mode") or "mentor"
+            focus = metadata.get("evolution_focus")
+            events.append({
+                "id": f"{idea.id}:discussion:{index}",
+                "type": "discussion",
+                "title": f"Copilot 讨论 · {mode}",
+                "summary": str(item.get("content") or "")[:240],
+                "timestamp": self._iso_timestamp(item.get("timestamp")) or fallback_timestamp,
+                "severity": "info",
+                "tags": self._timeline_tags([mode, "可演化" if focus else "", f"风险 {len(metadata.get('risks') or [])}"]),
+                "details": {
+                    "risks": metadata.get("risks") or [],
+                    "next_actions": metadata.get("next_actions") or [],
+                    "suggested_questions": metadata.get("suggested_questions") or [],
+                    "evolution_focus": focus,
+                },
+            })
+        return events
+
+    def _experiment_timeline_events(
+        self,
+        idea: ResearchIdea,
+        experiments: list[dict[str, Any]],
+        fallback_timestamp: str,
+    ) -> list[dict[str, Any]]:
+        events = []
+        for index, experiment in enumerate([item for item in experiments if str(item.get("idea_id") or "") == str(idea.id)], start=1):
+            events.append({
+                "id": f"{idea.id}:experiment:{experiment.get('experiment_id') or index}",
+                "type": "experiment",
+                "title": f"实验反馈 · {experiment.get('name') or '未命名实验'}",
+                "summary": experiment.get("notes") or f"数据集：{experiment.get('dataset') or '未填写'}",
+                "timestamp": self._iso_timestamp(experiment.get("timestamp")) or fallback_timestamp,
+                "severity": "success" if experiment.get("results") else "info",
+                "tags": self._timeline_tags([experiment.get("dataset"), "已有结果" if experiment.get("results") else "无结果"]),
+                "details": {
+                    "experiment_id": experiment.get("experiment_id"),
+                    "results": experiment.get("results") or {},
+                    "notes": experiment.get("notes"),
+                    "hyperparams": experiment.get("hyperparams") or {},
+                },
+            })
+        return events
+
+    def _child_version_timeline_events(
+        self,
+        idea: ResearchIdea,
+        project_ideas: list[ResearchIdea],
+        fallback_timestamp: str,
+    ) -> list[dict[str, Any]]:
+        children = [item for item in project_ideas if str(getattr(item, "parent_idea_id", "") or "") == str(idea.id)]
+        events = []
+        for child in children[:12]:
+            evolution = child.evolution_json or {}
+            events.append({
+                "id": f"{idea.id}:child:{child.id}",
+                "type": "child_version",
+                "title": "生成下一版 Proposal",
+                "summary": child.title,
+                "timestamp": self._iso_timestamp(getattr(child, "created_at", None)) or fallback_timestamp,
+                "severity": "info",
+                "tags": self._timeline_tags([f"第 {evolution.get('round') or 2} 轮", child.status]),
+                "details": {
+                    "child_idea_id": str(child.id),
+                    "rationale": evolution.get("rationale"),
+                    "focus": evolution.get("focus"),
+                },
+            })
+        return events
+
+    @staticmethod
+    def _timeline_tags(values: list[Any]) -> list[str]:
+        return [str(value) for value in values if str(value or "").strip()][:6]
+
+    @staticmethod
+    def _timeline_severity(readiness_status: Any, collision_level: Any) -> str:
+        if readiness_status == "ready":
+            return "success"
+        if readiness_status == "blocked" or collision_level == "high":
+            return "danger"
+        return "warning"
+
+    @staticmethod
+    def _iso_timestamp(value: Any) -> str:
+        if isinstance(value, datetime):
+            timestamp = value
+        elif isinstance(value, str) and value.strip():
+            return value
+        else:
+            timestamp = datetime.now(timezone.utc)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        return timestamp.isoformat()
 
     def _copilot_system_prompt(self, mode: str, context: dict[str, Any]) -> str:
         return f"""{COPILOT_MODE_PROMPTS[mode]}
