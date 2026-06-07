@@ -429,6 +429,79 @@ def test_proposal_progress_board_classifies_needs_evidence_and_feedback_evolutio
     assert board["summary"]["counts"]["needs_evolution"] == 1
 
 
+def test_code_project_normalization_filters_unsafe_paths_and_adds_required_files():
+    idea = _copilot_idea()
+    raw = {
+        "name": "Unsafe Project!",
+        "framework": "pytorch",
+        "summary": "Test package",
+        "files": [
+            {"path": "../secret.py", "content": "bad"},
+            {"path": "/tmp/bad.py", "content": "bad"},
+            {"path": "src/train.py", "language": "python", "purpose": "train", "content": "print('train')"},
+            {"path": "src/train.py", "language": "python", "purpose": "duplicate", "content": "print('duplicate')"},
+        ],
+        "entrypoints": [{"name": "train", "path": "src/train.py", "command": "python src/train.py"}],
+    }
+
+    project = ResearchPipelineService.normalize_code_project(raw, idea, "pytorch")
+    paths = [item["path"] for item in project["files"]]
+
+    assert "../secret.py" not in paths
+    assert "/tmp/bad.py" not in paths
+    assert paths.count("src/train.py") == 1
+    assert "README.md" in paths
+    assert "configs/default.yaml" in paths
+    assert project["entrypoints"][0]["path"] == "src/train.py"
+
+
+def test_code_project_fallback_contains_reproducible_project_files():
+    idea = _copilot_idea()
+
+    project = ResearchPipelineService.normalize_code_project({}, idea, "pytorch")
+    paths = {item["path"] for item in project["files"]}
+
+    assert project["name"]
+    assert project["framework"] == "pytorch"
+    assert {"README.md", "requirements.txt", "src/train.py", "src/evaluate.py", "analysis/plot_results.py"}.issubset(paths)
+    assert any("python src/train.py" in command for command in project["run_commands"])
+    assert "No code is executed automatically by this application." in project["safety_notes"]
+
+
+@pytest.mark.asyncio
+async def test_generate_code_persists_project_package_and_legacy_code(monkeypatch):
+    session = _Session()
+    service = ResearchPipelineService(session)
+    idea = _copilot_idea()
+
+    async def fake_chat(messages, **_kwargs):
+        assert "实验项目包" in messages[0]["content"]
+        return """{
+          "name": "grounded-qa",
+          "framework": "pytorch",
+          "summary": "Package summary",
+          "setup": ["pip install -r requirements.txt"],
+          "run_commands": ["python src/train.py"],
+          "entrypoints": [{"name": "train", "path": "src/train.py", "command": "python src/train.py"}],
+          "safety_notes": ["review before run"],
+          "files": [
+            {"path": "README.md", "language": "markdown", "purpose": "guide", "content": "# Guide"},
+            {"path": "src/train.py", "language": "python", "purpose": "train", "content": "print('ok')"}
+          ]
+        }"""
+
+    import app.services.research_service as research_module
+
+    monkeypatch.setattr(research_module.llm_service, "chat", fake_chat)
+    project = await service.generate_code(idea, framework="pytorch")
+
+    assert project["name"] == "grounded-qa"
+    assert idea.generated_code_project["name"] == "grounded-qa"
+    assert idea.generated_code == "print('ok')"
+    assert idea.status == "implemented"
+    assert session.commits == 1
+
+
 def test_experiment_execution_pack_explains_missing_setup():
     service = ResearchIdeaWorkbenchService(_Session())
     idea = SimpleNamespace(

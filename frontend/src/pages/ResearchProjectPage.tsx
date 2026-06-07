@@ -63,12 +63,24 @@ interface Candidate {
   minimum_experiment: ExperimentPlan; review?: Review; score?: number;
 }
 interface ExperimentPlan { dataset: string; baselines: string[]; metrics: string[]; steps: string[]; }
+interface CodeProjectFile { path: string; language: string; purpose: string; content: string; }
+interface CodeProjectEntrypoint { name: string; path: string; command: string; purpose: string; }
+interface CodeProjectManifest {
+  name: string;
+  framework: string;
+  summary: string;
+  setup: string[];
+  run_commands: string[];
+  entrypoints: CodeProjectEntrypoint[];
+  safety_notes: string[];
+  files: CodeProjectFile[];
+}
 interface Idea {
   id: string; project_id: string; title: string; description: string | null;
   hypothesis?: string | null; approach?: string | null; novelty?: string | null;
   feasibility_score: number | null; novelty_score: number | null; status: string;
   created_at?: string;
-  generated_code: string | null; evidence_json?: { items?: Evidence[]; scope?: string; collection_sources?: { id: string; name: string; evidence_count: number }[] } | null;
+  generated_code: string | null; generated_code_project?: CodeProjectManifest | null; evidence_json?: { items?: Evidence[]; scope?: string; collection_sources?: { id: string; name: string; evidence_count: number }[] } | null;
   review_json?: Review | null; experiment_plan?: ExperimentPlan | null;
   parent_idea_id?: string | null; evolution_json?: { focus?: string; rationale?: string; round?: number; experiment_feedback?: ExperimentRecord } | null;
   discussion_log?: CopilotLogEntry[];
@@ -293,6 +305,7 @@ const ResearchProjectPage: React.FC = () => {
   const [discussMap, setDiscussMap] = useState<Record<string, CopilotState>>({});
   const [copilotIdea, setCopilotIdea] = useState<Idea | null>(null);
   const [codeMap, setCodeMap] = useState<Record<string, { loading: boolean }>>({});
+  const [codeProjectSelectedFile, setCodeProjectSelectedFile] = useState<Record<string, string>>({});
   const [externalSearch, setExternalSearch] = useState(true);
   const [selectedIdeaIds, setSelectedIdeaIds] = useState<string[]>([]);
   const [proposalSort, setProposalSort] = useState<ProposalSortKey>('review');
@@ -553,11 +566,31 @@ const ResearchProjectPage: React.FC = () => {
     setCodeMap(previous => ({ ...previous, [ideaId]: { loading: true } }));
     try {
       const response = await api.post(`/research/ideas/${ideaId}/generate-code?framework=pytorch`);
-      setIdeas(previous => previous.map(idea => idea.id === ideaId ? { ...idea, generated_code: response.data.code, status: 'implemented' } : idea));
+      const projectPackage = response.data.code_project as CodeProjectManifest | undefined;
+      const defaultPath = projectPackage?.files?.find(file => file.path === 'README.md')?.path || projectPackage?.files?.[0]?.path;
+      if (defaultPath) {
+        setCodeProjectSelectedFile(previous => ({ ...previous, [ideaId]: defaultPath }));
+      }
+      setIdeas(previous => previous.map(idea => idea.id === ideaId ? { ...idea, generated_code: response.data.code, generated_code_project: projectPackage || null, status: 'implemented' } : idea));
       setPageActionError(null);
-      message.success('实验代码已生成');
-    } catch (error) { showPageError('代码生成失败', error, '代码生成失败'); }
+      message.success('实验项目包已生成');
+    } catch (error) { showPageError('实验项目包生成失败', error, '实验项目包生成失败'); }
     finally { setCodeMap(previous => ({ ...previous, [ideaId]: { loading: false } })); }
+  };
+  const downloadCodeProject = async (idea: Idea) => {
+    try {
+      const response = await api.get(`/research/ideas/${idea.id}/code-project/download`, { responseType: 'blob' });
+      const blob = new Blob([response.data], { type: 'application/zip' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${idea.generated_code_project?.name || idea.title || 'research-code-project'}.zip`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setPageActionError(null);
+    } catch (error) {
+      showPageError('下载实验项目包失败', error, '下载实验项目包失败');
+    }
   };
   const createWritingDraft = async (idea: Idea) => {
     setDraftingIdeaIds(previous => new Set(previous).add(idea.id));
@@ -880,6 +913,101 @@ const ResearchProjectPage: React.FC = () => {
     </Space>
   );
 
+  const renderCodeProject = (idea: Idea) => {
+    const projectPackage = idea.generated_code_project;
+    if (!projectPackage && idea.generated_code) {
+      return (
+        <Card size="small" title="旧版实验代码" style={{ borderRadius: 8, marginTop: 14 }}>
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            <Alert
+              type="info"
+              showIcon
+              message="这个 Proposal 只有旧版单文件代码"
+              description="可以重新生成结构化实验项目包，获得 README、配置、训练、评估和分析脚本。"
+            />
+            <pre style={{ background: '#1e1e1e', color: '#d4d4d4', padding: 16, borderRadius: 8, maxHeight: 320, overflow: 'auto' }}>{idea.generated_code}</pre>
+            <Button icon={<CodeOutlined />} loading={codeMap[idea.id]?.loading} onClick={() => handleGenCode(idea.id)}>重新生成实验项目包</Button>
+          </Space>
+        </Card>
+      );
+    }
+    if (!projectPackage) {
+      return (
+        <Button type="dashed" icon={<CodeOutlined />} loading={codeMap[idea.id]?.loading} onClick={() => handleGenCode(idea.id)} block>
+          生成实验项目包 (PyTorch)
+        </Button>
+      );
+    }
+    const selectedPath = codeProjectSelectedFile[idea.id] || projectPackage.files.find(file => file.path === 'README.md')?.path || projectPackage.files[0]?.path || '';
+    const selectedFile = projectPackage.files.find(file => file.path === selectedPath) || projectPackage.files[0];
+    return (
+      <Card
+        size="small"
+        title={<Space wrap><CodeOutlined /><Text strong>实验项目包</Text><Tag color="blue">{projectPackage.framework}</Tag><Tag>{projectPackage.files.length} 文件</Tag></Space>}
+        extra={<Space wrap><Button size="small" icon={<ReloadOutlined />} loading={codeMap[idea.id]?.loading} onClick={() => handleGenCode(idea.id)}>重新生成</Button><Button size="small" type="primary" icon={<CodeOutlined />} onClick={() => downloadCodeProject(idea)}>下载 ZIP</Button></Space>}
+        style={{ borderRadius: 8, marginTop: 14 }}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <div>
+            <Text strong>{projectPackage.name}</Text>
+            <Paragraph style={{ marginBottom: 0, marginTop: 4 }}>{projectPackage.summary}</Paragraph>
+          </div>
+          <Row gutter={[12, 12]}>
+            <Col xs={24} md={8}>
+              <Card size="small" title="文件" style={{ borderRadius: 8 }}>
+                <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                  {projectPackage.files.map(file => (
+                    <Button
+                      key={file.path}
+                      block
+                      size="small"
+                      type={file.path === selectedFile?.path ? 'primary' : 'default'}
+                      style={{ justifyContent: 'flex-start', textAlign: 'left' }}
+                      onClick={() => setCodeProjectSelectedFile(previous => ({ ...previous, [idea.id]: file.path }))}
+                    >
+                      {file.path}
+                    </Button>
+                  ))}
+                </Space>
+              </Card>
+            </Col>
+            <Col xs={24} md={16}>
+              <Card
+                size="small"
+                title={selectedFile ? <Space wrap><Text>{selectedFile.path}</Text><Tag>{selectedFile.language}</Tag></Space> : '文件预览'}
+                style={{ borderRadius: 8 }}
+              >
+                {selectedFile ? (
+                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                    {selectedFile.purpose && <Text type="secondary">{selectedFile.purpose}</Text>}
+                    <pre style={{ background: '#111827', color: '#e5e7eb', padding: 14, borderRadius: 8, maxHeight: 420, overflow: 'auto', margin: 0 }}>{selectedFile.content}</pre>
+                  </Space>
+                ) : <Text type="secondary">没有可预览文件</Text>}
+              </Card>
+            </Col>
+          </Row>
+          <Row gutter={[12, 12]}>
+            <Col xs={24} md={8}>
+              <Card size="small" title="安装" style={{ borderRadius: 8, height: '100%' }}>
+                <Space direction="vertical" size={6}>{projectPackage.setup.map(command => <Text code key={command}>{command}</Text>)}</Space>
+              </Card>
+            </Col>
+            <Col xs={24} md={8}>
+              <Card size="small" title="运行" style={{ borderRadius: 8, height: '100%' }}>
+                <Space direction="vertical" size={6}>{projectPackage.run_commands.map(command => <Text code key={command}>{command}</Text>)}</Space>
+              </Card>
+            </Col>
+            <Col xs={24} md={8}>
+              <Card size="small" title="安全说明" style={{ borderRadius: 8, height: '100%' }}>
+                <Space direction="vertical" size={6}>{projectPackage.safety_notes.map(note => <Text type="secondary" key={note}>{note}</Text>)}</Space>
+              </Card>
+            </Col>
+          </Row>
+        </Space>
+      </Card>
+    );
+  };
+
   const renderProposal = (idea: Idea) => {
     const review = idea.review_json;
     const plan = idea.experiment_plan;
@@ -1121,8 +1249,7 @@ const ResearchProjectPage: React.FC = () => {
             <Button type="link" icon={<MessageOutlined />} onClick={() => openCopilot(idea)}>进入迭代面板</Button>
           </Space>
         </Card>
-        {idea.generated_code ? <pre style={{ background: '#1e1e1e', color: '#d4d4d4', padding: 16, borderRadius: 10, maxHeight: 320, overflow: 'auto' }}>{idea.generated_code}</pre>
-          : <Button type="dashed" icon={<CodeOutlined />} loading={codeMap[idea.id]?.loading} onClick={() => handleGenCode(idea.id)} block>生成实验代码 (PyTorch)</Button>}
+        {renderCodeProject(idea)}
       </div>
     );
   };

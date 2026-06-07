@@ -89,6 +89,7 @@ class ResearchIdea(BaseModel):
     referenced_papers: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # 引用的论文 ID 列表
     discussion_log: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # 讨论记录
     generated_code: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 生成的代码
+    generated_code_project: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # 生成的实验项目包
     hypothesis: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     evidence_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     review_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)

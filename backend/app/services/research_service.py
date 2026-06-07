@@ -34,6 +34,20 @@ PROPOSAL_BOARD_STATUSES = [
     ("implemented", "已有代码"),
     ("rejected", "已淘汰"),
 ]
+CODE_PROJECT_MAX_FILES = 24
+CODE_PROJECT_MAX_FILE_CHARS = 24000
+CODE_PROJECT_DEFAULT_FILES = {
+    "README.md",
+    "requirements.txt",
+    "configs/default.yaml",
+    "src/data.py",
+    "src/model.py",
+    "src/train.py",
+    "src/evaluate.py",
+    "scripts/run_baseline.sh",
+    "scripts/run_experiment.sh",
+    "analysis/plot_results.py",
+}
 
 
 class ResearchPipelineService:
@@ -1010,47 +1024,509 @@ class ResearchPipelineService:
         self,
         idea: ResearchIdea,
         framework: str = "pytorch",
-    ) -> str:
-        """为 Idea 生成实验代码框架。"""
-        prompt = f"""请为以下研究 Idea 生成 {framework} 实验代码框架。
-
-## Idea: {idea.title}
-
-{idea.description or ''}
-
-## 要求
-- 使用 {framework} 框架
-- 包含完整的训练循环、数据加载、模型定义
-- 添加详细的中文注释
-- 代码应可直接运行（使用模拟数据如需要）
-- 包含必要的 import 语句
-
-请直接输出代码，不要其他解释。
-"""
+    ) -> dict[str, Any]:
+        """为 Idea 生成结构化实验项目包。"""
+        prompt = self._code_project_prompt(idea, framework)
 
         try:
-            code = await llm_service.chat(
+            response = await llm_service.chat(
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=4096,
+                temperature=0.25,
+                max_tokens=8192,
             )
+            try:
+                parsed = self._parse_json_object(response)
+            except Exception as exc:
+                logger.warning("实验项目包 JSON 解析失败，使用 fallback: %s", exc)
+                parsed = self._fallback_code_project(idea, framework)
 
-            # 提取代码块
-            if "```" in code:
-                code_blocks = code.split("```")
-                # 取第一个代码块
-                for i, block in enumerate(code_blocks):
-                    if block.startswith("python") or (i % 2 == 1 and not block.startswith("python")):
-                        code = block.replace("python\n", "").strip()
-                        break
-
-            # 保存到数据库
-            idea.generated_code = code
+            code_project = self.normalize_code_project(parsed, idea, framework)
+            legacy_code = self.representative_code_from_project(code_project)
+            idea.generated_code_project = code_project
+            idea.generated_code = legacy_code
             idea.status = "implemented"
             await self.session.commit()
 
-            return code
+            return code_project
         except Exception as e:
             logger.error(f"代码生成失败: {e}")
             await self.session.rollback()
             raise
+
+    def _code_project_prompt(self, idea: ResearchIdea, framework: str) -> str:
+        plan = idea.experiment_plan if isinstance(idea.experiment_plan, dict) else {}
+        evidence = self._summarize_evidence(idea.evidence_json)
+        review = self._summarize_review(idea.review_json)
+        return f"""你是科研代码项目架构师。请为以下论文 Proposal 生成一个可审阅、可下载的实验项目包，而不是单个代码片段。
+
+## Proposal
+标题: {idea.title}
+描述: {idea.description or ''}
+假设: {idea.hypothesis or ''}
+技术路线: {idea.approach or ''}
+创新点: {idea.novelty or ''}
+
+## 实验计划
+{json.dumps(plan, ensure_ascii=False, indent=2)}
+
+## 证据摘要
+{json.dumps(evidence, ensure_ascii=False, indent=2)}
+
+## 评审摘要
+{json.dumps(review, ensure_ascii=False, indent=2)}
+
+## 输出要求
+使用 {framework}，输出严格 JSON object，不要 markdown，不要解释文字。JSON schema:
+{{
+  "name": "short-project-name",
+  "framework": "{framework}",
+  "summary": "这个实验项目验证什么假设",
+  "setup": ["python -m venv .venv", "pip install -r requirements.txt"],
+  "run_commands": ["python src/train.py --config configs/default.yaml", "python src/evaluate.py --config configs/default.yaml"],
+  "entrypoints": [
+    {{"name": "train", "path": "src/train.py", "command": "python src/train.py --config configs/default.yaml", "purpose": "训练 baseline 和 proposed method"}}
+  ],
+  "safety_notes": ["代码仅供审阅，运行前检查数据路径和依赖"],
+  "files": [
+    {{"path": "README.md", "language": "markdown", "purpose": "项目说明", "content": "..."}},
+    {{"path": "requirements.txt", "language": "text", "purpose": "依赖", "content": "..."}},
+    {{"path": "configs/default.yaml", "language": "yaml", "purpose": "实验配置", "content": "..."}},
+    {{"path": "src/data.py", "language": "python", "purpose": "数据加载与模拟数据", "content": "..."}},
+    {{"path": "src/model.py", "language": "python", "purpose": "模型与方法", "content": "..."}},
+    {{"path": "src/train.py", "language": "python", "purpose": "训练入口", "content": "..."}},
+    {{"path": "src/evaluate.py", "language": "python", "purpose": "评估入口", "content": "..."}},
+    {{"path": "scripts/run_experiment.sh", "language": "shell", "purpose": "一键运行脚本", "content": "..."}},
+    {{"path": "analysis/plot_results.py", "language": "python", "purpose": "结果分析", "content": "..."}}
+  ]
+}}
+
+约束:
+- 文件路径必须是相对路径，不能包含 .. 或绝对路径。
+- 至少包含 README.md、requirements.txt、configs/default.yaml、src/train.py、src/evaluate.py。
+- 代码不要下载远程脚本，不要执行 shell 注入，不要读取用户私密路径。
+- 如真实数据不可用，使用清晰的 mock dataset，并在 README 中说明替换方式。
+"""
+
+    @staticmethod
+    def _parse_json_object(response: str) -> dict[str, Any]:
+        text = response.strip()
+        if "```json" in text:
+            text = text.split("```json", 1)[1].split("```", 1)[0].strip()
+        elif "```" in text:
+            text = text.split("```", 1)[1].split("```", 1)[0].strip()
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", text, flags=re.S)
+            if not match:
+                raise
+            parsed = json.loads(match.group(0))
+        if not isinstance(parsed, dict):
+            raise ValueError("expected JSON object")
+        return parsed
+
+    @classmethod
+    def normalize_code_project(cls, raw: Any, idea: ResearchIdea, framework: str = "pytorch") -> dict[str, Any]:
+        data = raw if isinstance(raw, dict) else {}
+        fallback = cls._fallback_code_project(idea, framework)
+        files = []
+        seen_paths = set()
+        raw_files = data.get("files") if isinstance(data.get("files"), list) else []
+        for item in raw_files:
+            if not isinstance(item, dict):
+                continue
+            path = cls.safe_code_project_path(item.get("path"))
+            if not path or path in seen_paths:
+                continue
+            content = str(item.get("content") or "")[:CODE_PROJECT_MAX_FILE_CHARS]
+            if not content.strip():
+                continue
+            seen_paths.add(path)
+            files.append({
+                "path": path,
+                "language": cls._infer_code_language(path, item.get("language")),
+                "purpose": str(item.get("purpose") or cls._default_file_purpose(path))[:300],
+                "content": content,
+            })
+            if len(files) >= CODE_PROJECT_MAX_FILES:
+                break
+
+        fallback_files = {item["path"]: item for item in fallback["files"]}
+        for required_path in CODE_PROJECT_DEFAULT_FILES:
+            if required_path in fallback_files and required_path not in seen_paths and len(files) < CODE_PROJECT_MAX_FILES:
+                files.append(fallback_files[required_path])
+                seen_paths.add(required_path)
+
+        if not files:
+            files = fallback["files"]
+
+        entrypoints = cls._normalize_entrypoints(data.get("entrypoints"), files, fallback["entrypoints"])
+        run_commands = cls._string_list(data.get("run_commands"), limit=8) or fallback["run_commands"]
+        setup = cls._string_list(data.get("setup"), limit=8) or fallback["setup"]
+        safety_notes = cls._string_list(data.get("safety_notes"), limit=8) or fallback["safety_notes"]
+        return {
+            "name": cls._safe_project_name(data.get("name") or idea.title),
+            "framework": str(data.get("framework") or framework or "pytorch")[:80],
+            "summary": str(data.get("summary") or fallback["summary"])[:1200],
+            "setup": setup,
+            "run_commands": run_commands,
+            "entrypoints": entrypoints,
+            "safety_notes": safety_notes,
+            "files": sorted(files, key=lambda item: item["path"]),
+        }
+
+    @classmethod
+    def _fallback_code_project(cls, idea: ResearchIdea, framework: str = "pytorch") -> dict[str, Any]:
+        project_name = cls._safe_project_name(idea.title)
+        plan = idea.experiment_plan if isinstance(idea.experiment_plan, dict) else {}
+        dataset = str(plan.get("dataset") or "MockResearchDataset")
+        baselines = plan.get("baselines") if isinstance(plan.get("baselines"), list) else ["baseline"]
+        metrics = plan.get("metrics") if isinstance(plan.get("metrics"), list) else ["accuracy"]
+        steps = plan.get("steps") if isinstance(plan.get("steps"), list) else ["Train baseline", "Train proposed method", "Compare metrics"]
+        requirements = "torch\nnumpy\npandas\nscikit-learn\nmatplotlib\npyyaml\n"
+        config = f"""project: {project_name}
+framework: {framework}
+dataset: {dataset}
+seed: 42
+epochs: 3
+batch_size: 32
+learning_rate: 0.001
+metrics:
+{chr(10).join(f"  - {metric}" for metric in metrics)}
+baselines:
+{chr(10).join(f"  - {baseline}" for baseline in baselines)}
+"""
+        readme = f"""# {idea.title}
+
+This generated experiment project is a reviewable starting point for the Proposal.
+
+## Hypothesis
+{idea.hypothesis or idea.description or "Define the falsifiable hypothesis before running full experiments."}
+
+## Approach
+{idea.approach or "Implement the proposed method and compare it against strong baselines."}
+
+## Dataset
+Default configuration uses `{dataset}`. If the real dataset is unavailable, `src/data.py` creates a mock dataset so the pipeline can be inspected end to end.
+
+## Experiment Steps
+{chr(10).join(f"- {step}" for step in steps)}
+
+## Run
+```bash
+pip install -r requirements.txt
+python src/train.py --config configs/default.yaml --variant baseline
+python src/train.py --config configs/default.yaml --variant proposed
+python src/evaluate.py --config configs/default.yaml
+python analysis/plot_results.py --input outputs/results.json
+```
+
+## Safety
+Review generated code before running. Replace mock data paths and verify dependencies in an isolated environment.
+"""
+        data_py = '''"""Data utilities for the generated experiment project."""
+
+import numpy as np
+import torch
+from torch.utils.data import DataLoader, TensorDataset
+
+
+def build_mock_dataset(num_samples=256, input_dim=32, num_classes=2, seed=42):
+    rng = np.random.default_rng(seed)
+    features = rng.normal(size=(num_samples, input_dim)).astype("float32")
+    weights = rng.normal(size=(input_dim, num_classes)).astype("float32")
+    labels = np.argmax(features @ weights, axis=1).astype("int64")
+    return TensorDataset(torch.from_numpy(features), torch.from_numpy(labels))
+
+
+def build_dataloaders(batch_size=32, seed=42):
+    train = build_mock_dataset(seed=seed)
+    valid = build_mock_dataset(num_samples=96, seed=seed + 1)
+    return {
+        "train": DataLoader(train, batch_size=batch_size, shuffle=True),
+        "valid": DataLoader(valid, batch_size=batch_size),
+    }
+'''
+        model_py = '''"""Baseline and proposed models for the generated experiment project."""
+
+import torch
+from torch import nn
+
+
+class BaselineModel(nn.Module):
+    def __init__(self, input_dim=32, num_classes=2):
+        super().__init__()
+        self.net = nn.Linear(input_dim, num_classes)
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class ProposedModel(nn.Module):
+    def __init__(self, input_dim=32, num_classes=2):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 64),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, num_classes),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+def build_model(variant="proposed"):
+    if variant == "baseline":
+        return BaselineModel()
+    return ProposedModel()
+'''
+        train_py = '''"""Train baseline or proposed variant."""
+
+import argparse
+import json
+from pathlib import Path
+
+import torch
+import yaml
+from torch import nn
+
+from data import build_dataloaders
+from model import build_model
+
+
+def accuracy(logits, labels):
+    return (logits.argmax(dim=-1) == labels).float().mean().item()
+
+
+def train(config, variant):
+    loaders = build_dataloaders(batch_size=config.get("batch_size", 32), seed=config.get("seed", 42))
+    model = build_model(variant)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.get("learning_rate", 1e-3))
+    loss_fn = nn.CrossEntropyLoss()
+    history = []
+    for epoch in range(config.get("epochs", 3)):
+        model.train()
+        for features, labels in loaders["train"]:
+            optimizer.zero_grad()
+            loss = loss_fn(model(features), labels)
+            loss.backward()
+            optimizer.step()
+        model.eval()
+        scores = []
+        with torch.no_grad():
+            for features, labels in loaders["valid"]:
+                scores.append(accuracy(model(features), labels))
+        history.append({"epoch": epoch + 1, "valid_accuracy": sum(scores) / max(len(scores), 1)})
+    output_dir = Path("outputs")
+    output_dir.mkdir(exist_ok=True)
+    output_path = output_dir / f"{variant}_history.json"
+    output_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+    print(f"saved {output_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--variant", default="proposed", choices=["baseline", "proposed"])
+    args = parser.parse_args()
+    config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
+    train(config, args.variant)
+
+
+if __name__ == "__main__":
+    main()
+'''
+        evaluate_py = '''"""Evaluate generated experiment outputs."""
+
+import json
+from pathlib import Path
+
+
+def read_last_score(path):
+    if not path.exists():
+        return None
+    history = json.loads(path.read_text(encoding="utf-8"))
+    if not history:
+        return None
+    return history[-1].get("valid_accuracy")
+
+
+def main():
+    output_dir = Path("outputs")
+    baseline = read_last_score(output_dir / "baseline_history.json")
+    proposed = read_last_score(output_dir / "proposed_history.json")
+    results = {"baseline_accuracy": baseline, "proposed_accuracy": proposed}
+    if baseline is not None and proposed is not None:
+        results["delta"] = proposed - baseline
+    output_dir.mkdir(exist_ok=True)
+    (output_dir / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    print(json.dumps(results, indent=2))
+
+
+if __name__ == "__main__":
+    main()
+'''
+        plot_py = '''"""Plot result summary for the generated experiment project."""
+
+import argparse
+import json
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", default="outputs/results.json")
+    args = parser.parse_args()
+    data = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    labels = ["baseline", "proposed"]
+    values = [data.get("baseline_accuracy") or 0, data.get("proposed_accuracy") or 0]
+    Path("outputs").mkdir(exist_ok=True)
+    plt.bar(labels, values)
+    plt.ylabel("validation accuracy")
+    plt.tight_layout()
+    plt.savefig("outputs/result_summary.png")
+    print("saved outputs/result_summary.png")
+
+
+if __name__ == "__main__":
+    main()
+'''
+        shell = """#!/usr/bin/env bash
+set -euo pipefail
+python src/train.py --config configs/default.yaml --variant baseline
+python src/train.py --config configs/default.yaml --variant proposed
+python src/evaluate.py --config configs/default.yaml
+python analysis/plot_results.py --input outputs/results.json
+"""
+        files = [
+            {"path": "README.md", "language": "markdown", "purpose": "Project overview and run guide", "content": readme},
+            {"path": "requirements.txt", "language": "text", "purpose": "Python dependencies", "content": requirements},
+            {"path": "configs/default.yaml", "language": "yaml", "purpose": "Default experiment configuration", "content": config},
+            {"path": "src/data.py", "language": "python", "purpose": "Dataset loading and mock data", "content": data_py},
+            {"path": "src/model.py", "language": "python", "purpose": "Baseline and proposed models", "content": model_py},
+            {"path": "src/train.py", "language": "python", "purpose": "Training entrypoint", "content": train_py},
+            {"path": "src/evaluate.py", "language": "python", "purpose": "Evaluation entrypoint", "content": evaluate_py},
+            {"path": "scripts/run_baseline.sh", "language": "shell", "purpose": "Baseline run command", "content": "#!/usr/bin/env bash\nset -euo pipefail\npython src/train.py --config configs/default.yaml --variant baseline\n"},
+            {"path": "scripts/run_experiment.sh", "language": "shell", "purpose": "End-to-end experiment script", "content": shell},
+            {"path": "analysis/plot_results.py", "language": "python", "purpose": "Result plotting", "content": plot_py},
+        ]
+        return {
+            "name": project_name,
+            "framework": framework or "pytorch",
+            "summary": f"Structured experiment package for testing: {idea.title}",
+            "setup": ["python -m venv .venv", "source .venv/bin/activate", "pip install -r requirements.txt"],
+            "run_commands": [
+                "python src/train.py --config configs/default.yaml --variant baseline",
+                "python src/train.py --config configs/default.yaml --variant proposed",
+                "python src/evaluate.py --config configs/default.yaml",
+                "python analysis/plot_results.py --input outputs/results.json",
+            ],
+            "entrypoints": [
+                {"name": "train baseline", "path": "src/train.py", "command": "python src/train.py --config configs/default.yaml --variant baseline", "purpose": "Train baseline model"},
+                {"name": "train proposed", "path": "src/train.py", "command": "python src/train.py --config configs/default.yaml --variant proposed", "purpose": "Train proposed method"},
+                {"name": "evaluate", "path": "src/evaluate.py", "command": "python src/evaluate.py --config configs/default.yaml", "purpose": "Compare outputs"},
+            ],
+            "safety_notes": [
+                "Generated code is an artifact for review; inspect before running.",
+                "Run inside an isolated environment and replace mock data with verified dataset paths.",
+                "No code is executed automatically by this application.",
+            ],
+            "files": files,
+        }
+
+    @staticmethod
+    def safe_code_project_path(value: Any) -> Optional[str]:
+        path = str(value or "").strip().replace("\\", "/")
+        path = re.sub(r"/+", "/", path)
+        if not path or path.startswith("/") or path.startswith("~") or "\x00" in path:
+            return None
+        parts = [part for part in path.split("/") if part not in {"", "."}]
+        if not parts or any(part == ".." for part in parts):
+            return None
+        safe_parts = []
+        for part in parts:
+            cleaned = re.sub(r"[^A-Za-z0-9._ -]", "_", part).strip()
+            if not cleaned:
+                return None
+            safe_parts.append(cleaned[:80])
+        return "/".join(safe_parts)[:240]
+
+    @staticmethod
+    def representative_code_from_project(project: dict[str, Any]) -> str:
+        files = project.get("files") if isinstance(project, dict) else []
+        preferred = ["src/train.py", "experiment.py", "main.py"]
+        if isinstance(files, list):
+            for path in preferred:
+                for item in files:
+                    if isinstance(item, dict) and item.get("path") == path:
+                        return str(item.get("content") or "")
+            for item in files:
+                if isinstance(item, dict) and str(item.get("language") or "").lower() == "python":
+                    return str(item.get("content") or "")
+        return ""
+
+    @classmethod
+    def _normalize_entrypoints(cls, value: Any, files: list[dict[str, Any]], fallback: list[dict[str, Any]]) -> list[dict[str, str]]:
+        file_paths = {item["path"] for item in files}
+        entrypoints = []
+        if isinstance(value, list):
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                path = cls.safe_code_project_path(item.get("path"))
+                if not path or path not in file_paths:
+                    continue
+                command = str(item.get("command") or "").strip()[:400]
+                if not command:
+                    continue
+                entrypoints.append({
+                    "name": str(item.get("name") or path)[:120],
+                    "path": path,
+                    "command": command,
+                    "purpose": str(item.get("purpose") or "")[:300],
+                })
+                if len(entrypoints) >= 8:
+                    break
+        return entrypoints or fallback[:3]
+
+    @staticmethod
+    def _safe_project_name(value: Any) -> str:
+        text = str(value or "research-code-project").strip().lower()
+        text = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "-", text)
+        text = text.strip("-")
+        return (text or "research-code-project")[:80]
+
+    @staticmethod
+    def _infer_code_language(path: str, value: Any = None) -> str:
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()[:40]
+        suffix = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+        return {
+            "py": "python",
+            "md": "markdown",
+            "txt": "text",
+            "yaml": "yaml",
+            "yml": "yaml",
+            "sh": "shell",
+            "json": "json",
+            "toml": "toml",
+        }.get(suffix, "text")
+
+    @staticmethod
+    def _default_file_purpose(path: str) -> str:
+        if path == "README.md":
+            return "Project overview and run instructions"
+        if path == "requirements.txt":
+            return "Python dependencies"
+        if path.endswith(".yaml") or path.endswith(".yml"):
+            return "Experiment configuration"
+        if path.startswith("src/"):
+            return "Experiment source file"
+        if path.startswith("scripts/"):
+            return "Run script"
+        if path.startswith("analysis/"):
+            return "Analysis script"
+        return "Generated project file"

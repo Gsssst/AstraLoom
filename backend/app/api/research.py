@@ -1,9 +1,11 @@
 """科研 Pipeline API — 项目管理、Idea 工作台、讨论、代码生成。"""
 
 import asyncio
+import io
 import hashlib
 import json
 import logging
+import zipfile
 from typing import Any, List, Literal, Optional
 from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from fastapi.responses import StreamingResponse
@@ -141,6 +143,7 @@ class IdeaBrief(BaseModel):
     evolution_json: Optional[dict] = None
     discussion_log: Optional[list] = None
     generated_code: Optional[str] = None
+    generated_code_project: Optional[dict[str, Any]] = None
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -180,6 +183,7 @@ class IdeaResponse(BaseModel):
     evolution_json: Optional[dict] = None
     discussion_log: Optional[list] = None
     generated_code: Optional[str] = None
+    generated_code_project: Optional[dict[str, Any]] = None
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -223,9 +227,35 @@ class DiscussResponse(BaseModel):
     evolution_focus: Optional[str] = None
 
 
+class CodeProjectFile(BaseModel):
+    path: str
+    language: str = "text"
+    purpose: str = ""
+    content: str
+
+
+class CodeProjectEntrypoint(BaseModel):
+    name: str
+    path: str
+    command: str
+    purpose: str = ""
+
+
+class CodeProjectManifest(BaseModel):
+    name: str
+    framework: str
+    summary: str
+    setup: list[str] = []
+    run_commands: list[str] = []
+    entrypoints: list[CodeProjectEntrypoint] = []
+    safety_notes: list[str] = []
+    files: list[CodeProjectFile]
+
+
 class CodeGenResponse(BaseModel):
     code: str
     idea_id: str
+    code_project: CodeProjectManifest
 
 
 class IdeaDecisionRequest(BaseModel):
@@ -343,6 +373,7 @@ def _idea_response(idea: ResearchIdea) -> IdeaResponse:
         evolution_json=idea.evolution_json,
         discussion_log=idea.discussion_log or [],
         generated_code=idea.generated_code,
+        generated_code_project=idea.generated_code_project,
         created_at=idea.created_at.isoformat() if idea.created_at else "",
     )
 
@@ -1030,15 +1061,47 @@ async def generate_code(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """为 Idea 生成实验代码。"""
+    """为 Idea 生成结构化实验代码项目包。"""
     idea = await _get_owned_idea(db, idea_id, current_user)
 
     service = ResearchPipelineService(db)
     try:
-        code = await service.generate_code(idea, framework=framework)
-        return CodeGenResponse(code=code, idea_id=idea_id)
+        code_project = await service.generate_code(idea, framework=framework)
+        code = service.representative_code_from_project(code_project)
+        return CodeGenResponse(code=code, idea_id=idea_id, code_project=code_project)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"代码生成失败: {str(e)}")
+
+
+@router.get("/ideas/{idea_id}/code-project/download")
+async def download_code_project(
+    idea_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """下载 Idea 生成的实验项目包 zip。"""
+    idea = await _get_owned_idea(db, idea_id, current_user)
+    service = ResearchPipelineService(db)
+    project = service.normalize_code_project(idea.generated_code_project, idea) if idea.generated_code_project else None
+    if not project:
+        raise HTTPException(status_code=404, detail="该 Proposal 还没有生成实验项目包")
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        manifest = {key: value for key, value in project.items() if key != "files"}
+        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        for file_item in project.get("files", []):
+            path = service.safe_code_project_path(file_item.get("path"))
+            if not path:
+                continue
+            archive.writestr(path, str(file_item.get("content") or ""))
+    buffer.seek(0)
+    filename = f"{project.get('name') or 'research-code-project'}.zip"
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.delete("/ideas/{idea_id}")
