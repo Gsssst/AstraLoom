@@ -1348,7 +1348,7 @@ const ResearchProjectPage: React.FC = () => {
             <Card
               size="small"
               title={<Space wrap><Tag color={proposalBoardStatusColors[group.status] || 'default'}>{group.label}</Tag><Text type="secondary">{group.count}</Text></Space>}
-              style={{ borderRadius: 8, minHeight: 220 }}
+              style={{ borderRadius: 8, minHeight: 220, minWidth: 0 }}
             >
               <Space direction="vertical" size={10} style={{ width: '100%' }}>
                 {group.items.map(item => {
@@ -1361,25 +1361,45 @@ const ResearchProjectPage: React.FC = () => {
                         borderRadius: 8,
                         padding: 12,
                         background: '#fbfcff',
+                        maxWidth: '100%',
+                        minWidth: 0,
+                        overflow: 'hidden',
                       }}
                     >
-                      <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                        <Space wrap>
-                          <Text strong>{item.title}</Text>
+                      <Space direction="vertical" size={8} style={{ width: '100%', minWidth: 0 }}>
+                        <Space wrap style={{ width: '100%', minWidth: 0 }}>
+                          <Text strong style={{ maxWidth: '100%', overflowWrap: 'anywhere' }}>{item.title}</Text>
                           <Tag color={item.priority >= 75 ? 'green' : item.priority >= 45 ? 'blue' : 'orange'}>优先级 {item.priority}</Tag>
                           <Tag>{statusLabels[item.manual_status] || item.manual_status}</Tag>
                         </Space>
-                        <Paragraph ellipsis={{ rows: 2 }} style={{ marginBottom: 0 }}>{item.summary}</Paragraph>
-                        <Space wrap>
+                        <Paragraph ellipsis={{ rows: 2 }} style={{ marginBottom: 0, maxWidth: '100%', overflowWrap: 'anywhere' }}>{item.summary}</Paragraph>
+                        <Space wrap style={{ width: '100%', minWidth: 0 }}>
                           <Tag>证据 {item.signals.evidence_count ?? 0}</Tag>
                           <Tag>实验 {Math.round((item.signals.experiment_completeness || 0) * 100)}%</Tag>
                           <Tag>反馈 {item.signals.experiment_feedback_count ?? 0}</Tag>
                           <Tag>讨论 {item.signals.discussion_turns ?? 0}</Tag>
                         </Space>
                         {item.blockers.length > 0 && (
-                          <Space wrap>{item.blockers.slice(0, 3).map(blocker => <Tag color="orange" key={blocker}>{blocker}</Tag>)}</Space>
+                          <Space wrap style={{ width: '100%', minWidth: 0 }}>
+                            {item.blockers.slice(0, 3).map(blocker => (
+                              <span
+                                key={blocker}
+                                style={{
+                                  maxWidth: '100%',
+                                  padding: '4px 8px',
+                                  borderRadius: 8,
+                                  background: '#fff7e6',
+                                  color: '#d46b08',
+                                  lineHeight: 1.5,
+                                  overflowWrap: 'anywhere',
+                                }}
+                              >
+                                {blocker}
+                              </span>
+                            ))}
+                          </Space>
                         )}
-                        <Space wrap>
+                        <Space wrap style={{ width: '100%', minWidth: 0 }}>
                           <Button type="primary" size="small" onClick={() => handleBoardAction(item)}>{item.recommended_action.label}</Button>
                           {idea && <Button size="small" onClick={() => openTimeline(idea)}>轨迹</Button>}
                           {idea && <Button size="small" onClick={() => openCopilot(idea)}>Copilot</Button>}

@@ -26,6 +26,14 @@ test('research project page renders progress board tab and grouped cards', () =>
   assert.match(researchProjectSource, /item\.blockers\.length/);
 });
 
+test('progress board cards constrain long dynamic text inside card boundaries', () => {
+  assert.match(researchProjectSource, /overflowWrap: 'anywhere'/);
+  assert.match(researchProjectSource, /minWidth: 0/);
+  assert.match(researchProjectSource, /maxWidth: '100%'/);
+  assert.match(researchProjectSource, /background: '#fff7e6'/);
+  assert.doesNotMatch(researchProjectSource, /item\.blockers\.slice\(0, 3\)\.map\(blocker => <Tag/);
+});
+
 test('proposal board recommended actions reuse existing workflows', () => {
   assert.match(researchProjectSource, /handleBoardAction/);
   assert.match(researchProjectSource, /setActiveWorkbenchTab\('evidence'\)/);
