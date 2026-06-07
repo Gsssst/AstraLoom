@@ -310,6 +310,33 @@ body {
   overflow: auto;
 }
 
+.proposal-similar-work-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.proposal-similar-work-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.proposal-similar-work-item .ant-space {
+  min-width: 0;
+}
+
+.proposal-similar-work-item .ant-typography {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .code-project-empty-preview {
   min-height: 240px;
   display: flex;

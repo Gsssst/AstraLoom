@@ -122,7 +122,18 @@ class ResearchIdeaWorkbenchService:
 
             await self._transition(run, "reviewing", callback=on_progress)
             reviewed = await self.review_candidates(brief, evidence_map, unique_candidates)
-            novelty_checked = self.novelty_check_candidates(reviewed, evidence_map)
+            similar_work_context = await self.collect_similar_work(
+                brief,
+                evidence_map,
+                reviewed,
+                external_search=bool((run.config_json or {}).get("external_search", True)),
+            )
+            novelty_checked = self.novelty_check_candidates(
+                reviewed,
+                evidence_map,
+                similar_work_pool=similar_work_context["items"],
+                source_coverage=similar_work_context["source_coverage"],
+            )
             adversarial_reviewed = self.adversarial_review_candidates(novelty_checked)
             reviewed = self.apply_quality_adjustments(adversarial_reviewed)
             run.candidate_pool = reviewed
@@ -133,6 +144,7 @@ class ResearchIdeaWorkbenchService:
                 "reviewed_count": len(reviewed),
                 "novelty": self._summarize_novelty(reviewed),
                 "adversarial": self._summarize_adversarial(reviewed),
+                "source_coverage": similar_work_context["source_coverage"],
             }
             await self.session.commit()
             await self._emit(
@@ -364,6 +376,74 @@ class ResearchIdeaWorkbenchService:
             unique.append(item)
         return unique[:8], errors
 
+    async def collect_similar_work(
+        self,
+        brief: dict[str, Any],
+        evidence_map: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        *,
+        external_search: bool = True,
+    ) -> dict[str, Any]:
+        """Build a reusable similar-work pool for candidate novelty checks."""
+        local_items = [
+            {**item, "relation": "generation_evidence"}
+            for category in ("seed", "background", "inspiration")
+            for item in evidence_map.get(category, [])
+            if isinstance(item, dict)
+        ]
+        external_items: list[dict[str, Any]] = []
+        source_errors = dict(evidence_map.get("source_errors") or {})
+        query = self._similar_work_query(brief, candidates)
+        if external_search and query:
+            external_items, new_errors = await self._collect_external_evidence(query)
+            source_errors.update(new_errors)
+
+        unique: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in [*local_items, *external_items]:
+            key = self._evidence_dedup_key(item)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
+
+        source_counts: dict[str, int] = {}
+        for item in unique:
+            source = str(item.get("source") or item.get("category") or "unknown")
+            source_counts[source] = source_counts.get(source, 0) + 1
+        coverage = {
+            "query": query,
+            "local_count": len(local_items),
+            "external_count": len(external_items),
+            "total_count": len(unique),
+            "sources": source_counts,
+            "source_errors": source_errors,
+        }
+        return {"items": unique, "source_coverage": coverage}
+
+    @staticmethod
+    def _similar_work_query(brief: dict[str, Any], candidates: list[dict[str, Any]]) -> str:
+        parts = [
+            str(brief.get("name") or ""),
+            " ".join(str(item) for item in (brief.get("keywords") or [])[:4]),
+        ]
+        for candidate in candidates[:3]:
+            parts.append(str(candidate.get("title") or ""))
+            hypothesis = str(candidate.get("hypothesis") or "")
+            if hypothesis:
+                parts.append(" ".join(re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]+", hypothesis)[:8]))
+        tokens = []
+        seen = set()
+        for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]+|[\u4e00-\u9fff]{2,}", " ".join(parts)):
+            key = token.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            tokens.append(token)
+            if len(tokens) >= 16:
+                break
+        return " ".join(tokens)
+
     @staticmethod
     def _external_evidence_item(paper: Any, source: str) -> dict[str, Any]:
         identity = paper.doi or paper.arxiv_id or ResearchIdeaWorkbenchService._title_key(paper.title)
@@ -587,56 +667,163 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         self,
         candidates: list[dict[str, Any]],
         evidence_map: dict[str, Any],
+        *,
+        similar_work_pool: list[dict[str, Any]] | None = None,
+        source_coverage: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        evidence_items = [
+        evidence_items = similar_work_pool or [
             item
             for category in ("seed", "background", "inspiration")
             for item in evidence_map.get(category, [])
         ]
+        coverage = source_coverage or {
+            "query": "",
+            "local_count": len(evidence_items),
+            "external_count": 0,
+            "total_count": len(evidence_items),
+            "sources": {},
+            "source_errors": dict(evidence_map.get("source_errors") or {}),
+        }
         return [
-            {**candidate, "novelty_check": self._novelty_check(candidate, evidence_items)}
+            {**candidate, "novelty_check": self._novelty_check(candidate, evidence_items, coverage)}
             for candidate in candidates
         ]
 
-    def _novelty_check(self, candidate: dict[str, Any], evidence_items: list[dict[str, Any]]) -> dict[str, Any]:
+    def _novelty_check(
+        self,
+        candidate: dict[str, Any],
+        evidence_items: list[dict[str, Any]],
+        source_coverage: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         candidate_tokens = self._dedup_tokens(
             f"{candidate.get('title', '')} {candidate.get('hypothesis', '')} {candidate.get('approach', '')}"
         )
-        nearest = None
-        best_similarity = 0.0
+        ranked = []
         for item in evidence_items:
-            evidence_tokens = self._dedup_tokens(
-                f"{item.get('title', '')} {item.get('abstract_excerpt', '')}"
-            )
-            if not candidate_tokens or not evidence_tokens:
-                similarity = 0.0
-            else:
-                similarity = len(candidate_tokens & evidence_tokens) / len(candidate_tokens | evidence_tokens)
-            if similarity > best_similarity:
-                best_similarity = similarity
-                nearest = item
+            score = self._similar_work_score(candidate, candidate_tokens, item)
+            if score["score"] <= 0:
+                continue
+            ranked.append({**score, "item": item})
+        ranked.sort(key=lambda value: value["score"], reverse=True)
+
+        nearest = ranked[0]["item"] if ranked else None
+        best_similarity = ranked[0]["score"] if ranked else 0.0
+        title_similarity = ranked[0]["title_similarity"] if ranked else 0.0
 
         novelty_score = round(max(0.0, 1.0 - best_similarity), 3)
-        if best_similarity >= 0.46:
+        if best_similarity >= 0.58 or title_similarity >= 0.72:
             status = "too_similar"
+            collision_risk = "high"
             rationale = "候选与已有证据论文高度重合，可能只是已有工作的变体。"
-        elif best_similarity >= 0.26:
+        elif best_similarity >= 0.34 or title_similarity >= 0.46:
             status = "incremental"
+            collision_risk = "medium"
             rationale = "候选与已有工作存在明显重叠，适合作为增量改进但需要强调区别。"
         else:
             status = "likely_novel"
+            collision_risk = "low"
             rationale = "候选与当前证据集重叠较低，具备进一步做新颖性检查的价值。"
 
         return {
             "status": status,
             "score": novelty_score,
             "max_similarity": round(best_similarity, 3),
+            "collision_risk": collision_risk,
             "nearest_evidence": {
                 "paper_id": nearest.get("paper_id"),
                 "title": nearest.get("title"),
                 "source": nearest.get("source"),
             } if nearest else None,
+            "similar_work": [
+                self._similar_work_summary(value["item"], value)
+                for value in ranked[:5]
+            ],
+            "source_coverage": source_coverage or {
+                "query": "",
+                "local_count": len(evidence_items),
+                "external_count": 0,
+                "total_count": len(evidence_items),
+                "sources": {},
+                "source_errors": {},
+            },
             "rationale": rationale,
+        }
+
+    def _similar_work_score(
+        self,
+        candidate: dict[str, Any],
+        candidate_tokens: set[str],
+        item: dict[str, Any],
+    ) -> dict[str, Any]:
+        title_tokens = self._dedup_tokens(str(item.get("title") or ""))
+        evidence_tokens = self._dedup_tokens(
+            f"{item.get('title', '')} {item.get('abstract_excerpt', '')}"
+        )
+        candidate_title_tokens = self._dedup_tokens(str(candidate.get("title") or ""))
+        lexical = self._jaccard(candidate_tokens, evidence_tokens)
+        title_similarity = self._jaccard(candidate_title_tokens, title_tokens)
+        source_bonus = self._similar_work_source_bonus(item)
+        recency_bonus = self._similar_work_recency_bonus(item)
+        score = min(1.0, lexical * 0.64 + title_similarity * 0.28 + source_bonus + recency_bonus)
+        if title_similarity >= 0.92:
+            score = max(score, 0.82)
+        elif title_similarity >= 0.72:
+            score = max(score, 0.62)
+        return {
+            "score": round(score, 3),
+            "lexical_similarity": round(lexical, 3),
+            "title_similarity": round(title_similarity, 3),
+            "source_bonus": round(source_bonus, 3),
+            "recency_bonus": round(recency_bonus, 3),
+        }
+
+    @staticmethod
+    def _jaccard(left: set[str], right: set[str]) -> float:
+        if not left or not right:
+            return 0.0
+        return len(left & right) / len(left | right)
+
+    @staticmethod
+    def _similar_work_source_bonus(item: dict[str, Any]) -> float:
+        category = str(item.get("category") or "")
+        source = str(item.get("source") or "")
+        if category == "seed":
+            return 0.08
+        if category == "background":
+            return 0.05
+        if source in {"semantic_scholar", "arxiv"}:
+            return 0.035
+        if category == "inspiration":
+            return 0.025
+        return 0.0
+
+    @staticmethod
+    def _similar_work_recency_bonus(item: dict[str, Any]) -> float:
+        try:
+            year = int(item.get("year") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        if year >= 2025:
+            return 0.025
+        if year >= 2022:
+            return 0.012
+        return 0.0
+
+    @staticmethod
+    def _similar_work_summary(item: dict[str, Any], score: dict[str, Any]) -> dict[str, Any]:
+        relation = "nearest_collision_candidate" if score["score"] >= 0.58 else "similar_prior_work" if score["score"] >= 0.34 else "background_neighbor"
+        reason = "标题和假设高度重合" if score["title_similarity"] >= 0.72 else "候选文本与论文摘要存在明显重叠" if score["lexical_similarity"] >= 0.34 else "作为相关工作需要人工复核"
+        return {
+            "paper_id": str(item.get("paper_id") or ""),
+            "title": item.get("title") or "未命名论文",
+            "year": item.get("year"),
+            "source": item.get("source") or item.get("category"),
+            "source_url": item.get("source_url"),
+            "score": score["score"],
+            "lexical_similarity": score["lexical_similarity"],
+            "title_similarity": score["title_similarity"],
+            "relation": relation,
+            "reason": reason,
         }
 
     def adversarial_review_candidates(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -865,18 +1052,41 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         novelty: dict[str, Any],
     ) -> list[dict[str, Any]]:
         nearest = novelty.get("nearest_evidence") if isinstance(novelty, dict) else None
+        similar_work = novelty.get("similar_work") if isinstance(novelty, dict) else None
         related: list[dict[str, Any]] = []
         seen: set[str] = set()
 
+        if isinstance(similar_work, list):
+            for item in similar_work:
+                if not isinstance(item, dict):
+                    continue
+                paper_id = str(item.get("paper_id") or item.get("id") or item.get("title") or "")
+                if not paper_id or paper_id in seen:
+                    continue
+                related.append({
+                    "paper_id": paper_id,
+                    "title": item.get("title") or "相似工作",
+                    "year": item.get("year"),
+                    "source": item.get("source"),
+                    "score": item.get("score"),
+                    "relation": item.get("relation") or "similar_prior_work",
+                    "reason": item.get("reason") or "Novelty Check 检出的相似工作。",
+                })
+                seen.add(paper_id)
+                if len(related) >= 5:
+                    return related
+
         if isinstance(nearest, dict) and nearest.get("paper_id"):
-            related.append({
-                "paper_id": str(nearest.get("paper_id")),
-                "title": nearest.get("title") or "最近相似证据",
-                "source": nearest.get("source"),
-                "relation": "nearest_collision_candidate",
-                "reason": "Novelty Check 中最相似的已有工作。",
-            })
-            seen.add(str(nearest.get("paper_id")))
+            paper_id = str(nearest.get("paper_id"))
+            if paper_id not in seen:
+                related.append({
+                    "paper_id": paper_id,
+                    "title": nearest.get("title") or "最近相似证据",
+                    "source": nearest.get("source"),
+                    "relation": "nearest_collision_candidate",
+                    "reason": "Novelty Check 中最相似的已有工作。",
+                })
+                seen.add(paper_id)
 
         ranked = sorted(
             evidence_items,

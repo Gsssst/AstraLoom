@@ -50,6 +50,15 @@ interface Review {
     status: 'likely_novel' | 'incremental' | 'too_similar';
     score: number; max_similarity: number; rationale: string;
     nearest_evidence?: { paper_id?: string; title?: string; source?: string } | null;
+    collision_risk?: 'high' | 'medium' | 'low' | 'unknown';
+    similar_work?: Array<{
+      paper_id?: string; title?: string; year?: number; source?: string; source_url?: string;
+      score?: number; relation?: string; reason?: string; title_similarity?: number; lexical_similarity?: number;
+    }>;
+    source_coverage?: {
+      query?: string; local_count?: number; external_count?: number; total_count?: number;
+      sources?: Record<string, number>; source_errors?: Record<string, string>;
+    };
   };
   adversarial_review?: {
     verdict: 'advance' | 'revise' | 'reject'; penalty: number;
@@ -1328,6 +1337,9 @@ const ResearchProjectPage: React.FC = () => {
     const validationData = validation?.data;
     const executionPack = executionPackMap[idea.id];
     const executionData = executionPack?.data;
+    const novelty = review?.novelty_check;
+    const collisionRisk = novelty?.collision_risk || (novelty?.status === 'too_similar' ? 'high' : novelty?.status === 'incremental' ? 'medium' : novelty?.status === 'likely_novel' ? 'low' : undefined);
+    const similarWork = novelty?.similar_work || [];
     return (
       <div>
         {idea.hypothesis && <Alert type="success" showIcon message="可证伪假设" description={idea.hypothesis} style={{ marginBottom: 14 }} />}
@@ -1345,12 +1357,44 @@ const ResearchProjectPage: React.FC = () => {
           {(review.novelty_check || review.adversarial_review || review.search_tree) && <>
             <Divider>v3 质量信号</Divider>
             <Space direction="vertical" size={10} style={{ width: '100%' }}>
-              {review.novelty_check && (
+              {novelty && (
                 <Alert
-                  type={review.novelty_check.status === 'likely_novel' ? 'success' : review.novelty_check.status === 'incremental' ? 'warning' : 'error'}
+                  type={novelty.status === 'likely_novel' ? 'success' : novelty.status === 'incremental' ? 'warning' : 'error'}
                   showIcon
-                  message={<Space wrap><Text strong>Novelty Check</Text><Tag color={noveltyColors[review.novelty_check.status]}>{noveltyLabels[review.novelty_check.status]}</Tag><Tag>{Math.round(review.novelty_check.score * 100)}%</Tag></Space>}
-                  description={<span>{review.novelty_check.rationale}{review.novelty_check.nearest_evidence?.title ? ` 最近相似证据：${review.novelty_check.nearest_evidence.title}` : ''}</span>}
+                  message={
+                    <Space wrap>
+                      <Text strong>Novelty Check</Text>
+                      <Tag color={noveltyColors[novelty.status]}>{noveltyLabels[novelty.status]}</Tag>
+                      <Tag>{Math.round(novelty.score * 100)}%</Tag>
+                      {collisionRisk && <Tag color={riskColors[collisionRisk] || 'default'}>碰撞风险 {collisionRisk}</Tag>}
+                    </Space>
+                  }
+                  description={
+                    <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                      <span>{novelty.rationale}{novelty.nearest_evidence?.title ? ` 最近相似证据：${novelty.nearest_evidence.title}` : ''}</span>
+                      {similarWork.length > 0 && (
+                        <div className="proposal-similar-work-list">
+                          {similarWork.slice(0, 3).map((item, index) => (
+                            <div className="proposal-similar-work-item" key={`${item.paper_id || item.title || index}`}>
+                              <Space size={6} wrap>
+                                <Tag color={item.relation === 'nearest_collision_candidate' ? 'red' : 'blue'}>{Math.round((item.score || 0) * 100)}%</Tag>
+                                {item.source && <Tag>{item.source}</Tag>}
+                                {item.year && <Tag>{item.year}</Tag>}
+                                <Text strong>{item.title || '相似工作'}</Text>
+                              </Space>
+                              {item.reason && <Text type="secondary">{item.reason}</Text>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {novelty.source_coverage && (
+                        <Text type="secondary">
+                          相似工作池：本地 {novelty.source_coverage.local_count ?? 0}，外部 {novelty.source_coverage.external_count ?? 0}
+                          {Object.keys(novelty.source_coverage.source_errors || {}).length > 0 ? '，部分外部源不可用' : ''}
+                        </Text>
+                      )}
+                    </Space>
+                  }
                 />
               )}
               {review.adversarial_review && (

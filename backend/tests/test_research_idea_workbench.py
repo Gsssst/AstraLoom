@@ -114,6 +114,87 @@ def test_novelty_check_flags_similar_candidate():
 
     assert checked[0]["novelty_check"]["status"] in {"too_similar", "incremental"}
     assert checked[0]["novelty_check"]["nearest_evidence"]["paper_id"] == "p1"
+    assert checked[0]["novelty_check"]["similar_work"][0]["paper_id"] == "p1"
+    assert checked[0]["novelty_check"]["collision_risk"] in {"high", "medium"}
+
+
+def test_novelty_collision_risk_tracks_high_medium_and_low_similarity():
+    service = ResearchIdeaWorkbenchService(_Session())
+    evidence = {
+        "seed": [{
+            "paper_id": "p1",
+            "title": "Adaptive Token Pruning",
+            "abstract_excerpt": "adaptive token pruning improves efficient inference under latency budgets",
+            "source": "local_library",
+            "category": "seed",
+            "year": 2025,
+        }],
+        "background": [{
+            "paper_id": "p2",
+            "title": "Efficient Inference Calibration",
+            "abstract_excerpt": "calibration for efficient inference improves robustness",
+            "source": "semantic_scholar",
+            "category": "background",
+            "year": 2024,
+        }],
+        "inspiration": [],
+    }
+    candidates = [
+        {
+            "title": "Adaptive Token Pruning",
+            "hypothesis": "adaptive token pruning improves efficient inference under latency budgets",
+            "approach": "prune tokens adaptively",
+        },
+        {
+            "title": "Inference Calibration Under Budget",
+            "hypothesis": "calibration improves efficient inference robustness",
+            "approach": "add calibration under fixed budgets",
+        },
+        {
+            "title": "Citation Graph Curriculum",
+            "hypothesis": "citation graph curriculum improves literature review planning",
+            "approach": "rank papers by graph novelty",
+        },
+    ]
+
+    checked = service.novelty_check_candidates(candidates, evidence)
+    risks = [item["novelty_check"]["collision_risk"] for item in checked]
+
+    assert risks[0] == "high"
+    assert risks[1] in {"medium", "low"}
+    assert risks[2] == "low"
+    assert checked[0]["novelty_check"]["similar_work"][0]["relation"] == "nearest_collision_candidate"
+    assert checked[0]["novelty_check"]["source_coverage"]["local_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_similar_work_collection_records_external_source_fallback(monkeypatch):
+    service = ResearchIdeaWorkbenchService(_Session())
+
+    async def fake_external(_query):
+        return (
+            [{
+                "paper_id": "ext:arxiv:2606.00001",
+                "title": "External Similar Work",
+                "abstract_excerpt": "similar idea from external search",
+                "source": "arxiv",
+                "category": "inspiration",
+                "year": 2026,
+            }],
+            {"semantic_scholar": "rate limited"},
+        )
+
+    monkeypatch.setattr(service, "_collect_external_evidence", fake_external)
+    context = await service.collect_similar_work(
+        {"name": "Efficient Inference", "keywords": ["pruning"]},
+        {"seed": [{"paper_id": "p1", "title": "Local Evidence", "abstract_excerpt": "local evidence", "source": "local_library"}], "background": [], "inspiration": []},
+        [{"title": "Adaptive Pruning", "hypothesis": "adaptive pruning improves efficient inference"}],
+        external_search=True,
+    )
+
+    assert context["source_coverage"]["external_count"] == 1
+    assert context["source_coverage"]["source_errors"] == {"semantic_scholar": "rate limited"}
+    assert {item["paper_id"] for item in context["items"]} == {"p1", "ext:arxiv:2606.00001"}
 
 
 def test_adversarial_review_objects_to_weak_baseline_and_metrics():
@@ -164,6 +245,41 @@ def test_validate_idea_blocks_high_collision_and_missing_experiment():
     assert any(risk["type"] == "evidence_gap" for risk in validation["feasibility_risks"])
     assert validation["experiment_checklist"]["baselines"]["present"] is False
     assert validation["related_work"][0]["relation"] == "nearest_collision_candidate"
+
+
+def test_validate_idea_prefers_ranked_similar_work_as_related_work():
+    service = ResearchIdeaWorkbenchService(_Session())
+    idea = SimpleNamespace(
+        id=uuid4(),
+        project_id=uuid4(),
+        feasibility_score=8,
+        referenced_papers={"paper_ids": ["p1", "p2"]},
+        evidence_json={"items": [{"paper_id": "p1", "title": "Supporting Evidence", "score": 0.9, "category": "seed"}]},
+        review_json={
+            "novelty_check": {
+                "status": "incremental",
+                "score": 0.55,
+                "max_similarity": 0.45,
+                "rationale": "Needs differentiation.",
+                "nearest_evidence": {"paper_id": "p1", "title": "Supporting Evidence", "source": "local_library"},
+                "similar_work": [{
+                    "paper_id": "ext:arxiv:2606.00001",
+                    "title": "External Collision Candidate",
+                    "source": "arxiv",
+                    "score": 0.62,
+                    "relation": "similar_prior_work",
+                    "reason": "候选文本与论文摘要存在明显重叠",
+                }],
+            },
+            "adversarial_review": {"objections": []},
+        },
+        experiment_plan={"dataset": "Bench", "baselines": ["Strong baseline"], "metrics": ["Score"], "steps": ["Reproduce", "Run", "Ablate"]},
+    )
+
+    validation = service.validate_idea(idea)
+
+    assert validation["related_work"][0]["paper_id"] == "ext:arxiv:2606.00001"
+    assert validation["related_work"][0]["relation"] == "similar_prior_work"
 
 
 def test_validate_idea_marks_complete_plan_as_writing_ready():
