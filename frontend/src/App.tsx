@@ -1,25 +1,41 @@
-import React, { useEffect } from 'react';
+import React, { Suspense, lazy, useEffect } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { ConfigProvider, App as AntApp } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import AppLayout from './components/AppLayout';
-import HomePage from './pages/HomePage';
-import ChatPage from './pages/ChatPage';
-import PapersPage from './pages/PapersPage';
-import ResearchPage from './pages/ResearchPage';
-import ResearchProjectPage from './pages/ResearchProjectPage';
-import WritingPage from './pages/WritingPage';
-import SettingsPage from './pages/SettingsPage';
-import LoginPage from './pages/LoginPage';
-import RegisterPage from './pages/RegisterPage';
-import PaperDetailPage from './pages/PaperDetailPage';
-import PaperDigestInboxPage from './pages/PaperDigestInboxPage';
-import WorkspacesPage from './pages/WorkspacesPage';
-import WorkspaceDetailPage from './pages/WorkspaceDetailPage';
-import AdminPage from './pages/AdminPage';
-import ActionCenterPage from './pages/ActionCenterPage';
+import { WorkflowLoadingState } from './components/WorkflowState';
 import { useAuthStore } from './stores/useAuthStore';
 import { useThemeStore } from './stores/useThemeStore';
+
+const HomePage = lazy(() => import('./pages/HomePage'));
+const ChatPage = lazy(() => import('./pages/ChatPage'));
+const PapersPage = lazy(() => import('./pages/PapersPage'));
+const ResearchPage = lazy(() => import('./pages/ResearchPage'));
+const ResearchProjectPage = lazy(() => import('./pages/ResearchProjectPage'));
+const WritingPage = lazy(() => import('./pages/WritingPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const LoginPage = lazy(() => import('./pages/LoginPage'));
+const RegisterPage = lazy(() => import('./pages/RegisterPage'));
+const PaperDetailPage = lazy(() => import('./pages/PaperDetailPage'));
+const PaperDigestInboxPage = lazy(() => import('./pages/PaperDigestInboxPage'));
+const WorkspacesPage = lazy(() => import('./pages/WorkspacesPage'));
+const WorkspaceDetailPage = lazy(() => import('./pages/WorkspaceDetailPage'));
+const AdminPage = lazy(() => import('./pages/AdminPage'));
+const ActionCenterPage = lazy(() => import('./pages/ActionCenterPage'));
+
+const routeFallback = (
+  <div style={{ width: 'min(960px, calc(100vw - 32px))', margin: '40px auto' }}>
+    <WorkflowLoadingState
+      title="正在加载页面"
+      description="首次打开该模块时需要下载对应页面资源。"
+      rows={3}
+    />
+  </div>
+);
+
+const lazyRoute = (element: React.ReactNode) => (
+  <Suspense fallback={routeFallback}>{element}</Suspense>
+);
 
 const App: React.FC = () => {
   const fetchUser = useAuthStore((s) => s.fetchUser);
@@ -49,24 +65,24 @@ const App: React.FC = () => {
         <BrowserRouter>
           <Routes>
             {/* 主页 —— 无侧边栏，全屏展示 */}
-            <Route path="/" element={<HomePage />} />
+            <Route path="/" element={lazyRoute(<HomePage />)} />
             {/* 登录和注册 */}
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/register" element={<RegisterPage />} />
+            <Route path="/login" element={lazyRoute(<LoginPage />)} />
+            <Route path="/register" element={lazyRoute(<RegisterPage />)} />
             {/* 内页 —— 侧边栏布局 */}
             <Route element={<AppLayout />}>
-              <Route path="/chat" element={<ChatPage />} />
-              <Route path="/actions" element={<ActionCenterPage />} />
-              <Route path="/papers" element={<PapersPage />} />
-              <Route path="/papers/digests" element={<PaperDigestInboxPage />} />
-              <Route path="/papers/:paperId" element={<PaperDetailPage />} />
-              <Route path="/research" element={<ResearchPage />} />
-              <Route path="/research/:projectId" element={<ResearchProjectPage />} />
-              <Route path="/writing" element={<WritingPage />} />
-              <Route path="/workspaces" element={<WorkspacesPage />} />
-              <Route path="/workspaces/:spaceId" element={<WorkspaceDetailPage />} />
-              <Route path="/admin" element={<AdminPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/chat" element={lazyRoute(<ChatPage />)} />
+              <Route path="/actions" element={lazyRoute(<ActionCenterPage />)} />
+              <Route path="/papers" element={lazyRoute(<PapersPage />)} />
+              <Route path="/papers/digests" element={lazyRoute(<PaperDigestInboxPage />)} />
+              <Route path="/papers/:paperId" element={lazyRoute(<PaperDetailPage />)} />
+              <Route path="/research" element={lazyRoute(<ResearchPage />)} />
+              <Route path="/research/:projectId" element={lazyRoute(<ResearchProjectPage />)} />
+              <Route path="/writing" element={lazyRoute(<WritingPage />)} />
+              <Route path="/workspaces" element={lazyRoute(<WorkspacesPage />)} />
+              <Route path="/workspaces/:spaceId" element={lazyRoute(<WorkspaceDetailPage />)} />
+              <Route path="/admin" element={lazyRoute(<AdminPage />)} />
+              <Route path="/settings" element={lazyRoute(<SettingsPage />)} />
             </Route>
           </Routes>
         </BrowserRouter>
