@@ -1,0 +1,50 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { test } from 'node:test';
+
+const pageShellSource = readFileSync(
+  new URL('../src/components/PageShell.tsx', import.meta.url),
+  'utf8',
+);
+const pageShellStyles = readFileSync(
+  new URL('../src/styles/page-shell.css', import.meta.url),
+  'utf8',
+);
+const settingsSource = readFileSync(
+  new URL('../src/pages/SettingsPage.tsx', import.meta.url),
+  'utf8',
+);
+
+test('page shell exposes stable layout class hooks', () => {
+  for (const className of [
+    'page-shell',
+    'page-shell-header',
+    'page-shell-heading',
+    'page-shell-icon',
+    'page-shell-title-block',
+    'page-shell-title',
+    'page-shell-subtitle',
+    'page-shell-actions',
+    'page-shell-body',
+  ]) {
+    assert.match(pageShellSource + pageShellStyles, new RegExp(className));
+  }
+});
+
+test('page shell supports title subtitle actions and configurable width', () => {
+  assert.match(pageShellSource, /title: React\.ReactNode/);
+  assert.match(pageShellSource, /subtitle\?: React\.ReactNode/);
+  assert.match(pageShellSource, /actions\?: React\.ReactNode/);
+  assert.match(pageShellSource, /maxWidth\?: number \| string/);
+  assert.match(pageShellSource, /style=\{\{ maxWidth:/);
+  assert.match(pageShellStyles, /@media \(max-width: 768px\)/);
+});
+
+test('settings page adopts the shared page shell without replacing tabs', () => {
+  assert.match(settingsSource, /import PageShell from '\.\.\/components\/PageShell'/);
+  assert.match(settingsSource, /<PageShell/);
+  assert.match(settingsSource, /title="系统设置"/);
+  assert.match(settingsSource, /maxWidth=\{860\}/);
+  assert.match(settingsSource, /<Tabs activeKey=\{undefined\} defaultActiveKey="profile" items=\{tabs\}/);
+  assert.doesNotMatch(settingsSource, /heroGradient/);
+});

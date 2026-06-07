@@ -13,13 +13,13 @@ import {
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import { getApiErrorDetails, getApiErrorMessage, type ApiErrorDetails } from '../services/apiError';
+import PageShell from '../components/PageShell';
 import { useThemeStore, THEME_PRESETS } from '../stores/useThemeStore';
 import { useAuthStore, type User } from '../stores/useAuthStore';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
 
-const heroGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
 const cardStyle = { borderRadius: 14, border: '1px solid #f0f0f0' };
 const inputStyle = { borderRadius: 10 };
 
@@ -744,24 +744,17 @@ const SettingsPage: React.FC = () => {
   ];
 
   return (
-    <div style={{ maxWidth: 860, margin: '0 auto' }}>
-      {/* Hero */}
-      <div style={{ background: heroGradient, borderRadius: 16, padding: '24px 32px', marginBottom: 24, color: '#fff', position: 'relative', overflow: 'hidden' }}>
-        <div style={{ position: 'absolute', right: -10, top: -25, fontSize: 120, opacity: 0.08 }}>⚙️</div>
-        <Space size={12}>
-          <div style={{ width: 48, height: 48, borderRadius: 14, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}><SettingOutlined /></div>
-          <div>
-            <Title level={3} style={{ color: '#fff', margin: 0 }}>系统设置</Title>
-            <Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: 13 }}>主题配色 · 个人资料 · API 配置 · 数据管理 · Token 用量</Text>
-          </div>
-        </Space>
-      </div>
-
+    <PageShell
+      title="系统设置"
+      subtitle="管理主题配色、个人资料、API 配置、数据导出、推送和 Token 用量。"
+      icon={<SettingOutlined />}
+      maxWidth={860}
+    >
       <Tabs activeKey={undefined} defaultActiveKey="profile" items={tabs}
         style={{ '--ant-primary-color': '#667eea' } as any}
         tabBarStyle={{ marginBottom: 20 }}
       />
-    </div>
+    </PageShell>
   );
 };
 
