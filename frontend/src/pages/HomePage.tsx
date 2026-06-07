@@ -7,6 +7,7 @@ import {
   ArrowRightOutlined, StarFilled, FireOutlined, BulbOutlined,
   ClockCircleOutlined, TeamOutlined,
 } from '@ant-design/icons';
+import { prefetchRouteIntent } from '../routes/lazyRoutes';
 import '../styles/home.css';
 
 const { Text } = Typography;
@@ -67,6 +68,11 @@ const HomePage: React.FC = () => {
   }, []);
 
   const handleSearch = useCallback(() => { if (searchValue.trim()) navigate(`/papers?q=${encodeURIComponent(searchValue.trim())}`); }, [searchValue, navigate]);
+  const routeIntentProps = (path: string) => ({
+    onMouseEnter: () => prefetchRouteIntent(path),
+    onFocus: () => prefetchRouteIntent(path),
+    onTouchStart: () => prefetchRouteIntent(path),
+  });
 
   const quickActions = [
     { key: 'chat', icon: <CommentOutlined />, label: 'AI 对话', desc: '与大模型对话探索研究方向', className: 'btn-chat', path: '/chat' },
@@ -130,7 +136,7 @@ const HomePage: React.FC = () => {
           {/* Quick actions */}
           <div className="quick-actions">
             {quickActions.map(action => (
-              <button key={action.key} className={`quick-action-btn ${action.className}`} onClick={() => navigate(action.path)}>
+              <button key={action.key} className={`quick-action-btn ${action.className}`} onClick={() => navigate(action.path)} {...routeIntentProps(action.path)}>
                 <span className="btn-icon">{action.icon}</span>
                 <span className="btn-text">
                   <strong>{action.label}</strong>
@@ -174,7 +180,7 @@ const HomePage: React.FC = () => {
         <Row gutter={[24, 24]} className="features-grid" style={{ maxWidth: 1200, margin: '0 auto' }}>
           {features.map((f, i) => (
             <Col xs={24} sm={12} lg={6} key={i}>
-              <div className="feature-card-v2" onClick={() => navigate(quickActions[i].path)}
+              <div className="feature-card-v2" onClick={() => navigate(quickActions[i].path)} {...routeIntentProps(quickActions[i].path)}
                 style={featureVisible ? { opacity: 1, transform: 'translateY(0)', transitionDelay: `${i * 0.1}s` } : {}}>
                 <div className="fc-icon" style={{ background: f.bg }}>{f.icon}</div>
                 <h3>{f.title}</h3>
@@ -197,7 +203,7 @@ const HomePage: React.FC = () => {
           </div>
           <Text type="secondary" style={{ fontSize: 13 }}>© 2026 · 由可配置 AI 模型驱动 · 为课题组打造的新一代 AI 科研平台</Text>
           <Space size={16} style={{ marginTop: 12 }}>
-            {quickActions.map(a => <Button key={a.key} type="text" size="small" onClick={() => navigate(a.path)} style={{ color: '#888' }}>{a.label}</Button>)}
+            {quickActions.map(a => <Button key={a.key} type="text" size="small" onClick={() => navigate(a.path)} style={{ color: '#888' }} {...routeIntentProps(a.path)}>{a.label}</Button>)}
           </Space>
         </div>
       </footer>

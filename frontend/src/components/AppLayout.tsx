@@ -10,6 +10,7 @@ import {
 import { useAuthStore } from '../stores/useAuthStore';
 import { useThemeStore, THEME_PRESETS } from '../stores/useThemeStore';
 import api from '../services/api';
+import { prefetchRouteIntent } from '../routes/lazyRoutes';
 
 const { Text } = Typography;
 const { Header, Sider, Content } = Layout;
@@ -84,10 +85,15 @@ const AppLayout: React.FC = () => {
     }
   };
   const handleLogout = () => { logout(); message.success('已退出登录'); navigate('/'); };
+  const routeIntentProps = (path: string) => ({
+    onMouseEnter: () => prefetchRouteIntent(path),
+    onFocus: () => prefetchRouteIntent(path),
+    onTouchStart: () => prefetchRouteIntent(path),
+  });
 
   // ═══════ 侧栏 Logo ═══════
   const renderLogo = (compact: boolean) => (
-    <div data-testid="sidebar-logo-link" style={{ width: '100%', cursor: 'pointer' }} onClick={() => navigate('/')}>
+    <div data-testid="sidebar-logo-link" style={{ width: '100%', cursor: 'pointer' }} onClick={() => navigate('/')} {...routeIntentProps('/')}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: compact ? 0 : 10,
         justifyContent: compact ? 'center' : 'flex-start',
@@ -146,6 +152,9 @@ const AppLayout: React.FC = () => {
             {m.label}
           </span>
         ),
+        onMouseEnter: () => prefetchRouteIntent(m.key),
+        onFocus: () => prefetchRouteIntent(m.key),
+        onTouchStart: () => prefetchRouteIntent(m.key),
         style: {
           borderRadius: 10, margin: '2px 10px',
           transition: 'all 0.25s',
@@ -197,7 +206,7 @@ const AppLayout: React.FC = () => {
                   const isActive = selectedMenuKey === m.key;
                   return (
                     <Tooltip key={m.key} title={m.label} placement="right">
-                      <div onClick={() => navigate(m.key)} style={{
+                      <div onClick={() => navigate(m.key)} {...routeIntentProps(m.key)} style={{
                         width: 40, height: 40, borderRadius: 12, cursor: 'pointer',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         background: isActive ? `${m.color}12` : 'transparent',
@@ -231,7 +240,7 @@ const AppLayout: React.FC = () => {
               padding: '12px 16px', borderTop: '1px solid #f0f0f0',
               background: '#fafbfc',
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }} onClick={() => navigate('/settings')}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }} onClick={() => navigate('/settings')} {...routeIntentProps('/settings')}>
                 <Avatar size={32} src={user.avatar} icon={<UserOutlined />} style={{ background: 'linear-gradient(135deg, #667eea, #764ba2)', flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <Text strong ellipsis style={{ fontSize: 13, display: 'block' }}>{user.display_name || user.username}</Text>
@@ -277,7 +286,7 @@ const AppLayout: React.FC = () => {
                       </List.Item>
                     )} />
                   )}
-                  <Button block type="link" icon={<BookOutlined />} onClick={() => { setNotifOpen(false); navigate('/papers/digests'); }} style={{ marginTop: 6 }}>进入论文推送中心</Button>
+                  <Button block type="link" icon={<BookOutlined />} onClick={() => { setNotifOpen(false); navigate('/papers/digests'); }} style={{ marginTop: 6 }} {...routeIntentProps('/papers/digests')}>进入论文推送中心</Button>
                 </div>
               }>
                 <Badge count={unreadCount} size="small"><Button type="text" icon={<BellOutlined />} onClick={handleNotifClick} /></Badge>
@@ -288,7 +297,7 @@ const AppLayout: React.FC = () => {
               <Dropdown menu={{ items: [
                 { key: 'role', label: `角色: ${user.role === 'admin' ? '管理员' : '用户'}`, disabled: true },
                 { type: 'divider' },
-                { key: 'settings', icon: <SettingOutlined />, label: '个人设置', onClick: () => navigate('/settings') },
+                { key: 'settings', icon: <SettingOutlined />, label: '个人设置', onMouseEnter: () => prefetchRouteIntent('/settings'), onClick: () => navigate('/settings') },
                 { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', onClick: handleLogout, danger: true },
               ] }} placement="bottomRight">
                 <div className="app-header-account"
@@ -299,7 +308,7 @@ const AppLayout: React.FC = () => {
                 </div>
               </Dropdown>
             ) : (
-              <Button type="link" icon={<LoginOutlined />} onClick={() => navigate('/login')}>登录</Button>
+              <Button type="link" icon={<LoginOutlined />} onClick={() => navigate('/login')} {...routeIntentProps('/login')}>登录</Button>
             )}
           </div>
         </Header>

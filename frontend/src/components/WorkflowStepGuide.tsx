@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Button, Card, Col, Row, Space, Tag, Typography } from 'antd';
 import { ArrowRightOutlined, CaretDownOutlined, CaretRightOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
+import { prefetchRouteIntent } from '../routes/lazyRoutes';
 
 const { Text, Title } = Typography;
 
@@ -150,6 +151,9 @@ const WorkflowStepGuide: React.FC<WorkflowStepGuideProps> = ({ title, subtitle, 
                   size="small"
                   type={step.status === 'recommended' ? 'primary' : 'default'}
                   onClick={() => handleStep(step)}
+                  onMouseEnter={() => prefetchRouteIntent(step.path)}
+                  onFocus={() => prefetchRouteIntent(step.path)}
+                  onTouchStart={() => prefetchRouteIntent(step.path)}
                   style={{ borderRadius: 999, alignSelf: 'flex-start', marginTop: 'auto' }}
                 >
                   {step.actionLabel}

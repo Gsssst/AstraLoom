@@ -1,27 +1,30 @@
-import React, { Suspense, lazy, useEffect } from 'react';
+import React, { Suspense, useEffect } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { ConfigProvider, App as AntApp } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import AppLayout from './components/AppLayout';
 import { WorkflowLoadingState } from './components/WorkflowState';
+import { lazyPages } from './routes/lazyRoutes';
 import { useAuthStore } from './stores/useAuthStore';
 import { useThemeStore } from './stores/useThemeStore';
 
-const HomePage = lazy(() => import('./pages/HomePage'));
-const ChatPage = lazy(() => import('./pages/ChatPage'));
-const PapersPage = lazy(() => import('./pages/PapersPage'));
-const ResearchPage = lazy(() => import('./pages/ResearchPage'));
-const ResearchProjectPage = lazy(() => import('./pages/ResearchProjectPage'));
-const WritingPage = lazy(() => import('./pages/WritingPage'));
-const SettingsPage = lazy(() => import('./pages/SettingsPage'));
-const LoginPage = lazy(() => import('./pages/LoginPage'));
-const RegisterPage = lazy(() => import('./pages/RegisterPage'));
-const PaperDetailPage = lazy(() => import('./pages/PaperDetailPage'));
-const PaperDigestInboxPage = lazy(() => import('./pages/PaperDigestInboxPage'));
-const WorkspacesPage = lazy(() => import('./pages/WorkspacesPage'));
-const WorkspaceDetailPage = lazy(() => import('./pages/WorkspaceDetailPage'));
-const AdminPage = lazy(() => import('./pages/AdminPage'));
-const ActionCenterPage = lazy(() => import('./pages/ActionCenterPage'));
+const {
+  HomePage,
+  ChatPage,
+  PapersPage,
+  ResearchPage,
+  ResearchProjectPage,
+  WritingPage,
+  SettingsPage,
+  LoginPage,
+  RegisterPage,
+  PaperDetailPage,
+  PaperDigestInboxPage,
+  WorkspacesPage,
+  WorkspaceDetailPage,
+  AdminPage,
+  ActionCenterPage,
+} = lazyPages;
 
 const routeFallback = (
   <div style={{ width: 'min(960px, calc(100vw - 32px))', margin: '40px auto' }}>
