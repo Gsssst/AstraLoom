@@ -26,7 +26,7 @@
 ## 5. Verification
 
 - [x] 5.1 Run OpenSpec strict validation after implementation.
-- [ ] 5.2 Run targeted backend tests.
+- [x] 5.2 Run targeted backend tests.
 - [x] 5.3 Run targeted frontend contract tests.
 - [x] 5.4 Run frontend build.
 - [x] 5.5 Run `git diff --check`.
