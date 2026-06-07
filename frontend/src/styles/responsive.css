@@ -7,6 +7,110 @@
   padding: 24px;
 }
 
+.command-palette-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #eceef3;
+  border-radius: 8px;
+  color: #667085;
+  background: #fff;
+}
+
+.command-palette-trigger .ant-typography {
+  font-size: 12px;
+}
+
+.global-command-palette .ant-modal-content {
+  padding: 0;
+  overflow: hidden;
+  border-radius: 12px;
+}
+
+.command-palette-shell {
+  padding: 14px;
+}
+
+.command-palette-input {
+  border-radius: 10px;
+}
+
+.command-palette-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 2px 8px;
+}
+
+.command-palette-results {
+  max-height: min(62vh, 560px);
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.command-palette-group {
+  padding: 6px 0;
+}
+
+.command-palette-group-title {
+  padding: 6px 8px;
+  color: #8a94a6;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.command-palette-item {
+  gap: 10px;
+  padding: 9px 10px !important;
+  border-radius: 10px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.command-palette-item.is-active {
+  border-color: #d8ddff;
+  background: #f6f7ff;
+}
+
+.command-palette-icon {
+  flex: 0 0 auto;
+  background: #eef2ff;
+  color: #5d6bda;
+}
+
+.command-palette-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.command-palette-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.command-palette-shortcut,
+.command-palette-kind {
+  margin-inline-end: 0;
+}
+
+.command-palette-kind {
+  flex: 0 0 auto;
+  color: #667085;
+}
+
+.command-palette-resource-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+}
+
 .app-header-account {
   display: inline-flex;
   height: 34px;
@@ -904,6 +1008,31 @@
 
   .app-layout-header {
     padding: 0 12px !important;
+  }
+
+  .command-palette-trigger .ant-typography {
+    display: none;
+  }
+
+  .global-command-palette {
+    max-width: calc(100vw - 20px);
+  }
+
+  .command-palette-meta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .command-palette-results {
+    max-height: 66vh;
+  }
+
+  .command-palette-item {
+    align-items: flex-start;
+  }
+
+  .command-palette-kind {
+    display: none;
   }
 
   .app-header-user-name {

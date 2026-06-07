@@ -6,6 +6,7 @@ import {
   SettingOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UserOutlined,
   LogoutOutlined, LoginOutlined, BellOutlined, BgColorsOutlined,
   RocketOutlined, AppstoreOutlined, SafetyCertificateOutlined, ThunderboltOutlined,
+  SearchOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useThemeStore, THEME_PRESETS } from '../stores/useThemeStore';
@@ -265,6 +266,15 @@ const AppLayout: React.FC = () => {
             onClick={() => isMobile ? setMobileNavOpen(true) : setCollapsed(!collapsed)}
           />
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Button
+              type="text"
+              className="command-palette-trigger"
+              icon={<SearchOutlined />}
+              onClick={() => window.dispatchEvent(new Event('command-palette:open'))}
+            >
+              <Text type="secondary">搜索 / 命令</Text>
+              {!isMobile && <Tag style={{ marginInlineEnd: 0 }}>⌘K</Tag>}
+            </Button>
             {/* 主题切换 */}
             <Dropdown menu={{ items: THEME_PRESETS.map(t => ({ key: t.id, icon: <span>{t.icon}</span>, label: t.name, onClick: () => themeStore.setTheme(t.id) })) }} placement="bottomRight">
               <Button type="text" icon={<BgColorsOutlined />} />
@@ -320,7 +330,7 @@ const AppLayout: React.FC = () => {
       {/* 快捷键弹窗 */}
       <Modal title="⌨️ 快捷键" open={shortcutOpen} onCancel={() => setShortcutOpen(false)} footer={null} width={400}>
         {[
-          ['?', '显示快捷键'], ['Ctrl+K', '搜索论文'], ['Ctrl+N', '新建对话'],
+          ['?', '显示快捷键'], ['Ctrl+K', '打开命令面板'], ['Ctrl+N', '新建对话'],
           ['Ctrl+B', '返回上一页'], ['Ctrl+H', '回到主页'],
           ['Enter', '发送消息'], ['Shift+Enter', '换行'],
         ].map(([k, d], i) => (

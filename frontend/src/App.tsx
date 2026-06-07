@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { ConfigProvider, App as AntApp } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import AppLayout from './components/AppLayout';
+import GlobalCommandPalette from './components/GlobalCommandPalette';
 import { WorkflowLoadingState } from './components/WorkflowState';
 import { lazyPages } from './routes/lazyRoutes';
 import { useAuthStore } from './stores/useAuthStore';
@@ -43,17 +44,23 @@ const lazyRoute = (element: React.ReactNode) => (
 const App: React.FC = () => {
   const fetchUser = useAuthStore((s) => s.fetchUser);
   const themeConfig = useThemeStore((s) => s.current);
+  const [commandPaletteOpen, setCommandPaletteOpen] = React.useState(false);
 
   useEffect(() => { fetchUser(); }, [fetchUser]);
 
   // 全局快捷键
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); window.location.href = '/papers'; }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); setCommandPaletteOpen(true); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'n') { e.preventDefault(); window.location.href = '/chat'; }
     };
+    const openCommandPalette = () => setCommandPaletteOpen(true);
     window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    window.addEventListener('command-palette:open', openCommandPalette);
+    return () => {
+      window.removeEventListener('keydown', handler);
+      window.removeEventListener('command-palette:open', openCommandPalette);
+    };
   }, []);
 
   return (
@@ -66,6 +73,7 @@ const App: React.FC = () => {
     >
       <AntApp>
         <BrowserRouter>
+          <GlobalCommandPalette open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />
           <Routes>
             {/* 主页 —— 无侧边栏，全屏展示 */}
             <Route path="/" element={lazyRoute(<HomePage />)} />
