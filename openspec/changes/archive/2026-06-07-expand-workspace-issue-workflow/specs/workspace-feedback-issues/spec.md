@@ -82,6 +82,8 @@ The frontend SHALL expose a compact GitHub Issues-style feedback section inside 
 - **WHEN** a member selects an issue from the workspace issue list
 - **THEN** the UI shows issue detail, comments, comment input, resource reference, and status controls according to the user's role
 
+## ADDED Requirements
+
 ### Requirement: Resource pages can submit workspace issues
 The frontend SHALL let users create workspace issues from resource detail or workflow pages when that resource is connected to a workspace.
 

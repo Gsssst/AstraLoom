@@ -11,17 +11,17 @@ The system SHALL expose a read-only action center endpoint for authenticated use
 
 - **GIVEN** the user is authenticated
 - **WHEN** they request workflow actions
-- **THEN** the response includes summary counts and grouped action items across papers, research, writing, and workspaces
+- **THEN** the response includes summary counts and grouped action items across papers, research, writing, workspaces, and high-priority workspace issues
 
 ### Requirement: Action center recommends module-specific next steps
 
-The system SHALL generate next-step recommendations from existing module state.
+The system SHALL generate next-step recommendations from existing module state and high-priority open workspace issues.
 
 #### Scenario: User has incomplete research workflow state
 
-- **GIVEN** the user has unread papers, draft writing projects, active research projects, or active spaces
+- **GIVEN** the user has unread papers, draft writing projects, active research projects, active spaces, or high-priority open workspace issues
 - **WHEN** the action center is loaded
-- **THEN** relevant actions link back to the module where the work should continue
+- **THEN** relevant actions link back to the module or workspace issue where the work should continue
 
 ### Requirement: Frontend shows a unified workflow surface
 
