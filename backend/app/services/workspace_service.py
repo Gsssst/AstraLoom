@@ -2,22 +2,33 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import desc, or_, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.models.paper import Paper, UserPaper
 from app.db.models.research import ResearchProject
 from app.db.models.user import User
-from app.db.models.workspace import ProjectSpace, ProjectSpaceActivity, ProjectSpaceMember, ProjectSpaceResource
+from app.db.models.workspace import (
+    ProjectSpace,
+    ProjectSpaceActivity,
+    ProjectSpaceIssue,
+    ProjectSpaceIssueComment,
+    ProjectSpaceMember,
+    ProjectSpaceResource,
+)
 from app.db.models.writing import WritingProject
 
 
 VALID_SPACE_ROLES = {"owner", "editor", "viewer"}
 VALID_RESOURCE_TYPES = {"papers", "research_projects", "writing_projects"}
+VALID_ISSUE_STATUSES = {"open", "closed"}
+VALID_ISSUE_TYPES = {"feedback", "bug", "idea", "question", "task"}
+VALID_ISSUE_PRIORITIES = {"low", "medium", "high", "urgent"}
 SPACE_ROLE_RANK = {"none": 0, "viewer": 1, "editor": 2, "owner": 3}
 
 
@@ -285,6 +296,203 @@ class WorkspaceService:
             .limit(max(1, min(limit, 100)))
         )
         return await self.activities_to_dict(result.scalars().all())
+
+    async def list_issues(
+        self,
+        space_id: str,
+        user: User,
+        *,
+        status_filter: Optional[str] = None,
+        issue_type: Optional[str] = None,
+        priority: Optional[str] = None,
+        label: Optional[str] = None,
+        limit: int = 50,
+    ) -> dict | None:
+        access = await self.get_space_for_user(space_id, user)
+        if not access:
+            return None
+        space, _role = access
+        status_filter = self._normalize_issue_status(status_filter)
+        issue_type = self._normalize_issue_type(issue_type)
+        priority = self._normalize_issue_priority(priority)
+        label = self._normalize_issue_label(label)
+
+        query = (
+            select(ProjectSpaceIssue)
+            .where(ProjectSpaceIssue.space_id == space.id)
+            .options(selectinload(ProjectSpaceIssue.comments))
+            .order_by(desc(ProjectSpaceIssue.updated_at))
+        )
+        if status_filter:
+            query = query.where(ProjectSpaceIssue.status == status_filter)
+        if issue_type:
+            query = query.where(ProjectSpaceIssue.issue_type == issue_type)
+        if priority:
+            query = query.where(ProjectSpaceIssue.priority == priority)
+        max_limit = max(1, min(limit, 100))
+        result = await self.session.execute(query.limit(500 if label else max_limit))
+        issues = result.scalars().unique().all()
+        if label:
+            issues = [issue for issue in issues if label in (issue.labels or [])][:max_limit]
+
+        open_count, closed_count = await self._issue_status_counts(space.id)
+        return {
+            "issues": await self._issues_to_dict(issues),
+            "summary": {
+                "open": open_count,
+                "closed": closed_count,
+                "total": open_count + closed_count,
+            },
+        }
+
+    async def create_issue(
+        self,
+        space_id: str,
+        user: User,
+        *,
+        title: str,
+        description: str = "",
+        issue_type: str = "feedback",
+        priority: str = "medium",
+        labels: Optional[list[str]] = None,
+    ) -> dict | None:
+        access = await self.get_space_for_user(space_id, user)
+        if not access:
+            return None
+        space, _role = access
+        issue = ProjectSpaceIssue(
+            space_id=space.id,
+            creator_id=user.id,
+            title=title.strip(),
+            description=description.strip() or None,
+            status="open",
+            issue_type=self._normalize_issue_type(issue_type) or "feedback",
+            priority=self._normalize_issue_priority(priority) or "medium",
+            labels=self._normalize_issue_labels(labels),
+            metadata_json={},
+        )
+        self.session.add(issue)
+        await self.session.flush()
+        self._record_activity(
+            space,
+            user,
+            "issue_created",
+            resource_type="issues",
+            resource_id=str(issue.id),
+            metadata={"title": issue.title, "status": issue.status, "priority": issue.priority},
+        )
+        await self.session.commit()
+        loaded = await self._issue_for_space(space.id, str(issue.id))
+        return await self.issue_to_dict(loaded or issue, include_comments=True)
+
+    async def get_issue_detail(self, space_id: str, issue_id: str, user: User) -> dict | None:
+        access = await self.get_space_for_user(space_id, user)
+        if not access:
+            return None
+        space, _role = access
+        issue = await self._issue_for_space(space.id, issue_id)
+        if not issue:
+            return None
+        return await self.issue_to_dict(issue, include_comments=True)
+
+    async def update_issue(
+        self,
+        space_id: str,
+        issue_id: str,
+        user: User,
+        **updates,
+    ) -> dict | None:
+        access = await self.get_space_for_user(space_id, user)
+        if not access:
+            return None
+        space, role = access
+        if role not in {"owner", "editor"}:
+            raise PermissionError("只有 owner 或 editor 可以管理反馈 Issue")
+        issue = await self._issue_for_space(space.id, issue_id)
+        if not issue:
+            return None
+
+        changed: list[str] = []
+        if updates.get("title") is not None:
+            issue.title = str(updates["title"]).strip()
+            changed.append("title")
+        if updates.get("description") is not None:
+            issue.description = str(updates["description"]).strip() or None
+            changed.append("description")
+        if updates.get("issue_type") is not None:
+            issue.issue_type = self._normalize_issue_type(updates["issue_type"]) or issue.issue_type
+            changed.append("issue_type")
+        if updates.get("priority") is not None:
+            issue.priority = self._normalize_issue_priority(updates["priority"]) or issue.priority
+            changed.append("priority")
+        if updates.get("labels") is not None:
+            issue.labels = self._normalize_issue_labels(updates["labels"])
+            changed.append("labels")
+        if "assignee_id" in updates:
+            issue.assignee_id = await self._member_user_id(space, updates.get("assignee_id"))
+            changed.append("assignee_id")
+        if updates.get("status") is not None:
+            next_status = self._normalize_issue_status(updates["status"]) or issue.status
+            if next_status != issue.status:
+                issue.status = next_status
+                if next_status == "closed":
+                    issue.closed_at = datetime.now(timezone.utc)
+                    issue.closed_by_id = user.id
+                    changed.append("closed")
+                else:
+                    issue.closed_at = None
+                    issue.closed_by_id = None
+                    changed.append("reopened")
+
+        if changed:
+            action = "issue_updated"
+            if "closed" in changed:
+                action = "issue_closed"
+            elif "reopened" in changed:
+                action = "issue_reopened"
+            self._record_activity(
+                space,
+                user,
+                action,
+                resource_type="issues",
+                resource_id=str(issue.id),
+                metadata={"title": issue.title, "fields": changed, "status": issue.status},
+            )
+            await self.session.commit()
+        loaded = await self._issue_for_space(space.id, str(issue.id))
+        return await self.issue_to_dict(loaded or issue, include_comments=True)
+
+    async def add_issue_comment(
+        self,
+        space_id: str,
+        issue_id: str,
+        user: User,
+        content: str,
+    ) -> dict | None:
+        access = await self.get_space_for_user(space_id, user)
+        if not access:
+            return None
+        space, _role = access
+        issue = await self._issue_for_space(space.id, issue_id)
+        if not issue:
+            return None
+        comment = ProjectSpaceIssueComment(
+            issue_id=issue.id,
+            author_id=user.id,
+            content=content.strip(),
+        )
+        self.session.add(comment)
+        self._record_activity(
+            space,
+            user,
+            "issue_commented",
+            resource_type="issues",
+            resource_id=str(issue.id),
+            metadata={"title": issue.title},
+        )
+        await self.session.commit()
+        await self.session.refresh(comment)
+        return await self.comment_to_dict(comment)
 
     async def search_resource_candidates(
         self,
@@ -713,6 +921,97 @@ class WorkspaceService:
             })
         return rows
 
+    async def _issues_to_dict(self, issues: list[ProjectSpaceIssue]) -> list[dict]:
+        return [await self.issue_to_dict(issue, include_comments=False) for issue in issues]
+
+    async def issue_to_dict(self, issue: ProjectSpaceIssue, include_comments: bool = False) -> dict:
+        user_ids = [uid for uid in [issue.creator_id, issue.assignee_id, issue.closed_by_id] if uid]
+        if include_comments:
+            user_ids.extend(comment.author_id for comment in (issue.comments or []) if comment.author_id)
+        users = await self._users_by_id(user_ids)
+        creator = users.get(issue.creator_id)
+        assignee = users.get(issue.assignee_id)
+        closed_by = users.get(issue.closed_by_id)
+        data = {
+            "id": str(issue.id),
+            "space_id": str(issue.space_id),
+            "title": issue.title,
+            "description": issue.description or "",
+            "status": issue.status,
+            "issue_type": issue.issue_type,
+            "priority": issue.priority,
+            "labels": issue.labels or [],
+            "creator_id": str(issue.creator_id) if issue.creator_id else None,
+            "creator_name": self._display_name(creator) if creator else "未知用户",
+            "assignee_id": str(issue.assignee_id) if issue.assignee_id else None,
+            "assignee_name": self._display_name(assignee) if assignee else None,
+            "closed_by_id": str(issue.closed_by_id) if issue.closed_by_id else None,
+            "closed_by_name": self._display_name(closed_by) if closed_by else None,
+            "closed_at": issue.closed_at.isoformat() if issue.closed_at else "",
+            "comment_count": len(issue.comments or []),
+            "created_at": issue.created_at.isoformat() if issue.created_at else "",
+            "updated_at": issue.updated_at.isoformat() if issue.updated_at else "",
+        }
+        if include_comments:
+            comments = sorted(issue.comments or [], key=lambda item: item.created_at)
+            data["comments"] = [await self.comment_to_dict(comment, users=users) for comment in comments]
+        return data
+
+    async def comment_to_dict(self, comment: ProjectSpaceIssueComment, users: Optional[dict] = None) -> dict:
+        users = users if users is not None else await self._users_by_id([comment.author_id] if comment.author_id else [])
+        author = users.get(comment.author_id)
+        return {
+            "id": str(comment.id),
+            "issue_id": str(comment.issue_id),
+            "author_id": str(comment.author_id) if comment.author_id else None,
+            "author_name": self._display_name(author) if author else "未知用户",
+            "content": comment.content,
+            "created_at": comment.created_at.isoformat() if comment.created_at else "",
+            "updated_at": comment.updated_at.isoformat() if comment.updated_at else "",
+        }
+
+    async def _issue_for_space(self, space_id, issue_id: str) -> ProjectSpaceIssue | None:
+        try:
+            iid = UUID(str(issue_id))
+        except ValueError:
+            return None
+        result = await self.session.execute(
+            select(ProjectSpaceIssue)
+            .where(ProjectSpaceIssue.id == iid, ProjectSpaceIssue.space_id == space_id)
+            .options(selectinload(ProjectSpaceIssue.comments))
+        )
+        return result.scalars().unique().one_or_none()
+
+    async def _issue_status_counts(self, space_id) -> tuple[int, int]:
+        result = await self.session.execute(
+            select(ProjectSpaceIssue.status, func.count(ProjectSpaceIssue.id))
+            .where(ProjectSpaceIssue.space_id == space_id)
+            .group_by(ProjectSpaceIssue.status)
+        )
+        counts = {status: count for status, count in result.all()}
+        return int(counts.get("open") or 0), int(counts.get("closed") or 0)
+
+    async def _member_user_id(self, space: ProjectSpace, value) -> UUID | None:
+        if not value:
+            return None
+        try:
+            user_id = UUID(str(value))
+        except ValueError:
+            raise LookupError("指派用户不存在")
+        if self._role_for(space, user_id) == "none":
+            raise LookupError("只能指派给空间成员")
+        return user_id
+
+    async def _users_by_id(self, user_ids: list) -> dict:
+        ids = [uid for uid in dict.fromkeys(user_ids) if uid]
+        if not ids:
+            return {}
+        result = await self.session.execute(select(User).where(User.id.in_(ids)))
+        return {user.id: user for user in result.scalars().all()}
+
+    def _display_name(self, user: User) -> str:
+        return user.display_name or user.username or user.email or "未知用户"
+
     def _assistant_resource_section(self, title: str, items: list[dict], limit: int = 6) -> str:
         if not items:
             return f"{title}：暂无"
@@ -790,6 +1089,37 @@ class WorkspaceService:
         }
         normalized = aliases.get(str(resource_type or "").strip())
         return normalized if normalized in VALID_RESOURCE_TYPES else None
+
+    def _normalize_issue_status(self, status: Optional[str]) -> Optional[str]:
+        normalized = str(status or "").strip().lower()
+        return normalized if normalized in VALID_ISSUE_STATUSES else None
+
+    def _normalize_issue_type(self, issue_type: Optional[str]) -> Optional[str]:
+        normalized = str(issue_type or "").strip().lower()
+        aliases = {
+            "feature": "idea",
+            "request": "feedback",
+            "problem": "bug",
+            "todo": "task",
+        }
+        normalized = aliases.get(normalized, normalized)
+        return normalized if normalized in VALID_ISSUE_TYPES else None
+
+    def _normalize_issue_priority(self, priority: Optional[str]) -> Optional[str]:
+        normalized = str(priority or "").strip().lower()
+        return normalized if normalized in VALID_ISSUE_PRIORITIES else None
+
+    def _normalize_issue_label(self, label: Optional[str]) -> Optional[str]:
+        normalized = str(label or "").strip().lower()
+        return normalized[:40] if normalized else None
+
+    def _normalize_issue_labels(self, labels: Optional[list[str]]) -> list[str]:
+        rows = []
+        for label in labels or []:
+            normalized = self._normalize_issue_label(label)
+            if normalized and normalized not in rows:
+                rows.append(normalized)
+        return rows[:8]
 
     def _record_activity(
         self,

@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  Alert, Button, Card, Col, Empty, Form, Input, List, Modal, Progress, Row, Select, Space, Statistic, Tag, Timeline, Typography, message,
+  Alert, Button, Card, Col, Drawer, Empty, Form, Input, List, Modal, Progress, Row, Select, Space, Statistic, Tag, Timeline, Typography, message,
 } from 'antd';
 import {
-  AppstoreOutlined, ArrowLeftOutlined, BookOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined,
+  AppstoreOutlined, ArrowLeftOutlined, BookOutlined, BugOutlined, CommentOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined,
   LinkOutlined, PlusOutlined, RobotOutlined, RocketOutlined, SendOutlined, TeamOutlined, UserOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
@@ -21,6 +21,22 @@ interface WorkspaceAssistantMessage {
   content: string;
   references?: any[];
   created_at?: string;
+}
+
+interface WorkspaceIssue {
+  id: string;
+  title: string;
+  description?: string;
+  status: 'open' | 'closed';
+  issue_type: string;
+  priority: string;
+  labels?: string[];
+  creator_name?: string;
+  assignee_name?: string;
+  comment_count?: number;
+  comments?: any[];
+  created_at?: string;
+  updated_at?: string;
 }
 
 const resourceIcon: Record<string, React.ReactNode> = {
@@ -44,6 +60,33 @@ const activityLabel: Record<string, string> = {
   member_removed: '移除了成员',
   resource_linked: '绑定了资源',
   resource_unlinked: '移除了资源',
+  issue_created: '创建了 Issue',
+  issue_updated: '更新了 Issue',
+  issue_commented: '评论了 Issue',
+  issue_closed: '关闭了 Issue',
+  issue_reopened: '重新打开了 Issue',
+};
+
+const issueTypeLabel: Record<string, string> = {
+  feedback: '反馈',
+  bug: 'Bug',
+  idea: '想法',
+  question: '问题',
+  task: '任务',
+};
+
+const issuePriorityLabel: Record<string, string> = {
+  low: '低',
+  medium: '中',
+  high: '高',
+  urgent: '紧急',
+};
+
+const issuePriorityColor: Record<string, string> = {
+  low: 'default',
+  medium: 'blue',
+  high: 'orange',
+  urgent: 'red',
 };
 
 const dashboardCardIcon: Record<string, React.ReactNode> = {
@@ -75,6 +118,16 @@ const WorkspaceDetailPage: React.FC = () => {
   const [candidates, setCandidates] = useState<any[]>([]);
   const [candidateLoading, setCandidateLoading] = useState(false);
   const [manualMode, setManualMode] = useState(false);
+  const [issueForm] = Form.useForm();
+  const [issueCommentForm] = Form.useForm();
+  const [issues, setIssues] = useState<WorkspaceIssue[]>([]);
+  const [issueSummary, setIssueSummary] = useState({ open: 0, closed: 0, total: 0 });
+  const [issueFilters, setIssueFilters] = useState({ status: 'open', issue_type: 'all', priority: 'all' });
+  const [issuesLoading, setIssuesLoading] = useState(false);
+  const [issueSaving, setIssueSaving] = useState(false);
+  const [issueModalOpen, setIssueModalOpen] = useState(false);
+  const [issueDrawerOpen, setIssueDrawerOpen] = useState(false);
+  const [selectedIssue, setSelectedIssue] = useState<WorkspaceIssue | null>(null);
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [assistantSending, setAssistantSending] = useState(false);
   const [assistantInput, setAssistantInput] = useState('');
@@ -226,6 +279,106 @@ const WorkspaceDetailPage: React.FC = () => {
       const detail = getApiErrorDetails(error, { fallback: '移除资源失败' });
       setWorkspaceActionError({ title: '移除资源失败', detail });
       message.warning(detail.message);
+    }
+  };
+
+  const fetchIssues = async (filters = issueFilters) => {
+    if (!spaceId) return;
+    setIssuesLoading(true);
+    try {
+      const response = await api.get(`/workspaces/${spaceId}/issues`, {
+        params: {
+          status_filter: filters.status === 'all' ? undefined : filters.status,
+          issue_type: filters.issue_type === 'all' ? undefined : filters.issue_type,
+          priority: filters.priority === 'all' ? undefined : filters.priority,
+          limit: 50,
+        },
+      });
+      setIssues(response.data.issues || []);
+      setIssueSummary(response.data.summary || { open: 0, closed: 0, total: 0 });
+      setWorkspaceActionError(null);
+    } catch (error: any) {
+      const detail = getApiErrorDetails(error, { fallback: '反馈 Issue 加载失败' });
+      setWorkspaceActionError({ title: '反馈 Issue 加载失败', detail });
+      message.warning(detail.message);
+    } finally {
+      setIssuesLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchIssues(issueFilters); }, [spaceId, issueFilters.status, issueFilters.issue_type, issueFilters.priority]);
+
+  const handleCreateIssue = async () => {
+    const values = await issueForm.validateFields();
+    setIssueSaving(true);
+    try {
+      const response = await api.post(`/workspaces/${spaceId}/issues`, values);
+      setIssueModalOpen(false);
+      issueForm.resetFields();
+      setSelectedIssue(response.data);
+      setIssueDrawerOpen(true);
+      await fetchIssues(issueFilters);
+      setWorkspaceActionError(null);
+      message.success('反馈 Issue 已创建');
+    } catch (error: any) {
+      const detail = getApiErrorDetails(error, { fallback: '创建反馈 Issue 失败' });
+      setWorkspaceActionError({ title: '创建反馈 Issue 失败', detail });
+      message.warning(detail.message);
+    } finally {
+      setIssueSaving(false);
+    }
+  };
+
+  const openIssueDetail = async (issue: WorkspaceIssue) => {
+    setSelectedIssue(issue);
+    setIssueDrawerOpen(true);
+    try {
+      const response = await api.get(`/workspaces/${spaceId}/issues/${issue.id}`);
+      setSelectedIssue(response.data);
+      setWorkspaceActionError(null);
+    } catch (error: any) {
+      const detail = getApiErrorDetails(error, { fallback: '反馈 Issue 详情加载失败' });
+      setWorkspaceActionError({ title: '反馈 Issue 详情加载失败', detail });
+      message.warning(detail.message);
+    }
+  };
+
+  const updateSelectedIssue = async (updates: Record<string, any>) => {
+    if (!selectedIssue) return;
+    setIssueSaving(true);
+    try {
+      const response = await api.patch(`/workspaces/${spaceId}/issues/${selectedIssue.id}`, updates);
+      setSelectedIssue(response.data);
+      await fetchIssues(issueFilters);
+      setWorkspaceActionError(null);
+      message.success(updates.status === 'closed' ? 'Issue 已关闭' : updates.status === 'open' ? 'Issue 已重新打开' : 'Issue 已更新');
+    } catch (error: any) {
+      const detail = getApiErrorDetails(error, { fallback: '更新反馈 Issue 失败' });
+      setWorkspaceActionError({ title: '更新反馈 Issue 失败', detail });
+      message.warning(detail.message);
+    } finally {
+      setIssueSaving(false);
+    }
+  };
+
+  const handleAddIssueComment = async () => {
+    if (!selectedIssue) return;
+    const values = await issueCommentForm.validateFields();
+    setIssueSaving(true);
+    try {
+      await api.post(`/workspaces/${spaceId}/issues/${selectedIssue.id}/comments`, values);
+      issueCommentForm.resetFields();
+      const response = await api.get(`/workspaces/${spaceId}/issues/${selectedIssue.id}`);
+      setSelectedIssue(response.data);
+      await fetchIssues(issueFilters);
+      setWorkspaceActionError(null);
+      message.success('评论已添加');
+    } catch (error: any) {
+      const detail = getApiErrorDetails(error, { fallback: '添加 Issue 评论失败' });
+      setWorkspaceActionError({ title: '添加 Issue 评论失败', detail });
+      message.warning(detail.message);
+    } finally {
+      setIssueSaving(false);
     }
   };
 
@@ -430,6 +583,111 @@ const WorkspaceDetailPage: React.FC = () => {
     </Card>
   );
 
+  const renderIssuePanel = () => (
+    <Card
+      title={<Space><BugOutlined />反馈 Issue</Space>}
+      loading={issuesLoading}
+      style={{ borderRadius: 14, marginBottom: 16 }}
+      extra={(
+        <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => setIssueModalOpen(true)}>
+          提 Issue
+        </Button>
+      )}
+    >
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Row gutter={[8, 8]}>
+          <Col xs={12} sm={6}>
+            <Statistic title="Open" value={issueSummary.open} valueStyle={{ fontSize: 20, color: '#16a34a' }} />
+          </Col>
+          <Col xs={12} sm={6}>
+            <Statistic title="Closed" value={issueSummary.closed} valueStyle={{ fontSize: 20 }} />
+          </Col>
+          <Col xs={24} sm={12}>
+            <Space wrap style={{ justifyContent: 'flex-end', width: '100%' }}>
+              <Select
+                size="small"
+                value={issueFilters.status}
+                style={{ width: 110 }}
+                onChange={statusValue => setIssueFilters(prev => ({ ...prev, status: statusValue }))}
+                options={[
+                  { value: 'open', label: 'Open' },
+                  { value: 'closed', label: 'Closed' },
+                  { value: 'all', label: '全部' },
+                ]}
+              />
+              <Select
+                size="small"
+                value={issueFilters.issue_type}
+                style={{ width: 112 }}
+                onChange={typeValue => setIssueFilters(prev => ({ ...prev, issue_type: typeValue }))}
+                options={[
+                  { value: 'all', label: '全部类型' },
+                  { value: 'feedback', label: '反馈' },
+                  { value: 'bug', label: 'Bug' },
+                  { value: 'idea', label: '想法' },
+                  { value: 'question', label: '问题' },
+                  { value: 'task', label: '任务' },
+                ]}
+              />
+              <Select
+                size="small"
+                value={issueFilters.priority}
+                style={{ width: 112 }}
+                onChange={priorityValue => setIssueFilters(prev => ({ ...prev, priority: priorityValue }))}
+                options={[
+                  { value: 'all', label: '全部优先级' },
+                  { value: 'low', label: '低' },
+                  { value: 'medium', label: '中' },
+                  { value: 'high', label: '高' },
+                  { value: 'urgent', label: '紧急' },
+                ]}
+              />
+            </Space>
+          </Col>
+        </Row>
+
+        <List
+          dataSource={issues}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无反馈 Issue" /> }}
+          renderItem={(issue) => (
+            <List.Item
+              style={{ cursor: 'pointer', alignItems: 'flex-start' }}
+              onClick={() => openIssueDetail(issue)}
+              actions={[
+                <Space key="comments" size={4}>
+                  <CommentOutlined />
+                  <Text type="secondary">{issue.comment_count || 0}</Text>
+                </Space>,
+              ]}
+            >
+              <List.Item.Meta
+                title={(
+                  <Space size={6} wrap>
+                    <Tag color={issue.status === 'open' ? 'green' : 'default'}>{issue.status}</Tag>
+                    <Text strong style={{ maxWidth: 520 }} ellipsis>{issue.title}</Text>
+                  </Space>
+                )}
+                description={(
+                  <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                    <Space size={6} wrap>
+                      <Tag>{issueTypeLabel[issue.issue_type] || issue.issue_type}</Tag>
+                      <Tag color={issuePriorityColor[issue.priority] || 'default'}>{issuePriorityLabel[issue.priority] || issue.priority}</Tag>
+                      {(issue.labels || []).slice(0, 4).map(label => <Tag key={label} color="geekblue">{label}</Tag>)}
+                    </Space>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {issue.creator_name || '未知用户'} 创建
+                      {issue.updated_at ? ` · 更新于 ${new Date(issue.updated_at).toLocaleString()}` : ''}
+                    </Text>
+                  </Space>
+                )}
+              />
+            </List.Item>
+          )}
+        />
+      </Space>
+    </Card>
+  );
+
   const summary = space?.summary || {};
   const dashboard = space?.dashboard || {};
   const resources = summary.linked_resources?.papers?.length || summary.linked_resources?.research_projects?.length || summary.linked_resources?.writing_projects?.length
@@ -566,6 +824,7 @@ const WorkspaceDetailPage: React.FC = () => {
                 description="看板会根据空间内论文、研究方向、写作草稿和最近活动自动判断推进状态。"
                 style={{ borderRadius: 12, marginBottom: 16 }}
               />
+              {renderIssuePanel()}
               <Row gutter={[16, 16]} style={{ marginBottom: 18 }}>
                 <Col xs={24} lg={8}>{renderResourceList('papers', resources.papers || [])}</Col>
                 <Col xs={24} lg={8}>{renderResourceList('research_projects', resources.research_projects || [])}</Col>
@@ -731,6 +990,168 @@ const WorkspaceDetailPage: React.FC = () => {
           </Form.Item>
         </Form>
       </Modal>
+
+      <Modal
+        title="提交反馈 Issue"
+        open={issueModalOpen}
+        onOk={handleCreateIssue}
+        confirmLoading={issueSaving}
+        onCancel={() => setIssueModalOpen(false)}
+        okText="提交"
+      >
+        <Form form={issueForm} layout="vertical" initialValues={{ issue_type: 'feedback', priority: 'medium', labels: [] }}>
+          <Form.Item name="title" label="标题" rules={[{ required: true, message: '请输入 Issue 标题' }]}>
+            <Input placeholder="一句话描述反馈、Bug 或需求" />
+          </Form.Item>
+          <Form.Item name="description" label="描述">
+            <Input.TextArea placeholder="补充复现步骤、期望结果、相关上下文或建议" autoSize={{ minRows: 4, maxRows: 8 }} />
+          </Form.Item>
+          <Row gutter={12}>
+            <Col span={12}>
+              <Form.Item name="issue_type" label="类型">
+                <Select options={[
+                  { value: 'feedback', label: '反馈' },
+                  { value: 'bug', label: 'Bug' },
+                  { value: 'idea', label: '想法' },
+                  { value: 'question', label: '问题' },
+                  { value: 'task', label: '任务' },
+                ]} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="priority" label="优先级">
+                <Select options={[
+                  { value: 'low', label: '低' },
+                  { value: 'medium', label: '中' },
+                  { value: 'high', label: '高' },
+                  { value: 'urgent', label: '紧急' },
+                ]} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Form.Item name="labels" label="标签">
+            <Select
+              mode="tags"
+              placeholder="输入标签后回车，例如 ui、体验、研究流程"
+              tokenSeparators={[',', '，']}
+              options={[
+                { value: 'ui', label: 'ui' },
+                { value: 'ux', label: 'ux' },
+                { value: 'api', label: 'api' },
+                { value: 'research-flow', label: 'research-flow' },
+              ]}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Drawer
+        title={selectedIssue ? (
+          <Space wrap>
+            <Tag color={selectedIssue.status === 'open' ? 'green' : 'default'}>{selectedIssue.status}</Tag>
+            <span>{selectedIssue.title}</span>
+          </Space>
+        ) : '反馈 Issue'}
+        open={issueDrawerOpen}
+        onClose={() => setIssueDrawerOpen(false)}
+        width={520}
+        extra={selectedIssue && canEditResources ? (
+          <Button
+            loading={issueSaving}
+            onClick={() => updateSelectedIssue({ status: selectedIssue.status === 'open' ? 'closed' : 'open' })}
+          >
+            {selectedIssue.status === 'open' ? '关闭 Issue' : '重新打开'}
+          </Button>
+        ) : null}
+      >
+        {selectedIssue ? (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Space size={6} wrap>
+              <Tag>{issueTypeLabel[selectedIssue.issue_type] || selectedIssue.issue_type}</Tag>
+              <Tag color={issuePriorityColor[selectedIssue.priority] || 'default'}>
+                {issuePriorityLabel[selectedIssue.priority] || selectedIssue.priority}
+              </Tag>
+              {(selectedIssue.labels || []).map(label => <Tag key={label} color="geekblue">{label}</Tag>)}
+            </Space>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {selectedIssue.creator_name || '未知用户'} 创建
+              {selectedIssue.created_at ? ` · ${new Date(selectedIssue.created_at).toLocaleString()}` : ''}
+              {selectedIssue.assignee_name ? ` · 指派给 ${selectedIssue.assignee_name}` : ''}
+            </Text>
+            <Card size="small" style={{ borderRadius: 10 }}>
+              {selectedIssue.description ? (
+                <Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }}>{selectedIssue.description}</Paragraph>
+              ) : (
+                <Text type="secondary">暂无描述</Text>
+              )}
+            </Card>
+
+            {canEditResources && (
+              <Space wrap>
+                <Select
+                  size="small"
+                  value={selectedIssue.priority}
+                  style={{ width: 120 }}
+                  onChange={value => updateSelectedIssue({ priority: value })}
+                  options={[
+                    { value: 'low', label: '低优先级' },
+                    { value: 'medium', label: '中优先级' },
+                    { value: 'high', label: '高优先级' },
+                    { value: 'urgent', label: '紧急' },
+                  ]}
+                />
+                <Select
+                  size="small"
+                  value={selectedIssue.issue_type}
+                  style={{ width: 120 }}
+                  onChange={value => updateSelectedIssue({ issue_type: value })}
+                  options={[
+                    { value: 'feedback', label: '反馈' },
+                    { value: 'bug', label: 'Bug' },
+                    { value: 'idea', label: '想法' },
+                    { value: 'question', label: '问题' },
+                    { value: 'task', label: '任务' },
+                  ]}
+                />
+              </Space>
+            )}
+
+            <div>
+              <Title level={5} style={{ marginTop: 0 }}>讨论</Title>
+              <List
+                dataSource={selectedIssue.comments || []}
+                locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无评论" /> }}
+                renderItem={(comment: any) => (
+                  <List.Item>
+                    <List.Item.Meta
+                      title={(
+                        <Space>
+                          <Text strong>{comment.author_name || '未知用户'}</Text>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            {comment.created_at ? new Date(comment.created_at).toLocaleString() : ''}
+                          </Text>
+                        </Space>
+                      )}
+                      description={<Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }}>{comment.content}</Paragraph>}
+                    />
+                  </List.Item>
+                )}
+              />
+            </div>
+
+            <Form form={issueCommentForm} layout="vertical">
+              <Form.Item name="content" rules={[{ required: true, message: '请输入评论内容' }]}>
+                <Input.TextArea placeholder="补充反馈、处理进展或结论" autoSize={{ minRows: 3, maxRows: 6 }} />
+              </Form.Item>
+              <Button type="primary" icon={<CommentOutlined />} loading={issueSaving} onClick={handleAddIssueComment}>
+                添加评论
+              </Button>
+            </Form>
+          </Space>
+        ) : (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请选择一个 Issue" />
+        )}
+      </Drawer>
     </PageShell>
   );
 };

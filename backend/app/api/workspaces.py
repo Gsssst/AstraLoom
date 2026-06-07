@@ -43,6 +43,28 @@ class WorkspaceAssistantSendRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=8000)
 
 
+class WorkspaceIssueCreateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=300)
+    description: str = Field(default="", max_length=8000)
+    issue_type: str = Field(default="feedback", pattern="^(feedback|bug|idea|question|task)$")
+    priority: str = Field(default="medium", pattern="^(low|medium|high|urgent)$")
+    labels: list[str] = Field(default_factory=list, max_length=8)
+
+
+class WorkspaceIssueUpdateRequest(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=300)
+    description: Optional[str] = Field(default=None, max_length=8000)
+    status: Optional[str] = Field(default=None, pattern="^(open|closed)$")
+    issue_type: Optional[str] = Field(default=None, pattern="^(feedback|bug|idea|question|task)$")
+    priority: Optional[str] = Field(default=None, pattern="^(low|medium|high|urgent)$")
+    labels: Optional[list[str]] = Field(default=None, max_length=8)
+    assignee_id: Optional[str] = None
+
+
+class WorkspaceIssueCommentRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=4000)
+
+
 class WorkspaceAssistantMessageResponse(BaseModel):
     id: str
     role: str
@@ -205,6 +227,108 @@ async def get_workspace_assistant_state(
         references=references,
         resource_summary=resource_summary,
     )
+
+
+@router.get("/{space_id}/issues")
+async def list_workspace_issues(
+    space_id: str,
+    status_filter: Optional[str] = None,
+    issue_type: Optional[str] = None,
+    priority: Optional[str] = None,
+    label: Optional[str] = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    service = WorkspaceService(db)
+    issues = await service.list_issues(
+        space_id,
+        user,
+        status_filter=status_filter,
+        issue_type=issue_type,
+        priority=priority,
+        label=label,
+        limit=limit,
+    )
+    if issues is None:
+        raise HTTPException(status_code=404, detail="项目空间未找到")
+    return issues
+
+
+@router.post("/{space_id}/issues", status_code=status.HTTP_201_CREATED)
+async def create_workspace_issue(
+    space_id: str,
+    req: WorkspaceIssueCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    service = WorkspaceService(db)
+    issue = await service.create_issue(
+        space_id,
+        user,
+        title=req.title,
+        description=req.description,
+        issue_type=req.issue_type,
+        priority=req.priority,
+        labels=req.labels,
+    )
+    if issue is None:
+        raise HTTPException(status_code=404, detail="项目空间未找到")
+    return issue
+
+
+@router.get("/{space_id}/issues/{issue_id}")
+async def get_workspace_issue(
+    space_id: str,
+    issue_id: str,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    service = WorkspaceService(db)
+    issue = await service.get_issue_detail(space_id, issue_id, user)
+    if issue is None:
+        raise HTTPException(status_code=404, detail="反馈 Issue 未找到")
+    return issue
+
+
+@router.patch("/{space_id}/issues/{issue_id}")
+async def update_workspace_issue(
+    space_id: str,
+    issue_id: str,
+    req: WorkspaceIssueUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    service = WorkspaceService(db)
+    try:
+        issue = await service.update_issue(
+            space_id,
+            issue_id,
+            user,
+            **{key: value for key, value in req.model_dump().items() if value is not None},
+        )
+    except PermissionError as exc:
+        _permission_error(exc)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    if issue is None:
+        raise HTTPException(status_code=404, detail="反馈 Issue 未找到")
+    return issue
+
+
+@router.post("/{space_id}/issues/{issue_id}/comments", status_code=status.HTTP_201_CREATED)
+async def add_workspace_issue_comment(
+    space_id: str,
+    issue_id: str,
+    req: WorkspaceIssueCommentRequest,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    service = WorkspaceService(db)
+    comment = await service.add_issue_comment(space_id, issue_id, user, req.content)
+    if comment is None:
+        raise HTTPException(status_code=404, detail="反馈 Issue 未找到")
+    return comment
 
 
 @router.post("/{space_id}/assistant/send", response_model=WorkspaceAssistantSendResponse)

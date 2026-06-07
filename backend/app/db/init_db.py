@@ -4,7 +4,14 @@ import logging
 from sqlalchemy import text
 from app.db.session import engine, AsyncSessionLocal
 from app.db.models.paper import Folder, PaperFolderItem
-from app.db.models.workspace import ProjectSpace, ProjectSpaceActivity, ProjectSpaceMember, ProjectSpaceResource
+from app.db.models.workspace import (
+    ProjectSpace,
+    ProjectSpaceActivity,
+    ProjectSpaceIssue,
+    ProjectSpaceIssueComment,
+    ProjectSpaceMember,
+    ProjectSpaceResource,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +35,8 @@ async def init_db() -> None:
                 ProjectSpaceMember.__table__,
                 ProjectSpaceResource.__table__,
                 ProjectSpaceActivity.__table__,
+                ProjectSpaceIssue.__table__,
+                ProjectSpaceIssueComment.__table__,
                 Folder.__table__,
                 PaperFolderItem.__table__,
             ])

@@ -1,9 +1,10 @@
 """项目空间 ORM 模型。"""
 
 import uuid
+from datetime import datetime
 from typing import Optional, List
 
-from sqlalchemy import String, Text, ForeignKey, UniqueConstraint, Index
+from sqlalchemy import String, Text, ForeignKey, UniqueConstraint, Index, DateTime
 from sqlalchemy.dialects.postgresql import UUID, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -37,6 +38,12 @@ class ProjectSpace(BaseModel):
     )
     activities: Mapped[List["ProjectSpaceActivity"]] = relationship(
         "ProjectSpaceActivity",
+        back_populates="space",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    issues: Mapped[List["ProjectSpaceIssue"]] = relationship(
+        "ProjectSpaceIssue",
         back_populates="space",
         cascade="all, delete-orphan",
         lazy="selectin",
@@ -112,4 +119,65 @@ class ProjectSpaceActivity(BaseModel):
     __table_args__ = (
         Index("ix_project_space_activities_space_created", "space_id", "created_at"),
         Index("ix_project_space_activities_actor_created", "actor_id", "created_at"),
+    )
+
+
+class ProjectSpaceIssue(BaseModel):
+    """项目空间反馈 issue。"""
+
+    __tablename__ = "project_space_issues"
+
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("project_spaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    creator_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    assignee_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    closed_by_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open", index=True)
+    issue_type: Mapped[str] = mapped_column(String(40), nullable=False, default="feedback", index=True)
+    priority: Mapped[str] = mapped_column(String(20), nullable=False, default="medium", index=True)
+    labels: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    space: Mapped["ProjectSpace"] = relationship("ProjectSpace", back_populates="issues")
+    comments: Mapped[List["ProjectSpaceIssueComment"]] = relationship(
+        "ProjectSpaceIssueComment",
+        back_populates="issue",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        Index("ix_project_space_issues_space_status", "space_id", "status"),
+        Index("ix_project_space_issues_space_priority", "space_id", "priority"),
+        Index("ix_project_space_issues_space_created", "space_id", "created_at"),
+    )
+
+
+class ProjectSpaceIssueComment(BaseModel):
+    """项目空间反馈 issue 评论。"""
+
+    __tablename__ = "project_space_issue_comments"
+
+    issue_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("project_space_issues.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    author_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+    issue: Mapped["ProjectSpaceIssue"] = relationship("ProjectSpaceIssue", back_populates="comments")
+
+    __table_args__ = (
+        Index("ix_project_space_issue_comments_issue_created", "issue_id", "created_at"),
     )
