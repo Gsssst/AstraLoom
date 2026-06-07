@@ -4,11 +4,13 @@ import {
   Alert, Button, Card, Col, Empty, Form, Input, List, Modal, Progress, Row, Select, Space, Statistic, Tag, Timeline, Typography, message,
 } from 'antd';
 import {
-  ArrowLeftOutlined, BookOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined,
+  AppstoreOutlined, ArrowLeftOutlined, BookOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined,
   LinkOutlined, PlusOutlined, RocketOutlined, TeamOutlined, UserOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
+import PageShell from '../components/PageShell';
+import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -64,6 +66,7 @@ const WorkspaceDetailPage: React.FC = () => {
   const [candidates, setCandidates] = useState<any[]>([]);
   const [candidateLoading, setCandidateLoading] = useState(false);
   const [manualMode, setManualMode] = useState(false);
+  const [workspaceActionError, setWorkspaceActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
 
   const fetchSpace = async () => {
     if (!spaceId) return;
@@ -71,9 +74,11 @@ const WorkspaceDetailPage: React.FC = () => {
     try {
       const response = await api.get(`/workspaces/${spaceId}`);
       setSpace(response.data);
-    } catch {
-      message.error('项目空间加载失败');
-      navigate('/workspaces');
+      setWorkspaceActionError(null);
+    } catch (error: any) {
+      const detail = getApiErrorDetails(error, { fallback: '项目空间加载失败' });
+      setWorkspaceActionError({ title: '项目空间加载失败', detail });
+      message.warning(detail.message);
     } finally {
       setLoading(false);
     }
@@ -89,8 +94,11 @@ const WorkspaceDetailPage: React.FC = () => {
         params: { resource_type: type, q: q || undefined, limit: 12 },
       });
       setCandidates(response.data.items || []);
+      setWorkspaceActionError(null);
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '候选资源加载失败');
+      const detail = getApiErrorDetails(error, { fallback: '候选资源加载失败' });
+      setWorkspaceActionError({ title: '候选资源加载失败', detail });
+      message.warning(detail.message);
     } finally {
       setCandidateLoading(false);
     }
@@ -104,9 +112,12 @@ const WorkspaceDetailPage: React.FC = () => {
       setSpace(response.data);
       setMemberModalOpen(false);
       memberForm.resetFields();
+      setWorkspaceActionError(null);
       message.success('成员已更新');
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '添加成员失败');
+      const detail = getApiErrorDetails(error, { fallback: '添加成员失败' });
+      setWorkspaceActionError({ title: '添加成员失败', detail });
+      message.warning(detail.message);
     } finally {
       setMemberSaving(false);
     }
@@ -116,9 +127,12 @@ const WorkspaceDetailPage: React.FC = () => {
     try {
       const response = await api.delete(`/workspaces/${spaceId}/members/${userId}`);
       setSpace(response.data);
+      setWorkspaceActionError(null);
       message.success('成员已移除');
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '移除成员失败');
+      const detail = getApiErrorDetails(error, { fallback: '移除成员失败' });
+      setWorkspaceActionError({ title: '移除成员失败', detail });
+      message.warning(detail.message);
     }
   };
 
@@ -135,9 +149,12 @@ const WorkspaceDetailPage: React.FC = () => {
       const response = await api.post(`/workspaces/${spaceId}/resources`, values);
       setSpace(response.data);
       resourceForm.resetFields();
+      setWorkspaceActionError(null);
       message.success('资源已绑定到空间');
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '绑定资源失败');
+      const detail = getApiErrorDetails(error, { fallback: '绑定资源失败' });
+      setWorkspaceActionError({ title: '绑定资源失败', detail });
+      message.warning(detail.message);
     } finally {
       setResourceSaving(false);
     }
@@ -151,10 +168,13 @@ const WorkspaceDetailPage: React.FC = () => {
         resource_id: candidate.id,
       });
       setSpace(response.data);
+      setWorkspaceActionError(null);
       await fetchCandidates(candidateType, candidateQuery);
       message.success('资源已绑定到空间');
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '绑定资源失败');
+      const detail = getApiErrorDetails(error, { fallback: '绑定资源失败' });
+      setWorkspaceActionError({ title: '绑定资源失败', detail });
+      message.warning(detail.message);
     } finally {
       setResourceSaving(false);
     }
@@ -164,9 +184,12 @@ const WorkspaceDetailPage: React.FC = () => {
     try {
       const response = await api.delete(`/workspaces/${spaceId}/resources/${resourceType}/${resourceId}`);
       setSpace(response.data);
+      setWorkspaceActionError(null);
       message.success('资源已从空间移除');
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '移除资源失败');
+      const detail = getApiErrorDetails(error, { fallback: '移除资源失败' });
+      setWorkspaceActionError({ title: '移除资源失败', detail });
+      message.warning(detail.message);
     }
   };
 
@@ -228,10 +251,45 @@ const WorkspaceDetailPage: React.FC = () => {
   const statusCards = dashboard.status_cards || [];
 
   return (
-    <div style={{ maxWidth: 1280, margin: '0 auto' }}>
-      <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/workspaces')} style={{ marginBottom: 12, borderRadius: 8 }}>
-        返回项目空间
-      </Button>
+    <PageShell
+      title={space?.name || '项目空间详情'}
+      subtitle={space?.description || '查看空间资源、成员、活动和下一步推进建议。'}
+      icon={<AppstoreOutlined />}
+      maxWidth={1280}
+      actions={(
+        <>
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/workspaces')} style={{ borderRadius: 8 }}>
+            返回项目空间
+          </Button>
+          <Button icon={<BookOutlined />} onClick={() => navigate('/papers')} style={{ borderRadius: 8 }}>论文库</Button>
+          <Button icon={<ExperimentOutlined />} onClick={() => navigate('/research')} style={{ borderRadius: 8 }}>研究方向</Button>
+          <Button icon={<EditOutlined />} onClick={() => navigate('/writing')} style={{ borderRadius: 8 }}>写作</Button>
+        </>
+      )}
+    >
+      {workspaceActionError ? (
+        <Alert
+          type={workspaceActionError.detail.severity === 'error' ? 'error' : 'warning'}
+          showIcon
+          closable
+          onClose={() => setWorkspaceActionError(null)}
+          style={{ borderRadius: 12, marginBottom: 16 }}
+          message={`${workspaceActionError.title}：${workspaceActionError.detail.message}`}
+          description={(
+            <Space direction="vertical" size={6}>
+              <Text>{workspaceActionError.detail.recovery}</Text>
+              <Space size={6} wrap>
+                <Tag color="orange">{workspaceActionError.detail.category}</Tag>
+                <Tag color={workspaceActionError.detail.retryable ? 'blue' : 'default'}>
+                  {workspaceActionError.detail.retryable ? '可重试' : '需先处理条件'}
+                </Tag>
+                {workspaceActionError.detail.status && <Tag>HTTP {workspaceActionError.detail.status}</Tag>}
+              </Space>
+            </Space>
+          )}
+        />
+      ) : null}
+
       <Card loading={loading} style={{ borderRadius: 18, marginBottom: 18 }}>
         {space && (
           <Row justify="space-between" align="top" gutter={[16, 16]}>
@@ -243,13 +301,6 @@ const WorkspaceDetailPage: React.FC = () => {
               </Space>
               <Title level={2} style={{ margin: '10px 0 4px' }}>{space.name}</Title>
               <Paragraph type="secondary" style={{ maxWidth: 720 }}>{space.description || '暂无空间描述。建议补充目标、当前问题和下一步计划。'}</Paragraph>
-            </Col>
-            <Col>
-              <Space>
-                <Button icon={<BookOutlined />} onClick={() => navigate('/papers')} style={{ borderRadius: 8 }}>论文库</Button>
-                <Button icon={<ExperimentOutlined />} onClick={() => navigate('/research')} style={{ borderRadius: 8 }}>研究方向</Button>
-                <Button icon={<EditOutlined />} onClick={() => navigate('/writing')} style={{ borderRadius: 8 }}>写作</Button>
-              </Space>
             </Col>
             <Col>
               <Progress
@@ -492,7 +543,7 @@ const WorkspaceDetailPage: React.FC = () => {
           </Form.Item>
         </Form>
       </Modal>
-    </div>
+    </PageShell>
   );
 };
 

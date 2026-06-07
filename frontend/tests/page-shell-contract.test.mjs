@@ -18,6 +18,10 @@ const workspacesSource = readFileSync(
   new URL('../src/pages/WorkspacesPage.tsx', import.meta.url),
   'utf8',
 );
+const workspaceDetailSource = readFileSync(
+  new URL('../src/pages/WorkspaceDetailPage.tsx', import.meta.url),
+  'utf8',
+);
 const actionCenterSource = readFileSync(
   new URL('../src/pages/ActionCenterPage.tsx', import.meta.url),
   'utf8',
@@ -75,6 +79,22 @@ test('workspaces page adopts page shell with create action', () => {
   assert.match(workspacesSource, /setModalOpen\(true\)/);
   assert.match(workspacesSource, /<Modal title="新建项目空间"/);
   assert.doesNotMatch(workspacesSource, /linear-gradient\(135deg, #667eea 0%, #764ba2 100%\)/);
+});
+
+test('workspace detail page adopts page shell with recovery guidance', () => {
+  assert.match(workspaceDetailSource, /import PageShell from '\.\.\/components\/PageShell'/);
+  assert.match(workspaceDetailSource, /<PageShell/);
+  assert.match(workspaceDetailSource, /title=\{space\?\.name \|\| '项目空间详情'\}/);
+  assert.match(workspaceDetailSource, /maxWidth=\{1280\}/);
+  assert.match(workspaceDetailSource, /返回项目空间/);
+  assert.match(workspaceDetailSource, /论文库/);
+  assert.match(workspaceDetailSource, /研究方向/);
+  assert.match(workspaceDetailSource, /写作/);
+  assert.match(workspaceDetailSource, /getApiErrorDetails/);
+  assert.match(workspaceDetailSource, /workspaceActionError/);
+  assert.match(workspaceDetailSource, /workspaceActionError\.detail\.recovery/);
+  assert.match(workspaceDetailSource, /需先处理条件/);
+  assert.doesNotMatch(workspaceDetailSource, /navigate\('\/workspaces'\);\n    } finally/);
 });
 
 test('action center adopts page shell with summary content', () => {
