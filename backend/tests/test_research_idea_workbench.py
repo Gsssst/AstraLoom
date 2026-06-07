@@ -6,6 +6,8 @@ from uuid import uuid4
 import pytest
 
 from app.services.research_idea_workbench import ResearchIdeaWorkbenchService
+from app.services.research_service import ResearchPipelineService
+from app.api.research import DiscussRequest, IdeaDiscussEvolveRequest
 from app.services.digest_service import ExperimentService
 from app.api.research import ExternalEvidenceImportRequest, import_external_evidence
 from app.db.models.research import ResearchIdeaRun, ResearchProject
@@ -184,6 +186,112 @@ def test_validate_idea_marks_complete_plan_as_writing_ready():
     assert validation["coverage"]["experiment_completeness"] == 1
     assert validation["experiment_checklist"]["ablations"]["present"] is True
     assert "创建写作草稿" in validation["next_actions"]
+
+
+def _copilot_idea():
+    return SimpleNamespace(
+        id=uuid4(),
+        project_id=uuid4(),
+        generation_run_id=uuid4(),
+        parent_idea_id=None,
+        title="Evidence-grounded proposal",
+        description="Use calibrated retrieval to reduce unsupported answers.",
+        hypothesis="Calibration improves answer grounding.",
+        approach="Add evidence calibration and evaluate against retrieval baselines.",
+        novelty="Combines calibration with answer abstention.",
+        feasibility_score=8,
+        novelty_score=7,
+        status="draft",
+        referenced_papers={"paper_ids": ["p1", "p2"]},
+        evidence_json={"scope": "local_library", "items": [
+            {"paper_id": "p1", "title": "Grounded Retrieval", "score": 0.9, "category": "seed", "abstract_excerpt": "retrieval grounding"},
+            {"paper_id": "p2", "title": "Answer Calibration", "score": 0.8, "category": "background", "abstract_excerpt": "calibration"},
+        ]},
+        review_json={
+            "scores": {"novelty": 7, "evidence_grounding": 8, "feasibility": 8, "testability": 9, "impact": 7, "clarity": 8},
+            "rationale": "Testable and evidence-backed.",
+            "novelty_check": {"status": "likely_novel", "score": 0.8, "max_similarity": 0.2},
+            "adversarial_review": {"objections": ["Needs a strong retrieval baseline."]},
+        },
+        experiment_plan={
+            "dataset": "QA-Bench",
+            "baselines": ["RAG baseline"],
+            "metrics": ["citation precision"],
+            "steps": ["Reproduce baseline", "Run calibration", "Ablation"],
+        },
+        evolution_json={},
+        discussion_log=[],
+    )
+
+
+@pytest.mark.asyncio
+async def test_idea_copilot_discussion_returns_structured_metadata(monkeypatch):
+    session = _Session()
+    service = ResearchPipelineService(session)
+    idea = _copilot_idea()
+    project = SimpleNamespace(id=idea.project_id, name="Grounded QA", description="Improve RAG reliability", keywords=["rag"])
+
+    async def fake_chat(messages, **_kwargs):
+        assert "审稿人" in messages[0]["content"]
+        assert "Grounded Retrieval" in messages[0]["content"]
+        assert "collision_risk" in messages[0]["content"]
+        return """
+        {
+          "reply": "## 主要问题\\n需要补强强基线。",
+          "risks": ["强基线不足"],
+          "next_actions": ["补充 RAG baseline"],
+          "suggested_questions": ["如何做消融？"],
+          "evolution_focus": "围绕强基线和消融演化下一版"
+        }
+        """
+
+    import app.services.research_service as research_module
+
+    monkeypatch.setattr(research_module.llm_service, "chat", fake_chat)
+    result = await service.discuss_idea(idea, "请严格审稿", project=project, mode="skeptic")
+
+    assert result["mode"] == "skeptic"
+    assert result["reply"].startswith("## 主要问题")
+    assert result["risks"] == ["强基线不足"]
+    assert result["next_actions"] == ["补充 RAG baseline"]
+    assert result["suggested_questions"] == ["如何做消融？"]
+    assert result["evolution_focus"] == "围绕强基线和消融演化下一版"
+    assert result["context_summary"]["evidence_count"] == 2
+    assert idea.discussion_log[-1]["metadata"]["evolution_focus"] == "围绕强基线和消融演化下一版"
+    assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_idea_copilot_discussion_falls_back_for_plain_text(monkeypatch):
+    service = ResearchPipelineService(_Session())
+    idea = _copilot_idea()
+    idea.evidence_json = {"scope": "local_library", "items": []}
+    idea.experiment_plan = {}
+
+    async def fake_chat(messages, **_kwargs):
+        assert messages[-1]["content"] == "下一步？"
+        return "请先补齐证据和最小实验。"
+
+    import app.services.research_service as research_module
+
+    monkeypatch.setattr(research_module.llm_service, "chat", fake_chat)
+    result = await service.discuss_idea(idea, "下一步？", mode="mentor")
+
+    assert result["reply"] == "请先补齐证据和最小实验。"
+    assert result["context_summary"]["missing"]
+    assert result["suggested_questions"]
+    assert "演化" in result["evolution_focus"]
+
+
+def test_discuss_request_rejects_invalid_copilot_mode():
+    with pytest.raises(Exception):
+        DiscussRequest(message="test", mode="invalid")
+
+
+def test_discussion_evolve_request_accepts_optional_focus():
+    req = IdeaDiscussEvolveRequest()
+
+    assert req.focus == ""
 
 
 def test_experiment_execution_pack_explains_missing_setup():

@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -139,6 +139,7 @@ class IdeaBrief(BaseModel):
     review_json: Optional[dict] = None
     experiment_plan: Optional[dict] = None
     evolution_json: Optional[dict] = None
+    discussion_log: Optional[list] = None
     generated_code: Optional[str] = None
     created_at: str
 
@@ -177,6 +178,7 @@ class IdeaResponse(BaseModel):
     review_json: Optional[dict] = None
     experiment_plan: Optional[dict] = None
     evolution_json: Optional[dict] = None
+    discussion_log: Optional[list] = None
     generated_code: Optional[str] = None
     created_at: str
 
@@ -207,11 +209,18 @@ class IdeaRunResponse(BaseModel):
 
 class DiscussRequest(BaseModel):
     message: str = Field(..., description="用户消息")
+    mode: Literal["mentor", "skeptic", "experiment_designer", "writer"] = "mentor"
 
 
 class DiscussResponse(BaseModel):
     reply: str
     discussion_log: Optional[list] = None
+    mode: str = "mentor"
+    context_summary: Optional[dict[str, Any]] = None
+    risks: list[str] = []
+    next_actions: list[str] = []
+    suggested_questions: list[str] = []
+    evolution_focus: Optional[str] = None
 
 
 class CodeGenResponse(BaseModel):
@@ -228,6 +237,10 @@ class IdeaCompareRequest(BaseModel):
 
 
 class IdeaEvolveRequest(BaseModel):
+    focus: str = Field(default="", max_length=1000)
+
+
+class IdeaDiscussEvolveRequest(BaseModel):
     focus: str = Field(default="", max_length=1000)
 
 
@@ -282,6 +295,7 @@ def _idea_response(idea: ResearchIdea) -> IdeaResponse:
         review_json=idea.review_json,
         experiment_plan=idea.experiment_plan,
         evolution_json=idea.evolution_json,
+        discussion_log=idea.discussion_log or [],
         generated_code=idea.generated_code,
         created_at=idea.created_at.isoformat() if idea.created_at else "",
     )
@@ -882,12 +896,41 @@ async def discuss_idea(
 ):
     """与 AI 讨论细化 Idea。"""
     idea = await _get_owned_idea(db, idea_id, current_user)
+    project = await _get_owned_project(db, str(idea.project_id), current_user)
 
     service = ResearchPipelineService(db)
     history = idea.discussion_log or []
-    reply = await service.discuss_idea(idea, req.message, history[-10:] if len(history) > 10 else history)
+    result = await service.discuss_idea(
+        idea,
+        req.message,
+        history[-10:] if len(history) > 10 else history,
+        project=project,
+        mode=req.mode,
+    )
 
-    return DiscussResponse(reply=reply, discussion_log=idea.discussion_log)
+    return DiscussResponse(**result)
+
+
+@router.post("/ideas/{idea_id}/discuss/evolve", response_model=IdeaResponse, status_code=201)
+async def evolve_idea_from_discussion(
+    idea_id: str,
+    req: IdeaDiscussEvolveRequest = IdeaDiscussEvolveRequest(),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """把 Copilot 讨论结论转成一个可追溯 Proposal 子版本。"""
+    idea = await _get_owned_idea(db, idea_id, current_user)
+    if idea.status not in {"draft", "pinned"}:
+        raise HTTPException(status_code=409, detail="仅待筛选或已收藏的 Proposal 可以继续演化")
+    project = await _get_owned_project(db, str(idea.project_id), current_user)
+    focus = req.focus.strip() or ResearchPipelineService(db).latest_copilot_evolution_focus(idea)
+    if not focus:
+        focus = "基于最近 Copilot 讨论，补强证据、实验设置和 Proposal 可证伪性"
+    try:
+        child = await ResearchIdeaWorkbenchService(db).evolve_idea(idea, project, focus=focus)
+        return _idea_response(child)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Proposal 演化失败: {str(exc)}")
 
 
 @router.post("/ideas/{idea_id}/generate-code", response_model=CodeGenResponse)

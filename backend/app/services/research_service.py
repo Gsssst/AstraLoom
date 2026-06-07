@@ -1,7 +1,9 @@
 """科研 Pipeline 服务 — Idea 生成、讨论、代码生成。"""
 
+import json
 import logging
-from typing import List, Optional
+import re
+from typing import Any, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -9,8 +11,17 @@ from app.services.llm import llm_service
 from app.services.rag_service import RAGService
 from app.db.models.paper import Paper
 from app.db.models.research import ResearchProject, ResearchIdea
+from app.services.research_idea_workbench import ResearchIdeaWorkbenchService
 
 logger = logging.getLogger(__name__)
+
+COPILOT_MODES = {"mentor", "skeptic", "experiment_designer", "writer"}
+COPILOT_MODE_PROMPTS = {
+    "mentor": "你是资深研究导师，目标是帮助学生把 Proposal 细化成更清晰、可推进的研究方案。",
+    "skeptic": "你是严格审稿人，优先攻击 novelty、证据缺口、可行性、实验设置和潜在撞车风险。",
+    "experiment_designer": "你是实验设计专家，优先给出最小实验、强基线、指标、消融和失败判定。",
+    "writer": "你是论文写作顾问，优先帮助整理贡献点、related work 角度、claim 边界和写作准备度。",
+}
 
 
 class ResearchPipelineService:
@@ -289,40 +300,299 @@ class ResearchPipelineService:
         idea: ResearchIdea,
         user_message: str,
         discussion_history: Optional[list] = None,
-    ) -> str:
-        """多轮讨论细化 Idea。"""
-        # 构建讨论上下文
-        context = f"""## Idea: {idea.title}
+        *,
+        project: Optional[ResearchProject] = None,
+        mode: str = "mentor",
+    ) -> dict[str, Any]:
+        """多轮讨论细化 Idea，并返回可驱动后续演化的结构化元数据。"""
+        selected_mode = mode if mode in COPILOT_MODES else "mentor"
+        context = self.build_copilot_context(idea, project, discussion_history)
+        system_prompt = self._copilot_system_prompt(selected_mode, context)
 
-{idea.description}
-
-可行性: {idea.feasibility_score}/10 | 创新性: {idea.novelty_score}/10
-"""
-
-        messages = [
-            {"role": "system", "content": f"你是一位资深研究导师。请围绕以下研究 Idea 与学生讨论，帮助其细化方案、识别潜在问题、提出改进建议。\n\n{context}"},
-        ]
-
-        if discussion_history:
-            messages.extend(discussion_history)
-
+        messages = [{"role": "system", "content": system_prompt}]
+        for item in self._recent_chat_messages(discussion_history or [], limit=8):
+            messages.append(item)
         messages.append({"role": "user", "content": user_message})
 
         response = await llm_service.chat(
             messages=messages,
-            temperature=0.7,
-            max_tokens=2048,
+            temperature=0.65 if selected_mode != "skeptic" else 0.55,
+            max_tokens=2400,
         )
 
-        # 更新讨论记录
-        current_log = idea.discussion_log or []
-        current_log.append({"role": "user", "content": user_message})
-        current_log.append({"role": "assistant", "content": response})
+        parsed = self._parse_copilot_response(response)
+        metadata = self._normalize_copilot_metadata(parsed, context, selected_mode)
+        reply = str(parsed.get("reply") or response or "").strip()
+        if not reply:
+            reply = "我暂时没有生成有效回复。建议先补齐验证闭环和最小实验信息后再继续讨论。"
+
+        current_log = list(idea.discussion_log or [])
+        current_log.append({"role": "user", "content": user_message, "mode": selected_mode})
+        current_log.append({"role": "assistant", "content": reply, "mode": selected_mode, "metadata": metadata})
         idea.discussion_log = current_log
         idea.status = "discussing"
         await self.session.commit()
 
-        return response
+        return {"reply": reply, "discussion_log": current_log, "mode": selected_mode, **metadata}
+
+    def build_copilot_context(
+        self,
+        idea: ResearchIdea,
+        project: Optional[ResearchProject] = None,
+        discussion_history: Optional[list] = None,
+    ) -> dict[str, Any]:
+        workbench = ResearchIdeaWorkbenchService(self.session)
+        validation = workbench.validate_idea(idea, project)
+        execution_pack = workbench.build_experiment_execution_pack(idea, project, experiments=[])
+        evidence = self._summarize_evidence(idea.evidence_json)
+        review = self._summarize_review(idea.review_json)
+        lineage = self._summarize_lineage(idea)
+        history = [
+            {"role": item.get("role"), "content": str(item.get("content") or "")[:700], "mode": item.get("mode")}
+            for item in (discussion_history or [])[-6:]
+            if isinstance(item, dict) and item.get("content")
+        ]
+        missing = []
+        if not evidence["items"]:
+            missing.append("evidence")
+        if not idea.experiment_plan:
+            missing.append("experiment_plan")
+        if not idea.review_json:
+            missing.append("review")
+        if not idea.parent_idea_id and not idea.evolution_json:
+            missing.append("lineage")
+
+        return {
+            "idea": {
+                "id": str(idea.id),
+                "title": idea.title,
+                "description": idea.description,
+                "hypothesis": idea.hypothesis,
+                "approach": idea.approach,
+                "novelty": idea.novelty,
+                "feasibility_score": idea.feasibility_score,
+                "novelty_score": idea.novelty_score,
+                "status": idea.status,
+            },
+            "project": {
+                "id": str(project.id) if project else str(idea.project_id),
+                "name": getattr(project, "name", None),
+                "description": getattr(project, "description", None),
+                "keywords": getattr(project, "keywords", None),
+            },
+            "evidence": evidence,
+            "review": review,
+            "experiment_plan": idea.experiment_plan or {},
+            "validation": self._summarize_validation(validation),
+            "execution": self._summarize_execution(execution_pack),
+            "lineage": lineage,
+            "evolution": idea.evolution_json or {},
+            "recent_discussion": history,
+            "context_summary": {
+                "evidence_count": evidence["count"],
+                "has_validation": True,
+                "has_execution_pack": True,
+                "has_lineage": bool(lineage.get("parent_idea_id") or lineage.get("evolution_round")),
+                "missing": missing,
+            },
+        }
+
+    def latest_copilot_evolution_focus(self, idea: ResearchIdea) -> str:
+        for item in reversed(idea.discussion_log or []):
+            if not isinstance(item, dict):
+                continue
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            focus = str(metadata.get("evolution_focus") or "").strip()
+            if focus:
+                return focus
+        return ""
+
+    def _copilot_system_prompt(self, mode: str, context: dict[str, Any]) -> str:
+        return f"""{COPILOT_MODE_PROMPTS[mode]}
+
+你正在协助用户迭代一个已经持久化的 Research Proposal。请基于下方 JSON 上下文回答，优先利用证据、验证闭环、实验推进包、谱系和历史讨论。不要编造不存在的论文或实验结果；如果上下文缺失，请明确指出缺口。
+
+请只输出合法 JSON，不要使用 Markdown 代码块。JSON 格式：
+{{
+  "reply": "给用户看的 markdown 回复",
+  "risks": ["最多 4 个关键风险"],
+  "next_actions": ["最多 5 个下一步动作"],
+  "suggested_questions": ["最多 4 个建议追问"],
+  "evolution_focus": "如果要演化下一版 Proposal，应该聚焦的一句话"
+}}
+
+上下文：
+{json.dumps(context, ensure_ascii=False)[:14000]}
+"""
+
+    @staticmethod
+    def _recent_chat_messages(history: list, limit: int = 8) -> list[dict[str, str]]:
+        messages = []
+        for item in history[-limit:]:
+            if not isinstance(item, dict):
+                continue
+            role = item.get("role")
+            content = str(item.get("content") or "").strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            messages.append({"role": role, "content": content[:1200]})
+        return messages
+
+    @staticmethod
+    def _parse_copilot_response(response: str) -> dict[str, Any]:
+        if not response:
+            return {}
+        text = response.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        try:
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, dict) else {"reply": response}
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+            if match:
+                try:
+                    parsed = json.loads(match.group(0))
+                    return parsed if isinstance(parsed, dict) else {"reply": response}
+                except json.JSONDecodeError:
+                    pass
+        return {"reply": response}
+
+    @staticmethod
+    def _normalize_copilot_metadata(
+        parsed: dict[str, Any],
+        context: dict[str, Any],
+        mode: str,
+    ) -> dict[str, Any]:
+        validation = context.get("validation") or {}
+        execution = context.get("execution") or {}
+        risks = ResearchPipelineService._string_list(parsed.get("risks"), limit=4)
+        if not risks:
+            risks = ResearchPipelineService._string_list(validation.get("feasibility_risks"), limit=4)
+        next_actions = ResearchPipelineService._string_list(parsed.get("next_actions"), limit=5)
+        if not next_actions:
+            next_actions = ResearchPipelineService._string_list(execution.get("next_actions"), limit=5)
+        suggested_questions = ResearchPipelineService._string_list(parsed.get("suggested_questions"), limit=4)
+        if not suggested_questions:
+            suggested_questions = ResearchPipelineService._fallback_questions(mode)
+        evolution_focus = str(parsed.get("evolution_focus") or "").strip()
+        if not evolution_focus:
+            evolution_focus = ResearchPipelineService._fallback_evolution_focus(context, mode)
+        return {
+            "context_summary": context.get("context_summary") or {},
+            "risks": risks,
+            "next_actions": next_actions,
+            "suggested_questions": suggested_questions,
+            "evolution_focus": evolution_focus,
+        }
+
+    @staticmethod
+    def _string_list(value: Any, limit: int) -> list[str]:
+        if isinstance(value, list):
+            items = []
+            for item in value:
+                if isinstance(item, dict):
+                    text = item.get("message") or item.get("label") or item.get("title") or item.get("detail")
+                else:
+                    text = item
+                text = str(text or "").strip()
+                if text:
+                    items.append(text)
+            return list(dict.fromkeys(items))[:limit]
+        if isinstance(value, str) and value.strip():
+            return [value.strip()[:400]]
+        return []
+
+    @staticmethod
+    def _fallback_questions(mode: str) -> list[str]:
+        if mode == "skeptic":
+            return ["这个 Proposal 最可能和哪类已有工作撞车？", "最弱的实验假设是什么？", "审稿人会质疑哪一个 claim？"]
+        if mode == "experiment_designer":
+            return ["第一轮最小实验应该如何设计？", "需要哪些强基线和消融？", "失败判定标准是什么？"]
+        if mode == "writer":
+            return ["贡献点应该如何收窄？", "related work 应该怎样组织？", "哪些证据还不足以支撑写作？"]
+        return ["下一版 Proposal 应该优先改哪一点？", "这个想法的关键风险是什么？", "如何把它变成可证伪实验？"]
+
+    @staticmethod
+    def _fallback_evolution_focus(context: dict[str, Any], mode: str) -> str:
+        idea = context.get("idea") or {}
+        validation = context.get("validation") or {}
+        title = idea.get("title") or "当前 Proposal"
+        if mode == "skeptic":
+            collision = validation.get("collision_risk") or {}
+            return f"降低「{title}」的撞车风险，并补强 novelty 与证据边界：{collision.get('reason') or '优先处理最强审稿质疑'}"
+        if mode == "experiment_designer":
+            return f"把「{title}」演化为包含强基线、指标、消融和失败判定的最小实验方案"
+        if mode == "writer":
+            return f"收窄「{title}」的可写作贡献点，并补齐支撑 claim 的证据与实验"
+        return f"基于当前验证与讨论，把「{title}」演化成更具体、可证伪、证据更充分的下一版 Proposal"
+
+    @staticmethod
+    def _summarize_evidence(evidence_json: Any) -> dict[str, Any]:
+        data = evidence_json if isinstance(evidence_json, dict) else {}
+        items = data.get("items") or []
+        summarized = []
+        for item in items[:8]:
+            if not isinstance(item, dict):
+                continue
+            summarized.append({
+                "paper_id": item.get("paper_id") or item.get("id"),
+                "title": item.get("title"),
+                "category": item.get("category"),
+                "score": item.get("score"),
+                "source": item.get("source") or item.get("source_label"),
+                "relevance": item.get("relevance") or item.get("relevance_explanation"),
+                "abstract_excerpt": str(item.get("abstract_excerpt") or item.get("abstract") or "")[:500],
+            })
+        return {"count": len(items), "scope": data.get("scope"), "items": summarized}
+
+    @staticmethod
+    def _summarize_review(review_json: Any) -> dict[str, Any]:
+        review = review_json if isinstance(review_json, dict) else {}
+        scores = review.get("scores") if isinstance(review.get("scores"), dict) else {}
+        adversarial = review.get("adversarial_review") if isinstance(review.get("adversarial_review"), dict) else {}
+        novelty_check = review.get("novelty_check") if isinstance(review.get("novelty_check"), dict) else {}
+        return {
+            "scores": scores,
+            "aggregate_score": review.get("aggregate_score"),
+            "rationale": review.get("rationale"),
+            "novelty_check": novelty_check,
+            "adversarial_objections": adversarial.get("objections", [])[:5] if isinstance(adversarial.get("objections"), list) else [],
+        }
+
+    @staticmethod
+    def _summarize_validation(validation: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "summary": validation.get("summary"),
+            "writing_readiness": validation.get("writing_readiness"),
+            "collision_risk": validation.get("collision_risk"),
+            "coverage": validation.get("coverage"),
+            "feasibility_risks": ResearchPipelineService._string_list(validation.get("feasibility_risks"), limit=5),
+            "next_actions": ResearchPipelineService._string_list(validation.get("next_actions"), limit=5),
+            "related_work": (validation.get("related_work") or [])[:5],
+        }
+
+    @staticmethod
+    def _summarize_execution(execution_pack: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "readiness": execution_pack.get("readiness"),
+            "summary": execution_pack.get("summary"),
+            "minimum_tasks": execution_pack.get("minimum_tasks", [])[:5],
+            "success_metrics": execution_pack.get("success_metrics", [])[:5],
+            "risks": ResearchPipelineService._string_list(execution_pack.get("risks"), limit=5),
+            "next_actions": ResearchPipelineService._string_list(execution_pack.get("next_actions"), limit=5),
+        }
+
+    @staticmethod
+    def _summarize_lineage(idea: ResearchIdea) -> dict[str, Any]:
+        evolution = idea.evolution_json if isinstance(idea.evolution_json, dict) else {}
+        return {
+            "parent_idea_id": str(idea.parent_idea_id) if idea.parent_idea_id else None,
+            "evolution_round": evolution.get("round"),
+            "evolution_focus": evolution.get("focus"),
+            "evolution_rationale": evolution.get("rationale"),
+        }
 
     async def generate_code(
         self,

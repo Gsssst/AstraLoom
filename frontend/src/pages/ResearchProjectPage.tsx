@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  Alert, Button, Card, Checkbox, Collapse, Col, Divider, Input, List, message,
+  Alert, Button, Card, Checkbox, Collapse, Col, Divider, Drawer, Input, List, message,
   Modal, Popconfirm, Row, Select, Space, Steps, Switch, Tabs, Tag, Tooltip, Typography,
 } from 'antd';
 import {
@@ -15,6 +15,7 @@ import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
 import WorkspaceIssueReporter from '../components/WorkspaceIssueReporter';
 import PageShell from '../components/PageShell';
 import ApiErrorAlert from '../components/ApiErrorAlert';
+import Markdown from '../components/Markdown';
 import {
   WorkflowEmptyState,
   WorkflowLoadingState,
@@ -70,6 +71,29 @@ interface Idea {
   generated_code: string | null; evidence_json?: { items?: Evidence[]; scope?: string; collection_sources?: { id: string; name: string; evidence_count: number }[] } | null;
   review_json?: Review | null; experiment_plan?: ExperimentPlan | null;
   parent_idea_id?: string | null; evolution_json?: { focus?: string; rationale?: string; round?: number; experiment_feedback?: ExperimentRecord } | null;
+  discussion_log?: CopilotLogEntry[];
+}
+type CopilotMode = 'mentor' | 'skeptic' | 'experiment_designer' | 'writer';
+interface CopilotMetadata {
+  context_summary?: { evidence_count?: number; has_validation?: boolean; has_execution_pack?: boolean; has_lineage?: boolean; missing?: string[] };
+  risks?: string[];
+  next_actions?: string[];
+  suggested_questions?: string[];
+  evolution_focus?: string | null;
+}
+interface CopilotLogEntry {
+  role: 'user' | 'assistant';
+  content: string;
+  mode?: CopilotMode;
+  metadata?: CopilotMetadata;
+}
+interface CopilotState extends CopilotMetadata {
+  msg: string;
+  mode: CopilotMode;
+  log: CopilotLogEntry[];
+  loading: boolean;
+  evolving: boolean;
+  evolutionFocus: string;
 }
 interface ExperimentRecord {
   experiment_id: string; idea_id?: string | null; name: string; dataset: string;
@@ -143,6 +167,18 @@ const adversarialColors: Record<string, string> = { advance: 'green', revise: 'o
 const readinessColors: Record<string, string> = { ready: 'green', needs_validation: 'orange', blocked: 'red' };
 const executionReadinessColors: Record<string, string> = { ready: 'green', needs_setup: 'orange', needs_iteration: 'purple' };
 const riskColors: Record<string, string> = { high: 'red', medium: 'orange', low: 'green' };
+const copilotModeOptions: { value: CopilotMode; label: string }[] = [
+  { value: 'mentor', label: '导师' },
+  { value: 'skeptic', label: '审稿人' },
+  { value: 'experiment_designer', label: '实验设计' },
+  { value: 'writer', label: '写作顾问' },
+];
+const copilotQuickPrompts: Record<CopilotMode, string[]> = {
+  mentor: ['帮我把这个 Proposal 收敛成一个可证伪假设', '下一版最该改进哪一点？', '这个方向最适合先做哪个低成本验证？'],
+  skeptic: ['请像严格审稿人一样攻击 novelty 和实验风险', '这个想法最可能和哪些已有工作撞车？', '列出必须修复的三个审稿质疑'],
+  experiment_designer: ['设计第一轮最小实验、强基线和消融', '如何定义成功指标和失败判定？', '把实验步骤拆成可执行清单'],
+  writer: ['把这个 idea 整理成论文贡献点', 'related work 应该如何组织？', '哪些 claim 现在还不能写？'],
+};
 
 const proposalEvidenceCount = (idea: Idea) => idea.evidence_json?.items?.length || 0;
 const proposalReviewScore = (idea: Idea) =>
@@ -177,7 +213,8 @@ const ResearchProjectPage: React.FC = () => {
   const [papersLoading, setPapersLoading] = useState(false);
   const [papersCached, setPapersCached] = useState(false);
   const [papersRefreshedAt, setPapersRefreshedAt] = useState<string | null>(null);
-  const [discussMap, setDiscussMap] = useState<Record<string, { msg: string; log: any[]; loading: boolean }>>({});
+  const [discussMap, setDiscussMap] = useState<Record<string, CopilotState>>({});
+  const [copilotIdea, setCopilotIdea] = useState<Idea | null>(null);
   const [codeMap, setCodeMap] = useState<Record<string, { loading: boolean }>>({});
   const [externalSearch, setExternalSearch] = useState(true);
   const [selectedIdeaIds, setSelectedIdeaIds] = useState<string[]>([]);
@@ -338,22 +375,80 @@ const ResearchProjectPage: React.FC = () => {
     message.info('已停止生成候选 Proposal');
   };
 
-  const getDiscuss = (ideaId: string) => discussMap[ideaId] || { msg: '', log: [], loading: false };
-  const setDiscuss = (ideaId: string, update: any) => setDiscussMap(previous => ({
-    ...previous, [ideaId]: { ...getDiscuss(ideaId), ...update },
+  const defaultDiscussState = (ideaId: string): CopilotState => {
+    const idea = ideas.find(item => item.id === ideaId);
+    return {
+      msg: '',
+      mode: 'mentor',
+      log: idea?.discussion_log || [],
+      loading: false,
+      evolving: false,
+      evolutionFocus: '',
+      risks: [],
+      next_actions: [],
+      suggested_questions: [],
+      evolution_focus: '',
+      context_summary: undefined,
+    };
+  };
+  const getDiscuss = (ideaId: string): CopilotState => discussMap[ideaId] || defaultDiscussState(ideaId);
+  const setDiscuss = (ideaId: string, update: Partial<CopilotState>) => setDiscussMap(previous => ({
+    ...previous, [ideaId]: { ...(previous[ideaId] || defaultDiscussState(ideaId)), ...update },
   }));
+  const openCopilot = (idea: Idea) => {
+    setDiscuss(idea.id, { log: getDiscuss(idea.id).log.length ? getDiscuss(idea.id).log : idea.discussion_log || [] });
+    setCopilotIdea(idea);
+  };
+  const applyQuickPrompt = (text: string) => {
+    if (!copilotIdea) return;
+    setDiscuss(copilotIdea.id, { msg: text });
+  };
   const handleDiscuss = async (ideaId: string) => {
     const current = getDiscuss(ideaId);
     if (!current.msg.trim()) return;
     setDiscuss(ideaId, { loading: true });
-    const log = [...current.log, { role: 'user', content: current.msg }];
+    const log: CopilotLogEntry[] = [...current.log, { role: 'user', content: current.msg, mode: current.mode }];
     setDiscuss(ideaId, { msg: '', log });
     try {
-      const response = await api.post(`/research/ideas/${ideaId}/discuss`, { message: current.msg });
-      setDiscuss(ideaId, { log: [...log, { role: 'assistant', content: response.data.reply }] });
+      const response = await api.post(`/research/ideas/${ideaId}/discuss`, { message: current.msg, mode: current.mode });
+      const assistantEntry: CopilotLogEntry = {
+        role: 'assistant',
+        content: response.data.reply,
+        mode: response.data.mode,
+        metadata: {
+          context_summary: response.data.context_summary,
+          risks: response.data.risks || [],
+          next_actions: response.data.next_actions || [],
+          suggested_questions: response.data.suggested_questions || [],
+          evolution_focus: response.data.evolution_focus || '',
+        },
+      };
+      setDiscuss(ideaId, {
+        log: response.data.discussion_log || [...log, assistantEntry],
+        context_summary: response.data.context_summary,
+        risks: response.data.risks || [],
+        next_actions: response.data.next_actions || [],
+        suggested_questions: response.data.suggested_questions || [],
+        evolution_focus: response.data.evolution_focus || '',
+        evolutionFocus: response.data.evolution_focus || getDiscuss(ideaId).evolutionFocus,
+      });
+      setIdeas(previous => previous.map(idea => idea.id === ideaId ? { ...idea, discussion_log: response.data.discussion_log || [...log, assistantEntry] } : idea));
       setPageActionError(null);
     } catch (error) { showPageError('讨论失败', error, '讨论失败'); }
     finally { setDiscuss(ideaId, { loading: false }); }
+  };
+  const evolveFromCopilot = async (ideaId: string) => {
+    const current = getDiscuss(ideaId);
+    setDiscuss(ideaId, { evolving: true });
+    try {
+      const focus = current.evolutionFocus || current.evolution_focus || '';
+      const response = await api.post(`/research/ideas/${ideaId}/discuss/evolve`, { focus });
+      setIdeas(previous => [response.data, ...previous]);
+      setCopilotIdea(response.data);
+      setPageActionError(null);
+      message.success('已根据 Copilot 讨论生成下一版 Proposal');
+    } catch (error) { showPageError('根据 Copilot 讨论演化失败', error, '根据 Copilot 讨论演化失败'); }
+    finally { setDiscuss(ideaId, { evolving: false }); }
   };
   const handleGenCode = async (ideaId: string) => {
     setCodeMap(previous => ({ ...previous, [ideaId]: { loading: true } }));
@@ -637,7 +732,6 @@ const ResearchProjectPage: React.FC = () => {
   );
 
   const renderProposal = (idea: Idea) => {
-    const discussion = getDiscuss(idea.id);
     const review = idea.review_json;
     const plan = idea.experiment_plan;
     const validation = validationMap[idea.id];
@@ -866,22 +960,17 @@ const ResearchProjectPage: React.FC = () => {
           <Button icon={<ExperimentOutlined />} loading={executionPack?.loading} onClick={() => loadExecutionPack(idea.id)}>实验推进包</Button>
           <Button icon={<FileSearchOutlined />} loading={validation?.loading} onClick={() => loadIdeaValidation(idea.id)}>验证闭环</Button>
           <Button icon={<FileTextOutlined />} loading={draftingIdeaIds.has(idea.id)} onClick={() => createWritingDraft(idea)}>生成写作草稿</Button>
+          <Button type="primary" icon={<MessageOutlined />} onClick={() => openCopilot(idea)}>打开 Idea Copilot</Button>
         </Space>
-        <Divider><MessageOutlined /> AI 讨论</Divider>
-        <div style={{ maxHeight: 240, overflowY: 'auto', marginBottom: 8, background: '#f8f9ff', padding: 12, borderRadius: 10 }}>
-          {discussion.log.length === 0 && <Text type="secondary">继续追问实验设计、强基线或风险控制方案</Text>}
-          {discussion.log.map((entry, index) => (
-            <div key={index} style={{ display: 'flex', gap: 8, marginBottom: 10, flexDirection: entry.role === 'user' ? 'row-reverse' : 'row' }}>
-              {entry.role === 'user' ? <UserOutlined /> : <RobotOutlined />}
-              <div style={{ maxWidth: '86%', padding: '8px 12px', borderRadius: 10, background: entry.role === 'user' ? '#6956d9' : '#fff', color: entry.role === 'user' ? '#fff' : '#333' }}>{entry.content}</div>
-            </div>
-          ))}
-        </div>
-        <Space.Compact style={{ width: '100%', marginBottom: 12 }}>
-          <TextArea autoSize={{ minRows: 1, maxRows: 4 }} value={discussion.msg} onChange={event => setDiscuss(idea.id, { msg: event.target.value })}
-            onPressEnter={event => { if (!event.shiftKey) { event.preventDefault(); handleDiscuss(idea.id); } }} placeholder="讨论这个 Proposal..." />
-          <Button type="primary" icon={<SendOutlined />} loading={discussion.loading} onClick={() => handleDiscuss(idea.id)} />
-        </Space.Compact>
+        <Card size="small" style={{ borderRadius: 12, marginTop: 14, background: '#fbfcff' }}>
+          <Space wrap>
+            <RobotOutlined style={{ color: '#1677ff' }} />
+            <Text strong>Idea Copilot</Text>
+            <Text type="secondary">用证据、验证闭环、实验推进包和谱系继续迭代这个 Proposal。</Text>
+            {(idea.discussion_log?.length || getDiscuss(idea.id).log.length) > 0 && <Tag color="blue">{idea.discussion_log?.length || getDiscuss(idea.id).log.length} 条讨论</Tag>}
+            <Button type="link" icon={<MessageOutlined />} onClick={() => openCopilot(idea)}>进入迭代面板</Button>
+          </Space>
+        </Card>
         {idea.generated_code ? <pre style={{ background: '#1e1e1e', color: '#d4d4d4', padding: 16, borderRadius: 10, maxHeight: 320, overflow: 'auto' }}>{idea.generated_code}</pre>
           : <Button type="dashed" icon={<CodeOutlined />} loading={codeMap[idea.id]?.loading} onClick={() => handleGenCode(idea.id)} block>生成实验代码 (PyTorch)</Button>}
       </div>
@@ -967,6 +1056,122 @@ const ResearchProjectPage: React.FC = () => {
       </List.Item>
     )} />
   );
+  const renderCopilotPanel = () => {
+    if (!copilotIdea) return null;
+    const discussion = getDiscuss(copilotIdea.id);
+    const summary = discussion.context_summary;
+    const metadata = discussion.log.slice().reverse().find(entry => entry.role === 'assistant' && entry.metadata)?.metadata || {};
+    const risks = discussion.risks?.length ? discussion.risks : metadata.risks || [];
+    const nextActions = discussion.next_actions?.length ? discussion.next_actions : metadata.next_actions || [];
+    const suggestedQuestions = discussion.suggested_questions?.length ? discussion.suggested_questions : metadata.suggested_questions || [];
+    const evolutionFocus = discussion.evolutionFocus || discussion.evolution_focus || metadata.evolution_focus || '';
+    return (
+      <Drawer
+        title={<Space wrap><RobotOutlined style={{ color: '#1677ff' }} /><Text strong>Idea Copilot</Text><Tag color="blue">{copilotModeOptions.find(item => item.value === discussion.mode)?.label}</Tag></Space>}
+        width={720}
+        open={!!copilotIdea}
+        onClose={() => setCopilotIdea(null)}
+        extra={<Button type="primary" ghost icon={<HistoryOutlined />} onClick={() => openLineage(copilotIdea)}>查看谱系</Button>}
+      >
+        <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <Card size="small" style={{ borderRadius: 12, background: '#fbfcff' }}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Text strong>{copilotIdea.title}</Text>
+              <Space wrap>
+                <Tag color="purple">证据 {summary?.evidence_count ?? proposalEvidenceCount(copilotIdea)}</Tag>
+                <Tag color={summary?.has_validation === false ? 'orange' : 'green'}>验证闭环</Tag>
+                <Tag color={summary?.has_execution_pack === false ? 'orange' : 'green'}>实验推进包</Tag>
+                <Tag color={summary?.has_lineage || copilotIdea.parent_idea_id ? 'cyan' : 'default'}>谱系</Tag>
+                {summary?.missing?.map(item => <Tag color="orange" key={item}>缺少 {item}</Tag>)}
+              </Space>
+              <Select
+                value={discussion.mode}
+                options={copilotModeOptions}
+                onChange={mode => setDiscuss(copilotIdea.id, { mode })}
+                style={{ width: 180 }}
+              />
+              <Space wrap>
+                {copilotQuickPrompts[discussion.mode].map(prompt => (
+                  <Button key={prompt} size="small" onClick={() => applyQuickPrompt(prompt)}>{prompt}</Button>
+                ))}
+              </Space>
+            </Space>
+          </Card>
+
+          <div style={{ minHeight: 300, maxHeight: '48vh', overflowY: 'auto', padding: 12, border: '1px solid #edf0f7', borderRadius: 12, background: '#f7f9fc' }}>
+            {discussion.log.length === 0 && (
+              <WorkflowEmptyState
+                title="还没有 Copilot 讨论"
+                description="选择一个模式，围绕 novelty、实验、写作或下一版演化继续推进这个 Proposal。"
+                icon={<MessageOutlined />}
+              />
+            )}
+            {discussion.log.map((entry, index) => (
+              <div key={`${entry.role}-${index}`} style={{ display: 'flex', gap: 10, marginBottom: 12, flexDirection: entry.role === 'user' ? 'row-reverse' : 'row' }}>
+                <div style={{ width: 28, height: 28, borderRadius: 14, display: 'grid', placeItems: 'center', background: entry.role === 'user' ? '#1677ff' : '#fff', border: '1px solid #e5e7eb', color: entry.role === 'user' ? '#fff' : '#1677ff', flex: '0 0 auto' }}>
+                  {entry.role === 'user' ? <UserOutlined /> : <RobotOutlined />}
+                </div>
+                <div style={{ maxWidth: '86%', padding: '10px 12px', borderRadius: 12, background: entry.role === 'user' ? '#1677ff' : '#fff', color: entry.role === 'user' ? '#fff' : '#1f2937', boxShadow: entry.role === 'assistant' ? '0 1px 4px rgba(15, 23, 42, 0.06)' : 'none' }}>
+                  {entry.role === 'assistant' ? <Markdown content={entry.content} /> : <div style={{ whiteSpace: 'pre-wrap' }}>{entry.content}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {(risks.length > 0 || nextActions.length > 0 || suggestedQuestions.length > 0 || evolutionFocus) && (
+            <Row gutter={[12, 12]}>
+              <Col xs={24} md={12}>
+                <Card size="small" title="风险与缺口" style={{ borderRadius: 12, height: '100%' }}>
+                  <Space wrap>{risks.length ? risks.map(item => <Tag color="orange" key={item}>{item}</Tag>) : <Text type="secondary">暂无结构化风险</Text>}</Space>
+                </Card>
+              </Col>
+              <Col xs={24} md={12}>
+                <Card size="small" title="下一步" style={{ borderRadius: 12, height: '100%' }}>
+                  <List size="small" dataSource={nextActions} locale={{ emptyText: '暂无下一步动作' }} renderItem={(item, index) => <List.Item>{index + 1}. {item}</List.Item>} />
+                </Card>
+              </Col>
+              <Col xs={24}>
+                <Card size="small" title="建议追问" style={{ borderRadius: 12 }}>
+                  <Space wrap>{suggestedQuestions.map(item => <Button key={item} size="small" onClick={() => applyQuickPrompt(item)}>{item}</Button>)}</Space>
+                </Card>
+              </Col>
+            </Row>
+          )}
+
+          <Card size="small" title="讨论转演化" style={{ borderRadius: 12 }}>
+            <Space direction="vertical" size={10} style={{ width: '100%' }}>
+              <TextArea
+                value={evolutionFocus}
+                onChange={event => setDiscuss(copilotIdea.id, { evolutionFocus: event.target.value })}
+                autoSize={{ minRows: 2, maxRows: 5 }}
+                placeholder="把这次讨论收束成下一版 Proposal 的演化焦点"
+              />
+              <Button
+                type="primary"
+                icon={<ThunderboltOutlined />}
+                loading={discussion.evolving}
+                disabled={copilotIdea.status !== 'draft' && copilotIdea.status !== 'pinned'}
+                onClick={() => evolveFromCopilot(copilotIdea.id)}
+              >
+                创建下一版 Proposal
+              </Button>
+            </Space>
+          </Card>
+
+          <Space.Compact style={{ width: '100%' }}>
+            <TextArea
+              autoSize={{ minRows: 2, maxRows: 6 }}
+              value={discussion.msg}
+              onChange={event => setDiscuss(copilotIdea.id, { msg: event.target.value })}
+              onPressEnter={event => { if (!event.shiftKey) { event.preventDefault(); handleDiscuss(copilotIdea.id); } }}
+              placeholder="继续讨论这个 Proposal..."
+            />
+            <Button type="primary" icon={<SendOutlined />} loading={discussion.loading} onClick={() => handleDiscuss(copilotIdea.id)} />
+          </Space.Compact>
+        </Space>
+      </Drawer>
+    );
+  };
 
   return (
     <PageShell
@@ -1133,6 +1338,7 @@ const ResearchProjectPage: React.FC = () => {
           description: idea.evolution_json?.rationale || '初始 Proposal',
         }))} />
       </Modal>
+      {renderCopilotPanel()}
     </PageShell>
   );
 };
