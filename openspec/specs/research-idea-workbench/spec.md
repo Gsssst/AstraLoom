@@ -66,11 +66,11 @@ The system SHALL remove substantially overlapping candidates and SHALL review re
 - **THEN** its review includes novelty, evidence grounding, feasibility, testability, impact, and clarity scores with rationale
 
 ### Requirement: Persist top proposals
-The system SHALL select and persist top proposals as enriched research ideas compatible with the existing idea discussion, validation, and code-generation flows.
+The system SHALL select and persist top proposals as enriched research ideas compatible with the existing idea discussion, validation, and code-generation flows while preserving selection rationale.
 
 #### Scenario: Complete a successful run
 - **WHEN** candidate review finishes successfully
-- **THEN** the run enters `complete`, stores its review summary, and persists the selected top proposals with evidence, review, novelty collision, and experiment-plan metadata
+- **THEN** the run enters `complete`, stores its review summary, and persists the selected top proposals with evidence, review, novelty collision, selection rationale, and experiment-plan metadata
 
 #### Scenario: Continue discussing a selected proposal
 - **WHEN** the user opens a persisted top proposal
@@ -81,7 +81,7 @@ The system SHALL select and persist top proposals as enriched research ideas com
 - **THEN** the validation summary includes those similar works as related-work candidates before falling back to generic evidence ranking.
 
 ### Requirement: Research Idea Workbench interface
-The system SHALL present the research project page as a workbench that exposes pipeline progress, Evidence Map, Gap Map, candidate pool, selected proposals, and proposal-level collision evidence.
+The system SHALL present the research project page as a workbench that exposes pipeline progress, Evidence Map, Gap Map, candidate pool, selected proposals, proposal-level collision evidence, and selection rationale.
 
 #### Scenario: Inspect intermediate artifacts
 - **WHEN** a user opens a project with a completed or running workbench run
@@ -94,6 +94,10 @@ The system SHALL present the research project page as a workbench that exposes p
 #### Scenario: Inspect similar work collisions
 - **WHEN** a reviewed proposal has novelty collision metadata
 - **THEN** the interface displays collision risk, top similar-work entries, their sources, and concise reasons without hiding the existing proposal details.
+
+#### Scenario: Inspect selection rationale
+- **WHEN** a reviewed proposal has diversity-aware selection metadata
+- **THEN** the interface displays why the proposal was selected and the diversity facets it contributes without hiding novelty or adversarial review signals.
 
 ### Requirement: Research Workflows Show Persistent API Recovery
 The research direction list and research project workbench frontends SHALL show persistent structured recovery guidance for failed project, idea, proposal, evidence, experiment, validation, and generation operations.

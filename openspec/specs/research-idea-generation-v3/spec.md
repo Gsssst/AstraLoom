@@ -4,11 +4,19 @@
 TBD - created by archiving change research-idea-generation-v3. Update Purpose after archive.
 ## Requirements
 ### Requirement: Candidate Search Tree
-The system SHALL refine generated research candidates through a traceable lightweight search tree.
+The system SHALL refine generated research candidates through a traceable bounded search tree that can use LLM-assisted critique-and-evolution with deterministic fallback expansion.
 
 #### Scenario: Candidate lineage is recorded
 - **WHEN** the workbench expands generated candidates
-- **THEN** each expanded candidate includes tree metadata with round, operator, and lineage.
+- **THEN** each expanded candidate includes tree metadata with round, operator, parent title, and lineage.
+
+#### Scenario: Candidate is evolved from critique
+- **WHEN** the LLM evolution step returns valid evolved candidates
+- **THEN** the workbench includes candidates with critique, improvement, selection angle, and their parent lineage.
+
+#### Scenario: Evolution output is unavailable
+- **WHEN** the LLM evolution step fails or returns insufficient valid candidates
+- **THEN** the workbench uses deterministic fallback operators to keep the search tree populated and traceable.
 
 ### Requirement: Novelty Check
 The system SHALL evaluate candidate novelty against available evidence and ranked similar work gathered from local and configured external scholarly sources.
@@ -33,11 +41,15 @@ The system SHALL generate adversarial review signals for each candidate before f
 - **THEN** the adversarial review includes objections and a non-zero penalty.
 
 ### Requirement: Persist Quality Signals
-The system SHALL persist search tree, novelty check, similar-work collision details, and adversarial review data on selected Ideas.
+The system SHALL persist search tree, novelty check, similar-work collision details, adversarial review data, and diversity-aware selection metadata on selected Ideas.
 
 #### Scenario: Selected proposal stores v3 signals
 - **WHEN** a candidate is persisted as a Research Idea
-- **THEN** its review metadata includes novelty check, ranked similar work, collision risk, source coverage, adversarial review, search tree, and adjusted aggregate score.
+- **THEN** its review metadata includes novelty check, ranked similar work, collision risk, source coverage, adversarial review, search tree, adjusted aggregate score, selection rationale, selection score, and diversity facets.
+
+#### Scenario: Diverse proposal selection records rationale
+- **WHEN** final proposals are selected from reviewed candidates
+- **THEN** the run records selected candidate titles, suppressed near-duplicates, and diversity rationale in the review summary.
 
 ### Requirement: Show Quality Signals In UI
 The frontend SHALL show novelty and adversarial review signals in Proposal details.
