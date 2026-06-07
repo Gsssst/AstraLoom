@@ -16,7 +16,9 @@ import Markdown from '../components/Markdown';
 import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
 import PageShell from '../components/PageShell';
+import ApiErrorAlert from '../components/ApiErrorAlert';
 import { DiffViewer, PipelineProgress, WritingProjectPanel, SectionEditor } from '../components/writing';
+import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -206,6 +208,13 @@ const WritingPage: React.FC = () => {
   const [pipelineStatusText, setPipelineStatusText] = useState('');
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const [pipelineAbort, setPipelineAbort] = useState<AbortController | null>(null);
+  const [pageActionError, setPageActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
+
+  const showPageError = useCallback((title: string, error: unknown, fallback = title) => {
+    const detail = getApiErrorDetails(error, { fallback });
+    setPageActionError({ title, detail });
+    message.warning(detail.message);
+  }, []);
 
   const handleCopy = (text: string) => { navigator.clipboard.writeText(text); message.success('已复制'); };
   const matchColor = (status?: string) => status === 'strong' ? 'green' : status === 'partial' ? 'gold' : 'red';
@@ -253,9 +262,10 @@ const WritingPage: React.FC = () => {
       .then(response => {
         setSelectedProject(response.data);
         setProjectSections(response.data.sections || []);
+        setPageActionError(null);
       })
-      .catch(() => message.error('无法打开写作项目'));
-  }, [location.search]);
+      .catch(error => showPageError('无法打开写作项目', error, '无法打开写作项目'));
+  }, [location.search, showPageError]);
 
   useEffect(() => {
     if (!selectedProject?.id) {
@@ -313,51 +323,51 @@ const WritingPage: React.FC = () => {
   const handleRecommend = useCallback(async () => {
     if (!citeText.trim()) return;
     setCiteLoading(true);
-    try { const r = await api.post('/writing/recommend-citations', { text: citeText, top_k: 5 }); setCitations(r.data); if (!r.data.length) message.info('知识库中暂无相关论文'); }
-    catch { message.error('引用推荐失败'); } finally { setCiteLoading(false); }
-  }, [citeText]);
+    try { const r = await api.post('/writing/recommend-citations', { text: citeText, top_k: 5 }); setCitations(r.data); setPageActionError(null); if (!r.data.length) message.info('知识库中暂无相关论文'); }
+    catch (error) { showPageError('引用推荐失败', error, '引用推荐失败'); } finally { setCiteLoading(false); }
+  }, [citeText, showPageError]);
   const handleRelatedWork = useCallback(async () => {
     if (!rwTopic.trim()) return;
     setRwLoading(true);
-    try { const r = await api.post('/writing/related-work', { topic: rwTopic, max_papers: 5, language: 'chinese' }); setRwResult(r.data.result); }
-    catch { message.error('生成失败'); } finally { setRwLoading(false); }
-  }, [rwTopic]);
+    try { const r = await api.post('/writing/related-work', { topic: rwTopic, max_papers: 5, language: 'chinese' }); setRwResult(r.data.result); setPageActionError(null); }
+    catch (error) { showPageError('Related Work 生成失败', error, 'Related Work 生成失败'); } finally { setRwLoading(false); }
+  }, [rwTopic, showPageError]);
   const handleRelatedWorkTable = useCallback(async () => {
     if (!rwTopic.trim()) return;
     setRwTableLoading(true);
-    try { const r = await api.post('/writing/related-work/table', { topic: rwTopic, max_papers: 8, language: 'chinese' }); setRwTable(r.data.markdown || ''); }
-    catch { message.error('对比表生成失败'); } finally { setRwTableLoading(false); }
-  }, [rwTopic]);
+    try { const r = await api.post('/writing/related-work/table', { topic: rwTopic, max_papers: 8, language: 'chinese' }); setRwTable(r.data.markdown || ''); setPageActionError(null); }
+    catch (error) { showPageError('对比表生成失败', error, '对比表生成失败'); } finally { setRwTableLoading(false); }
+  }, [rwTopic, showPageError]);
   const handlePolish = useCallback(async () => {
     if (!polishText.trim()) return;
     setPolishLoading(true);
-    try { const r = await api.post('/writing/polish', { text: polishText, style: polishStyle }); setPolishResult(r.data.result); }
-    catch { message.error('润色失败'); } finally { setPolishLoading(false); }
-  }, [polishText, polishStyle]);
+    try { const r = await api.post('/writing/polish', { text: polishText, style: polishStyle }); setPolishResult(r.data.result); setPageActionError(null); }
+    catch (error) { showPageError('润色失败', error, '润色失败'); } finally { setPolishLoading(false); }
+  }, [polishText, polishStyle, showPageError]);
   const handleAbstract = useCallback(async () => {
     if (!absTitle.trim()) return;
     setAbsLoading(true);
-    try { const r = await api.post('/writing/generate-abstract', { title: absTitle, key_points: absKeyPoints, language: 'chinese' }); setAbsResult(r.data.result); }
-    catch { message.error('生成失败'); } finally { setAbsLoading(false); }
-  }, [absTitle, absKeyPoints]);
+    try { const r = await api.post('/writing/generate-abstract', { title: absTitle, key_points: absKeyPoints, language: 'chinese' }); setAbsResult(r.data.result); setPageActionError(null); }
+    catch (error) { showPageError('摘要生成失败', error, '摘要生成失败'); } finally { setAbsLoading(false); }
+  }, [absTitle, absKeyPoints, showPageError]);
   const handleLitReview = useCallback(async () => {
     if (!lrTopic.trim()) return;
     setLrLoading(true);
-    try { const r = await api.post('/writing/literature-review', { topic: lrTopic, max_papers: 10 }); setLrResult(r.data); }
-    catch { message.error('生成失败'); } finally { setLrLoading(false); }
-  }, [lrTopic]);
+    try { const r = await api.post('/writing/literature-review', { topic: lrTopic, max_papers: 10 }); setLrResult(r.data); setPageActionError(null); }
+    catch (error) { showPageError('文献综述生成失败', error, '文献综述生成失败'); } finally { setLrLoading(false); }
+  }, [lrTopic, showPageError]);
   const handleCompare = useCallback(async () => {
     const ids = compareIds.split(/[\s,]+/).filter(Boolean);
     if (ids.length < 2) { message.warning('请输入至少 2 个论文 ID'); return; }
     setCompareLoading(true);
-    try { const r = await api.post('/writing/compare-papers', { paper_ids: ids }); setCompareResult(r.data.result); }
-    catch { message.error('对比失败'); } finally { setCompareLoading(false); }
-  }, [compareIds]);
+    try { const r = await api.post('/writing/compare-papers', { paper_ids: ids }); setCompareResult(r.data.result); setPageActionError(null); }
+    catch (error) { showPageError('论文对比失败', error, '论文对比失败'); } finally { setCompareLoading(false); }
+  }, [compareIds, showPageError]);
   const handleDiffPolish = async () => {
     if (!polishText.trim()) return;
     setDiffLoading(true);
-    try { const r = await api.post('/writing/polish/diff', { text: polishText, style: polishStyle }); setDiffResult(r.data); }
-    catch { message.error('Diff 润色失败'); } finally { setDiffLoading(false); }
+    try { const r = await api.post('/writing/polish/diff', { text: polishText, style: polishStyle }); setDiffResult(r.data); setPageActionError(null); }
+    catch (error) { showPageError('Diff 润色失败', error, 'Diff 润色失败'); } finally { setDiffLoading(false); }
   };
   const handleApplyDiff = (result: string) => { setPolishResult(result); setDiffResult(null); message.success('Diff 修改已应用'); };
   const handleSelectProject = async (p: any) => {
@@ -382,9 +392,10 @@ const WritingPage: React.FC = () => {
       setSelectedProject(project);
       setProjectSections(project.sections || []);
       setProjectRefreshSignal(v => v + 1);
+      setPageActionError(null);
       message.success(r.data.evidence_status === 'sufficient' ? '综述草稿已创建' : '已创建草稿，但证据不足，建议先补充论文');
-    } catch {
-      message.error('创建综述草稿失败');
+    } catch (error) {
+      showPageError('创建综述草稿失败', error, '创建综述草稿失败');
     } finally {
       setDraftLoading(false);
     }
@@ -398,9 +409,10 @@ const WritingPage: React.FC = () => {
     try {
       await api.put(`/writing/projects/${selectedProject.id}/sections/${section.id}`, { content });
       setProjectSections(prev => prev.map(s => s.id === section.id ? { ...s, content, word_count: content.length } : s));
+      setPageActionError(null);
       if (successText) message.success(successText);
-    } catch {
-      message.error('章节更新失败');
+    } catch (error) {
+      showPageError('章节更新失败', error, '章节更新失败');
     }
   };
   const handleInsertEvidenceMarker = async (marker: string) => {
@@ -422,10 +434,11 @@ const WritingPage: React.FC = () => {
     try {
       const response = await api.post(`/writing/projects/${selectedProject.id}/evidence-related-work-table`);
       setEvidenceTable(response.data);
+      setPageActionError(null);
       if (response.data.warnings?.length) message.warning('证据表已生成，但存在证据覆盖提醒');
       else message.success('证据对比表已生成');
-    } catch {
-      message.error('生成证据对比表失败');
+    } catch (error) {
+      showPageError('生成证据对比表失败', error, '生成证据对比表失败');
     } finally {
       setEvidenceTableLoading(false);
     }
@@ -458,9 +471,10 @@ const WritingPage: React.FC = () => {
       });
       setCitationChecks(prev => ({ ...prev, [section.id]: response.data }));
       const warning = response.data.summary?.evidence_warning;
+      setPageActionError(null);
       message.success(warning ? '引用校验完成：存在需要确认的证据' : '引用校验完成：当前引用较稳');
-    } catch {
-      message.error('引用校验失败');
+    } catch (error) {
+      showPageError('引用校验失败', error, '引用校验失败');
     } finally {
       setCitationChecking(prev => ({ ...prev, [section.id]: false }));
     }
@@ -479,9 +493,10 @@ const WritingPage: React.FC = () => {
         text: section.content || '',
       });
       setQualityChecks(prev => ({ ...prev, [section.id]: response.data }));
+      setPageActionError(null);
       message.success(response.data.status === 'ready' ? '质量评估完成：可进入润色' : '质量评估完成：仍有可补强点');
-    } catch {
-      message.error('质量评估失败');
+    } catch (error) {
+      showPageError('质量评估失败', error, '质量评估失败');
     } finally {
       setQualityChecking(prev => ({ ...prev, [section.id]: false }));
     }
@@ -493,9 +508,10 @@ const WritingPage: React.FC = () => {
       const response = await api.get(`/writing/projects/${selectedProject.id}/export/package`);
       setExportPackage(response.data);
       setExportReadiness(response.data.readiness || null);
+      setPageActionError(null);
       return response.data;
-    } catch {
-      message.error('导出包生成失败');
+    } catch (error) {
+      showPageError('导出包生成失败', error, '导出包生成失败');
       return null;
     } finally {
       setExportLoading(false);
@@ -527,8 +543,9 @@ const WritingPage: React.FC = () => {
       const filename = pkg?.formats?.docx?.filename || `${selectedProject.title || 'writing_project'}.docx`;
       const response = await api.get(`/writing/projects/${selectedProject.id}/export?format=docx`, { responseType: 'blob' });
       downloadBlobFile(filename, response.data);
-    } catch {
-      message.error('Word 下载失败');
+      setPageActionError(null);
+    } catch (error) {
+      showPageError('Word 下载失败', error, 'Word 下载失败');
     }
   };
   const handleBindSubmissionTemplate = async () => {
@@ -553,9 +570,10 @@ const WritingPage: React.FC = () => {
       setExportPackage(null);
       const readiness = await api.get(`/writing/projects/${selectedProject.id}/export/readiness`);
       setExportReadiness(readiness.data);
+      setPageActionError(null);
       message.success('投稿模板已检查并绑定到项目');
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '模板绑定失败');
+      showPageError('模板绑定失败', error, '模板绑定失败');
     } finally {
       setSubmissionUploading(false);
     }
@@ -583,20 +601,81 @@ const WritingPage: React.FC = () => {
             else if (ev.type === 'phase_start') { setPipelineCurrentPhase(ev.phase); setPipelinePhaseStatuses(p => ({ ...p, [ev.phase!]: 'running' })); setPipelineStatusText(`${ev.phase} 阶段...`); }
             else if (ev.type === 'phase_complete') setPipelinePhaseStatuses(p => ({ ...p, [ev.phase!]: 'complete' }));
             else if (ev.type === 'status') setPipelineStatusText(typeof ev.content === 'string' ? ev.content : '');
-            else if (ev.type === 'error') { setPipelinePhaseStatuses(p => ({ ...p, [ev.phase!]: 'error' })); message.error(typeof ev.content === 'string' ? ev.content : '出错'); }
-            else if (ev.type === 'done') setPipelineStatusText('完成');
+            else if (ev.type === 'error') { setPipelinePhaseStatuses(p => ({ ...p, [ev.phase!]: 'error' })); showPageError('Pipeline 执行失败', { message: typeof ev.content === 'string' ? ev.content : '出错' }, typeof ev.content === 'string' ? ev.content : '出错'); }
+            else if (ev.type === 'done') { setPipelineStatusText('完成'); setPageActionError(null); }
           } catch { /* ignore */ }
         }
       }
-    } catch (e: any) { if (e.name !== 'AbortError') message.error('Pipeline 执行失败'); }
+    } catch (e: any) { if (e.name !== 'AbortError') showPageError('Pipeline 执行失败', e, 'Pipeline 执行失败'); }
     finally { setPipelineRunning(false); setPipelineAbort(null); }
   };
 
   // ── 申请书处理器 ──
-  const handleGrantWrite = async () => { if (!grantTopic.trim()) { message.warning('请填写项目主题'); return; } setGrantLoading(true); try { const r = await api.post('/writing/grant/write-section', { section: grantSection, topic: grantTopic, background: grantBg, previous_content: grantResult }); setGrantResult(r.data.result); } catch { message.error('生成失败'); } finally { setGrantLoading(false); } };
-  const handleGrantReview = async () => { if (!grantResult.trim()) { message.warning('请先生成或粘贴内容'); return; } setGrantReviewing(true); try { const r = await api.post('/writing/grant/review-section', { section: grantSection, content: grantResult, topic: grantTopic }); setGrantReview(r.data.result); } catch { message.error('审阅失败'); } finally { setGrantReviewing(false); } };
-  const handleGrantPolish = async () => { if (!grantPolishText.trim()) return; setGrantPolishing(true); try { const r = await api.post('/writing/grant/polish', { text: grantPolishText }); setGrantPolishResult(r.data.result); } catch { message.error('润色失败'); } finally { setGrantPolishing(false); } };
-  const handleGrantInnov = async () => { if (!grantTopic.trim()) { message.warning('请先填写项目主题'); return; } setGrantInnovLoading(true); try { const r = await api.post('/writing/grant/extract-innovation', { topic: grantTopic, background: grantBg, methods: grantResult }); setGrantInnovResult(r.data.result); } catch { message.error('提取失败'); } finally { setGrantInnovLoading(false); } };
+  const handleGrantWrite = async () => {
+    if (!grantTopic.trim()) { message.warning('请填写项目主题'); return; }
+    setGrantLoading(true);
+    try {
+      const r = await api.post('/writing/grant/write-section', {
+        section: grantSection,
+        topic: grantTopic,
+        background: grantBg,
+        previous_content: grantResult,
+      });
+      setGrantResult(r.data.result);
+      setPageActionError(null);
+    } catch (error) {
+      showPageError('申请书生成失败', error, '申请书生成失败');
+    } finally {
+      setGrantLoading(false);
+    }
+  };
+  const handleGrantReview = async () => {
+    if (!grantResult.trim()) { message.warning('请先生成或粘贴内容'); return; }
+    setGrantReviewing(true);
+    try {
+      const r = await api.post('/writing/grant/review-section', {
+        section: grantSection,
+        content: grantResult,
+        topic: grantTopic,
+      });
+      setGrantReview(r.data.result);
+      setPageActionError(null);
+    } catch (error) {
+      showPageError('申请书审阅失败', error, '申请书审阅失败');
+    } finally {
+      setGrantReviewing(false);
+    }
+  };
+  const handleGrantPolish = async () => {
+    if (!grantPolishText.trim()) return;
+    setGrantPolishing(true);
+    try {
+      const r = await api.post('/writing/grant/polish', { text: grantPolishText });
+      setGrantPolishResult(r.data.result);
+      setPageActionError(null);
+    } catch (error) {
+      showPageError('申请书润色失败', error, '申请书润色失败');
+    } finally {
+      setGrantPolishing(false);
+    }
+  };
+  const handleGrantInnov = async () => {
+    if (!grantTopic.trim()) { message.warning('请先填写项目主题'); return; }
+    setGrantInnovLoading(true);
+    try {
+      const r = await api.post('/writing/grant/extract-innovation', {
+        topic: grantTopic,
+        background: grantBg,
+        methods: grantResult,
+      });
+      setGrantInnovResult(r.data.result);
+      setPageActionError(null);
+    } catch (error) {
+      showPageError('创新点提炼失败', error, '创新点提炼失败');
+    } finally {
+      setGrantInnovLoading(false);
+    }
+  };
 
   // ══════════════════════════════════════════════════
   //  Tab 内容
@@ -1243,6 +1322,15 @@ const WritingPage: React.FC = () => {
         />
       )}
     >
+      {pageActionError ? (
+        <ApiErrorAlert
+          title={pageActionError.title}
+          detail={pageActionError.detail}
+          onClose={() => setPageActionError(null)}
+          style={{ marginBottom: 18 }}
+        />
+      ) : null}
+
       <WorkflowStepGuide
         title="写作工作台下一步"
         subtitle="把研究方向、证据、引用和投稿模板收束到同一个写作流程。"

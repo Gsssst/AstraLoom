@@ -13,6 +13,8 @@ import {
 import api from '../services/api';
 import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
 import PageShell from '../components/PageShell';
+import ApiErrorAlert from '../components/ApiErrorAlert';
+import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -193,6 +195,13 @@ const ResearchProjectPage: React.FC = () => {
   const [validationMap, setValidationMap] = useState<Record<string, { loading: boolean; data?: IdeaValidation }>>({});
   const [executionPackMap, setExecutionPackMap] = useState<Record<string, { loading: boolean; data?: ExperimentExecutionPack }>>({});
   const [activeWorkbenchTab, setActiveWorkbenchTab] = useState('evidence');
+  const [pageActionError, setPageActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
+
+  const showPageError = (title: string, error: unknown, fallback = title) => {
+    const detail = getApiErrorDetails(error, { fallback });
+    setPageActionError({ title, detail });
+    message.warning(detail.message);
+  };
 
   const loadProject = async () => {
     if (!projectId) return;
@@ -230,7 +239,7 @@ const ResearchProjectPage: React.FC = () => {
       loadProject(),
       api.get(`/research/projects/${projectId}/idea-runs/latest`).then(response => setRun(response.data)).catch(() => {}),
       api.get(`/research/projects/${projectId}/experiments`).then(response => setExperiments(response.data)).catch(() => {}),
-    ]).catch(() => message.error('加载研究工作台失败')).finally(() => setLoading(false));
+    ]).then(() => setPageActionError(null)).catch(error => showPageError('加载研究工作台失败', error, '加载研究工作台失败')).finally(() => setLoading(false));
   }, [projectId]);
 
   const applyStreamEvent = (event: any) => {
@@ -241,7 +250,7 @@ const ResearchProjectPage: React.FC = () => {
     if (event.type === 'artifact') {
       setRun(previous => previous ? { ...previous, [event.artifact]: event.data } : previous);
     }
-    if (event.type === 'error') message.error(event.message || 'Idea 工作台运行失败');
+    if (event.type === 'error') showPageError('Idea 工作台运行失败', event, event.message || 'Idea 工作台运行失败');
     if (event.type === 'done' && event.run) {
       setRun(event.run);
       setIdeas(event.ideas || event.run.ideas || []);
@@ -290,13 +299,14 @@ const ResearchProjectPage: React.FC = () => {
       await loadProject();
       if (!generationCancelRequestedRef.current && finalRunStatus === 'complete') {
         setActiveWorkbenchTab('proposals');
+        setPageActionError(null);
         message.success('Idea 工作台已生成新的 Proposal');
       } else if (!generationCancelRequestedRef.current && finalRunStatus === 'failed') {
-        message.error(finalRunError || 'Idea 工作台运行失败');
+        showPageError('Idea 工作台运行失败', { message: finalRunError || 'Idea 工作台运行失败' }, finalRunError || 'Idea 工作台运行失败');
       }
     } catch (error: any) {
       if (!generationCancelRequestedRef.current && error?.name !== 'AbortError') {
-        message.error(error?.message || '生成失败');
+        showPageError('生成失败', error, error?.message || '生成失败');
       }
     } finally {
       setGenerating(false);
@@ -334,7 +344,8 @@ const ResearchProjectPage: React.FC = () => {
     try {
       const response = await api.post(`/research/ideas/${ideaId}/discuss`, { message: current.msg });
       setDiscuss(ideaId, { log: [...log, { role: 'assistant', content: response.data.reply }] });
-    } catch { message.error('讨论失败'); }
+      setPageActionError(null);
+    } catch (error) { showPageError('讨论失败', error, '讨论失败'); }
     finally { setDiscuss(ideaId, { loading: false }); }
   };
   const handleGenCode = async (ideaId: string) => {
@@ -342,8 +353,9 @@ const ResearchProjectPage: React.FC = () => {
     try {
       const response = await api.post(`/research/ideas/${ideaId}/generate-code?framework=pytorch`);
       setIdeas(previous => previous.map(idea => idea.id === ideaId ? { ...idea, generated_code: response.data.code, status: 'implemented' } : idea));
+      setPageActionError(null);
       message.success('实验代码已生成');
-    } catch { message.error('代码生成失败'); }
+    } catch (error) { showPageError('代码生成失败', error, '代码生成失败'); }
     finally { setCodeMap(previous => ({ ...previous, [ideaId]: { loading: false } })); }
   };
   const createWritingDraft = async (idea: Idea) => {
@@ -351,10 +363,11 @@ const ResearchProjectPage: React.FC = () => {
     try {
       const response = await api.post(`/research/ideas/${idea.id}/writing-draft`);
       const projectId = response.data.project?.id;
+      setPageActionError(null);
       message.success(response.data.evidence_status === 'sufficient' ? '写作草稿已创建' : '写作草稿已创建，但证据不足');
       if (projectId) navigate(`/writing?project=${projectId}`);
-    } catch {
-      message.error('创建写作草稿失败');
+    } catch (error) {
+      showPageError('创建写作草稿失败', error, '创建写作草稿失败');
     } finally {
       setDraftingIdeaIds(previous => {
         const next = new Set(previous);
@@ -367,15 +380,17 @@ const ResearchProjectPage: React.FC = () => {
     try {
       const response = await api.post(`/research/projects/${projectId}/share`);
       await navigator.clipboard.writeText(`${window.location.origin}/research/share/${response.data.share_token}`);
+      setPageActionError(null);
       message.success('分享链接已复制');
-    } catch { message.error('分享失败'); }
+    } catch (error) { showPageError('分享失败', error, '分享失败'); }
   };
   const updateDecision = async (ideaId: string, status: 'draft' | 'pinned' | 'rejected') => {
     try {
       const response = await api.patch(`/research/ideas/${ideaId}/decision`, { status });
       setIdeas(previous => previous.map(idea => idea.id === ideaId ? response.data : idea));
+      setPageActionError(null);
       message.success(status === 'pinned' ? '已收藏 Proposal' : status === 'rejected' ? '已标记为淘汰' : '已恢复为待筛选');
-    } catch { message.error('更新 Proposal 状态失败'); }
+    } catch (error) { showPageError('更新 Proposal 状态失败', error, '更新 Proposal 状态失败'); }
   };
   const toggleCompare = (ideaId: string, checked: boolean) => {
     setSelectedIdeaIds(previous => checked ? [...previous, ideaId].slice(-4) : previous.filter(id => id !== ideaId));
@@ -386,7 +401,8 @@ const ResearchProjectPage: React.FC = () => {
       const response = await api.post('/research/ideas/compare', { idea_ids: selectedIdeaIds });
       setCompareIdeas(response.data);
       setCompareOpen(true);
-    } catch { message.error('加载 Proposal 比较失败'); }
+      setPageActionError(null);
+    } catch (error) { showPageError('加载 Proposal 比较失败', error, '加载 Proposal 比较失败'); }
   };
   const evolveProposal = async () => {
     if (!evolvingIdea) return;
@@ -396,8 +412,9 @@ const ResearchProjectPage: React.FC = () => {
       setIdeas(previous => [response.data, ...previous]);
       setEvolvingIdea(null);
       setEvolutionFocus('');
+      setPageActionError(null);
       message.success('已生成一个可追溯的 Proposal 新版本');
-    } catch { message.error('Proposal 演化失败'); }
+    } catch (error) { showPageError('Proposal 演化失败', error, 'Proposal 演化失败'); }
     finally { setEvolving(false); }
   };
   const importEvidence = async (item: Evidence) => {
@@ -414,8 +431,9 @@ const ResearchProjectPage: React.FC = () => {
         });
         return { ...previous, evidence_map: evidenceMap };
       });
+      setPageActionError(null);
       message.success(response.data.is_new ? '外部论文已入库并关联当前项目' : '论文已存在，已关联当前项目');
-    } catch { message.error('外部论文入库失败'); }
+    } catch (error) { showPageError('外部论文入库失败', error, '外部论文入库失败'); }
     finally {
       setImportingEvidence(previous => {
         const next = new Set(previous); next.delete(item.paper_id); return next;
@@ -427,7 +445,8 @@ const ResearchProjectPage: React.FC = () => {
       const response = await api.get(`/research/ideas/${idea.id}/lineage`);
       setLineage(response.data);
       setLineageOpen(true);
-    } catch { message.error('加载演化谱系失败'); }
+      setPageActionError(null);
+    } catch (error) { showPageError('加载演化谱系失败', error, '加载演化谱系失败'); }
   };
   const openExperiment = (idea: Idea) => {
     setExperimentIdea(idea);
@@ -449,25 +468,28 @@ const ResearchProjectPage: React.FC = () => {
       });
       setExperiments(previous => [response.data.experiment, ...previous]);
       setExperimentOpen(false);
+      setPageActionError(null);
       message.success('实验反馈已记录');
-    } catch { message.error('保存实验反馈失败'); }
+    } catch (error) { showPageError('保存实验反馈失败', error, '保存实验反馈失败'); }
   };
   const evolveFromFeedback = async (experiment: ExperimentRecord) => {
     if (!experiment.idea_id) return;
     try {
       const response = await api.post(`/research/ideas/${experiment.idea_id}/evolve-from-feedback`, { experiment_id: experiment.experiment_id });
       setIdeas(previous => [response.data, ...previous]);
+      setPageActionError(null);
       message.success('已根据实验反馈生成下一轮 Proposal');
-    } catch { message.error('根据实验反馈演化失败'); }
+    } catch (error) { showPageError('根据实验反馈演化失败', error, '根据实验反馈演化失败'); }
   };
   const loadIdeaValidation = async (ideaId: string) => {
     setValidationMap(previous => ({ ...previous, [ideaId]: { ...previous[ideaId], loading: true } }));
     try {
       const response = await api.get(`/research/ideas/${ideaId}/validation`);
       setValidationMap(previous => ({ ...previous, [ideaId]: { loading: false, data: response.data } }));
+      setPageActionError(null);
       message.success('验证闭环已更新');
-    } catch {
-      message.error('加载验证闭环失败');
+    } catch (error) {
+      showPageError('加载验证闭环失败', error, '加载验证闭环失败');
       setValidationMap(previous => ({ ...previous, [ideaId]: { ...previous[ideaId], loading: false } }));
     }
   };
@@ -476,9 +498,10 @@ const ResearchProjectPage: React.FC = () => {
     try {
       const response = await api.get(`/research/ideas/${ideaId}/execution-pack`);
       setExecutionPackMap(previous => ({ ...previous, [ideaId]: { loading: false, data: response.data } }));
+      setPageActionError(null);
       message.success('实验推进包已更新');
-    } catch {
-      message.error('加载实验推进包失败');
+    } catch (error) {
+      showPageError('加载实验推进包失败', error, '加载实验推进包失败');
       setExecutionPackMap(previous => ({ ...previous, [ideaId]: { ...previous[ideaId], loading: false } }));
     }
   };
@@ -886,6 +909,14 @@ const ResearchProjectPage: React.FC = () => {
         </>
       )}
     >
+      {pageActionError ? (
+        <ApiErrorAlert
+          title={pageActionError.title}
+          detail={pageActionError.detail}
+          onClose={() => setPageActionError(null)}
+        />
+      ) : null}
+
       <Card style={{ borderRadius: 14, marginBottom: 18 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 10 }}>
           <div>

@@ -16,10 +16,11 @@ import {
   CaretDownOutlined, CaretRightOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
-import { getApiErrorMessage } from '../services/apiError';
+import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
 import { useAuthStore } from '../stores/useAuthStore';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
 import PageShell from '../components/PageShell';
+import ApiErrorAlert from '../components/ApiErrorAlert';
 
 const { Text, Paragraph, Title } = Typography;
 
@@ -197,6 +198,7 @@ const PapersPage: React.FC = () => {
   const [kbDiagTab, setKbDiagTab] = useState<DiagnosticTab>('hybrid');
   const [kbDiagLoading, setKbDiagLoading] = useState(false);
   const [showCoverage, setShowCoverage] = useState(false);
+  const [pageActionError, setPageActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
   const isAuthenticated = !!localStorage.getItem('access_token');
   const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
   const isRemoteSource = remoteSearchSources.includes(source);
@@ -209,6 +211,12 @@ const PapersPage: React.FC = () => {
   const updateSource = useCallback((nextSource: string) => {
     setSource(nextSource);
     setResultStateFilter('all');
+  }, []);
+
+  const showPageError = useCallback((title: string, error: unknown, fallback = title) => {
+    const detail = getApiErrorDetails(error, { fallback });
+    setPageActionError({ title, detail });
+    message.warning(detail.message);
   }, []);
 
   const fetchReadingCounts = useCallback(async () => {
@@ -290,8 +298,9 @@ const PapersPage: React.FC = () => {
         setPapers(r.data.items);
         setRemotePage(requestedPage);
       }
-    } catch (e: any) { setPapers([]); message.error(getApiErrorMessage(e, { fallback: '搜索失败' })); } finally { setLoading(false); }
-  }, [isRemoteSource, readingStatus, searchQuery, selectedCollectionId, source, sort, yearFrom, yearTo]);
+      setPageActionError(null);
+    } catch (e: any) { setPapers([]); showPageError('搜索失败', e, '搜索失败'); } finally { setLoading(false); }
+  }, [isRemoteSource, readingStatus, searchQuery, selectedCollectionId, showPageError, source, sort, yearFrom, yearTo]);
 
   useEffect(() => { handleSearch(1); }, [source, sort, readingStatus, selectedCollectionId, urlSearchRevision]);
 
@@ -345,9 +354,10 @@ const PapersPage: React.FC = () => {
         const r = await api.post('/writing/group-report', { paper_ids: Array.from(selectedIds), title: reportTitle }, { responseType: 'blob', timeout: 120000 });
         const url = URL.createObjectURL(new Blob([r.data])); const a = document.createElement('a');
         a.href = url; a.download = `${reportTitle}_${new Date().toISOString().slice(0, 10)}.docx`; a.click();
+        setPageActionError(null);
         message.success('报告已下载');
       }
-    } catch (error) { message.error(getApiErrorMessage(error, { fallback: '组会报告生成失败' })); } finally { setReportLoading(false); setReportModalOpen(false); }
+    } catch (error) { showPageError('组会报告生成失败', error, '组会报告生成失败'); } finally { setReportLoading(false); setReportModalOpen(false); }
   };
 
   const handleIngestOne = useCallback(async (e: React.MouseEvent, paper: PaperItem, collectionOverrideId?: string) => {
@@ -378,13 +388,14 @@ const PapersPage: React.FC = () => {
         }
       }
       setIngestedRemoteIds(prev => new Set(prev).add(remoteKey));
+      setPageActionError(null);
       message.success(collectionId ? '已入库并加入目标分类' : '已加入你的论文库');
     } catch (e: any) {
-      message.error(getApiErrorMessage(e, { fallback: '加入论文库失败' }));
+      showPageError('加入论文库失败', e, '加入论文库失败');
     } finally {
       setIngestingIds(prev => { const n = new Set(prev); n.delete(remoteKey); return n; });
     }
-  }, [fetchCollections, handleSearch, selectedCollectionId, source, targetCollectionId]);
+  }, [fetchCollections, handleSearch, selectedCollectionId, showPageError, source, targetCollectionId]);
 
   const handleIngest = useCallback(async () => {
     if (!ingestQuery.trim()) { message.warning('请输入搜索关键词或 arXiv ID'); return; }
@@ -392,10 +403,11 @@ const PapersPage: React.FC = () => {
     try {
       const isId = /^\d{4}\.\d{4,5}(v\d+)?$/.test(ingestQuery.trim());
       const r = await api.post('/papers/ingest', isId ? { arxiv_ids: [ingestQuery.trim()], auto_download: true } : { search_query: ingestQuery.trim(), max_results: 10, auto_download: true });
+      setPageActionError(null);
       message.success(`入库完成: ${r.data.success} 新增, ${r.data.skipped} 已存在${r.data.error > 0 ? `, ${r.data.error} 失败` : ''}`);
       if (r.data.success > 0) handleSearch();
-    } catch (error) { message.error(getApiErrorMessage(error, { fallback: '入库失败' })); } finally { setIngesting(false); }
-  }, [ingestQuery, handleSearch]);
+    } catch (error) { showPageError('入库失败', error, '入库失败'); } finally { setIngesting(false); }
+  }, [ingestQuery, handleSearch, showPageError]);
 
   const handleViewDetail = useCallback(async (paper: PaperItem) => {
     if (!paper.id) { message.info('来自远程搜索，请先入库后查看详情'); return; }
@@ -413,8 +425,9 @@ const PapersPage: React.FC = () => {
     try {
       if (isSaved) { await api.delete(`/papers/${paper.id}/save`); setSavedIds(prev => { const n = new Set(prev); n.delete(paper.id); return n; }); }
       else { await api.post(`/papers/${paper.id}/save`); setSavedIds(prev => new Set(prev).add(paper.id)); }
-    } catch (error) { message.error(getApiErrorMessage(error, { fallback: isSaved ? '取消收藏失败' : '收藏失败' })); }
-  }, [savedIds, isAuthenticated]);
+      setPageActionError(null);
+    } catch (error) { showPageError(isSaved ? '取消收藏失败' : '收藏失败', error, isSaved ? '取消收藏失败' : '收藏失败'); }
+  }, [savedIds, isAuthenticated, showPageError]);
 
   const handleCreateCollection = useCallback(async () => {
     if (!isAuthenticated) {
@@ -426,17 +439,18 @@ const PapersPage: React.FC = () => {
     setCreatingCollection(true);
     try {
       const response = await api.post('/folders/', { name: name.trim() });
+      setPageActionError(null);
       message.success('分类已创建');
       await fetchCollections();
       updateSource('collection');
       setSelectedCollectionId(response.data.id);
       setTargetCollectionId(response.data.id);
     } catch (e: any) {
-      message.error(getApiErrorMessage(e, { fallback: '创建分类失败' }));
+      showPageError('创建分类失败', e, '创建分类失败');
     } finally {
       setCreatingCollection(false);
     }
-  }, [fetchCollections, isAuthenticated, updateSource]);
+  }, [fetchCollections, isAuthenticated, showPageError, updateSource]);
 
   const handleAddSelectedToCollection = useCallback(async () => {
     if (!targetCollectionId) {
@@ -450,16 +464,17 @@ const PapersPage: React.FC = () => {
     setAddingCollection(true);
     try {
       const response = await api.post(`/folders/${targetCollectionId}/papers`, { paper_ids: Array.from(selectedIds) });
+      setPageActionError(null);
       message.success(`已加入分类：新增 ${response.data.added || 0} 篇，跳过 ${response.data.skipped || 0} 篇`);
       setSelectedIds(new Set());
       await fetchCollections();
       if (source === 'collection' && selectedCollectionId === targetCollectionId) handleSearch();
     } catch (e: any) {
-      message.error(getApiErrorMessage(e, { fallback: '加入分类失败' }));
+      showPageError('加入分类失败', e, '加入分类失败');
     } finally {
       setAddingCollection(false);
     }
-  }, [fetchCollections, handleSearch, selectedCollectionId, selectedIds, source, targetCollectionId]);
+  }, [fetchCollections, handleSearch, selectedCollectionId, selectedIds, showPageError, source, targetCollectionId]);
 
   const handleDeleteCollectionClick = useCallback(() => {
     const collection = collections.find(item => item.id === selectedCollectionId) || null;
@@ -487,13 +502,14 @@ const PapersPage: React.FC = () => {
       setRecommendationPapers([]);
       setRecommendationMeta(null);
       setDeleteCollectionModal({ open: false, collection: null });
+      setPageActionError(null);
       message.success('分类已删除，论文仍保留在论文库中');
     } catch (e: any) {
-      message.error(getApiErrorMessage(e, { fallback: '删除分类失败' }));
+      showPageError('删除分类失败', e, '删除分类失败');
     } finally {
       setDeletingCollection(false);
     }
-  }, [collections, deleteCollectionModal.collection]);
+  }, [collections, deleteCollectionModal.collection, showPageError]);
 
   const handleFetchRecommendations = useCallback(async (kind: RecommendationKind, query?: string) => {
     if (!selectedCollectionId) {
@@ -508,15 +524,16 @@ const PapersPage: React.FC = () => {
       });
       setRecommendationPapers(response.data.items || []);
       setRecommendationMeta({ query: response.data.query, reason: response.data.reason });
+      setPageActionError(null);
       if ((response.data.items || []).length === 0) {
         message.info('没有找到新的补充论文，可以换一个推荐类型或调整分类关键词');
       }
     } catch (e: any) {
-      message.error(getApiErrorMessage(e, { fallback: '推荐论文检索失败' }));
+      showPageError('推荐论文检索失败', e, '推荐论文检索失败');
     } finally {
       setRecommendationLoading(false);
     }
-  }, [selectedCollectionId]);
+  }, [selectedCollectionId, showPageError]);
 
   const fetchMaintenanceCenter = useCallback(async () => {
     if (!isAdmin) return;
@@ -528,12 +545,13 @@ const PapersPage: React.FC = () => {
       ]);
       setKbHealth(healthRes.data);
       setKbRecommendations(recommendationsRes.data || []);
+      setPageActionError(null);
     } catch (e: any) {
-      message.error(getApiErrorMessage(e, { fallback: '知识库维护状态读取失败' }));
+      showPageError('知识库维护状态读取失败', e, '知识库维护状态读取失败');
     } finally {
       setKbLoading(false);
     }
-  }, [isAdmin]);
+  }, [isAdmin, showPageError]);
 
   useEffect(() => {
     if (source === 'maintenance') fetchMaintenanceCenter();
@@ -543,14 +561,15 @@ const PapersPage: React.FC = () => {
     setKbAction(action);
     try {
       const response = await api.post(endpoint);
+      setPageActionError(null);
       message.success(`维护完成：成功 ${response.data.success || 0}，失败 ${response.data.failed || 0}，跳过 ${response.data.skipped || 0}`);
       await fetchMaintenanceCenter();
     } catch (e: any) {
-      message.error(getApiErrorMessage(e, { fallback: '维护操作失败' }));
+      showPageError('维护操作失败', e, '维护操作失败');
     } finally {
       setKbAction(null);
     }
-  }, [fetchMaintenanceCenter]);
+  }, [fetchMaintenanceCenter, showPageError]);
 
   const runKbDiagnostics = useCallback(async () => {
     if (!kbQuery.trim()) {
@@ -562,25 +581,27 @@ const PapersPage: React.FC = () => {
       const response = await api.get('/papers/maintenance/search-diagnostics', { params: { q: kbQuery.trim(), top_k: 5 } });
       setKbDiagnostics(response.data);
       setKbDiagTab('hybrid');
+      setPageActionError(null);
     } catch (e: any) {
-      message.error(getApiErrorMessage(e, { fallback: '检索诊断失败' }));
+      showPageError('检索诊断失败', e, '检索诊断失败');
     } finally {
       setKbDiagLoading(false);
     }
-  }, [kbQuery]);
+  }, [kbQuery, showPageError]);
 
   const handleRemoveFromCollection = useCallback(async (e: React.MouseEvent, paper: PaperItem) => {
     e.stopPropagation();
     if (!selectedCollectionId || !paper.id) return;
     try {
       await api.delete(`/folders/${selectedCollectionId}/papers/${paper.id}`);
+      setPageActionError(null);
       message.success('已从分类移除');
       setPapers(prev => prev.filter(item => item.id !== paper.id));
       await fetchCollections();
     } catch (err: any) {
-      message.error(getApiErrorMessage(err, { fallback: '移出分类失败' }));
+      showPageError('移出分类失败', err, '移出分类失败');
     }
-  }, [fetchCollections, selectedCollectionId]);
+  }, [fetchCollections, selectedCollectionId, showPageError]);
 
   const handleDeleteClick = useCallback((e: React.MouseEvent, paper: PaperItem) => { e.stopPropagation(); if (!paper.id || !isAuthenticated) { message.warning('请先登录'); return; } setDeleteModal({ open: true, paper }); }, [isAuthenticated]);
   const handleReadStatusChange = useCallback(async (e: React.MouseEvent, paper: PaperItem, status: 'unread' | 'reading' | 'completed') => {
@@ -594,13 +615,14 @@ const PapersPage: React.FC = () => {
         .map(item => item.id === paper.id ? { ...item, read_status: status } : item)
         .filter(item => source !== 'reading' || item.id !== paper.id || status === readingStatus));
       await fetchReadingCounts();
+      setPageActionError(null);
       message.success(`已标记为${readingStatusMeta[status].label}`);
     } catch (error) {
-      message.error(getApiErrorMessage(error, { fallback: '阅读状态更新失败' }));
+      showPageError('阅读状态更新失败', error, '阅读状态更新失败');
     } finally {
       setUpdatingStatusIds(prev => { const n = new Set(prev); n.delete(paper.id); return n; });
     }
-  }, [fetchReadingCounts, isAuthenticated, readingStatus, source]);
+  }, [fetchReadingCounts, isAuthenticated, readingStatus, showPageError, source]);
 
   const renderReadingActions = (paper: PaperItem) => {
     if (!isAuthenticated || !paper.id || source !== 'reading') return null;
@@ -628,8 +650,8 @@ const PapersPage: React.FC = () => {
 
   const confirmDelete = async (global: boolean) => {
     if (!deleteModal.paper) return; setDeleting(true);
-    try { await api.delete(`/papers/${deleteModal.paper.id}${global ? '/global' : ''}`); message.success(global ? '已从总库删除' : '已从收藏移除'); setPapers(prev => prev.filter(p => p.id !== deleteModal.paper!.id)); setSavedIds(prev => { const n = new Set(prev); n.delete(deleteModal.paper!.id!); return n; }); }
-    catch (e: any) { message.error(getApiErrorMessage(e, { fallback: '删除失败' })); } finally { setDeleting(false); setDeleteModal({ open: false, paper: null }); }
+    try { await api.delete(`/papers/${deleteModal.paper.id}${global ? '/global' : ''}`); setPageActionError(null); message.success(global ? '已从总库删除' : '已从收藏移除'); setPapers(prev => prev.filter(p => p.id !== deleteModal.paper!.id)); setSavedIds(prev => { const n = new Set(prev); n.delete(deleteModal.paper!.id!); return n; }); }
+    catch (e: any) { showPageError('删除失败', e, '删除失败'); } finally { setDeleting(false); setDeleteModal({ open: false, paper: null }); }
   };
 
   const sc = (s: string) => ({ arxiv: '#b31b1b', semantic_scholar: '#1890ff', openalex: '#13a8a8', google_scholar: '#5f6368', manual: '#52c41a' }[s] || '#999');
@@ -836,7 +858,7 @@ const PapersPage: React.FC = () => {
                 const f = e.target.files?.[0]; if (!f) return;
                 const ep = f.name.endsWith('.bib') ? '/api/papers/import-bibtex' : '/api/papers/import-zotero';
                 const fd = new FormData(); fd.append('file', f);
-                try { const r = await api.post(ep, fd, { headers: { 'Content-Type': 'multipart/form-data' } }); message.success(`导入: ${r.data.imported} 新增, ${r.data.skipped} 跳过`); handleSearch(); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '导入失败' })); }
+                try { const r = await api.post(ep, fd, { headers: { 'Content-Type': 'multipart/form-data' } }); setPageActionError(null); message.success(`导入: ${r.data.imported} 新增, ${r.data.skipped} 跳过`); handleSearch(); } catch (error) { showPageError('导入失败', error, '导入失败'); }
               }} />
             </>}
             <Button icon={<FileTextOutlined />} disabled={selectedIds.size === 0} onClick={() => setReportModalOpen(true)} style={{ borderRadius: 10 }}>
@@ -848,6 +870,14 @@ const PapersPage: React.FC = () => {
         </>
       )}
     >
+      {pageActionError ? (
+        <ApiErrorAlert
+          title={pageActionError.title}
+          detail={pageActionError.detail}
+          onClose={() => setPageActionError(null)}
+        />
+      ) : null}
+
       <div style={{ height: 'calc(100vh - 170px)', display: 'flex', flexDirection: 'column' }}>
 
       <WorkflowStepGuide
@@ -1297,8 +1327,8 @@ const PapersPage: React.FC = () => {
           />
           <Button size="small" icon={<FolderAddOutlined />} loading={addingCollection} onClick={handleAddSelectedToCollection} style={{ borderRadius: 8 }}>加入分类</Button>
           <Button size="small" icon={<FolderAddOutlined />} loading={creatingCollection} onClick={handleCreateCollection} style={{ borderRadius: 8 }}>新建分类</Button>
-          {isAdmin && <Button size="small" onClick={() => { const t = prompt('输入标签'); if (t) { api.post('/papers/batch-tag', { paper_ids: Array.from(selectedIds), tags: t.split(',').map(x => x.trim()).filter(Boolean) }).then(() => { message.success('已添加'); setSelectedIds(new Set()); handleSearch(); }).catch(error => message.error(getApiErrorMessage(error, { fallback: '批量标签失败' }))); } }} style={{ borderRadius: 8 }}>🏷️ 标签</Button>}
-          <Button size="small" onClick={async () => { try { const r = await api.post('/writing/export', { format: 'bibtex', paper_ids: Array.from(selectedIds) }); const b = new Blob([r.data.data], { type: 'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'selected.bib'; a.click(); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '导出失败' })); } }} style={{ borderRadius: 8 }}>📥 导出</Button>
+          {isAdmin && <Button size="small" onClick={() => { const t = prompt('输入标签'); if (t) { api.post('/papers/batch-tag', { paper_ids: Array.from(selectedIds), tags: t.split(',').map(x => x.trim()).filter(Boolean) }).then(() => { setPageActionError(null); message.success('已添加'); setSelectedIds(new Set()); handleSearch(); }).catch(error => showPageError('批量标签失败', error, '批量标签失败')); } }} style={{ borderRadius: 8 }}>🏷️ 标签</Button>}
+          <Button size="small" onClick={async () => { try { const r = await api.post('/writing/export', { format: 'bibtex', paper_ids: Array.from(selectedIds) }); const b = new Blob([r.data.data], { type: 'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'selected.bib'; a.click(); setPageActionError(null); } catch (error) { showPageError('导出失败', error, '导出失败'); } }} style={{ borderRadius: 8 }}>📥 导出</Button>
           <Button size="small" onClick={() => setSelectedIds(new Set())} style={{ borderRadius: 8 }}>✕</Button>
         </div>
       )}
@@ -1351,7 +1381,7 @@ const PapersPage: React.FC = () => {
       <Modal title="生成组会报告" open={reportModalOpen} onCancel={() => setReportModalOpen(false)}
         footer={[<Button key="cancel" onClick={() => setReportModalOpen(false)}>取消</Button>, <Button key="md" icon={<FileTextOutlined />} loading={reportLoading} onClick={async () => {
           const ids = Array.from(selectedIds).join(',');
-          try { const r = await api.get(`/writing/group-report-md?paper_ids=${ids}&title=${encodeURIComponent(reportTitle)}`); await navigator.clipboard.writeText(r.data.result); message.success('已复制，可粘贴到飞书'); setReportModalOpen(false); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '复制 Markdown 报告失败' })); }
+          try { const r = await api.get(`/writing/group-report-md?paper_ids=${ids}&title=${encodeURIComponent(reportTitle)}`); await navigator.clipboard.writeText(r.data.result); setPageActionError(null); message.success('已复制，可粘贴到飞书'); setReportModalOpen(false); } catch (error) { showPageError('复制 Markdown 报告失败', error, '复制 Markdown 报告失败'); }
         }}>复制 MD</Button>, <Button key="docx" type="primary" icon={<FileTextOutlined />} loading={reportLoading} onClick={() => handleReport('docx')}>下载 Word</Button>]}>
         <Space direction="vertical" style={{ width: '100%' }}>
           <Text>已选择 {selectedIds.size} 篇论文</Text>

@@ -6,6 +6,26 @@ const apiErrorSource = readFileSync(
   new URL('../src/services/apiError.ts', import.meta.url),
   'utf8',
 );
+const apiErrorAlertSource = readFileSync(
+  new URL('../src/components/ApiErrorAlert.tsx', import.meta.url),
+  'utf8',
+);
+const papersSource = readFileSync(
+  new URL('../src/pages/PapersPage.tsx', import.meta.url),
+  'utf8',
+);
+const researchSource = readFileSync(
+  new URL('../src/pages/ResearchPage.tsx', import.meta.url),
+  'utf8',
+);
+const researchProjectSource = readFileSync(
+  new URL('../src/pages/ResearchProjectPage.tsx', import.meta.url),
+  'utf8',
+);
+const writingSource = readFileSync(
+  new URL('../src/pages/WritingPage.tsx', import.meta.url),
+  'utf8',
+);
 
 const loadHelper = async () => {
   const ts = await import('typescript');
@@ -84,4 +104,25 @@ test('api error helper formats fetch status errors', async () => {
   assert.equal(details.category, 'timeout');
   assert.equal(details.retryable, true);
   assert.match(details.recovery, /重试/);
+});
+
+test('shared api error alert renders recovery metadata', () => {
+  assert.match(apiErrorAlertSource, /type ApiErrorAlertProps/);
+  assert.match(apiErrorAlertSource, /detail: ApiErrorDetails/);
+  assert.match(apiErrorAlertSource, /detail\.recovery/);
+  assert.match(apiErrorAlertSource, /detail\.category/);
+  assert.match(apiErrorAlertSource, /detail\.retryable/);
+  assert.match(apiErrorAlertSource, /detail\.status/);
+  assert.match(apiErrorAlertSource, /需先处理条件/);
+});
+
+test('primary workflow pages use persistent structured api recovery', () => {
+  for (const source of [papersSource, researchSource, researchProjectSource, writingSource]) {
+    assert.match(source, /import ApiErrorAlert from '\.\.\/components\/ApiErrorAlert'/);
+    assert.match(source, /getApiErrorDetails/);
+    assert.match(source, /type ApiErrorDetails/);
+    assert.match(source, /pageActionError/);
+    assert.match(source, /<ApiErrorAlert/);
+    assert.match(source, /setPageActionError\(null\)/);
+  }
 });
