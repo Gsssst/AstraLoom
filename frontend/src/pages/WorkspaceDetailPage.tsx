@@ -5,7 +5,7 @@ import {
 } from 'antd';
 import {
   AppstoreOutlined, ArrowLeftOutlined, BookOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined,
-  LinkOutlined, PlusOutlined, RocketOutlined, TeamOutlined, UserOutlined,
+  LinkOutlined, PlusOutlined, RobotOutlined, RocketOutlined, SendOutlined, TeamOutlined, UserOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
@@ -13,6 +13,14 @@ import PageShell from '../components/PageShell';
 import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
 
 const { Title, Text, Paragraph } = Typography;
+
+interface WorkspaceAssistantMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  references?: any[];
+  created_at?: string;
+}
 
 const resourceIcon: Record<string, React.ReactNode> = {
   papers: <BookOutlined />,
@@ -66,6 +74,12 @@ const WorkspaceDetailPage: React.FC = () => {
   const [candidates, setCandidates] = useState<any[]>([]);
   const [candidateLoading, setCandidateLoading] = useState(false);
   const [manualMode, setManualMode] = useState(false);
+  const [assistantLoading, setAssistantLoading] = useState(false);
+  const [assistantSending, setAssistantSending] = useState(false);
+  const [assistantInput, setAssistantInput] = useState('');
+  const [assistantMessages, setAssistantMessages] = useState<WorkspaceAssistantMessage[]>([]);
+  const [assistantPrompts, setAssistantPrompts] = useState<string[]>([]);
+  const [assistantReferences, setAssistantReferences] = useState<any[]>([]);
   const [workspaceActionError, setWorkspaceActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
 
   const fetchSpace = async () => {
@@ -85,6 +99,26 @@ const WorkspaceDetailPage: React.FC = () => {
   };
 
   useEffect(() => { fetchSpace(); }, [spaceId]);
+
+  const fetchAssistantState = async () => {
+    if (!spaceId) return;
+    setAssistantLoading(true);
+    try {
+      const response = await api.get(`/workspaces/${spaceId}/assistant`);
+      setAssistantMessages(response.data.messages || []);
+      setAssistantPrompts(response.data.quick_prompts || []);
+      setAssistantReferences(response.data.references || []);
+      setWorkspaceActionError(null);
+    } catch (error: any) {
+      const detail = getApiErrorDetails(error, { fallback: '项目空间 AI 助手加载失败' });
+      setWorkspaceActionError({ title: 'AI 助手加载失败', detail });
+      message.warning(detail.message);
+    } finally {
+      setAssistantLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchAssistantState(); }, [spaceId]);
 
   const fetchCandidates = async (type = candidateType, q = candidateQuery) => {
     if (!spaceId || !canEditResources) return;
@@ -202,6 +236,26 @@ const WorkspaceDetailPage: React.FC = () => {
     }, 0);
   };
 
+  const sendAssistantMessage = async (contentOverride?: string) => {
+    const content = (contentOverride ?? assistantInput).trim();
+    if (!spaceId || !content) return;
+    setAssistantSending(true);
+    if (!contentOverride) setAssistantInput('');
+    try {
+      const response = await api.post(`/workspaces/${spaceId}/assistant/send`, { content });
+      setAssistantMessages(prev => [...prev, response.data.message, response.data.reply]);
+      setAssistantReferences(response.data.references || []);
+      setWorkspaceActionError(null);
+    } catch (error: any) {
+      if (!contentOverride) setAssistantInput(content);
+      const detail = getApiErrorDetails(error, { fallback: '项目空间 AI 助手发送失败' });
+      setWorkspaceActionError({ title: 'AI 助手发送失败', detail });
+      message.warning(detail.message);
+    } finally {
+      setAssistantSending(false);
+    }
+  };
+
   const renderResourceList = (type: string, items: any[]) => (
     <Card title={<Space>{resourceIcon[type]}{resourceLabel[type]}</Space>} style={{ borderRadius: 14, height: '100%' }}>
       {items?.length ? (
@@ -240,6 +294,107 @@ const WorkspaceDetailPage: React.FC = () => {
       ) : (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无资源" />
       )}
+    </Card>
+  );
+
+  const renderAssistantPanel = () => (
+    <Card
+      title={<Space><RobotOutlined />项目空间 AI 助手</Space>}
+      loading={assistantLoading}
+      style={{ borderRadius: 14, marginBottom: 16 }}
+    >
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Text type="secondary" style={{ fontSize: 13 }}>
+          基于当前空间的论文、研究方向、写作草稿和活动记录回答。不会自动修改空间内容。
+        </Text>
+
+        <Space wrap size={6}>
+          {assistantPrompts.map(prompt => (
+            <Button
+              key={prompt}
+              size="small"
+              onClick={() => sendAssistantMessage(prompt)}
+              disabled={assistantSending}
+              style={{ borderRadius: 8 }}
+            >
+              {prompt.length > 18 ? `${prompt.slice(0, 18)}...` : prompt}
+            </Button>
+          ))}
+        </Space>
+
+        <div style={{ maxHeight: 340, overflowY: 'auto', paddingRight: 4 }}>
+          {assistantMessages.length ? (
+            <Space direction="vertical" size={10} style={{ width: '100%' }}>
+              {assistantMessages.map(item => (
+                <div
+                  key={item.id}
+                  style={{
+                    padding: '10px 12px',
+                    borderRadius: item.role === 'user' ? '12px 12px 4px 12px' : '4px 12px 12px 12px',
+                    background: item.role === 'user' ? '#f3f6ff' : '#f8fafc',
+                    border: '1px solid #eef0f4',
+                  }}
+                >
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <Text strong style={{ fontSize: 12 }}>{item.role === 'user' ? '你' : 'AI 助手'}</Text>
+                    <Paragraph style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{item.content}</Paragraph>
+                    {!!item.references?.length && (
+                      <Space wrap size={4}>
+                        {item.references.slice(0, 6).map((reference: any, index: number) => (
+                          <Tag
+                            key={`${reference.resource_type || 'ref'}-${reference.resource_id || index}`}
+                            color="geekblue"
+                            style={{ cursor: reference.path ? 'pointer' : 'default' }}
+                            onClick={() => reference.path && navigate(reference.path)}
+                          >
+                            {reference.source_label || '空间引用'}：{reference.title || reference.resource_type}
+                          </Tag>
+                        ))}
+                      </Space>
+                    )}
+                  </Space>
+                </div>
+              ))}
+            </Space>
+          ) : (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有空间对话，可以先点一个快捷问题" />
+          )}
+        </div>
+
+        {!!assistantReferences.length && (
+          <Space wrap size={4}>
+            <Text type="secondary" style={{ fontSize: 12 }}>当前上下文：</Text>
+            {assistantReferences.slice(0, 8).map((reference: any, index: number) => (
+              <Tag
+                key={`${reference.resource_type || 'ctx'}-${reference.resource_id || index}`}
+                onClick={() => reference.path && navigate(reference.path)}
+                style={{ cursor: reference.path ? 'pointer' : 'default' }}
+              >
+                {reference.title || reference.source_label}
+              </Tag>
+            ))}
+          </Space>
+        )}
+
+        <Input.TextArea
+          value={assistantInput}
+          onChange={event => setAssistantInput(event.target.value)}
+          placeholder="问这个项目空间：比如当前进展、证据缺口、下一步计划、写作提纲..."
+          autoSize={{ minRows: 2, maxRows: 5 }}
+          disabled={assistantSending}
+          style={{ borderRadius: 10 }}
+        />
+        <Button
+          type="primary"
+          icon={<SendOutlined />}
+          loading={assistantSending}
+          disabled={!assistantInput.trim()}
+          onClick={() => sendAssistantMessage()}
+          style={{ borderRadius: 10, alignSelf: 'flex-end' }}
+        >
+          发送给空间助手
+        </Button>
+      </Space>
     </Card>
   );
 
@@ -476,6 +631,7 @@ const WorkspaceDetailPage: React.FC = () => {
               )}
             </Col>
             <Col xs={24} xl={8}>
+              {renderAssistantPanel()}
               <Card title="下一步建议" style={{ borderRadius: 14 }}>
                 <List
                   dataSource={space.next_actions || []}

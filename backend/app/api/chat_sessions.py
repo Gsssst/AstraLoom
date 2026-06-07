@@ -351,6 +351,11 @@ class SendMessageResponse(BaseModel):
     compression_notice: Optional[str] = None
 
 
+def _is_workspace_scoped_session(session: ChatSession) -> bool:
+    metadata = session.metadata_json or {}
+    return metadata.get("scope") == "workspace" and bool(metadata.get("workspace_id"))
+
+
 @router.delete("/{session_id}/messages/{message_id}")
 async def delete_message(session_id: str, message_id: str, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """删除消息。"""
@@ -402,7 +407,7 @@ async def list_sessions(user: User = Depends(get_current_user), db: AsyncSession
         .options(selectinload(ChatSession.messages))
         .order_by(ChatSession.updated_at.desc())
     )
-    sessions = result.scalars().all()
+    sessions = [session for session in result.scalars().all() if not _is_workspace_scoped_session(session)]
 
     return [
         SessionResponse(

@@ -429,6 +429,40 @@ class WorkspaceService:
             },
         }
 
+    async def build_assistant_context(self, space: ProjectSpace) -> tuple[str, list[dict], dict]:
+        """Build a concise, workspace-scoped context block for advisory AI chat."""
+        summary = await self.build_summary(space)
+        dashboard = self.build_dashboard(summary)
+        next_actions = self._next_actions(summary)
+        activities = await self.recent_activities_for_space(space, limit=8)
+        linked = summary.get("linked_resources") or {}
+        recent = summary.get("recent_resources") or {}
+        resource_summary = {
+            "linked_resources": linked,
+            "recent_resources": recent,
+            "dashboard": dashboard,
+            "next_actions": next_actions,
+        }
+        references = self._assistant_references(linked, activities)
+        lines = [
+            "你是项目空间 AI 助手，只能基于下面给出的项目空间上下文提供建议。",
+            "如果上下文不足以支持结论，请明确说明缺少哪些论文、研究方向、草稿或活动记录。",
+            "不要声称已经阅读完整 PDF、完整草稿或未提供的外部资料。",
+            "",
+            f"空间名称：{space.name}",
+            f"空间描述：{space.description or '暂无'}",
+            f"当前阶段：{dashboard.get('stage_label') or '待判断'}，进度 {dashboard.get('progress_score', 0)}%",
+            "",
+            self._assistant_resource_section("已绑定论文", linked.get("papers") or []),
+            self._assistant_resource_section("已绑定研究方向", linked.get("research_projects") or []),
+            self._assistant_resource_section("已绑定写作草稿", linked.get("writing_projects") or []),
+            self._assistant_next_actions_section(next_actions),
+            self._assistant_activity_section(activities),
+        ]
+        if not references:
+            lines.append("当前空间绑定资源较少，回答时优先给出资源补齐建议。")
+        return "\n".join(line for line in lines if line is not None), references, resource_summary
+
     async def _recent_activity_count(self, space: ProjectSpace) -> int:
         result = await self.session.execute(
             select(ProjectSpaceActivity.id)
@@ -678,6 +712,64 @@ class WorkspaceService:
                 "created_at": activity.created_at.isoformat() if activity.created_at else "",
             })
         return rows
+
+    def _assistant_resource_section(self, title: str, items: list[dict], limit: int = 6) -> str:
+        if not items:
+            return f"{title}：暂无"
+        rows = [f"{title}："]
+        for index, item in enumerate(items[:limit], start=1):
+            rows.append(f"{index}. {item.get('title') or '未命名'}｜{item.get('subtitle') or ''}｜路径 {item.get('path') or ''}")
+        extra = len(items) - limit
+        if extra > 0:
+            rows.append(f"...另有 {extra} 个资源未展开")
+        return "\n".join(rows)
+
+    def _assistant_next_actions_section(self, actions: list[dict], limit: int = 5) -> str:
+        if not actions:
+            return "下一步建议：暂无"
+        rows = ["下一步建议："]
+        for index, item in enumerate(actions[:limit], start=1):
+            rows.append(f"{index}. {item.get('label') or ''}｜{item.get('path') or ''}")
+        return "\n".join(rows)
+
+    def _assistant_activity_section(self, activities: list[dict], limit: int = 8) -> str:
+        if not activities:
+            return "最近活动：暂无"
+        rows = ["最近活动："]
+        for index, item in enumerate(activities[:limit], start=1):
+            title = (item.get("metadata_json") or {}).get("title") or ""
+            rows.append(
+                f"{index}. {item.get('actor_name') or '系统'} {item.get('action') or ''}"
+                f" {item.get('resource_type') or ''} {title}｜{item.get('created_at') or ''}"
+            )
+        return "\n".join(rows)
+
+    def _assistant_references(self, linked: dict, activities: list[dict], limit_per_type: int = 5) -> list[dict]:
+        references: list[dict] = []
+        for rtype, label in [
+            ("papers", "空间论文"),
+            ("research_projects", "空间研究方向"),
+            ("writing_projects", "空间写作草稿"),
+        ]:
+            for item in (linked.get(rtype) or [])[:limit_per_type]:
+                references.append({
+                    "source": "workspace",
+                    "source_label": label,
+                    "resource_type": rtype,
+                    "resource_id": item.get("id"),
+                    "title": item.get("title"),
+                    "path": item.get("path"),
+                })
+        for item in activities[:3]:
+            references.append({
+                "source": "workspace",
+                "source_label": "最近活动",
+                "resource_type": item.get("resource_type") or "activity",
+                "resource_id": item.get("resource_id") or item.get("id"),
+                "title": (item.get("metadata_json") or {}).get("title") or item.get("action"),
+                "path": None,
+            })
+        return references
 
     def _role_for(self, space: ProjectSpace, user_id) -> str:
         for member in space.members or []:
