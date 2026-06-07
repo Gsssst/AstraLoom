@@ -16,6 +16,12 @@ import { prefetchRouteIntent } from '../routes/lazyRoutes';
 const { Text } = Typography;
 const { Header, Sider, Content } = Layout;
 
+const notificationCategoryConfig: Record<string, { label: string; color: string }> = {
+  digest: { label: '论文推送', color: 'blue' },
+  workspace_issue: { label: 'Issue', color: 'purple' },
+  system: { label: '系统', color: 'default' },
+};
+
 const menuItems = [
   { key: '/chat', icon: <CommentOutlined />, label: '对话', color: '#667eea' },
   { key: '/actions', icon: <ThunderboltOutlined />, label: '行动中心', color: '#f59e0b' },
@@ -78,11 +84,31 @@ const AppLayout: React.FC = () => {
     setUnreadCount(c => Math.max(0, c - 1));
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
   };
+  const notificationTargetPath = (item: any) => {
+    const metadata = item.metadata || {};
+    if (item.category === 'workspace_issue') {
+      if (metadata.path) return metadata.path;
+      if (metadata.workspace_id && metadata.issue_id) return `/workspaces/${metadata.workspace_id}?issue=${metadata.issue_id}`;
+    }
+    if (item.category === 'digest') return '/papers/digests';
+    return metadata.path || '';
+  };
   const handleNotificationSelect = async (item: any) => {
     if (!item.is_read) await handleMarkRead(item.id);
-    if (item.category === 'digest') {
+    const targetPath = notificationTargetPath(item);
+    if (targetPath) {
       setNotifOpen(false);
-      navigate('/papers/digests');
+      navigate(targetPath);
+    }
+  };
+  const handleMarkAllNotificationsRead = async () => {
+    try {
+      await api.post('/notifications/read-all');
+      setNotifications(prev => prev.map(item => ({ ...item, is_read: true })));
+      setUnreadCount(0);
+      window.dispatchEvent(new Event('notifications:refresh'));
+    } catch {
+      message.warning('通知标记已读失败');
     }
   };
   const handleLogout = () => { logout(); message.success('已退出登录'); navigate('/'); };
@@ -283,13 +309,26 @@ const AppLayout: React.FC = () => {
             {isAuthenticated && (
               <Popover trigger="click" open={notifOpen} onOpenChange={setNotifOpen} title="通知" content={
                 <div style={{ width: 320 }}>
+                  <Button
+                    block
+                    size="small"
+                    disabled={!notifications.some((item: any) => !item.is_read)}
+                    onClick={handleMarkAllNotificationsRead}
+                    style={{ marginBottom: 8, borderRadius: 8 }}
+                  >
+                    全部标记已读
+                  </Button>
                   {notifications.length === 0 ? <Empty description="暂无通知" image={Empty.PRESENTED_IMAGE_SIMPLE} /> : (
                     <List style={{ maxHeight: 360, overflow: 'auto' }} dataSource={notifications} renderItem={(item: any) => (
-                      <List.Item style={{ opacity: item.is_read ? 0.58 : 1, cursor: 'pointer' }} onClick={() => handleNotificationSelect(item)}>
+                      <List.Item
+                        style={{ opacity: item.is_read ? 0.58 : 1, cursor: 'pointer' }}
+                        onClick={() => handleNotificationSelect(item)}
+                        {...routeIntentProps(notificationTargetPath(item))}
+                      >
                         <List.Item.Meta title={item.title} description={
                           <div>
                             <Text style={{ fontSize: 12 }} ellipsis>{item.content?.slice(0, 150)}</Text>
-                            <div><Tag color={item.category === 'digest' ? 'blue' : 'default'} style={{ fontSize: 10 }}>{item.category}</Tag>
+                            <div><Tag color={notificationCategoryConfig[item.category]?.color || 'default'} style={{ fontSize: 10 }}>{notificationCategoryConfig[item.category]?.label || item.category}</Tag>
                               <Text type="secondary" style={{ fontSize: 10 }}>{new Date(item.created_at).toLocaleDateString()}</Text></div>
                           </div>
                         } />

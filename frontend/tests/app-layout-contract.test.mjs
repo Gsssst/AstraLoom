@@ -37,3 +37,16 @@ test('chat session active state does not add a second full-height left border', 
     /\.chat-session-item\.is-active\s*\{[^}]*border-left:/,
   );
 });
+
+test('header notifications route workspace issue events and keep digest behavior', () => {
+  assert.match(layoutSource, /notificationCategoryConfig/);
+  assert.match(layoutSource, /workspace_issue: \{ label: 'Issue', color: 'purple' \}/);
+  assert.match(layoutSource, /const notificationTargetPath = \(item: any\) =>/);
+  assert.match(layoutSource, /metadata\.path/);
+  assert.match(layoutSource, /`\/workspaces\/\$\{metadata\.workspace_id\}\?issue=\$\{metadata\.issue_id\}`/);
+  assert.match(layoutSource, /if \(item\.category === 'digest'\) return '\/papers\/digests'/);
+  assert.match(layoutSource, /navigate\(targetPath\)/);
+  assert.match(layoutSource, /api\.post\('\/notifications\/read-all'\)/);
+  assert.match(layoutSource, /全部标记已读/);
+  assert.match(layoutSource, /routeIntentProps\(notificationTargetPath\(item\)\)/);
+});

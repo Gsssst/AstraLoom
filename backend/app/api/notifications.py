@@ -166,6 +166,7 @@ def _notification_response(notification: Notification) -> dict:
 async def list_notifications(
     limit: int = Query(default=20, ge=1, le=100),
     unread_only: bool = False,
+    category: Optional[str] = Query(default=None, min_length=1, max_length=50),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -174,6 +175,8 @@ async def list_notifications(
 
     if unread_only:
         query = query.where(Notification.is_read == False)
+    if category:
+        query = query.where(Notification.category == category)
 
     query = query.order_by(Notification.created_at.desc()).limit(limit)
     result = await db.execute(query)
@@ -312,15 +315,21 @@ async def mark_read(notification_id: str, user: User = Depends(get_current_user)
 
 
 @router.post("/read-all")
-async def mark_all_read(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def mark_all_read(
+    category: Optional[str] = Query(default=None, min_length=1, max_length=50),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """全部标记已读。"""
-    result = await db.execute(
-        select(Notification).where(
-            Notification.user_id == user.id,
-            Notification.is_read == False,
-        )
+    query = select(Notification).where(
+        Notification.user_id == user.id,
+        Notification.is_read == False,
     )
-    for n in result.scalars().all():
-        n.is_read = True
+    if category:
+        query = query.where(Notification.category == category)
+    result = await db.execute(query)
+    notifications = result.scalars().all()
+    for notification in notifications:
+        notification.is_read = True
     await db.commit()
-    return {"read_all": True}
+    return {"read_all": True, "updated": len(notifications)}

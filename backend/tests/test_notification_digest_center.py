@@ -1,6 +1,6 @@
 """Regression tests for the usable in-app arXiv digest center."""
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -174,22 +174,24 @@ def test_arxiv_parser_preserves_precise_publication_timestamp():
 async def test_digest_fetch_deduplicates_multi_source_results_and_filters_stale_dated_papers(monkeypatch):
     session = _Session()
     service = DigestService(session)
+    fresh_published_at = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
+    stale_published_at = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
 
     async def fake_search(**_kwargs):
         return [
             PaperResult(
                 title="Fresh Paper", authors=["Alice"], abstract="video grounding",
-                year=2026, published_at="2026-06-03T00:00:00Z", arxiv_id="2606.00001v1",
+                year=2026, published_at=fresh_published_at, arxiv_id="2606.00001v1",
                 metadata={"remote_id": "2606.00001v1"},
             ),
             PaperResult(
                 title="Fresh Paper", authors=["Alice"], abstract="duplicate",
-                year=2026, published_at="2026-06-03T00:00:00Z", arxiv_id="2606.00001v2",
+                year=2026, published_at=fresh_published_at, arxiv_id="2606.00001v2",
                 metadata={"remote_id": "2606.00001v2"},
             ),
             PaperResult(
                 title="Stale Paper", authors=["Bob"], abstract="old",
-                year=2026, published_at="2026-01-01T00:00:00Z", arxiv_id="2601.00001v1",
+                year=2026, published_at=stale_published_at, arxiv_id="2601.00001v1",
                 metadata={"remote_id": "2601.00001v1"},
             ),
         ]
@@ -242,6 +244,54 @@ async def test_mark_all_digests_read_does_not_touch_unrelated_notifications():
     assert result == {"read_all": True, "updated": 1}
     assert digest.is_read is True
     assert system.is_read is False
+    assert session.committed is True
+
+
+@pytest.mark.asyncio
+async def test_notification_list_can_filter_workspace_issue_category():
+    workspace_issue = SimpleNamespace(
+        id=uuid4(),
+        title="Issue 新评论",
+        content="Alice 评论了 Issue",
+        category="workspace_issue",
+        is_read=False,
+        metadata_json={"path": "/workspaces/space-1?issue=issue-1"},
+        created_at=datetime(2026, 6, 7),
+    )
+    session = _Session([workspace_issue])
+
+    result = await notifications.list_notifications(
+        limit=10,
+        unread_only=False,
+        category="workspace_issue",
+        user=SimpleNamespace(id=uuid4()),
+        db=session,
+    )
+
+    assert result == [{
+        "id": str(workspace_issue.id),
+        "title": "Issue 新评论",
+        "content": "Alice 评论了 Issue",
+        "category": "workspace_issue",
+        "is_read": False,
+        "metadata": {"path": "/workspaces/space-1?issue=issue-1"},
+        "created_at": "2026-06-07T00:00:00",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_mark_all_read_can_scope_to_workspace_issue_category():
+    workspace_issue = SimpleNamespace(category="workspace_issue", is_read=False)
+    session = _Session([workspace_issue])
+
+    result = await notifications.mark_all_read(
+        category="workspace_issue",
+        user=SimpleNamespace(id=uuid4()),
+        db=session,
+    )
+
+    assert result == {"read_all": True, "updated": 1}
+    assert workspace_issue.is_read is True
     assert session.committed is True
 
 
