@@ -17,6 +17,7 @@ import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
 import PageShell from '../components/PageShell';
 import ApiErrorAlert from '../components/ApiErrorAlert';
+import { WorkflowEmptyState, WorkflowProgressState } from '../components/WorkflowState';
 import { DiffViewer, PipelineProgress, WritingProjectPanel, SectionEditor } from '../components/writing';
 import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
 
@@ -1263,7 +1264,21 @@ const WritingPage: React.FC = () => {
               <div style={{ marginBottom: 16 }}>
                 <WorkspaceResourceLinks resourceType="writing_projects" resourceId={selectedProject.id} title="所属项目空间" />
               </div>
-              {pipelineRunning && <div style={{ marginBottom: 12 }}><PipelineProgress phases={pipelinePhases} currentPhase={pipelineCurrentPhase} phaseStatuses={pipelinePhaseStatuses} statusText={pipelineStatusText} onCancel={handleCancelPipeline} /></div>}
+              {pipelineRunning && (
+                <div style={{ marginBottom: 12 }}>
+                  <WorkflowProgressState
+                    title="AI 辅助写作正在运行"
+                    description="系统会按检索、阅读、写作、审阅和引用验证阶段推进当前项目。"
+                    phase={pipelineCurrentPhase || pipelinePhases[0] || '启动'}
+                    statusText={pipelineStatusText || '正在启动...'}
+                    icon={<RocketOutlined />}
+                    action={<Button size="small" danger onClick={handleCancelPipeline} style={{ borderRadius: 8 }}>取消</Button>}
+                    compact
+                    style={{ marginBottom: 10 }}
+                  />
+                  <PipelineProgress phases={pipelinePhases} currentPhase={pipelineCurrentPhase} phaseStatuses={pipelinePhaseStatuses} statusText={pipelineStatusText} onCancel={handleCancelPipeline} />
+                </div>
+              )}
               {publicationExportPanel}
               <div id="writing-sections-panel">
                 {projectSections.map(s => (
@@ -1285,7 +1300,12 @@ const WritingPage: React.FC = () => {
             <div>{evidencePanel}</div>
           </div>
         ) : (
-          <Card style={{ ...cardStyle, textAlign: 'center', padding: 60 }}><Empty description={<span><Text strong>选择或创建一个写作项目开始</Text><br /><Text type="secondary">使用章节管理器组织论文结构，一键导出 Word/Markdown</Text></span>} /></Card>
+          <WorkflowEmptyState
+            title="选择或创建一个写作项目开始"
+            description="使用章节管理器组织论文结构，把证据卡、引用校验和导出预检放到同一个写作流程里。"
+            icon={<FolderOutlined />}
+            action={<Button type="primary" icon={<RocketOutlined />} onClick={handleCreateReviewDraft} loading={draftLoading} style={{ borderRadius: 10 }}>从研究方向创建草稿</Button>}
+          />
         )}
       </div>
     </div>

@@ -21,6 +21,7 @@ import { useAuthStore } from '../stores/useAuthStore';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
 import PageShell from '../components/PageShell';
 import ApiErrorAlert from '../components/ApiErrorAlert';
+import { WorkflowEmptyState, WorkflowLoadingState } from '../components/WorkflowState';
 
 const { Text, Paragraph, Title } = Typography;
 
@@ -1213,8 +1214,14 @@ const PapersPage: React.FC = () => {
       {/* ── 论文列表 (可滚动) ── */}
       <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, paddingRight: 4 }}>
       {source === 'maintenance' ? maintenanceView : (
-      <Spin spinning={loading}>
-        {filteredPapers.length > 0 ? (
+        loading ? (
+          <WorkflowLoadingState
+            title={isRemoteSource ? '正在检索外部学术源' : '正在加载论文列表'}
+            description={isRemoteSource ? '系统会合并可用学术源，并标记可入库、已入库和开放 PDF 状态。' : '正在读取收藏、阅读状态、分类和论文元数据。'}
+            icon={<BookOutlined />}
+            style={{ marginBottom: 12 }}
+          />
+        ) : filteredPapers.length > 0 ? (
           <List dataSource={filteredPapers} renderItem={(paper, idx) => {
             const remoteKey = paperRemoteKey(paper);
             const resultState = paperResultState(paper, ingestedRemoteIds);
@@ -1275,21 +1282,22 @@ const PapersPage: React.FC = () => {
           );
           }} />
         ) : (
-          <Card style={{ borderRadius: 16, textAlign: 'center', padding: 60, border: '2px dashed #e8e8e8' }}>
-            <div style={{ width: 80, height: 80, borderRadius: 20, background: '#f0f2ff', margin: '0 auto 20px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <BookOutlined style={{ fontSize: 36, color: '#667eea' }} />
-            </div>
-            <Title level={4}>{papers.length > 0 ? '当前状态筛选下没有结果' : isRemoteSource ? '这次外部检索没有返回论文' : '暂无论文'}</Title>
+          <WorkflowEmptyState
+            title={papers.length > 0 ? '当前状态筛选下没有结果' : isRemoteSource ? '这次外部检索没有返回论文' : '暂无论文'}
+            description={papers.length > 0
+              ? `当前结果中没有符合「${paperResultStateOptions.find(option => option.value === resultStateFilter)?.label}」状态的论文。`
+              : isRemoteSource
+                ? '可能是关键词过窄、年份限制过紧、当前 provider 不可用，或该来源没有开放元数据。'
+                : '尝试搜索 arXiv 或一键入库来添加论文。'}
+            icon={<BookOutlined />}
+            action={(
+              <>
             {papers.length > 0 ? (
               <Space direction="vertical" size={10} style={{ width: '100%', alignItems: 'center' }}>
-                <Text type="secondary" style={{ fontSize: 14 }}>当前结果中没有符合「{paperResultStateOptions.find(option => option.value === resultStateFilter)?.label}」状态的论文。</Text>
                 <Button onClick={() => setResultStateFilter('all')} style={{ borderRadius: 10 }}>查看全部状态</Button>
               </Space>
             ) : isRemoteSource ? (
               <Space direction="vertical" size={10} style={{ width: '100%', alignItems: 'center' }}>
-                <Text type="secondary" style={{ fontSize: 14 }}>
-                  可能是关键词过窄、年份限制过紧、当前 provider 不可用，或该来源没有开放元数据。
-                </Text>
                 <Space wrap style={{ justifyContent: 'center' }}>
                   <Button onClick={() => { setYearFrom(undefined); setYearTo(undefined); }} style={{ borderRadius: 10 }}>放宽年份</Button>
                   <Button icon={<RedoOutlined />} loading={loading} onClick={() => handleSearch(remotePage + 1)} style={{ borderRadius: 10 }}>换一批</Button>
@@ -1301,14 +1309,12 @@ const PapersPage: React.FC = () => {
                 {remoteGuidance && <Text type="secondary" style={{ fontSize: 12 }}>{remoteGuidance.retry}</Text>}
               </Space>
             ) : (
-              <>
-                <Text type="secondary" style={{ fontSize: 14, display: 'block', marginBottom: 20 }}>尝试搜索 arXiv 或一键入库来添加论文</Text>
                 <Button type="primary" size="large" icon={<RocketOutlined />} onClick={() => { setIngestQuery('large language model'); handleIngest(); }} style={{ borderRadius: 12, height: 44 }}>示例：检索 "large language model"</Button>
+            )}
               </>
             )}
-          </Card>
-        )}
-      </Spin>
+          />
+        )
       )}
       </div>
 

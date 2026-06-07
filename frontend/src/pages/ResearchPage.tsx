@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Card, Button, Input, Tag, Typography, Space, Spin,
+  Card, Button, Input, Tag, Typography, Space,
   message, Row, Col, Modal, Divider, Popconfirm, Select,
 } from 'antd';
 import {
@@ -14,8 +14,9 @@ import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
 import PageShell from '../components/PageShell';
 import ApiErrorAlert from '../components/ApiErrorAlert';
+import { WorkflowEmptyState, WorkflowLoadingState } from '../components/WorkflowState';
 
-const { Title, Text, Paragraph } = Typography;
+const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
 
 interface Project {
@@ -183,18 +184,20 @@ const ResearchPage: React.FC = () => {
       />
 
       {/* ── 项目列表 ── */}
-      <Spin spinning={loading}>
-        {projects.length === 0 ? (
-          <Card style={{ borderRadius: 16, textAlign: 'center', padding: 80, border: '2px dashed #e8e8e8' }}>
-            <div style={{ width: 80, height: 80, borderRadius: 20, background: '#fff0f2', margin: '0 auto 20px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <ExperimentOutlined style={{ fontSize: 36, color: '#f5576c' }} />
-            </div>
-            <Title level={4} style={{ color: '#333' }}>还没有研究方向</Title>
-            <Text type="secondary" style={{ fontSize: 14, display: 'block', marginBottom: 24 }}>
-              创建研究方向后，AI 将分析知识库论文，为你生成创新性的研究 Idea
-            </Text>
-            <Button type="primary" size="large" icon={<RocketOutlined />} onClick={() => setCreateModalOpen(true)} style={{ borderRadius: 12, height: 44 }}>创建第一个方向</Button>
-          </Card>
+      {loading ? (
+        <WorkflowLoadingState
+          title="正在加载研究方向"
+          description="研究方向列表加载完成后，可以继续生成 Proposal、绑定论文分类或沉淀到写作。"
+          icon={<ExperimentOutlined />}
+          style={{ marginBottom: 18 }}
+        />
+      ) : projects.length === 0 ? (
+          <WorkflowEmptyState
+            title="还没有研究方向"
+            description="创建研究方向后，AI 会基于关联论文生成 Idea、实验方案和写作素材。"
+            icon={<ExperimentOutlined />}
+            action={<Button type="primary" size="large" icon={<RocketOutlined />} onClick={() => setCreateModalOpen(true)} style={{ borderRadius: 12, height: 44 }}>创建第一个方向</Button>}
+          />
         ) : (
           <Row gutter={[16, 16]}>
             {projects.map(p => (
@@ -235,8 +238,7 @@ const ResearchPage: React.FC = () => {
               </Col>
             ))}
           </Row>
-        )}
-      </Spin>
+      )}
 
       {/* ── 创建弹窗 ── */}
       <Modal title={<span><ExperimentOutlined style={{ color: '#f5576c', marginRight: 8 }} />新建研究方向</span>}

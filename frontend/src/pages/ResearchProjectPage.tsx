@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  Alert, Button, Card, Checkbox, Collapse, Col, Divider, Empty, Input, List, message,
-  Modal, Popconfirm, Progress, Row, Select, Space, Spin, Steps, Switch, Tabs, Tag, Tooltip, Typography,
+  Alert, Button, Card, Checkbox, Collapse, Col, Divider, Input, List, message,
+  Modal, Popconfirm, Row, Select, Space, Steps, Switch, Tabs, Tag, Tooltip, Typography,
 } from 'antd';
 import {
   ArrowLeftOutlined, BulbOutlined, CodeOutlined, DeleteOutlined,
@@ -14,6 +14,12 @@ import api from '../services/api';
 import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
 import PageShell from '../components/PageShell';
 import ApiErrorAlert from '../components/ApiErrorAlert';
+import {
+  WorkflowEmptyState,
+  WorkflowLoadingState,
+  WorkflowProgressState,
+  WorkflowUnavailableState,
+} from '../components/WorkflowState';
 import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
 
 const { Title, Text, Paragraph } = Typography;
@@ -506,8 +512,42 @@ const ResearchProjectPage: React.FC = () => {
     }
   };
 
-  if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
-  if (!project) return <Empty description="项目未找到" />;
+  if (loading) {
+    return (
+      <PageShell
+        title="研究工作台"
+        subtitle="正在读取研究方向、运行状态和候选 Proposal。"
+        icon={<ExperimentOutlined />}
+        maxWidth={1280}
+        actions={<Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/research')} style={{ borderRadius: 10 }}>返回研究方向</Button>}
+      >
+        <WorkflowLoadingState
+          title="正在打开研究工作台"
+          description="会优先加载方向基础信息，相关论文和辅助状态随后在页面内刷新。"
+          icon={<ExperimentOutlined />}
+        />
+      </PageShell>
+    );
+  }
+
+  if (!project) {
+    return (
+      <PageShell
+        title="研究工作台"
+        subtitle="当前研究方向不可用。"
+        icon={<ExperimentOutlined />}
+        maxWidth={960}
+        actions={<Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/research')} style={{ borderRadius: 10 }}>返回研究方向</Button>}
+      >
+        <WorkflowUnavailableState
+          title="没有找到这个研究方向"
+          description="它可能已被删除、归档，或当前账号没有访问权限。"
+          icon={<FileSearchOutlined />}
+          action={<Button type="primary" icon={<ArrowLeftOutlined />} onClick={() => navigate('/research')} style={{ borderRadius: 10 }}>返回研究方向</Button>}
+        />
+      </PageShell>
+    );
+  }
 
   const evidenceMap = run?.evidence_map || {};
   const evidenceItems = (['seed', 'background', 'inspiration'] as const).flatMap(category => (evidenceMap[category] as Evidence[] || []));
@@ -535,7 +575,14 @@ const ResearchProjectPage: React.FC = () => {
     <div>
       <Alert showIcon type="info" message="证据地图" description="核心论文来自你主动关联的文献；背景论文用于界定现有方法；灵感论文可以来自本地论文库、arXiv 或 Semantic Scholar，用于新颖性检查和跨领域启发。" style={{ marginBottom: 16 }} />
       {Object.keys(sourceErrors).length > 0 && <Alert showIcon type="warning" message="部分联网来源暂不可用" description={`已自动使用其余证据继续生成：${Object.keys(sourceErrors).join('、')}`} style={{ marginBottom: 16 }} />}
-      {evidenceItems.length === 0 ? <Empty description="运行工作台后会显示证据地图" /> : (
+      {evidenceItems.length === 0 ? (
+        <WorkflowEmptyState
+          title="证据地图还没有生成"
+          description="从论文证据开始运行工作台后，这里会显示种子、背景和灵感论文。"
+          icon={<FileSearchOutlined />}
+          action={<Button type="primary" icon={<RocketOutlined />} onClick={handleGenerate}>从论文证据开始生成</Button>}
+        />
+      ) : (
         <List dataSource={evidenceItems} renderItem={item => (
           <List.Item style={{ alignItems: 'flex-start' }}>
             <List.Item.Meta
@@ -548,7 +595,14 @@ const ResearchProjectPage: React.FC = () => {
     </div>
   );
 
-  const gapTab = gaps.length === 0 ? <Empty description="证据收集后会自动形成 Gap Map" /> : (
+  const gapTab = gaps.length === 0 ? (
+    <WorkflowEmptyState
+      title="Gap Map 尚未形成"
+      description="工作台完成证据收集后，会把现有限制、研究机会和可验证问题沉淀到这里。"
+      icon={<NodeIndexOutlined />}
+      action={<Button type="primary" icon={<RocketOutlined />} onClick={handleGenerate}>继续生成 Gap Map</Button>}
+    />
+  ) : (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       {gaps.map((gap, index) => (
         <Card key={`${gap.title}-${index}`} size="small" title={<Space><NodeIndexOutlined style={{ color: '#8b5cf6' }} /><Text strong>{gap.title}</Text></Space>} style={{ borderRadius: 12 }}>
@@ -561,7 +615,14 @@ const ResearchProjectPage: React.FC = () => {
     </Space>
   );
 
-  const candidateTab = candidates.length === 0 ? <Empty description="Gap Map 完成后会显示候选假设池" /> : (
+  const candidateTab = candidates.length === 0 ? (
+    <WorkflowEmptyState
+      title="候选假设池为空"
+      description="Gap Map 完成后，系统会生成多条可证伪假设并在这里展示。"
+      icon={<BulbOutlined />}
+      action={<Button type="primary" icon={<RocketOutlined />} onClick={handleGenerate}>生成候选假设</Button>}
+    />
+  ) : (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       {candidates.map((candidate, index) => (
         <Card key={`${candidate.title}-${index}`} size="small" style={{ borderRadius: 12 }}
@@ -826,7 +887,14 @@ const ResearchProjectPage: React.FC = () => {
     );
   };
 
-  const proposalTab = ideas.length === 0 ? <Empty description="评审完成后会保存 Top Proposal" /> : (
+  const proposalTab = ideas.length === 0 ? (
+    <WorkflowEmptyState
+      title="还没有 Top Proposal"
+      description="候选假设经过去重和评审后，会保存为可讨论、可验证、可写作的 Proposal。"
+      icon={<ExperimentOutlined />}
+      action={<Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate}>生成 Proposal</Button>}
+    />
+  ) : (
     <Space direction="vertical" size={14} style={{ width: '100%' }}>
       <Card size="small" style={{ borderRadius: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -852,7 +920,14 @@ const ResearchProjectPage: React.FC = () => {
           />
         )}
       </Card>
-      {visibleProposals.length === 0 ? <Empty description="当前筛选条件下没有 Proposal" /> : (
+      {visibleProposals.length === 0 ? (
+        <WorkflowEmptyState
+          title="当前筛选条件下没有 Proposal"
+          description="可以切回全部状态，或调整排序后继续比较候选项。"
+          icon={<FileSearchOutlined />}
+          action={<Button onClick={() => setProposalFilter('all')} style={{ borderRadius: 10 }}>查看全部 Proposal</Button>}
+        />
+      ) : (
         <Collapse accordion items={visibleProposals.map((idea, index) => {
           const isRecommended = recommendedProposal?.id === idea.id;
           return {
@@ -875,7 +950,13 @@ const ResearchProjectPage: React.FC = () => {
     </Space>
   );
 
-  const experimentTab = experiments.length === 0 ? <Empty description="在 Proposal 中记录实验后，会在这里形成反馈闭环" /> : (
+  const experimentTab = experiments.length === 0 ? (
+    <WorkflowEmptyState
+      title="还没有实验反馈"
+      description="在 Proposal 中记录实验结果后，这里会形成反馈闭环，并支持基于结果继续演化。"
+      icon={<ExperimentOutlined />}
+    />
+  ) : (
     <List dataSource={experiments} renderItem={experiment => (
       <List.Item actions={experiment.idea_id ? [<Button key="evolve" type="link" onClick={() => evolveFromFeedback(experiment)}>根据反馈演化</Button>] : []}>
         <List.Item.Meta
@@ -928,8 +1009,19 @@ const ResearchProjectPage: React.FC = () => {
             <br />
             <Text type="secondary">{run?.message || '从证据开始，而不是让模型直接猜一个 Idea'}</Text>
           </div>
-          <Progress type="circle" size={54} percent={run?.progress || 0} />
         </div>
+        {(generating || run) && (
+          <WorkflowProgressState
+            title={generating ? '正在生成 Proposal' : '最近一次工作台进度'}
+            description={run?.message || '从证据开始推进到 Gap Map、候选池和 Top Proposal。'}
+            percent={run?.progress}
+            phase={currentStageTitle}
+            statusText={runStatusLabel}
+            icon={generating ? <ThunderboltOutlined /> : <ExperimentOutlined />}
+            compact
+            style={{ marginBottom: 12 }}
+          />
+        )}
         <Steps current={stageIndex} size="small" responsive items={stageItems.map(([, title]) => ({ title }))} />
         <Space wrap style={{ marginTop: 12 }}>
           {generating && <Button danger icon={<StopOutlined />} onClick={handleStopGeneration}>停止当前生成</Button>}
