@@ -258,6 +258,41 @@ class CodeGenResponse(BaseModel):
     code_project: CodeProjectManifest
 
 
+class CodeProjectVersionSummary(BaseModel):
+    id: str
+    idea_id: str
+    version: int
+    project_name: str
+    framework: str
+    summary: Optional[str] = None
+    file_count: int
+    created_at: str
+
+
+class CodeProjectVersionDetail(CodeProjectVersionSummary):
+    code_project: CodeProjectManifest
+
+
+class CodeProjectFileDiff(BaseModel):
+    path: str
+    status: Literal["added", "removed", "modified", "unchanged"]
+    language: str = "text"
+    purpose: str = ""
+    before_line_count: int = 0
+    after_line_count: int = 0
+    before_content: Optional[str] = None
+    after_content: Optional[str] = None
+    diff: str = ""
+
+
+class CodeProjectVersionCompareResponse(BaseModel):
+    idea_id: str
+    from_version: int
+    to_version: int
+    summary: dict[str, int]
+    files: list[CodeProjectFileDiff]
+
+
 class IdeaDecisionRequest(BaseModel):
     status: str = Field(..., pattern="^(draft|pinned|rejected)$")
 
@@ -381,6 +416,27 @@ def _idea_response(idea: ResearchIdea) -> IdeaResponse:
 def _idea_brief(idea: ResearchIdea) -> IdeaBrief:
     response = _idea_response(idea)
     return IdeaBrief(**response.model_dump(exclude={"project_id"}))
+
+
+def _code_project_version_summary(version) -> CodeProjectVersionSummary:
+    return CodeProjectVersionSummary(
+        id=str(version.id),
+        idea_id=str(version.idea_id),
+        version=version.version,
+        project_name=version.project_name,
+        framework=version.framework,
+        summary=version.summary,
+        file_count=version.file_count,
+        created_at=version.created_at.isoformat() if version.created_at else "",
+    )
+
+
+def _code_project_version_detail(version) -> CodeProjectVersionDetail:
+    summary = _code_project_version_summary(version)
+    return CodeProjectVersionDetail(
+        **summary.model_dump(),
+        code_project=version.project_manifest,
+    )
 
 
 def _run_response(run: ResearchIdeaRun, ideas: Optional[list[ResearchIdea]] = None) -> IdeaRunResponse:
@@ -1071,6 +1127,56 @@ async def generate_code(
         return CodeGenResponse(code=code, idea_id=idea_id, code_project=code_project)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"代码生成失败: {str(e)}")
+
+
+@router.get("/ideas/{idea_id}/code-project/versions", response_model=list[CodeProjectVersionSummary])
+async def list_code_project_versions(
+    idea_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """列出 Idea 的实验项目包版本历史。"""
+    idea = await _get_owned_idea(db, idea_id, current_user)
+    versions = await ResearchPipelineService(db).list_code_project_versions(idea)
+    return [_code_project_version_summary(version) for version in versions]
+
+
+@router.get("/ideas/{idea_id}/code-project/versions/compare", response_model=CodeProjectVersionCompareResponse)
+async def compare_code_project_versions(
+    idea_id: str,
+    from_version: int = Query(..., ge=1),
+    to_version: int = Query(..., ge=1),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """比较 Idea 的两个实验项目包版本。"""
+    idea = await _get_owned_idea(db, idea_id, current_user)
+    try:
+        comparison = await ResearchPipelineService(db).compare_code_project_versions(
+            idea,
+            from_version=from_version,
+            to_version=to_version,
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail="实验项目包版本不存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return CodeProjectVersionCompareResponse(idea_id=idea_id, **comparison)
+
+
+@router.get("/ideas/{idea_id}/code-project/versions/{version_number}", response_model=CodeProjectVersionDetail)
+async def get_code_project_version(
+    idea_id: str,
+    version_number: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """读取 Idea 的某个实验项目包版本。"""
+    idea = await _get_owned_idea(db, idea_id, current_user)
+    version = await ResearchPipelineService(db).get_code_project_version(idea, version_number)
+    if not version:
+        raise HTTPException(status_code=404, detail="实验项目包版本不存在")
+    return _code_project_version_detail(version)
 
 
 @router.get("/ideas/{idea_id}/code-project/download")

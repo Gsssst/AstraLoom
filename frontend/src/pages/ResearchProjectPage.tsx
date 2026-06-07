@@ -76,6 +76,37 @@ interface CodeProjectManifest {
   files: CodeProjectFile[];
 }
 interface CodeProjectFolderGroup { folder: string; files: CodeProjectFile[]; }
+interface CodeProjectVersionSummary {
+  id: string;
+  idea_id: string;
+  version: number;
+  project_name: string;
+  framework: string;
+  summary?: string | null;
+  file_count: number;
+  created_at: string;
+}
+interface CodeProjectVersionDetail extends CodeProjectVersionSummary {
+  code_project: CodeProjectManifest;
+}
+interface CodeProjectFileDiff {
+  path: string;
+  status: 'added' | 'removed' | 'modified' | 'unchanged';
+  language: string;
+  purpose: string;
+  before_line_count: number;
+  after_line_count: number;
+  before_content?: string | null;
+  after_content?: string | null;
+  diff: string;
+}
+interface CodeProjectVersionCompare {
+  idea_id: string;
+  from_version: number;
+  to_version: number;
+  summary: Record<'added' | 'removed' | 'modified' | 'unchanged', number>;
+  files: CodeProjectFileDiff[];
+}
 interface Idea {
   id: string; project_id: string; title: string; description: string | null;
   hypothesis?: string | null; approach?: string | null; novelty?: string | null;
@@ -309,6 +340,17 @@ const codeProjectFolderGroups = (projectPackage: CodeProjectManifest): CodeProje
   });
   return Array.from(groups.entries()).map(([folder, files]) => ({ folder, files }));
 };
+interface CodeProjectHistoryState {
+  loading: boolean;
+  versions: CodeProjectVersionSummary[];
+  selectedVersion?: number | 'latest';
+  selectedDetail?: CodeProjectVersionDetail;
+  compareFrom?: number;
+  compareTo?: number;
+  comparing: boolean;
+  comparison?: CodeProjectVersionCompare;
+  selectedDiffPath?: string;
+}
 
 const ResearchProjectPage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
@@ -328,6 +370,7 @@ const ResearchProjectPage: React.FC = () => {
   const [copilotIdea, setCopilotIdea] = useState<Idea | null>(null);
   const [codeMap, setCodeMap] = useState<Record<string, { loading: boolean }>>({});
   const [codeProjectSelectedFile, setCodeProjectSelectedFile] = useState<Record<string, string>>({});
+  const [codeProjectHistoryMap, setCodeProjectHistoryMap] = useState<Record<string, CodeProjectHistoryState>>({});
   const [externalSearch, setExternalSearch] = useState(true);
   const [selectedIdeaIds, setSelectedIdeaIds] = useState<string[]>([]);
   const [proposalSort, setProposalSort] = useState<ProposalSortKey>('review');
@@ -367,6 +410,77 @@ const ResearchProjectPage: React.FC = () => {
   const copyCodeProjectText = async (text: string, successMessage = '已复制') => {
     await navigator.clipboard.writeText(text);
     message.success(successMessage);
+  };
+  const updateCodeProjectHistory = (ideaId: string, patch: Partial<CodeProjectHistoryState>) => {
+    setCodeProjectHistoryMap(previous => ({
+      ...previous,
+      [ideaId]: {
+        ...previous[ideaId],
+        loading: previous[ideaId]?.loading ?? false,
+        versions: previous[ideaId]?.versions ?? [],
+        comparing: previous[ideaId]?.comparing ?? false,
+        ...patch,
+      },
+    }));
+  };
+  const loadCodeProjectVersions = async (ideaId: string) => {
+    updateCodeProjectHistory(ideaId, { loading: true });
+    try {
+      const response = await api.get(`/research/ideas/${ideaId}/code-project/versions`);
+      const versions = response.data as CodeProjectVersionSummary[];
+      updateCodeProjectHistory(ideaId, {
+        loading: false,
+        versions,
+        compareFrom: versions[1]?.version ?? versions[0]?.version,
+        compareTo: versions[0]?.version,
+      });
+      setPageActionError(null);
+    } catch (error) {
+      updateCodeProjectHistory(ideaId, { loading: false });
+      showPageError('加载实验项目版本失败', error, '加载实验项目版本失败');
+    }
+  };
+  const selectCodeProjectVersion = async (idea: Idea, version: number | 'latest') => {
+    if (version === 'latest') {
+      updateCodeProjectHistory(idea.id, { selectedVersion: 'latest', selectedDetail: undefined });
+      if (idea.generated_code_project) {
+        setCodeProjectSelectedFile(previous => ({ ...previous, [idea.id]: codeProjectDefaultFilePath(idea.generated_code_project!) }));
+      }
+      return;
+    }
+    updateCodeProjectHistory(idea.id, { selectedVersion: version, loading: true });
+    try {
+      const response = await api.get(`/research/ideas/${idea.id}/code-project/versions/${version}`);
+      const detail = response.data as CodeProjectVersionDetail;
+      updateCodeProjectHistory(idea.id, { selectedVersion: version, selectedDetail: detail, loading: false });
+      setCodeProjectSelectedFile(previous => ({ ...previous, [idea.id]: codeProjectDefaultFilePath(detail.code_project) }));
+      setPageActionError(null);
+    } catch (error) {
+      updateCodeProjectHistory(idea.id, { loading: false });
+      showPageError('加载实验项目版本详情失败', error, '加载实验项目版本详情失败');
+    }
+  };
+  const compareCodeProjectVersions = async (ideaId: string) => {
+    const history = codeProjectHistoryMap[ideaId];
+    if (!history?.compareFrom || !history.compareTo || history.compareFrom === history.compareTo) {
+      message.warning('请选择两个不同版本进行比较');
+      return;
+    }
+    updateCodeProjectHistory(ideaId, { comparing: true });
+    try {
+      const response = await api.get(`/research/ideas/${ideaId}/code-project/versions/compare`, {
+        params: { from_version: history.compareFrom, to_version: history.compareTo },
+      });
+      const comparison = response.data as CodeProjectVersionCompare;
+      const selectedDiffPath = comparison.files.find(file => file.status === 'modified')?.path
+        || comparison.files.find(file => file.status !== 'unchanged')?.path
+        || comparison.files[0]?.path;
+      updateCodeProjectHistory(ideaId, { comparing: false, comparison, selectedDiffPath });
+      setPageActionError(null);
+    } catch (error) {
+      updateCodeProjectHistory(ideaId, { comparing: false });
+      showPageError('比较实验项目版本失败', error, '比较实验项目版本失败');
+    }
   };
 
   const loadProject = async () => {
@@ -598,6 +712,13 @@ const ResearchProjectPage: React.FC = () => {
         setCodeProjectSelectedFile(previous => ({ ...previous, [ideaId]: defaultPath }));
       }
       setIdeas(previous => previous.map(idea => idea.id === ideaId ? { ...idea, generated_code: response.data.code, generated_code_project: projectPackage || null, status: 'implemented' } : idea));
+      updateCodeProjectHistory(ideaId, {
+        selectedVersion: 'latest',
+        selectedDetail: undefined,
+        comparison: undefined,
+        selectedDiffPath: undefined,
+      });
+      loadCodeProjectVersions(ideaId);
       setPageActionError(null);
       message.success('实验项目包已生成');
     } catch (error) { showPageError('实验项目包生成失败', error, '实验项目包生成失败'); }
@@ -969,38 +1090,96 @@ const ResearchProjectPage: React.FC = () => {
         </Button>
       );
     }
-    const files = normalizeCodeProjectFiles(projectPackage);
-    const selectedPath = codeProjectSelectedFile[idea.id] || codeProjectDefaultFilePath(projectPackage);
-    const selectedFile = files.find(file => file.path === selectedPath) || files[0];
-    const folderGroups = codeProjectFolderGroups(projectPackage);
-    const entrypointPaths = new Set((projectPackage.entrypoints || []).map(entrypoint => entrypoint.path));
+    const history = codeProjectHistoryMap[idea.id] || { loading: false, versions: [], comparing: false };
+    const visibleProjectPackage = history.selectedDetail?.code_project || projectPackage;
+    const visibleVersionLabel = history.selectedDetail ? `v${history.selectedDetail.version}` : '最新';
+    const visibleFiles = normalizeCodeProjectFiles(visibleProjectPackage);
+    const selectedPath = codeProjectSelectedFile[idea.id] || codeProjectDefaultFilePath(visibleProjectPackage);
+    const visibleSelectedFile = visibleFiles.find(file => file.path === selectedPath) || visibleFiles[0];
+    const folderGroups = codeProjectFolderGroups(visibleProjectPackage);
+    const entrypointPaths = new Set((visibleProjectPackage.entrypoints || []).map(entrypoint => entrypoint.path));
     const selectProjectFile = (path: string) => setCodeProjectSelectedFile(previous => ({ ...previous, [idea.id]: path }));
+    const versionOptions = [
+      { value: 'latest', label: '最新版本' },
+      ...history.versions.map(version => ({ value: version.version, label: `v${version.version} · ${version.project_name}` })),
+    ];
+    const compareVersionOptions = history.versions.map(version => ({ value: version.version, label: `v${version.version}` }));
+    const selectedDiff = history.comparison?.files.find(file => file.path === history.selectedDiffPath);
     return (
       <Card
         size="small"
-        title={<Space wrap><CodeOutlined /><Text strong>实验项目包</Text><Tag color="blue">{projectPackage.framework}</Tag><Tag>{files.length} 文件</Tag></Space>}
+        title={<Space wrap><CodeOutlined /><Text strong>实验项目包</Text><Tag color="blue">{visibleProjectPackage.framework}</Tag><Tag>{visibleFiles.length} 文件</Tag><Tag color={history.selectedDetail ? 'purple' : 'green'}>{visibleVersionLabel}</Tag></Space>}
         style={{ borderRadius: 8, marginTop: 14 }}
       >
         <Space direction="vertical" size={14} style={{ width: '100%' }}>
           <div className="code-project-summary">
             <div className="code-project-summary-main">
               <Space wrap size={8}>
-                <Text strong>{projectPackage.name}</Text>
-                <Tag color="geekblue">{projectPackage.framework}</Tag>
-                <Tag>{files.length} files</Tag>
+                <Text strong>{visibleProjectPackage.name}</Text>
+                <Tag color="geekblue">{visibleProjectPackage.framework}</Tag>
+                <Tag>{visibleFiles.length} files</Tag>
+                {history.selectedDetail && <Tag color="purple">历史版本 v{history.selectedDetail.version}</Tag>}
               </Space>
-              <Paragraph style={{ marginBottom: 0, marginTop: 6 }}>{projectPackage.summary}</Paragraph>
+              <Paragraph style={{ marginBottom: 0, marginTop: 6 }}>{visibleProjectPackage.summary}</Paragraph>
             </div>
             <div className="code-project-actions">
               <Button size="small" icon={<ReloadOutlined />} loading={codeMap[idea.id]?.loading} onClick={() => handleGenCode(idea.id)}>重新生成</Button>
               <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => downloadCodeProject(idea)}>下载 ZIP</Button>
             </div>
           </div>
+          <div className="code-project-version-panel">
+            <div className="code-project-version-header">
+              <Space wrap>
+                <HistoryOutlined />
+                <Text strong>项目版本历史</Text>
+                {history.versions.length > 0 ? <Tag>{history.versions.length} 个版本</Tag> : <Tag color="default">暂无历史版本</Tag>}
+              </Space>
+              <Button size="small" loading={history.loading} onClick={() => loadCodeProjectVersions(idea.id)}>刷新版本</Button>
+            </div>
+            {history.versions.length > 0 ? (
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                <Space wrap>
+                  <Text type="secondary">预览版本</Text>
+                  <Select
+                    size="small"
+                    value={history.selectedVersion || 'latest'}
+                    options={versionOptions}
+                    onChange={(value) => selectCodeProjectVersion(idea, value as number | 'latest')}
+                    style={{ minWidth: 220 }}
+                  />
+                  {history.selectedDetail?.created_at && <Text type="secondary">生成于 {new Date(history.selectedDetail.created_at).toLocaleString()}</Text>}
+                </Space>
+                <Space wrap>
+                  <Text type="secondary">比较</Text>
+                  <Select
+                    size="small"
+                    value={history.compareFrom}
+                    options={compareVersionOptions}
+                    onChange={(value) => updateCodeProjectHistory(idea.id, { compareFrom: value })}
+                    placeholder="旧版本"
+                    style={{ width: 120 }}
+                  />
+                  <Text type="secondary">到</Text>
+                  <Select
+                    size="small"
+                    value={history.compareTo}
+                    options={compareVersionOptions}
+                    onChange={(value) => updateCodeProjectHistory(idea.id, { compareTo: value })}
+                    placeholder="新版本"
+                    style={{ width: 120 }}
+                  />
+                  <Button size="small" loading={history.comparing} onClick={() => compareCodeProjectVersions(idea.id)}>比较版本</Button>
+                </Space>
+              </Space>
+            ) : (
+              <Text type="secondary">当前最新项目仍可浏览；版本历史会从下一次生成实验项目包开始保存。</Text>
+            )}
+          </div>
           <div className="code-project-meta-grid">
             <section className="code-project-meta-panel">
               <Text strong>安装</Text>
               <Space direction="vertical" size={6} style={{ width: '100%', marginTop: 8 }}>
-                {(projectPackage.setup || []).length > 0 ? projectPackage.setup.map(command => (
+                {(visibleProjectPackage.setup || []).length > 0 ? visibleProjectPackage.setup.map(command => (
                   <div className="code-project-command" key={command}>
                     <Text code>{command}</Text>
                     <Tooltip title="复制命令"><Button type="text" size="small" icon={<CopyOutlined />} onClick={() => copyCodeProjectText(command, '安装命令已复制')} /></Tooltip>
@@ -1011,7 +1190,7 @@ const ResearchProjectPage: React.FC = () => {
             <section className="code-project-meta-panel">
               <Text strong>运行</Text>
               <Space direction="vertical" size={6} style={{ width: '100%', marginTop: 8 }}>
-                {(projectPackage.run_commands || []).length > 0 ? projectPackage.run_commands.map(command => (
+                {(visibleProjectPackage.run_commands || []).length > 0 ? visibleProjectPackage.run_commands.map(command => (
                   <div className="code-project-command" key={command}>
                     <Text code>{command}</Text>
                     <Tooltip title="复制命令"><Button type="text" size="small" icon={<CopyOutlined />} onClick={() => copyCodeProjectText(command, '运行命令已复制')} /></Tooltip>
@@ -1022,7 +1201,7 @@ const ResearchProjectPage: React.FC = () => {
             <section className="code-project-meta-panel">
               <Text strong>入口</Text>
               <Space direction="vertical" size={6} style={{ width: '100%', marginTop: 8 }}>
-                {(projectPackage.entrypoints || []).length > 0 ? projectPackage.entrypoints.map(entrypoint => (
+                {(visibleProjectPackage.entrypoints || []).length > 0 ? visibleProjectPackage.entrypoints.map(entrypoint => (
                   <button className="code-project-entrypoint" type="button" key={`${entrypoint.name}-${entrypoint.path}`} onClick={() => selectProjectFile(entrypoint.path)}>
                     <span>{entrypoint.name}</span>
                     <Text type="secondary">{entrypoint.path}</Text>
@@ -1033,7 +1212,7 @@ const ResearchProjectPage: React.FC = () => {
             <section className="code-project-meta-panel">
               <Text strong>安全说明</Text>
               <Space direction="vertical" size={6} style={{ width: '100%', marginTop: 8 }}>
-                {(projectPackage.safety_notes || []).length > 0 ? projectPackage.safety_notes.map(note => <Text type="secondary" key={note}>{note}</Text>) : <Text type="secondary">暂无安全说明</Text>}
+                {(visibleProjectPackage.safety_notes || []).length > 0 ? visibleProjectPackage.safety_notes.map(note => <Text type="secondary" key={note}>{note}</Text>) : <Text type="secondary">暂无安全说明</Text>}
               </Space>
             </section>
           </div>
@@ -1049,7 +1228,7 @@ const ResearchProjectPage: React.FC = () => {
                     <div className="code-project-folder-row"><FolderOutlined /><Text type="secondary">{group.folder}</Text></div>
                     {group.files.map(file => (
                       <button
-                        className={`code-project-file-row${file.path === selectedFile?.path ? ' is-selected' : ''}`}
+                        className={`code-project-file-row${file.path === visibleSelectedFile?.path ? ' is-selected' : ''}`}
                         type="button"
                         key={file.path}
                         onClick={() => selectProjectFile(file.path)}
@@ -1065,24 +1244,24 @@ const ResearchProjectPage: React.FC = () => {
               </div>
             </aside>
             <section className="code-project-preview-panel">
-              {selectedFile ? (
+              {visibleSelectedFile ? (
                 <>
                   <div className="code-project-preview-toolbar">
                     <div className="code-project-preview-heading">
-                      <Text strong>{selectedFile.path}</Text>
+                      <Text strong>{visibleSelectedFile.path}</Text>
                       <Space wrap size={6}>
-                        <Tag>{selectedFile.language || 'text'}</Tag>
-                        <Tag>{codeProjectLineCount(selectedFile.content)} 行</Tag>
-                        {entrypointPaths.has(selectedFile.path) && <Tag color="purple">入口</Tag>}
+                        <Tag>{visibleSelectedFile.language || 'text'}</Tag>
+                        <Tag>{codeProjectLineCount(visibleSelectedFile.content)} 行</Tag>
+                        {entrypointPaths.has(visibleSelectedFile.path) && <Tag color="purple">入口</Tag>}
                       </Space>
                     </div>
                     <Tooltip title="复制文件内容">
-                      <Button size="small" icon={<CopyOutlined />} onClick={() => copyCodeProjectText(selectedFile.content, '文件内容已复制')}>复制</Button>
+                      <Button size="small" icon={<CopyOutlined />} onClick={() => copyCodeProjectText(visibleSelectedFile.content, '文件内容已复制')}>复制</Button>
                     </Tooltip>
                   </div>
-                  {selectedFile.purpose && <Text type="secondary" className="code-project-file-purpose">{selectedFile.purpose}</Text>}
+                  {visibleSelectedFile.purpose && <Text type="secondary" className="code-project-file-purpose">{visibleSelectedFile.purpose}</Text>}
                   <div className="code-project-preview">
-                    <pre>{selectedFile.content}</pre>
+                    <pre>{visibleSelectedFile.content}</pre>
                   </div>
                 </>
               ) : (
@@ -1093,6 +1272,50 @@ const ResearchProjectPage: React.FC = () => {
               )}
             </section>
           </div>
+          {history.comparison && (
+            <div className="code-project-diff-panel">
+              <div className="code-project-version-header">
+                <Space wrap>
+                  <Text strong>版本差异</Text>
+                  <Tag color="green">新增 {history.comparison.summary.added || 0}</Tag>
+                  <Tag color="red">删除 {history.comparison.summary.removed || 0}</Tag>
+                  <Tag color="orange">修改 {history.comparison.summary.modified || 0}</Tag>
+                  <Tag>未变 {history.comparison.summary.unchanged || 0}</Tag>
+                </Space>
+                <Text type="secondary">v{history.comparison.from_version} → v{history.comparison.to_version}</Text>
+              </div>
+              <div className="code-project-diff-layout">
+                <div className="code-project-diff-files">
+                  {history.comparison.files.map(file => (
+                    <button
+                      type="button"
+                      key={file.path}
+                      className={`code-project-diff-row is-${file.status}${file.path === history.selectedDiffPath ? ' is-selected' : ''}`}
+                      onClick={() => updateCodeProjectHistory(idea.id, { selectedDiffPath: file.path })}
+                    >
+                      <span>{file.path}</span>
+                      <Tag color={file.status === 'added' ? 'green' : file.status === 'removed' ? 'red' : file.status === 'modified' ? 'orange' : 'default'}>
+                        {file.status}
+                      </Tag>
+                    </button>
+                  ))}
+                </div>
+                <div className="code-project-diff-preview">
+                  {selectedDiff ? (
+                    <>
+                      <Space wrap style={{ marginBottom: 8 }}>
+                        <Text strong>{selectedDiff.path}</Text>
+                        <Tag>{selectedDiff.language}</Tag>
+                        <Tag>旧 {selectedDiff.before_line_count} 行</Tag>
+                        <Tag>新 {selectedDiff.after_line_count} 行</Tag>
+                      </Space>
+                      <pre>{selectedDiff.diff || selectedDiff.after_content || selectedDiff.before_content || '文件内容未变化'}</pre>
+                    </>
+                  ) : <Text type="secondary">选择一个文件查看差异</Text>}
+                </div>
+              </div>
+            </div>
+          )}
         </Space>
       </Card>
     );

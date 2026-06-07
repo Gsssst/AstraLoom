@@ -2,7 +2,7 @@
 
 import uuid
 from typing import List, Optional
-from sqlalchemy import String, Text, ForeignKey, Integer, Float
+from sqlalchemy import String, Text, ForeignKey, Integer, Float, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import BaseModel
@@ -109,3 +109,32 @@ class ResearchIdea(BaseModel):
         back_populates="parent",
         passive_deletes=True,
     )
+    code_project_versions: Mapped[List["ResearchCodeProjectVersion"]] = relationship(
+        back_populates="idea",
+        lazy="selectin",
+        order_by="ResearchCodeProjectVersion.version.desc()",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class ResearchCodeProjectVersion(BaseModel):
+    """结构化实验代码项目版本快照。"""
+
+    __tablename__ = "research_code_project_versions"
+    __table_args__ = (
+        UniqueConstraint("idea_id", "version", name="uq_research_code_project_version"),
+    )
+
+    idea_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("research_ideas.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    project_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    framework: Mapped[str] = mapped_column(String(80), nullable=False, default="pytorch")
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    project_manifest: Mapped[dict] = mapped_column(JSON, nullable=False)
+    representative_code: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    idea: Mapped["ResearchIdea"] = relationship(back_populates="code_project_versions")

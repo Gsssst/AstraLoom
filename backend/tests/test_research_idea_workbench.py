@@ -10,13 +10,15 @@ from app.services.research_service import ResearchPipelineService
 from app.api.research import DiscussRequest, IdeaDiscussEvolveRequest
 from app.services.digest_service import ExperimentService
 from app.api.research import ExternalEvidenceImportRequest, import_external_evidence
-from app.db.models.research import ResearchIdeaRun, ResearchProject
+from app.db.models.research import ResearchCodeProjectVersion, ResearchIdeaRun, ResearchProject
 
 
 class _Session:
     def __init__(self):
         self.commits = 0
         self.added = []
+        self.next_scalar = None
+        self.scalar_results = []
 
     async def commit(self):
         self.commits += 1
@@ -26,6 +28,13 @@ class _Session:
 
     def add(self, item):
         self.added.append(item)
+
+    async def execute(self, _query):
+        if self.scalar_results:
+            value = self.scalar_results.pop(0)
+        else:
+            value = self.next_scalar
+        return SimpleNamespace(scalar_one_or_none=lambda: value)
 
 
 @pytest.mark.asyncio
@@ -499,7 +508,62 @@ async def test_generate_code_persists_project_package_and_legacy_code(monkeypatc
     assert idea.generated_code_project["name"] == "grounded-qa"
     assert idea.generated_code == "print('ok')"
     assert idea.status == "implemented"
+    assert isinstance(session.added[0], ResearchCodeProjectVersion)
+    assert session.added[0].version == 1
+    assert session.added[0].project_manifest["name"] == "grounded-qa"
     assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_code_project_version_snapshot_increments_per_idea():
+    session = _Session()
+    session.next_scalar = 2
+    service = ResearchPipelineService(session)
+    idea = _copilot_idea()
+    project = {
+        "name": "project-v3",
+        "framework": "pytorch",
+        "summary": "third version",
+        "files": [{"path": "README.md", "language": "markdown", "purpose": "guide", "content": "# v3"}],
+    }
+
+    version = await service.create_code_project_version(idea, project, "# v3")
+
+    assert version.version == 3
+    assert version.file_count == 1
+    assert version.project_name == "project-v3"
+    assert session.added == [version]
+
+
+def test_code_project_manifest_diff_marks_added_removed_modified_and_unchanged():
+    left = {
+        "files": [
+            {"path": "README.md", "language": "markdown", "content": "# Old"},
+            {"path": "src/train.py", "language": "python", "content": "print('old')\n"},
+            {"path": "src/remove.py", "language": "python", "content": "gone\n"},
+            {"path": "requirements.txt", "language": "text", "content": "torch\n"},
+        ]
+    }
+    right = {
+        "files": [
+            {"path": "README.md", "language": "markdown", "content": "# New"},
+            {"path": "src/train.py", "language": "python", "content": "print('old')\n"},
+            {"path": "src/add.py", "language": "python", "content": "added\n"},
+            {"path": "requirements.txt", "language": "text", "content": "torch\n"},
+        ]
+    }
+
+    diff = ResearchPipelineService.diff_code_project_manifests(left, right, from_version=1, to_version=2)
+    statuses = {item["path"]: item["status"] for item in diff["files"]}
+
+    assert diff["summary"] == {"added": 1, "removed": 1, "modified": 1, "unchanged": 2}
+    assert statuses["src/add.py"] == "added"
+    assert statuses["src/remove.py"] == "removed"
+    assert statuses["README.md"] == "modified"
+    assert statuses["src/train.py"] == "unchanged"
+    readme = next(item for item in diff["files"] if item["path"] == "README.md")
+    assert "--- a/README.md" in readme["diff"]
+    assert "+++ b/README.md" in readme["diff"]
 
 
 def test_experiment_execution_pack_explains_missing_setup():

@@ -15,8 +15,11 @@ test('research project page models generated code project packages', () => {
   assert.match(researchProjectSource, /interface CodeProjectFile/);
   assert.match(researchProjectSource, /interface CodeProjectManifest/);
   assert.match(researchProjectSource, /interface CodeProjectFolderGroup/);
+  assert.match(researchProjectSource, /interface CodeProjectVersionSummary/);
+  assert.match(researchProjectSource, /interface CodeProjectVersionCompare/);
   assert.match(researchProjectSource, /generated_code_project\?: CodeProjectManifest/);
   assert.match(researchProjectSource, /codeProjectSelectedFile/);
+  assert.match(researchProjectSource, /codeProjectHistoryMap/);
 });
 
 test('research project page stores package generation response', () => {
@@ -39,8 +42,8 @@ test('research project page renders package browser and download action', () => 
 });
 
 test('research project page surfaces commands, entrypoints, file metadata, and copy actions', () => {
-  assert.match(researchProjectSource, /projectPackage\.run_commands/);
-  assert.match(researchProjectSource, /projectPackage\.entrypoints/);
+  assert.match(researchProjectSource, /visibleProjectPackage\.run_commands/);
+  assert.match(researchProjectSource, /visibleProjectPackage\.entrypoints/);
   assert.match(researchProjectSource, /codeProjectLineCount/);
   assert.match(researchProjectSource, /copyCodeProjectText/);
   assert.match(researchProjectSource, /文件内容已复制/);
@@ -55,10 +58,26 @@ test('research project page supports legacy single-code fallback', () => {
   assert.match(researchProjectSource, /旧版实验代码已复制/);
 });
 
+test('research project page supports code project version history and comparison', () => {
+  assert.match(researchProjectSource, /loadCodeProjectVersions/);
+  assert.match(researchProjectSource, /selectCodeProjectVersion/);
+  assert.match(researchProjectSource, /compareCodeProjectVersions/);
+  assert.match(researchProjectSource, /\/research\/ideas\/\$\{ideaId\}\/code-project\/versions/);
+  assert.match(researchProjectSource, /\/research\/ideas\/\$\{idea\.id\}\/code-project\/versions\/\$\{version\}/);
+  assert.match(researchProjectSource, /\/research\/ideas\/\$\{ideaId\}\/code-project\/versions\/compare/);
+  assert.match(researchProjectSource, /项目版本历史/);
+  assert.match(researchProjectSource, /比较版本/);
+  assert.match(researchProjectSource, /版本差异/);
+  assert.match(researchProjectSource, /版本历史会从下一次生成实验项目包开始保存/);
+});
+
 test('research project browser css keeps file tree and preview responsive', () => {
   assert.match(globalCssSource, /\.code-project-browser/);
   assert.match(globalCssSource, /grid-template-columns: minmax\(220px, 0\.36fr\) minmax\(0, 1fr\)/);
   assert.match(globalCssSource, /\.code-project-file-row\.is-selected/);
+  assert.match(globalCssSource, /\.code-project-version-panel/);
+  assert.match(globalCssSource, /\.code-project-diff-panel/);
+  assert.match(globalCssSource, /\.code-project-diff-row\.is-selected/);
   assert.match(globalCssSource, /\.code-project-preview pre/);
   assert.match(globalCssSource, /overflow-wrap: anywhere/);
   assert.match(globalCssSource, /@media \(max-width: 760px\)/);

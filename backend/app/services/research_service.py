@@ -3,15 +3,16 @@
 import json
 import logging
 import re
+from difflib import unified_diff
 from datetime import datetime, timezone
 from typing import Any, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.services.llm import llm_service
 from app.services.rag_service import RAGService
 from app.db.models.paper import Paper
-from app.db.models.research import ResearchProject, ResearchIdea
+from app.db.models.research import ResearchCodeProjectVersion, ResearchProject, ResearchIdea
 from app.services.research_idea_workbench import ResearchIdeaWorkbenchService
 
 logger = logging.getLogger(__name__)
@@ -1045,6 +1046,7 @@ class ResearchPipelineService:
             idea.generated_code_project = code_project
             idea.generated_code = legacy_code
             idea.status = "implemented"
+            await self.create_code_project_version(idea, code_project, legacy_code)
             await self.session.commit()
 
             return code_project
@@ -1052,6 +1054,160 @@ class ResearchPipelineService:
             logger.error(f"代码生成失败: {e}")
             await self.session.rollback()
             raise
+
+    async def create_code_project_version(
+        self,
+        idea: ResearchIdea,
+        code_project: dict[str, Any],
+        representative_code: str,
+    ) -> ResearchCodeProjectVersion:
+        """保存一次结构化实验项目包版本快照。"""
+        result = await self.session.execute(
+            select(func.max(ResearchCodeProjectVersion.version))
+            .where(ResearchCodeProjectVersion.idea_id == idea.id)
+        )
+        next_version = int(result.scalar_one_or_none() or 0) + 1
+        files = code_project.get("files") if isinstance(code_project, dict) else []
+        version = ResearchCodeProjectVersion(
+            idea_id=idea.id,
+            version=next_version,
+            project_name=str(code_project.get("name") or idea.title)[:300],
+            framework=str(code_project.get("framework") or "pytorch")[:80],
+            summary=str(code_project.get("summary") or "")[:2000],
+            file_count=len(files) if isinstance(files, list) else 0,
+            project_manifest=code_project,
+            representative_code=representative_code,
+        )
+        self.session.add(version)
+        return version
+
+    async def list_code_project_versions(self, idea: ResearchIdea) -> list[ResearchCodeProjectVersion]:
+        """列出 Idea 的实验项目包版本。"""
+        result = await self.session.execute(
+            select(ResearchCodeProjectVersion)
+            .where(ResearchCodeProjectVersion.idea_id == idea.id)
+            .order_by(ResearchCodeProjectVersion.version.desc())
+        )
+        return list(result.scalars().all())
+
+    async def get_code_project_version(
+        self,
+        idea: ResearchIdea,
+        version_number: int,
+    ) -> Optional[ResearchCodeProjectVersion]:
+        """读取 Idea 的某个实验项目包版本。"""
+        result = await self.session.execute(
+            select(ResearchCodeProjectVersion)
+            .where(
+                ResearchCodeProjectVersion.idea_id == idea.id,
+                ResearchCodeProjectVersion.version == version_number,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def compare_code_project_versions(
+        self,
+        idea: ResearchIdea,
+        from_version: int,
+        to_version: int,
+    ) -> dict[str, Any]:
+        """比较两个实验项目包版本。"""
+        if from_version == to_version:
+            raise ValueError("请选择两个不同版本进行比较")
+        left = await self.get_code_project_version(idea, from_version)
+        right = await self.get_code_project_version(idea, to_version)
+        if not left or not right:
+            raise LookupError("实验项目包版本不存在")
+        return self.diff_code_project_manifests(
+            left.project_manifest,
+            right.project_manifest,
+            from_version=from_version,
+            to_version=to_version,
+        )
+
+    @classmethod
+    def diff_code_project_manifests(
+        cls,
+        left: dict[str, Any],
+        right: dict[str, Any],
+        *,
+        from_version: int,
+        to_version: int,
+    ) -> dict[str, Any]:
+        """按文件路径比较两个结构化项目包。"""
+        left_files = cls._code_project_file_map(left)
+        right_files = cls._code_project_file_map(right)
+        paths = sorted(set(left_files) | set(right_files))
+        items = []
+        counts = {"added": 0, "removed": 0, "modified": 0, "unchanged": 0}
+        for path in paths:
+            before = left_files.get(path)
+            after = right_files.get(path)
+            if before is None:
+                status = "added"
+            elif after is None:
+                status = "removed"
+            elif before.get("content") != after.get("content"):
+                status = "modified"
+            else:
+                status = "unchanged"
+            counts[status] += 1
+            before_content = str(before.get("content") or "") if before else ""
+            after_content = str(after.get("content") or "") if after else ""
+            item = {
+                "path": path,
+                "status": status,
+                "language": str((after or before or {}).get("language") or "text"),
+                "purpose": str((after or before or {}).get("purpose") or ""),
+                "before_line_count": cls._line_count(before_content) if before else 0,
+                "after_line_count": cls._line_count(after_content) if after else 0,
+                "before_content": before_content if status in {"removed", "modified"} else None,
+                "after_content": after_content if status in {"added", "modified"} else None,
+                "diff": cls._unified_file_diff(path, before_content, after_content) if status == "modified" else "",
+            }
+            items.append(item)
+        return {
+            "from_version": from_version,
+            "to_version": to_version,
+            "summary": counts,
+            "files": items,
+        }
+
+    @classmethod
+    def _code_project_file_map(cls, project: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        files = project.get("files") if isinstance(project, dict) else []
+        result: dict[str, dict[str, Any]] = {}
+        if not isinstance(files, list):
+            return result
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            path = cls.safe_code_project_path(item.get("path"))
+            if not path:
+                continue
+            result[path] = {
+                "path": path,
+                "language": item.get("language") or cls._infer_code_language(path),
+                "purpose": item.get("purpose") or "",
+                "content": str(item.get("content") or ""),
+            }
+        return result
+
+    @staticmethod
+    def _line_count(content: str) -> int:
+        return 0 if not content else len(content.splitlines())
+
+    @staticmethod
+    def _unified_file_diff(path: str, before: str, after: str) -> str:
+        diff = unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            lineterm="",
+            n=3,
+        )
+        return "\n".join(list(diff)[:220])
 
     def _code_project_prompt(self, idea: ResearchIdea, framework: str) -> str:
         plan = idea.experiment_plan if isinstance(idea.experiment_plan, dict) else {}
