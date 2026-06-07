@@ -76,7 +76,8 @@ def test_duplicate_candidates_are_merged_by_hypothesis_overlap():
     }]
 
 
-def test_candidate_tree_expansion_records_lineage():
+@pytest.mark.asyncio
+async def test_candidate_tree_expansion_records_lineage():
     service = ResearchIdeaWorkbenchService(_Session())
     candidates = [{
         "title": "Reliable grounding",
@@ -88,13 +89,62 @@ def test_candidate_tree_expansion_records_lineage():
         "minimum_experiment": {"dataset": "Bench", "baselines": ["Base"], "metrics": ["Score"], "steps": ["Run"]},
     }]
 
-    expanded, summary = service.expand_candidate_tree(candidates, rounds=2, beam_width=2)
+    expanded, summary = await service.expand_candidate_tree(candidates, rounds=2, beam_width=2)
 
     assert summary["root_count"] == 1
-    assert summary["expanded_count"] == 3
+    assert summary["expanded_count"] >= 2
     assert expanded[0]["tree"]["operator"] == "root"
     assert any(item["tree"]["parent_title"] == "Reliable grounding" for item in expanded[1:])
     assert any(item["tree"]["operator"] == "strong_baseline" for item in expanded)
+
+
+@pytest.mark.asyncio
+async def test_candidate_tree_expansion_uses_llm_evolved_candidates(monkeypatch):
+    service = ResearchIdeaWorkbenchService(_Session())
+    parent = {
+        "title": "Reliable grounding",
+        "path": "grounded",
+        "gap": "Weak grounding.",
+        "hypothesis": "Calibration improves grounding.",
+        "approach": "Add calibration.",
+        "evidence_ids": ["p1"],
+        "risks": ["Weak baseline"],
+        "falsification_test": "Reject if score does not improve.",
+        "minimum_experiment": {"dataset": "Bench", "baselines": ["Base"], "metrics": ["Score"], "steps": ["Run"]},
+    }
+
+    async def fake_chat_json(_prompt):
+        return {"evolved": [{
+            "parent_title": "Reliable grounding",
+            "operator": "mechanism_shift",
+            "critique": "Mechanism is underspecified.",
+            "improvement": "Use uncertainty-aware calibration.",
+            "selection_angle": "Covers mechanism shift.",
+            "title": "Uncertainty-aware grounding",
+            "path": "grounded",
+            "gap": "Weak grounding.",
+            "hypothesis": "Uncertainty-aware calibration improves grounding.",
+            "approach": "Add calibrated uncertainty gate.",
+            "evidence_ids": ["p1"],
+            "risks": ["Over-calibration"],
+            "falsification_test": "Reject if citation precision is unchanged.",
+            "minimum_experiment": {"dataset": "Bench", "baselines": ["Base"], "metrics": ["Citation precision"], "steps": ["Run", "Ablate", "Audit"]},
+        }]}
+
+    monkeypatch.setattr(service, "_chat_json", fake_chat_json)
+    expanded, summary = await service.expand_candidate_tree(
+        [parent],
+        {"name": "Grounded QA"},
+        {"seed": [{"paper_id": "p1", "title": "Evidence", "abstract_excerpt": "grounding"}], "background": [], "inspiration": []},
+        {"gaps": []},
+        rounds=2,
+        beam_width=2,
+    )
+
+    evolved = next(item for item in expanded if item["title"] == "Uncertainty-aware grounding")
+    assert evolved["tree"]["source"] == "llm"
+    assert evolved["critique"] == "Mechanism is underspecified."
+    assert summary["llm_evolved_count"] == 1
 
 
 def test_novelty_check_flags_similar_candidate():
@@ -214,6 +264,50 @@ def test_adversarial_review_objects_to_weak_baseline_and_metrics():
     assert adversarial["penalty"] > 0
     assert adversarial["verdict"] in {"revise", "reject"}
     assert any("baseline" in item.lower() for item in adversarial["objections"])
+
+
+def test_diverse_selection_prefers_distinct_facets_over_near_duplicate():
+    service = ResearchIdeaWorkbenchService(_Session())
+    candidates = [
+        {
+            "title": "Calibration for QA",
+            "path": "grounded",
+            "hypothesis": "calibration improves qa grounding",
+            "score": 9.0,
+            "evidence_ids": ["p1"],
+            "minimum_experiment": {"dataset": "QA-Bench", "metrics": ["citation precision"], "baselines": ["Base"], "steps": ["Run"]},
+            "risks": ["weak baseline"],
+            "tree": {"operator": "root"},
+        },
+        {
+            "title": "QA Calibration Variant",
+            "path": "grounded",
+            "hypothesis": "calibration improves qa grounding",
+            "score": 8.9,
+            "evidence_ids": ["p1"],
+            "minimum_experiment": {"dataset": "QA-Bench", "metrics": ["citation precision"], "baselines": ["Base"], "steps": ["Run"]},
+            "risks": ["weak baseline"],
+            "tree": {"operator": "strong_baseline"},
+        },
+        {
+            "title": "Cost-aware retrieval",
+            "path": "inspiration",
+            "hypothesis": "cost-aware retrieval improves latency under fixed quality",
+            "score": 8.4,
+            "evidence_ids": ["p2"],
+            "minimum_experiment": {"dataset": "Latency-Bench", "metrics": ["latency"], "baselines": ["Base"], "steps": ["Run"]},
+            "risks": ["cost tradeoff"],
+            "tree": {"operator": "cost_aware"},
+        },
+    ]
+
+    selected, summary = service.select_diverse_proposals(candidates, num_ideas=2)
+
+    assert [item["title"] for item in selected] == ["Calibration for QA", "Cost-aware retrieval"]
+    assert selected[0]["selection_rationale"]
+    assert selected[1]["selection_score"] <= selected[1]["score"] + 0.5
+    assert "diversity_facets" in selected[1]
+    assert any(item["reason"] == "diversity_near_duplicate" for item in summary["suppressed"])
 
 
 def test_validate_idea_blocks_high_collision_and_missing_experiment():
@@ -802,6 +896,10 @@ async def test_top_proposal_persists_evidence_review_and_minimum_experiment():
         "novelty_check": {"status": "likely_novel", "score": 0.9},
         "adversarial_review": {"verdict": "advance", "penalty": 0, "objections": []},
         "tree": {"round": 1, "operator": "strong_baseline", "parent_title": "Root"},
+        "selection_rationale": "综合评分高且贡献新的数据集维度",
+        "selection_score": 8.8,
+        "diversity_facets": ["path:grounded", "dataset:benchmark"],
+        "suppressed_duplicates": [{"title": "Duplicate", "reason": "diversity_near_duplicate"}],
         "review": {
             "scores": {"novelty": 8, "evidence_grounding": 9, "feasibility": 9, "testability": 9, "impact": 8, "clarity": 8},
             "rationale": "The hypothesis is falsifiable.",
@@ -826,6 +924,9 @@ async def test_top_proposal_persists_evidence_review_and_minimum_experiment():
     assert ideas[0].review_json["novelty_check"]["status"] == "likely_novel"
     assert ideas[0].review_json["adversarial_review"]["verdict"] == "advance"
     assert ideas[0].review_json["search_tree"]["operator"] == "strong_baseline"
+    assert ideas[0].review_json["selection_score"] == 8.8
+    assert ideas[0].review_json["diversity_facets"] == ["path:grounded", "dataset:benchmark"]
+    assert ideas[0].review_json["suppressed_duplicates"][0]["title"] == "Duplicate"
     assert ideas[0].experiment_plan == experiment
 
 

@@ -46,6 +46,10 @@ interface Review {
   scores: Record<string, number>; rationale: string; uncertainty: string; recommendation: string;
   aggregate_score?: number;
   base_score?: number;
+  selection_rationale?: string | null;
+  selection_score?: number | null;
+  diversity_facets?: string[];
+  suppressed_duplicates?: Array<{ title?: string; kept?: string; reason?: string; similarity?: number }>;
   novelty_check?: {
     status: 'likely_novel' | 'incremental' | 'too_similar';
     score: number; max_similarity: number; rationale: string;
@@ -64,7 +68,7 @@ interface Review {
     verdict: 'advance' | 'revise' | 'reject'; penalty: number;
     objections: string[]; required_fixes: string[]; summary: string;
   };
-  search_tree?: { round?: number; operator?: string; parent_title?: string | null; lineage?: string[] };
+  search_tree?: { round?: number; operator?: string; parent_title?: string | null; lineage?: string[]; source?: string };
 }
 interface Candidate {
   title: string; path: string; gap: string; hypothesis: string; approach: string;
@@ -1340,6 +1344,7 @@ const ResearchProjectPage: React.FC = () => {
     const novelty = review?.novelty_check;
     const collisionRisk = novelty?.collision_risk || (novelty?.status === 'too_similar' ? 'high' : novelty?.status === 'incremental' ? 'medium' : novelty?.status === 'likely_novel' ? 'low' : undefined);
     const similarWork = novelty?.similar_work || [];
+    const diversityFacets = review?.diversity_facets || [];
     return (
       <div>
         {idea.hypothesis && <Alert type="success" showIcon message="可证伪假设" description={idea.hypothesis} style={{ marginBottom: 14 }} />}
@@ -1354,9 +1359,28 @@ const ResearchProjectPage: React.FC = () => {
           </Row>
           <Paragraph style={{ marginTop: 12 }}><Text strong>评审理由：</Text>{review.rationale}</Paragraph>
           <Text type="secondary">主要不确定性：{review.uncertainty}</Text>
-          {(review.novelty_check || review.adversarial_review || review.search_tree) && <>
+          {(review.novelty_check || review.adversarial_review || review.search_tree || review.selection_rationale) && <>
             <Divider>v3 质量信号</Divider>
             <Space direction="vertical" size={10} style={{ width: '100%' }}>
+              {review.selection_rationale && (
+                <Card size="small" className="proposal-selection-signal">
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <Space wrap>
+                      <Tag color="purple">选择理由</Tag>
+                      {review.selection_score != null && <Tag>选择分 {review.selection_score}</Tag>}
+                    </Space>
+                    <Text>{review.selection_rationale}</Text>
+                    {diversityFacets.length > 0 && (
+                      <Space wrap size={6}>
+                        {diversityFacets.slice(0, 6).map(facet => <Tag color="geekblue" key={facet}>{facet}</Tag>)}
+                      </Space>
+                    )}
+                    {(review.suppressed_duplicates || []).length > 0 && (
+                      <Text type="secondary">已压制相近候选：{review.suppressed_duplicates?.slice(0, 2).map(item => item.title).filter(Boolean).join('、')}</Text>
+                    )}
+                  </Space>
+                </Card>
+              )}
               {novelty && (
                 <Alert
                   type={novelty.status === 'likely_novel' ? 'success' : novelty.status === 'incremental' ? 'warning' : 'error'}
@@ -1415,6 +1439,7 @@ const ResearchProjectPage: React.FC = () => {
                   <Space wrap>
                     <Tag color="geekblue">搜索树 Round {review.search_tree.round ?? 0}</Tag>
                     <Tag>{review.search_tree.operator || 'root'}</Tag>
+                    {review.search_tree.source && <Tag color={review.search_tree.source === 'llm' ? 'purple' : 'default'}>{review.search_tree.source}</Tag>}
                     {review.search_tree.parent_title && <Text type="secondary">父节点：{review.search_tree.parent_title}</Text>}
                   </Space>
                 </Card>

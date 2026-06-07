@@ -337,6 +337,17 @@ body {
   overflow-wrap: anywhere;
 }
 
+.proposal-selection-signal {
+  border-radius: 8px;
+  background: #fbfaff;
+}
+
+.proposal-selection-signal .ant-tag,
+.proposal-selection-signal .ant-typography {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .code-project-empty-preview {
   min-height: 240px;
   display: flex;

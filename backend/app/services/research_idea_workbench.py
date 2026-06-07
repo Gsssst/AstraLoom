@@ -105,7 +105,14 @@ class ResearchIdeaWorkbenchService:
 
             await self._transition(run, "generating", callback=on_progress)
             candidates = await self.generate_candidates(brief, evidence_map, gap_map, num_ideas)
-            tree_candidates, tree_summary = self.expand_candidate_tree(candidates, rounds=2, beam_width=max(num_ideas * 2, 4))
+            tree_candidates, tree_summary = await self.expand_candidate_tree(
+                candidates,
+                brief,
+                evidence_map,
+                gap_map,
+                rounds=2,
+                beam_width=max(num_ideas * 2, 4),
+            )
             await self._emit(
                 on_progress,
                 {"type": "artifact", "artifact": "search_tree", "data": tree_summary},
@@ -136,6 +143,7 @@ class ResearchIdeaWorkbenchService:
             )
             adversarial_reviewed = self.adversarial_review_candidates(novelty_checked)
             reviewed = self.apply_quality_adjustments(adversarial_reviewed)
+            selected, diversity_summary = self.select_diverse_proposals(reviewed, num_ideas)
             run.candidate_pool = reviewed
             run.review_summary = {
                 "rubric": REVIEW_WEIGHTS,
@@ -145,6 +153,7 @@ class ResearchIdeaWorkbenchService:
                 "novelty": self._summarize_novelty(reviewed),
                 "adversarial": self._summarize_adversarial(reviewed),
                 "source_coverage": similar_work_context["source_coverage"],
+                "diversity_selection": diversity_summary,
             }
             await self.session.commit()
             await self._emit(
@@ -153,7 +162,7 @@ class ResearchIdeaWorkbenchService:
             )
 
             await self._transition(run, "selecting", callback=on_progress)
-            ideas = await self.persist_top_proposals(run, reviewed, evidence_map, num_ideas)
+            ideas = await self.persist_top_proposals(run, selected, evidence_map, num_ideas)
             await self._transition(run, "complete", status="complete", callback=on_progress)
             return ideas
         except Exception as exc:
@@ -563,34 +572,110 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         }
         return words | cjk_bigrams
 
-    def expand_candidate_tree(
+    async def expand_candidate_tree(
         self,
         candidates: list[dict[str, Any]],
+        brief: dict[str, Any] | None = None,
+        evidence_map: dict[str, Any] | None = None,
+        gap_map: dict[str, Any] | None = None,
         *,
         rounds: int = 2,
         beam_width: int = 6,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Lightweight progressive tree search over candidate proposals."""
+        """Bounded progressive tree search over candidate proposals."""
         roots = [self._with_tree_metadata(candidate, round_number=0, operator="root") for candidate in candidates]
         all_candidates = list(roots)
         frontier = roots[:beam_width]
-        operators = ("strong_baseline", "failure_mode", "cost_aware")
+        operators = ("strong_baseline", "failure_mode", "cost_aware", "mechanism_shift", "cross_domain_transfer")
+        llm_evolved_count = 0
         for round_number in range(1, max(1, rounds)):
-            next_frontier = []
+            next_frontier = await self.evolve_candidate_frontier(
+                frontier[:beam_width],
+                brief or {},
+                evidence_map or {},
+                gap_map or {},
+                round_number=round_number,
+                target_count=max(beam_width, len(frontier[:beam_width])),
+            )
+            llm_evolved_count += sum(1 for item in next_frontier if item.get("tree", {}).get("source") == "llm")
+            fallback_needed = max(0, beam_width - len(next_frontier))
+            fallback_frontier = []
             for parent in frontier[:beam_width]:
                 for operator in operators:
+                    if fallback_needed <= 0 and next_frontier:
+                        break
                     child = self._mutate_candidate(parent, operator, round_number)
-                    next_frontier.append(child)
-            all_candidates.extend(next_frontier)
-            frontier = sorted(next_frontier, key=self._candidate_potential, reverse=True)[:beam_width]
+                    fallback_frontier.append(child)
+                    fallback_needed -= 1
+                if fallback_needed <= 0 and next_frontier:
+                    break
+            expanded = [*next_frontier, *fallback_frontier]
+            if not expanded:
+                for parent in frontier[:beam_width]:
+                    expanded.extend(self._mutate_candidate(parent, operator, round_number) for operator in operators[:3])
+            all_candidates.extend(expanded)
+            frontier = sorted(expanded, key=self._candidate_potential, reverse=True)[:beam_width]
         summary = {
             "rounds": rounds,
             "beam_width": beam_width,
             "root_count": len(roots),
             "expanded_count": max(0, len(all_candidates) - len(roots)),
             "operators": list(operators),
+            "llm_evolved_count": llm_evolved_count,
+            "fallback_count": max(0, len(all_candidates) - len(roots) - llm_evolved_count),
         }
         return all_candidates, summary
+
+    async def evolve_candidate_frontier(
+        self,
+        frontier: list[dict[str, Any]],
+        brief: dict[str, Any],
+        evidence_map: dict[str, Any],
+        gap_map: dict[str, Any],
+        *,
+        round_number: int,
+        target_count: int,
+    ) -> list[dict[str, Any]]:
+        if not frontier or target_count <= 0:
+            return []
+        prompt = f"""你是科研 Idea 树搜索中的审稿人与改写者。请 critique 当前候选，并演化出最多 {target_count} 个更强且彼此不同的候选。
+可用 operator：mechanism_shift、strong_baseline、failure_mode、cost_aware、cross_domain_transfer。
+输出严格 JSON：
+{{"evolved":[{{"parent_title":"...", "operator":"mechanism_shift|strong_baseline|failure_mode|cost_aware|cross_domain_transfer",
+"critique":"指出父候选最关键弱点", "improvement":"本轮如何改进", "selection_angle":"为什么这个方向值得保留",
+"title":"...", "path":"grounded|inspiration|seed_refinement", "gap":"...", "hypothesis":"可证伪假设",
+"approach":"技术草图", "evidence_ids":["paper uuid"], "risks":["..."], "falsification_test":"...",
+"minimum_experiment":{{"dataset":"...", "baselines":["..."], "metrics":["..."], "steps":["..."]}}}}]}}
+候选之间必须覆盖不同机制、数据场景或风险类型，禁止只改标题。
+
+研究简报：{json.dumps(brief, ensure_ascii=False)}
+Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
+证据：{self._format_evidence(evidence_map, limit=8)}
+父候选：{json.dumps(frontier, ensure_ascii=False)}
+"""
+        data = await self._chat_json(prompt)
+        evolved = data.get("evolved") if isinstance(data, dict) else None
+        if not isinstance(evolved, list) or not evolved:
+            return []
+        parent_by_title = {str(parent.get("title")): parent for parent in frontier}
+        normalized = []
+        for index, item in enumerate(evolved[:target_count]):
+            if not isinstance(item, dict):
+                continue
+            parent = parent_by_title.get(str(item.get("parent_title"))) or frontier[index % len(frontier)]
+            candidate = self._normalize_candidate(item, brief, evidence_map, index)
+            candidate["critique"] = str(item.get("critique") or "需要补强假设边界、强基线或实验可证伪性。")
+            candidate["improvement"] = str(item.get("improvement") or "在父候选基础上加入更清晰的验证路径。")
+            candidate["selection_angle"] = str(item.get("selection_angle") or "提供与父候选不同的推进角度。")
+            operator = str(item.get("operator") or "mechanism_shift")
+            normalized.append(self._with_tree_metadata(
+                candidate,
+                round_number=round_number,
+                operator=operator,
+                parent=parent,
+                source="llm",
+            ))
+        return normalized
 
     def _with_tree_metadata(
         self,
@@ -599,6 +684,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         round_number: int,
         operator: str,
         parent: dict[str, Any] | None = None,
+        source: str = "deterministic",
     ) -> dict[str, Any]:
         parent_tree = parent.get("tree", {}) if parent else {}
         lineage = list(parent_tree.get("lineage", []))
@@ -611,6 +697,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                 "operator": operator,
                 "parent_title": parent.get("title") if parent else None,
                 "lineage": lineage,
+                "source": source,
             },
         }
 
@@ -897,6 +984,151 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             })
         return sorted(adjusted, key=lambda item: item["score"], reverse=True)
 
+    def select_diverse_proposals(
+        self,
+        candidates: list[dict[str, Any]],
+        num_ideas: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        selected: list[dict[str, Any]] = []
+        suppressed: list[dict[str, Any]] = []
+        remaining = [
+            {**candidate, "diversity_facets": self._candidate_diversity_facets(candidate)}
+            for candidate in candidates
+        ]
+        target = max(0, num_ideas)
+        while remaining and len(selected) < target:
+            ranked = []
+            for candidate in remaining:
+                penalty, overlaps = self._selection_diversity_penalty(candidate, selected)
+                facet_bonus = self._selection_facet_bonus(candidate, selected)
+                selection_score = round(float(candidate.get("score") or 0) - penalty + facet_bonus, 2)
+                ranked.append((selection_score, penalty, facet_bonus, overlaps, candidate))
+            ranked.sort(key=lambda item: (item[0], float(item[4].get("score") or 0)), reverse=True)
+            selection_score, penalty, facet_bonus, overlaps, chosen = ranked[0]
+            chosen = {
+                **chosen,
+                "selection_score": selection_score,
+                "selection_rationale": self._selection_rationale(chosen, penalty, facet_bonus, overlaps),
+                "suppressed_duplicates": [],
+            }
+            selected.append(chosen)
+            next_remaining = []
+            for _, item_penalty, _, item_overlaps, candidate in ranked[1:]:
+                similarity = self._candidate_similarity(chosen, candidate)
+                candidate_facets = set(candidate.get("diversity_facets") or [])
+                chosen_facets = set(chosen.get("diversity_facets") or [])
+                facet_overlap = len(candidate_facets & chosen_facets) / len(candidate_facets | chosen_facets) if candidate_facets and chosen_facets else 0.0
+                if similarity >= 0.72 or facet_overlap >= 0.62:
+                    suppressed_item = {
+                        "title": candidate.get("title"),
+                        "kept": chosen.get("title"),
+                        "reason": "diversity_near_duplicate",
+                        "similarity": round(similarity, 3),
+                        "facet_overlap": round(facet_overlap, 3),
+                    }
+                    chosen["suppressed_duplicates"].append(suppressed_item)
+                    suppressed.append(suppressed_item)
+                else:
+                    candidate["_last_diversity_penalty"] = item_penalty
+                    candidate["_last_diversity_overlaps"] = item_overlaps
+                    next_remaining.append(candidate)
+            remaining = next_remaining
+        summary = {
+            "selected": [
+                {
+                    "title": candidate.get("title"),
+                    "selection_score": candidate.get("selection_score"),
+                    "diversity_facets": candidate.get("diversity_facets", []),
+                    "rationale": candidate.get("selection_rationale"),
+                }
+                for candidate in selected
+            ],
+            "suppressed": suppressed[:20],
+            "strategy": "score_minus_overlap_plus_new_facets",
+        }
+        return selected, summary
+
+    def _candidate_diversity_facets(self, candidate: dict[str, Any]) -> list[str]:
+        facets: list[str] = []
+        path = str(candidate.get("path") or "").strip()
+        if path:
+            facets.append(f"path:{path}")
+        operator = str((candidate.get("tree") or {}).get("operator") or "").strip()
+        if operator:
+            facets.append(f"operator:{operator}")
+        experiment = candidate.get("minimum_experiment") or {}
+        dataset = str(experiment.get("dataset") or "").strip()
+        if dataset:
+            facets.append(f"dataset:{self._facet_key(dataset)[:36]}")
+        for metric in (experiment.get("metrics") or [])[:2]:
+            facets.append(f"metric:{self._facet_key(str(metric))[:28]}")
+        for risk in (candidate.get("risks") or [])[:2]:
+            facets.append(f"risk:{self._facet_key(str(risk))[:28]}")
+        evidence_ids = [str(item) for item in (candidate.get("evidence_ids") or []) if item]
+        if evidence_ids:
+            facets.append(f"evidence:{','.join(evidence_ids[:2])}")
+        novelty_status = str((candidate.get("novelty_check") or {}).get("status") or "").strip()
+        if novelty_status:
+            facets.append(f"novelty:{novelty_status}")
+        return list(dict.fromkeys(facets))[:8]
+
+    @staticmethod
+    def _facet_key(text: str) -> str:
+        return "-".join(re.findall(r"[a-z0-9\u4e00-\u9fff]+", text.lower())) or "unknown"
+
+    def _selection_diversity_penalty(
+        self,
+        candidate: dict[str, Any],
+        selected: list[dict[str, Any]],
+    ) -> tuple[float, list[str]]:
+        if not selected:
+            return 0.0, []
+        candidate_facets = set(candidate.get("diversity_facets") or [])
+        overlaps: list[str] = []
+        max_similarity = 0.0
+        max_facet_overlap = 0.0
+        for item in selected:
+            similarity = self._candidate_similarity(candidate, item)
+            max_similarity = max(max_similarity, similarity)
+            selected_facets = set(item.get("diversity_facets") or [])
+            if candidate_facets and selected_facets:
+                facet_overlap = len(candidate_facets & selected_facets) / len(candidate_facets | selected_facets)
+                max_facet_overlap = max(max_facet_overlap, facet_overlap)
+                overlaps.extend(sorted(candidate_facets & selected_facets))
+        penalty = min(2.4, max_similarity * 1.5 + max_facet_overlap * 0.9)
+        return round(penalty, 2), list(dict.fromkeys(overlaps))[:6]
+
+    @staticmethod
+    def _selection_facet_bonus(candidate: dict[str, Any], selected: list[dict[str, Any]]) -> float:
+        if not selected:
+            return 0.0
+        used = {
+            facet
+            for item in selected
+            for facet in (item.get("diversity_facets") or [])
+        }
+        new_facets = [facet for facet in (candidate.get("diversity_facets") or []) if facet not in used]
+        return round(min(0.5, len(new_facets) * 0.08), 2)
+
+    @staticmethod
+    def _selection_rationale(
+        candidate: dict[str, Any],
+        penalty: float,
+        facet_bonus: float,
+        overlaps: list[str],
+    ) -> str:
+        parts = [f"综合评分 {candidate.get('score', 0)}"]
+        if facet_bonus > 0:
+            parts.append(f"贡献新的多样性维度 +{facet_bonus}")
+        if penalty > 0:
+            parts.append(f"与已选方向重叠扣 {penalty}")
+        if overlaps:
+            parts.append(f"重叠维度：{', '.join(overlaps[:3])}")
+        tree = candidate.get("tree") or {}
+        if tree.get("operator"):
+            parts.append(f"来源：{tree.get('operator')}")
+        return "；".join(parts)
+
     @staticmethod
     def _summarize_novelty(candidates: list[dict[str, Any]]) -> dict[str, Any]:
         summary = {"likely_novel": 0, "incremental": 0, "too_similar": 0}
@@ -982,6 +1214,10 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                     "novelty_check": candidate.get("novelty_check"),
                     "adversarial_review": candidate.get("adversarial_review"),
                     "search_tree": candidate.get("tree"),
+                    "selection_rationale": candidate.get("selection_rationale"),
+                    "selection_score": candidate.get("selection_score"),
+                    "diversity_facets": candidate.get("diversity_facets", []),
+                    "suppressed_duplicates": candidate.get("suppressed_duplicates", []),
                 },
                 experiment_plan=candidate["minimum_experiment"],
                 status="draft",
@@ -1573,7 +1809,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             for item in evidence_map.get(category, [])
         ][:limit]
         return "\n".join(
-            f"- [{item['paper_id']}] ({item['category']}) {item['title']}: {item.get('abstract_excerpt', '')}"
+            f"- [{item['paper_id']}] ({item.get('category', item.get('source', 'evidence'))}) {item['title']}: {item.get('abstract_excerpt', '')}"
             for item in items
         ) or "- 当前论文库没有匹配证据，需要将结论标注为低置信度。"
 
