@@ -22,6 +22,10 @@ const actionCenterSource = readFileSync(
   new URL('../src/pages/ActionCenterPage.tsx', import.meta.url),
   'utf8',
 );
+const paperDigestSource = readFileSync(
+  new URL('../src/pages/PaperDigestInboxPage.tsx', import.meta.url),
+  'utf8',
+);
 
 test('page shell exposes stable layout class hooks', () => {
   for (const className of [
@@ -77,4 +81,17 @@ test('action center adopts page shell with summary content', () => {
   assert.match(actionCenterSource, /<Statistic title="行动项"/);
   assert.match(actionCenterSource, /<Statistic title="高优先级"/);
   assert.doesNotMatch(actionCenterSource, /linear-gradient\(135deg, #667eea 0%, #764ba2 100%\)/);
+});
+
+test('paper digest inbox adopts page shell with recovery guidance', () => {
+  assert.match(paperDigestSource, /import PageShell from '\.\.\/components\/PageShell'/);
+  assert.match(paperDigestSource, /<PageShell/);
+  assert.match(paperDigestSource, /title="论文推送中心"/);
+  assert.match(paperDigestSource, /maxWidth=\{1100\}/);
+  assert.match(paperDigestSource, /返回论文库/);
+  assert.match(paperDigestSource, /getApiErrorDetails/);
+  assert.match(paperDigestSource, /digestActionError/);
+  assert.match(paperDigestSource, /digestActionError\.detail\.recovery/);
+  assert.match(paperDigestSource, /需先处理条件/);
+  assert.doesNotMatch(paperDigestSource, /heroGradient/);
 });

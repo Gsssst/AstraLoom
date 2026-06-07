@@ -4,15 +4,16 @@ import {
   Alert, Badge, Button, Card, Col, Empty, List, Row, Space, Spin, Tag, Typography, message,
 } from 'antd';
 import {
-  ArrowLeftOutlined, BellOutlined, CalendarOutlined, CheckCircleOutlined,
+  ArrowLeftOutlined, CalendarOutlined, CheckCircleOutlined,
   ClockCircleOutlined, FilePdfOutlined, ImportOutlined, LikeOutlined,
   LinkOutlined, PlayCircleOutlined, ReadOutlined, StopOutlined, UserOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import Markdown from '../components/Markdown';
+import PageShell from '../components/PageShell';
+import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
 
 const { Text, Title, Paragraph } = Typography;
-const heroGradient = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
 
 interface DigestPaper {
   title: string;
@@ -57,6 +58,7 @@ const PaperDigestInboxPage: React.FC = () => {
   const [localPaperIds, setLocalPaperIds] = useState<Record<string, string>>({});
   const [readingLoopStatus, setReadingLoopStatus] = useState<Record<string, 'unread' | 'reading'>>({});
   const [feedbackLoadingKeys, setFeedbackLoadingKeys] = useState<Set<string>>(new Set());
+  const [digestActionError, setDigestActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
 
   const loadDigests = useCallback(async () => {
     setLoading(true);
@@ -68,7 +70,9 @@ const PaperDigestInboxPage: React.FC = () => {
       setDigests(digestResponse.data);
       setUnreadCount(unreadResponse.data.unread_count || 0);
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '加载论文推送失败');
+      const detail = getApiErrorDetails(error, { fallback: '加载论文推送失败' });
+      setDigestActionError({ title: '加载论文推送失败', detail });
+      message.warning(detail.message);
     } finally {
       setLoading(false);
     }
@@ -83,10 +87,13 @@ const PaperDigestInboxPage: React.FC = () => {
       await api.post('/notifications/digests/read-all');
       setDigests(previous => previous.map(digest => ({ ...digest, is_read: true })));
       setUnreadCount(0);
+      setDigestActionError(null);
       window.dispatchEvent(new Event('notifications:refresh'));
       message.success('论文推送已全部标记为已读');
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '操作失败');
+      const detail = getApiErrorDetails(error, { fallback: '操作失败' });
+      setDigestActionError({ title: '全部标记已读失败', detail });
+      message.warning(detail.message);
     } finally {
       setMarkingRead(false);
     }
@@ -117,10 +124,13 @@ const PaperDigestInboxPage: React.FC = () => {
       const paperId = response.data.paper_ids?.[0];
       setIngestedIds(previous => new Set(previous).add(key));
       if (paperId) setLocalPaperIds(previous => ({ ...previous, [key]: paperId }));
+      setDigestActionError(null);
       message.success('已加入你的论文库');
       return paperId || null;
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '加入论文库失败');
+      const detail = getApiErrorDetails(error, { fallback: '加入论文库失败' });
+      setDigestActionError({ title: '加入论文库失败', detail });
+      message.warning(detail.message);
       return null;
     } finally {
       setIngestingIds(previous => {
@@ -138,10 +148,13 @@ const PaperDigestInboxPage: React.FC = () => {
     try {
       await api.put(`/papers/${paperId}/read-status`, { status });
       setReadingLoopStatus(previous => ({ ...previous, [key]: status }));
+      setDigestActionError(null);
       message.success(status === 'reading' ? '已开始阅读，正在打开论文详情' : '已加入待读列表');
       if (status === 'reading') navigate(`/papers/${paperId}`);
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '更新阅读状态失败');
+      const detail = getApiErrorDetails(error, { fallback: '更新阅读状态失败' });
+      setDigestActionError({ title: '更新阅读状态失败', detail });
+      message.warning(detail.message);
     }
   };
 
@@ -170,9 +183,12 @@ const PaperDigestInboxPage: React.FC = () => {
           }
           : digest
       )));
+      setDigestActionError(null);
       message.success(action === 'dismissed' ? '已减少此类推荐' : action === 'later' ? '已加入待读列表' : '已记录你的兴趣');
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '记录反馈失败');
+      const detail = getApiErrorDetails(error, { fallback: '记录反馈失败' });
+      setDigestActionError({ title: '记录反馈失败', detail });
+      message.warning(detail.message);
     } finally {
       setFeedbackLoadingKeys(previous => {
         const next = new Set(previous);
@@ -183,20 +199,17 @@ const PaperDigestInboxPage: React.FC = () => {
   };
 
   return (
-    <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-      <div style={{ background: heroGradient, borderRadius: 18, padding: '22px 28px', marginBottom: 16, color: '#fff', position: 'relative', overflow: 'hidden' }}>
-        <div style={{ position: 'absolute', right: 30, top: -46, fontSize: 160, opacity: 0.08 }}><BellOutlined /></div>
-        <Space direction="vertical" size={4}>
-          <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/papers')} style={{ color: 'rgba(255,255,255,0.9)', paddingInline: 0 }}>返回论文库</Button>
-          <Space size={14} align="center">
-            <div style={{ width: 52, height: 52, borderRadius: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.18)', fontSize: 25 }}><ReadOutlined /></div>
-            <div>
-              <Title level={3} style={{ color: '#fff', margin: 0 }}>论文推送中心</Title>
-              <Text style={{ color: 'rgba(255,255,255,0.76)' }}>阅读每日摘要，挑选真正值得进入知识库的论文</Text>
-            </div>
-          </Space>
-        </Space>
-      </div>
+    <PageShell
+      title="论文推送中心"
+      subtitle="阅读每日摘要，挑选真正值得进入知识库和阅读队列的论文。"
+      icon={<ReadOutlined />}
+      maxWidth={1100}
+      actions={(
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/papers')} style={{ borderRadius: 9 }}>
+          返回论文库
+        </Button>
+      )}
+    >
 
       <Card style={{ borderRadius: 14, marginBottom: 14, border: '1px solid #eee' }} styles={{ body: { padding: '12px 18px' } }}>
         <Row align="middle" justify="space-between" gutter={[12, 12]}>
@@ -212,6 +225,29 @@ const PaperDigestInboxPage: React.FC = () => {
           </Col>
         </Row>
       </Card>
+
+      {digestActionError ? (
+        <Alert
+          type={digestActionError.detail.severity === 'error' ? 'error' : 'warning'}
+          showIcon
+          closable
+          onClose={() => setDigestActionError(null)}
+          style={{ borderRadius: 12, marginBottom: 14 }}
+          message={`${digestActionError.title}：${digestActionError.detail.message}`}
+          description={(
+            <Space direction="vertical" size={6}>
+              <Text>{digestActionError.detail.recovery}</Text>
+              <Space size={6} wrap>
+                <Tag color="orange">{digestActionError.detail.category}</Tag>
+                <Tag color={digestActionError.detail.retryable ? 'blue' : 'default'}>
+                  {digestActionError.detail.retryable ? '可重试' : '需先处理条件'}
+                </Tag>
+                {digestActionError.detail.status && <Tag>HTTP {digestActionError.detail.status}</Tag>}
+              </Space>
+            </Space>
+          )}
+        />
+      ) : null}
 
       <Spin spinning={loading}>
         {digests.length ? (
@@ -327,7 +363,7 @@ const PaperDigestInboxPage: React.FC = () => {
           </Card>
         )}
       </Spin>
-    </div>
+    </PageShell>
   );
 };
 
