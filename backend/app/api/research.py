@@ -212,6 +212,23 @@ class ContinueGapReviewRequest(BaseModel):
     generation_constraints: GenerationConstraintsRequest = Field(default_factory=GenerationConstraintsRequest)
 
 
+class GapFeedbackRequest(BaseModel):
+    title: Optional[str] = None
+    limitation: Optional[str] = None
+    opportunity: Optional[str] = None
+    research_question: Optional[str] = None
+    uncertainty: Optional[str] = None
+    evidence_rationale: Optional[str] = None
+    evidence_ids: Optional[list[str]] = None
+    rating: Literal["strong", "promising", "weak", "reject"] = "promising"
+    labels: list[Literal["valuable", "too_broad", "evidence_weak", "already_done", "misaligned", "needs_narrowing", "high_potential"]] = Field(default_factory=list)
+    note: str = ""
+
+
+class GapRefineRequest(BaseModel):
+    focus_note: str = ""
+
+
 class IdeaRunResponse(BaseModel):
     id: str
     project_id: str
@@ -776,6 +793,54 @@ async def continue_idea_run_from_gaps(
         num_ideas=req.num_ideas,
     )
     return _run_response(run, ideas)
+
+
+@router.patch("/projects/{project_id}/idea-runs/{run_id}/gaps/{gap_index}/feedback", response_model=IdeaRunResponse)
+async def update_idea_run_gap_feedback(
+    project_id: str,
+    run_id: str,
+    gap_index: int,
+    req: GapFeedbackRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """保存单个 Gap Map 条目的编辑与反馈。"""
+    project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
+    run = await _get_owned_run(db, run_id, current_user)
+    if run.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Idea 工作台运行未找到")
+    if not run.gap_map:
+        raise HTTPException(status_code=400, detail="当前运行还没有可编辑的 Gap Map")
+    service = ResearchIdeaWorkbenchService(db)
+    try:
+        run = await service.save_gap_feedback(run, gap_index, req.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return _run_response(run)
+
+
+@router.post("/projects/{project_id}/idea-runs/{run_id}/gaps/{gap_index}/refine", response_model=IdeaRunResponse)
+async def refine_idea_run_gap(
+    project_id: str,
+    run_id: str,
+    gap_index: int,
+    req: GapRefineRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """基于用户反馈和证据细化单个 Gap Map 条目。"""
+    project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
+    run = await _get_owned_run(db, run_id, current_user)
+    if run.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Idea 工作台运行未找到")
+    if not run.gap_map:
+        raise HTTPException(status_code=400, detail="当前运行还没有可细化的 Gap Map")
+    service = ResearchIdeaWorkbenchService(db)
+    try:
+        run = await service.refine_gap(project, run, gap_index, focus_note=req.focus_note)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return _run_response(run)
 
 
 @router.post("/projects/{project_id}/idea-runs/stream")

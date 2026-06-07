@@ -361,6 +361,22 @@ body {
   overflow-wrap: anywhere;
 }
 
+.gap-review-card .ant-card-head-title,
+.gap-feedback-collapse .ant-collapse-header-text,
+.gap-evidence-item .ant-typography {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.gap-feedback-collapse {
+  margin-top: 10px;
+}
+
+.gap-evidence-item {
+  align-items: flex-start;
+  padding: 8px 0;
+}
+
 .code-project-empty-preview {
   min-height: 240px;
   display: flex;

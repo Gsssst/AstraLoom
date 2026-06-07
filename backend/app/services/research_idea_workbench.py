@@ -39,6 +39,16 @@ STAGES = {
     "selecting": (94, "正在整理最值得推进的 Proposal"),
     "complete": (100, "Idea 工作台已完成"),
 }
+GAP_FEEDBACK_RATINGS = {"strong", "promising", "weak", "reject"}
+GAP_FEEDBACK_LABELS = {
+    "valuable",
+    "too_broad",
+    "evidence_weak",
+    "already_done",
+    "misaligned",
+    "needs_narrowing",
+    "high_potential",
+}
 
 REVIEW_WEIGHTS = {
     "novelty": 0.25,
@@ -224,6 +234,91 @@ class ResearchIdeaWorkbenchService:
             )
             raise
 
+    async def save_gap_feedback(
+        self,
+        run: ResearchIdeaRun,
+        gap_index: int,
+        feedback: dict[str, Any] | None,
+    ) -> ResearchIdeaRun:
+        """Persist user edits and feedback for a single Gap Map item."""
+        gap_map = dict(run.gap_map or {})
+        gaps = list(gap_map.get("gaps") or [])
+        if gap_index < 0 or gap_index >= len(gaps):
+            raise ValueError("Gap Map 条目不存在")
+        evidence_ids = self._available_evidence_ids(run.evidence_map or {})
+        gaps[gap_index] = self.normalize_gap_feedback(gaps[gap_index], feedback or {}, evidence_ids)
+        run.gap_map = {**gap_map, "gaps": gaps, "feedback_summary": self.summarize_gap_feedback({"gaps": gaps})}
+        config = dict(run.config_json or {})
+        config["gap_feedback"] = run.gap_map["feedback_summary"]
+        run.config_json = config
+        await self.session.commit()
+        await self.session.refresh(run)
+        return run
+
+    async def refine_gap(
+        self,
+        project: ResearchProject,
+        run: ResearchIdeaRun,
+        gap_index: int,
+        *,
+        focus_note: str = "",
+    ) -> ResearchIdeaRun:
+        """Refine one Gap Map item using current evidence and user feedback."""
+        gap_map = dict(run.gap_map or {})
+        gaps = list(gap_map.get("gaps") or [])
+        if gap_index < 0 or gap_index >= len(gaps):
+            raise ValueError("Gap Map 条目不存在")
+        brief = self._project_brief(project)
+        evidence_map = run.evidence_map or {}
+        current_gap = gaps[gap_index] if isinstance(gaps[gap_index], dict) else {}
+        focus_note = str(focus_note or "").strip()[:600]
+        linked_evidence = self._evidence_items_by_ids(evidence_map, current_gap.get("evidence_ids") or [])
+        prompt = f"""你是科研 Gap Map 编辑器。请只细化一个研究空白，不要生成 proposal。
+要求：
+- 保留与证据相关的边界，避免扩大主题。
+- 如果用户反馈认为 gap 太宽泛或证据不足，需要让问题更窄、更可验证。
+- 输出严格 JSON：
+{{"title":"...", "limitation":"...", "opportunity":"...", "research_question":"...", "evidence_ids":["paper uuid"], "uncertainty":"...", "evidence_rationale":"为什么这些证据支持该 gap"}}
+
+研究简报：{json.dumps(brief, ensure_ascii=False)}
+当前 Gap：{json.dumps(current_gap, ensure_ascii=False)}
+用户反馈：{json.dumps(current_gap.get("user_feedback") or {}, ensure_ascii=False)}
+用户细化要求：{focus_note}
+相关证据：{json.dumps(linked_evidence, ensure_ascii=False)}
+"""
+        source = "llm"
+        data = await self._chat_json(prompt)
+        refined = data.get("gap") if isinstance(data, dict) and isinstance(data.get("gap"), dict) else data
+        if not isinstance(refined, dict) or not any(refined.get(key) for key in ("title", "limitation", "research_question")):
+            source = "fallback"
+            refined = self._fallback_refined_gap(brief, current_gap, focus_note)
+        normalized = self._normalize_gap(refined, brief, evidence_map)
+        if not normalized.get("evidence_ids"):
+            normalized["evidence_ids"] = list(current_gap.get("evidence_ids") or [])[:4]
+        updated = {
+            **current_gap,
+            **normalized,
+            "user_feedback": current_gap.get("user_feedback") or {},
+            "refinement": {
+                "source": source,
+                "focus_note": focus_note,
+                "previous_title": current_gap.get("title"),
+            },
+        }
+        gaps[gap_index] = updated
+        run.gap_map = {**gap_map, "gaps": gaps, "feedback_summary": self.summarize_gap_feedback({"gaps": gaps})}
+        config = dict(run.config_json or {})
+        config["gap_feedback"] = run.gap_map["feedback_summary"]
+        run.config_json = config
+        run.stage = "gap_review"
+        run.progress = STAGES["gap_review"][0]
+        run.message = "Gap Map 已更新，等待选择推进方向"
+        if run.status != "failed":
+            run.status = "pending"
+        await self.session.commit()
+        await self.session.refresh(run)
+        return run
+
     async def _execute_from_gap_map(
         self,
         project: ResearchProject,
@@ -292,6 +387,7 @@ class ResearchIdeaWorkbenchService:
             "diversity_selection": diversity_summary,
             "gap_selection": generation_context.get("gap_selection"),
             "generation_constraints": generation_context.get("generation_constraints"),
+            "gap_feedback": generation_context.get("gap_feedback") or [],
         }
         await self.session.commit()
         await self._emit(
@@ -655,6 +751,54 @@ class ResearchIdeaWorkbenchService:
             "generation_constraints": constraints,
         }
 
+    def normalize_gap_feedback(
+        self,
+        current_gap: Any,
+        feedback: dict[str, Any],
+        available_evidence_ids: set[str],
+    ) -> dict[str, Any]:
+        data = feedback if isinstance(feedback, dict) else {}
+        gap = current_gap if isinstance(current_gap, dict) else {}
+
+        def text_field(key: str, limit: int = 1200) -> str:
+            raw = data.get(key)
+            if raw is None:
+                raw = gap.get(key)
+            return str(raw or "").strip()[:limit]
+
+        requested_evidence = data.get("evidence_ids")
+        if requested_evidence is None:
+            requested_evidence = gap.get("evidence_ids") or []
+        evidence_ids = []
+        for item in self._string_list(requested_evidence, limit=8):
+            if not available_evidence_ids or item in available_evidence_ids:
+                evidence_ids.append(item)
+        rating = str(data.get("rating") or (gap.get("user_feedback") or {}).get("rating") or "promising").strip()
+        if rating not in GAP_FEEDBACK_RATINGS:
+            rating = "promising"
+        raw_labels = data["labels"] if "labels" in data else (gap.get("user_feedback") or {}).get("labels")
+        labels = [
+            label
+            for label in self._string_list(raw_labels, limit=8)
+            if label in GAP_FEEDBACK_LABELS
+        ]
+        note = str(data.get("note") if data.get("note") is not None else (gap.get("user_feedback") or {}).get("note") or "").strip()[:600]
+        return {
+            **gap,
+            "title": text_field("title", 240) or str(gap.get("title") or "未命名 Gap"),
+            "limitation": text_field("limitation"),
+            "opportunity": text_field("opportunity"),
+            "research_question": text_field("research_question"),
+            "evidence_ids": evidence_ids,
+            "uncertainty": text_field("uncertainty", 800),
+            "evidence_rationale": text_field("evidence_rationale", 800),
+            "user_feedback": {
+                "rating": rating,
+                "labels": labels,
+                "note": note,
+            },
+        }
+
     @staticmethod
     def _normalize_generation_constraints(value: dict[str, Any] | None) -> dict[str, str]:
         data = value if isinstance(value, dict) else {}
@@ -689,6 +833,7 @@ class ResearchIdeaWorkbenchService:
             "research_mode": constraints.get("research_mode") or "balanced",
             "risk_appetite": constraints.get("risk_appetite") or "balanced",
             "resource_budget": constraints.get("resource_budget") or "reproducible",
+            "gap_feedback": data.get("gap_feedback") or [],
         }, ensure_ascii=False)
 
     def apply_gap_selection(self, gap_map: dict[str, Any], selection: dict[str, Any]) -> dict[str, Any]:
@@ -724,12 +869,15 @@ class ResearchIdeaWorkbenchService:
 
     def generation_context_from_run(self, run: ResearchIdeaRun, gap_map: dict[str, Any]) -> dict[str, Any]:
         config = dict(run.config_json or {})
+        feedback_summary = self.summarize_gap_feedback(gap_map)
         if config.get("gap_selection") or config.get("generation_constraints"):
             return {
                 "gap_selection": config.get("gap_selection") or self.normalize_gap_selection(gap_map, None, None)["gap_selection"],
                 "generation_constraints": config.get("generation_constraints") or self._normalize_generation_constraints(None),
+                "gap_feedback": feedback_summary,
             }
         normalized = self.normalize_gap_selection(gap_map, None, None)
+        normalized["gap_feedback"] = feedback_summary
         return normalized
 
     async def generate_candidates(
@@ -2067,6 +2215,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             "research_question": str(data.get("research_question") or f"如何改进 {brief['name']} 的可靠性？"),
             "evidence_ids": evidence_ids,
             "uncertainty": str(data.get("uncertainty") or "需要通过更完整的文献阅读与实验确认。"),
+            "evidence_rationale": str(data.get("evidence_rationale") or data.get("rationale") or ""),
         }
 
     @staticmethod
@@ -2125,6 +2274,73 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         }
 
     @staticmethod
+    def _evidence_items_by_ids(evidence_map: dict[str, Any], evidence_ids: list[Any]) -> list[dict[str, Any]]:
+        wanted = {str(item) for item in evidence_ids if item}
+        if not wanted:
+            return []
+        items = []
+        for category in ("seed", "background", "inspiration"):
+            for item in evidence_map.get(category, []) or []:
+                if str(item.get("paper_id")) in wanted:
+                    items.append({
+                        "paper_id": item.get("paper_id"),
+                        "title": item.get("title"),
+                        "category": item.get("category") or category,
+                        "source": item.get("source"),
+                        "relevance": item.get("relevance"),
+                        "abstract_excerpt": item.get("abstract_excerpt"),
+                    })
+        return items
+
+    @staticmethod
+    def summarize_gap_feedback(gap_map: dict[str, Any]) -> list[dict[str, Any]]:
+        summary = []
+        for index, gap in enumerate(gap_map.get("gaps") or []):
+            if not isinstance(gap, dict):
+                continue
+            feedback = gap.get("user_feedback") or {}
+            labels = [str(label) for label in feedback.get("labels") or [] if label]
+            if not feedback and not gap.get("refinement"):
+                continue
+            summary.append({
+                "index": index,
+                "title": str(gap.get("title") or ""),
+                "rating": str(feedback.get("rating") or ""),
+                "labels": labels,
+                "note": str(feedback.get("note") or "")[:240],
+                "refined": bool(gap.get("refinement")),
+                "selection_status": gap.get("selection_status"),
+            })
+        return summary
+
+    @staticmethod
+    def _fallback_refined_gap(
+        brief: dict[str, Any],
+        current_gap: dict[str, Any],
+        focus_note: str,
+    ) -> dict[str, Any]:
+        title = str(current_gap.get("title") or f"{brief['name']} 的待细化空白")
+        feedback = current_gap.get("user_feedback") or {}
+        labels = set(feedback.get("labels") or [])
+        narrowing = "围绕一个明确数据切片和强基线重新界定边界"
+        if "evidence_weak" in labels:
+            narrowing = "先限定到已有证据能直接支撑的数据切片"
+        elif "too_broad" in labels:
+            narrowing = "把问题收窄到一个失败模式和一个可复现实验"
+        elif "already_done" in labels:
+            narrowing = "避开已覆盖设置，转向未系统验证的边界条件"
+        focus_clause = f" 用户强调：{focus_note}" if focus_note else ""
+        return {
+            "title": f"{title}（细化版）",
+            "limitation": f"{current_gap.get('limitation') or '当前表述仍偏宽泛。'} 需要{narrowing}。",
+            "opportunity": f"{current_gap.get('opportunity') or '重新设计更窄的验证路径。'}{focus_clause}",
+            "research_question": f"在{brief['name']}中，{narrowing}后是否仍能获得可复现收益？",
+            "evidence_ids": current_gap.get("evidence_ids") or [],
+            "uncertainty": "该细化来自用户反馈 fallback，需要后续结合全文证据复核。",
+            "evidence_rationale": "沿用当前 Gap 的证据引用，并根据用户反馈收窄验证边界。",
+        }
+
+    @staticmethod
     def _fallback_gap_map(brief: dict[str, Any], evidence_map: dict[str, Any]) -> dict[str, Any]:
         evidence_ids = list(ResearchIdeaWorkbenchService._available_evidence_ids(evidence_map))
         return {
@@ -2164,6 +2380,13 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         context = generation_context or {}
         selection = context.get("gap_selection") or {}
         constraints = context.get("generation_constraints") or {}
+        usable_gaps = [
+            gap for gap in gaps
+            if (gap.get("user_feedback") or {}).get("rating") != "reject"
+            and "misaligned" not in ((gap.get("user_feedback") or {}).get("labels") or [])
+        ]
+        if usable_gaps:
+            gaps = usable_gaps
         focus_note = selection.get("focus_note") or ""
         budget = constraints.get("resource_budget") or "reproducible"
         mode = constraints.get("research_mode") or "balanced"
@@ -2187,13 +2410,19 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             gap = gaps[index % len(gaps)]
             path = ("grounded", "inspiration", "grounded")[index % 3]
             strategy_title, strategy = strategies[index % len(strategies)]
+            feedback = gap.get("user_feedback") or {}
+            feedback_note = feedback.get("note") or ""
+            feedback_labels = ", ".join(feedback.get("labels") or [])
+            feedback_clause = ""
+            if feedback.get("rating") or feedback_labels or feedback_note:
+                feedback_clause = f" Gap 反馈：rating={feedback.get('rating') or '未标注'}; labels={feedback_labels or '无'}; note={feedback_note or '无'}。"
             candidates.append(
                 {
                     "title": f"{brief['name']}：{strategy_title}",
                     "path": path,
                     "gap": gap.get("limitation") or "现有方法缺少边界验证。",
                     "hypothesis": f"针对「{gap.get('title') or brief['name']}」采用{strategy_title}后，可在{dataset}上获得可复现的改进信号。",
-                    "approach": f"先复现强基线，再{strategy}" + (f" 用户关注：{focus_note}" if focus_note else ""),
+                    "approach": f"先复现强基线，再{strategy}" + (f" 用户关注：{focus_note}" if focus_note else "") + feedback_clause,
                     "evidence_ids": gap.get("evidence_ids") or evidence_ids[:2],
                     "risks": ["收益可能来自训练预算差异", "本地论文覆盖不足"],
                     "falsification_test": "统一训练和推理预算后，若主要指标和效率指标均未稳定改善，则否定假设。",

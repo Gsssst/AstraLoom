@@ -137,6 +137,113 @@ async def test_continue_from_gap_review_applies_selection_and_constraints(monkey
     assert captured["config"]["gap_selection"]["focus_note"] == "prefer low compute"
 
 
+@pytest.mark.asyncio
+async def test_gap_feedback_persists_edits_and_summary():
+    session = _Session()
+    service = ResearchIdeaWorkbenchService(session)
+    run = SimpleNamespace(
+        gap_map={"summary": "Gaps", "gaps": [{
+            "title": "Gap A",
+            "limitation": "L",
+            "opportunity": "O",
+            "research_question": "Q",
+            "evidence_ids": ["p1"],
+            "uncertainty": "U",
+        }]},
+        evidence_map={"seed": [{"paper_id": "p1", "title": "Evidence"}], "background": [], "inspiration": []},
+        config_json={},
+    )
+
+    result = await service.save_gap_feedback(run, 0, {
+        "title": "Edited Gap",
+        "limitation": "Narrower limitation",
+        "evidence_ids": ["p1", "missing"],
+        "rating": "weak",
+        "labels": ["too_broad", "not_allowed"],
+        "note": "Needs narrowing.",
+    })
+
+    gap = result.gap_map["gaps"][0]
+    assert gap["title"] == "Edited Gap"
+    assert gap["limitation"] == "Narrower limitation"
+    assert gap["evidence_ids"] == ["p1"]
+    assert gap["user_feedback"]["rating"] == "weak"
+    assert gap["user_feedback"]["labels"] == ["too_broad"]
+    assert result.config_json["gap_feedback"][0]["title"] == "Edited Gap"
+    assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_refine_gap_falls_back_and_preserves_feedback(monkeypatch):
+    session = _Session()
+    service = ResearchIdeaWorkbenchService(session)
+    project = SimpleNamespace(id=uuid4(), name="Grounded QA", description="", keywords=[], metadata_json={}, paper_ids=[])
+    run = SimpleNamespace(
+        stage="complete",
+        status="complete",
+        progress=100,
+        message="done",
+        gap_map={"summary": "Gaps", "gaps": [{
+            "title": "Broad Gap",
+            "limitation": "Too broad.",
+            "opportunity": "Test something.",
+            "research_question": "What works?",
+            "evidence_ids": ["p1"],
+            "uncertainty": "High.",
+            "user_feedback": {"rating": "weak", "labels": ["too_broad"], "note": "Make it testable."},
+        }]},
+        evidence_map={"seed": [{"paper_id": "p1", "title": "Evidence", "relevance": "Supports boundary analysis."}], "background": [], "inspiration": []},
+        config_json={},
+    )
+
+    async def empty_json(_prompt):
+        return {}
+
+    monkeypatch.setattr(service, "_chat_json", empty_json)
+    result = await service.refine_gap(project, run, 0, focus_note="prefer low compute")
+
+    refined = result.gap_map["gaps"][0]
+    assert refined["refinement"]["source"] == "fallback"
+    assert refined["refinement"]["focus_note"] == "prefer low compute"
+    assert refined["user_feedback"]["labels"] == ["too_broad"]
+    assert result.stage == "gap_review"
+    assert result.status == "pending"
+
+
+def test_generation_context_summarizes_feedback_and_fallback_avoids_rejected_gap():
+    service = ResearchIdeaWorkbenchService(_Session())
+    gap_map = {"gaps": [
+        {
+            "title": "Rejected Gap",
+            "limitation": "Do not use.",
+            "evidence_ids": ["p1"],
+            "user_feedback": {"rating": "reject", "labels": ["misaligned"], "note": "Out of scope."},
+        },
+        {
+            "title": "Strong Gap",
+            "limitation": "Boundary is unclear.",
+            "evidence_ids": ["p1"],
+            "user_feedback": {"rating": "strong", "labels": ["valuable"], "note": "Use this."},
+        },
+    ]}
+    run = SimpleNamespace(config_json={})
+    evidence = {"seed": [{"paper_id": "p1", "title": "Evidence"}], "background": [], "inspiration": []}
+
+    context = service.generation_context_from_run(run, gap_map)
+    candidates = ResearchIdeaWorkbenchService._fallback_candidates(
+        {"name": "Grounded QA"},
+        evidence,
+        gap_map,
+        count=1,
+        generation_context=context,
+    )
+
+    assert context["gap_feedback"][0]["rating"] == "reject"
+    assert context["gap_feedback"][1]["title"] == "Strong Gap"
+    assert "Strong Gap" in candidates[0]["hypothesis"]
+    assert "rating=strong" in candidates[0]["approach"]
+
+
 def test_duplicate_candidates_are_merged_by_hypothesis_overlap():
     candidates = [
         {"title": "Adaptive pruning", "hypothesis": "adaptive pruning improves efficient inference"},

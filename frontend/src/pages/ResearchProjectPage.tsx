@@ -8,7 +8,7 @@ import {
   ArrowLeftOutlined, BulbOutlined, CodeOutlined, CopyOutlined, DeleteOutlined, DownloadOutlined,
   ExperimentOutlined, FileOutlined, FileSearchOutlined, FileTextOutlined, FolderOutlined, MessageOutlined, NodeIndexOutlined,
   HistoryOutlined, ImportOutlined, PlusOutlined, PushpinOutlined, ReloadOutlined, RiseOutlined, RobotOutlined, RocketOutlined, SendOutlined,
-  ShareAltOutlined, StarFilled, StopOutlined, ThunderboltOutlined, UserOutlined,
+  SaveOutlined, ShareAltOutlined, StarFilled, StopOutlined, ThunderboltOutlined, UserOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
@@ -41,6 +41,29 @@ interface Evidence {
 interface Gap {
   title: string; limitation: string; opportunity: string;
   research_question: string; evidence_ids: string[]; uncertainty: string;
+  evidence_rationale?: string;
+  selection_status?: string;
+  user_feedback?: GapUserFeedback;
+  refinement?: { source?: string; focus_note?: string; previous_title?: string };
+}
+type GapFeedbackRating = 'strong' | 'promising' | 'weak' | 'reject';
+type GapFeedbackLabel = 'valuable' | 'too_broad' | 'evidence_weak' | 'already_done' | 'misaligned' | 'needs_narrowing' | 'high_potential';
+interface GapUserFeedback {
+  rating?: GapFeedbackRating;
+  labels?: GapFeedbackLabel[];
+  note?: string;
+}
+interface GapFeedbackDraft {
+  title: string;
+  limitation: string;
+  opportunity: string;
+  research_question: string;
+  uncertainty: string;
+  evidence_rationale: string;
+  evidence_ids: string[];
+  rating: GapFeedbackRating;
+  labels: GapFeedbackLabel[];
+  note: string;
 }
 interface Review {
   scores: Record<string, number>; rationale: string; uncertainty: string; recommendation: string;
@@ -283,6 +306,35 @@ const resourceBudgetOptions = [
   { value: 'reproducible', label: '可复现' },
   { value: 'large_model', label: '大模型实验' },
 ] as const;
+const gapRatingOptions = [
+  { value: 'strong', label: '强价值' },
+  { value: 'promising', label: '可推进' },
+  { value: 'weak', label: '偏弱' },
+  { value: 'reject', label: '不推进' },
+] as const;
+const gapRatingColors: Record<GapFeedbackRating, string> = { strong: 'green', promising: 'blue', weak: 'orange', reject: 'red' };
+const gapLabelOptions = [
+  { value: 'valuable', label: '有价值' },
+  { value: 'too_broad', label: '太宽泛' },
+  { value: 'evidence_weak', label: '证据不足' },
+  { value: 'already_done', label: '可能已做过' },
+  { value: 'misaligned', label: '不符合方向' },
+  { value: 'needs_narrowing', label: '需要收窄' },
+  { value: 'high_potential', label: '高潜力' },
+] as const;
+const gapLabelMap = Object.fromEntries(gapLabelOptions.map(item => [item.value, item.label])) as Record<GapFeedbackLabel, string>;
+const gapToDraft = (gap: Gap): GapFeedbackDraft => ({
+  title: gap.title || '',
+  limitation: gap.limitation || '',
+  opportunity: gap.opportunity || '',
+  research_question: gap.research_question || '',
+  uncertainty: gap.uncertainty || '',
+  evidence_rationale: gap.evidence_rationale || '',
+  evidence_ids: gap.evidence_ids || [],
+  rating: gap.user_feedback?.rating || 'promising',
+  labels: gap.user_feedback?.labels || [],
+  note: gap.user_feedback?.note || '',
+});
 type ProposalSortKey = 'review' | 'novelty' | 'feasibility' | 'evidence' | 'recent';
 type ProposalFilterKey = 'all' | 'draft' | 'pinned' | 'rejected' | 'implemented';
 const proposalSortOptions: { value: ProposalSortKey; label: string }[] = [
@@ -448,6 +500,10 @@ const ResearchProjectPage: React.FC = () => {
   const [selectedGapTitles, setSelectedGapTitles] = useState<string[]>([]);
   const [blockedGapTitles, setBlockedGapTitles] = useState<string[]>([]);
   const [gapFocusNote, setGapFocusNote] = useState('');
+  const [gapDrafts, setGapDrafts] = useState<Record<number, GapFeedbackDraft>>({});
+  const [savingGapFeedback, setSavingGapFeedback] = useState<Set<number>>(new Set());
+  const [refiningGaps, setRefiningGaps] = useState<Set<number>>(new Set());
+  const [gapRefineNotes, setGapRefineNotes] = useState<Record<number, string>>({});
   const [researchMode, setResearchMode] = useState<GenerationConstraints['research_mode']>('balanced');
   const [riskAppetite, setRiskAppetite] = useState<GenerationConstraints['risk_appetite']>('balanced');
   const [resourceBudget, setResourceBudget] = useState<GenerationConstraints['resource_budget']>('reproducible');
@@ -592,6 +648,7 @@ const ResearchProjectPage: React.FC = () => {
     if (gapTitles.length === 0) {
       setSelectedGapTitles([]);
       setBlockedGapTitles([]);
+      setGapDrafts({});
       return;
     }
     const savedSelection = run?.config_json?.gap_selection;
@@ -602,6 +659,7 @@ const ResearchProjectPage: React.FC = () => {
     setResearchMode(savedConstraints.research_mode || 'balanced');
     setRiskAppetite(savedConstraints.risk_appetite || 'balanced');
     setResourceBudget(savedConstraints.resource_budget || 'reproducible');
+    setGapDrafts(Object.fromEntries((run?.gap_map?.gaps || []).map((gap, index) => [index, gapToDraft(gap)])));
   }, [run?.id, run?.gap_map]);
 
   const applyStreamEvent = (event: any) => {
@@ -725,6 +783,50 @@ const ResearchProjectPage: React.FC = () => {
       showPageError('按 Gap Map 继续生成失败', error, '按 Gap Map 继续生成失败');
     } finally {
       setGapContinuing(false);
+    }
+  };
+
+  const updateGapDraft = (index: number, patch: Partial<GapFeedbackDraft>) => {
+    setGapDrafts(previous => ({
+      ...previous,
+      [index]: { ...(previous[index] || gapToDraft(gaps[index])), ...patch },
+    }));
+  };
+
+  const handleSaveGapFeedback = async (index: number) => {
+    if (!projectId || !run?.id || savingGapFeedback.has(index)) return;
+    const draft = gapDrafts[index] || gapToDraft(gaps[index]);
+    setSavingGapFeedback(previous => new Set(previous).add(index));
+    try {
+      const response = await api.patch(`/research/projects/${projectId}/idea-runs/${run.id}/gaps/${index}/feedback`, draft);
+      setRun(response.data);
+      setPageActionError(null);
+      message.success('Gap 反馈已保存');
+    } catch (error) {
+      showPageError('保存 Gap 反馈失败', error, '保存 Gap 反馈失败');
+    } finally {
+      setSavingGapFeedback(previous => {
+        const next = new Set(previous); next.delete(index); return next;
+      });
+    }
+  };
+
+  const handleRefineGap = async (index: number) => {
+    if (!projectId || !run?.id || refiningGaps.has(index)) return;
+    setRefiningGaps(previous => new Set(previous).add(index));
+    try {
+      const response = await api.post(`/research/projects/${projectId}/idea-runs/${run.id}/gaps/${index}/refine`, {
+        focus_note: gapRefineNotes[index] || '',
+      });
+      setRun(response.data);
+      setPageActionError(null);
+      message.success('Gap 已细化');
+    } catch (error) {
+      showPageError('细化 Gap 失败', error, '细化 Gap 失败');
+    } finally {
+      setRefiningGaps(previous => {
+        const next = new Set(previous); next.delete(index); return next;
+      });
     }
   };
 
@@ -1094,6 +1196,11 @@ const ResearchProjectPage: React.FC = () => {
 
   const evidenceMap = run?.evidence_map || {};
   const evidenceItems = (['seed', 'background', 'inspiration'] as const).flatMap(category => (evidenceMap[category] as Evidence[] || []));
+  const evidenceById = new Map(evidenceItems.map(item => [item.paper_id, item]));
+  const evidenceOptions = evidenceItems.map(item => ({
+    value: item.paper_id,
+    label: `${item.title}${item.year ? ` (${item.year})` : ''}`,
+  }));
   const sourceErrors = evidenceMap.source_errors as Record<string, string> || {};
   const gaps = run?.gap_map?.gaps || [];
   const candidates = run?.candidate_pool || [];
@@ -1188,34 +1295,110 @@ const ResearchProjectPage: React.FC = () => {
           </Space>
         </Space>
       </Card>
-      {gaps.map((gap, index) => (
-        <Card key={`${gap.title}-${index}`} size="small" title={<Space><NodeIndexOutlined style={{ color: '#8b5cf6' }} /><Text strong>{gap.title}</Text></Space>} style={{ borderRadius: 12 }}>
-          <Space wrap style={{ marginBottom: 10 }}>
-            <Checkbox
-              checked={selectedGapTitles.includes(gap.title)}
-              onChange={event => {
-                setSelectedGapTitles(previous => event.target.checked ? Array.from(new Set([...previous, gap.title])) : previous.filter(title => title !== gap.title));
-                if (event.target.checked) setBlockedGapTitles(previous => previous.filter(title => title !== gap.title));
-              }}
-            >
-              推进
-            </Checkbox>
-            <Checkbox
-              checked={blockedGapTitles.includes(gap.title)}
-              onChange={event => {
-                setBlockedGapTitles(previous => event.target.checked ? Array.from(new Set([...previous, gap.title])) : previous.filter(title => title !== gap.title));
-                if (event.target.checked) setSelectedGapTitles(previous => previous.filter(title => title !== gap.title));
-              }}
-            >
-              暂不考虑
-            </Checkbox>
-          </Space>
-          <Paragraph><Text strong>现有限制：</Text>{gap.limitation}</Paragraph>
-          <Paragraph><Text strong>研究机会：</Text>{gap.opportunity}</Paragraph>
-          <Paragraph style={{ marginBottom: 6 }}><Text strong>可验证问题：</Text>{gap.research_question}</Paragraph>
-          <Text type="secondary">不确定性：{gap.uncertainty}</Text>
-        </Card>
-      ))}
+      {gaps.map((gap, index) => {
+        const draft = gapDrafts[index] || gapToDraft(gap);
+        const feedback = gap.user_feedback;
+        const linkedEvidence = (gap.evidence_ids || []).map(id => evidenceById.get(id)).filter(Boolean) as Evidence[];
+        return (
+          <Card
+            key={`${gap.title}-${index}`}
+            size="small"
+            className="gap-review-card"
+            title={<Space wrap><NodeIndexOutlined style={{ color: '#8b5cf6' }} /><Text strong>{gap.title}</Text>{feedback?.rating && <Tag color={gapRatingColors[feedback.rating]}>{gapRatingOptions.find(item => item.value === feedback.rating)?.label}</Tag>}{feedback?.labels?.map(label => <Tag key={label}>{gapLabelMap[label]}</Tag>)}{gap.refinement && <Tag color="cyan">已细化</Tag>}</Space>}
+            style={{ borderRadius: 12 }}
+          >
+            <Space wrap style={{ marginBottom: 10 }}>
+              <Checkbox
+                checked={selectedGapTitles.includes(gap.title)}
+                onChange={event => {
+                  setSelectedGapTitles(previous => event.target.checked ? Array.from(new Set([...previous, gap.title])) : previous.filter(title => title !== gap.title));
+                  if (event.target.checked) setBlockedGapTitles(previous => previous.filter(title => title !== gap.title));
+                }}
+              >
+                推进
+              </Checkbox>
+              <Checkbox
+                checked={blockedGapTitles.includes(gap.title)}
+                onChange={event => {
+                  setBlockedGapTitles(previous => event.target.checked ? Array.from(new Set([...previous, gap.title])) : previous.filter(title => title !== gap.title));
+                  if (event.target.checked) setSelectedGapTitles(previous => previous.filter(title => title !== gap.title));
+                }}
+              >
+                暂不考虑
+              </Checkbox>
+            </Space>
+            <Paragraph><Text strong>现有限制：</Text>{gap.limitation}</Paragraph>
+            <Paragraph><Text strong>研究机会：</Text>{gap.opportunity}</Paragraph>
+            <Paragraph style={{ marginBottom: 6 }}><Text strong>可验证问题：</Text>{gap.research_question}</Paragraph>
+            <Text type="secondary">不确定性：{gap.uncertainty}</Text>
+            <Collapse
+              ghost
+              size="small"
+              className="gap-feedback-collapse"
+              items={[
+                {
+                  key: 'feedback',
+                  label: <Space><SaveOutlined />编辑与反馈</Space>,
+                  children: (
+                    <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                      <Input value={draft.title} onChange={event => updateGapDraft(index, { title: event.target.value })} placeholder="Gap 标题" />
+                      <Row gutter={[10, 10]}>
+                        <Col xs={24} md={12}><Text type="secondary">现有限制</Text><TextArea rows={2} value={draft.limitation} onChange={event => updateGapDraft(index, { limitation: event.target.value })} /></Col>
+                        <Col xs={24} md={12}><Text type="secondary">研究机会</Text><TextArea rows={2} value={draft.opportunity} onChange={event => updateGapDraft(index, { opportunity: event.target.value })} /></Col>
+                        <Col xs={24} md={12}><Text type="secondary">可验证问题</Text><TextArea rows={2} value={draft.research_question} onChange={event => updateGapDraft(index, { research_question: event.target.value })} /></Col>
+                        <Col xs={24} md={12}><Text type="secondary">不确定性</Text><TextArea rows={2} value={draft.uncertainty} onChange={event => updateGapDraft(index, { uncertainty: event.target.value })} /></Col>
+                      </Row>
+                      <Row gutter={[10, 10]}>
+                        <Col xs={24} md={8}>
+                          <Text type="secondary">质量判断</Text>
+                          <Select style={{ width: '100%', marginTop: 6 }} value={draft.rating} options={[...gapRatingOptions]} onChange={value => updateGapDraft(index, { rating: value as GapFeedbackRating })} />
+                        </Col>
+                        <Col xs={24} md={16}>
+                          <Text type="secondary">反馈标签</Text>
+                          <Select mode="multiple" style={{ width: '100%', marginTop: 6 }} value={draft.labels} options={[...gapLabelOptions]} onChange={value => updateGapDraft(index, { labels: value as GapFeedbackLabel[] })} />
+                        </Col>
+                      </Row>
+                      <TextArea rows={2} value={draft.note} onChange={event => updateGapDraft(index, { note: event.target.value })} placeholder="写下为什么这个 Gap 值得推进、需要收窄或应该暂缓。" />
+                      <TextArea rows={2} value={draft.evidence_rationale} onChange={event => updateGapDraft(index, { evidence_rationale: event.target.value })} placeholder="证据解释：这些论文为什么支持这个 Gap？" />
+                      <Select mode="multiple" style={{ width: '100%' }} value={draft.evidence_ids} options={evidenceOptions} onChange={value => updateGapDraft(index, { evidence_ids: value as string[] })} placeholder="关联证据论文" />
+                      <Space wrap>
+                        <Button icon={<SaveOutlined />} type="primary" loading={savingGapFeedback.has(index)} onClick={() => handleSaveGapFeedback(index)}>保存 Gap 反馈</Button>
+                        <TextArea
+                          rows={1}
+                          style={{ width: 320, maxWidth: '100%' }}
+                          value={gapRefineNotes[index] || ''}
+                          onChange={event => setGapRefineNotes(previous => ({ ...previous, [index]: event.target.value }))}
+                          placeholder="可选：告诉 AI 如何细化这个 Gap"
+                        />
+                        <Button icon={<ReloadOutlined />} loading={refiningGaps.has(index)} onClick={() => handleRefineGap(index)}>细化这个 Gap</Button>
+                      </Space>
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'evidence',
+                  label: <Space><FileSearchOutlined />关联证据 {linkedEvidence.length}</Space>,
+                  children: (
+                    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                      {gap.evidence_rationale && <Alert type="info" showIcon message="证据解释" description={gap.evidence_rationale} />}
+                      {linkedEvidence.length === 0 ? <Text type="secondary">这个 Gap 还没有关联证据。</Text> : (
+                        <List size="small" dataSource={linkedEvidence} renderItem={item => (
+                          <List.Item className="gap-evidence-item">
+                            <List.Item.Meta
+                              title={<Space wrap><Tag color={categoryColors[item.category]}>{categoryLabels[item.category]}</Tag><Text strong>{item.title}</Text>{item.year && <Text type="secondary">{item.year}</Text>}</Space>}
+                              description={<Paragraph ellipsis={{ rows: 2 }} style={{ marginBottom: 0 }}>{item.relevance || item.abstract_excerpt || '暂无证据解释'}</Paragraph>}
+                            />
+                          </List.Item>
+                        )} />
+                      )}
+                    </Space>
+                  ),
+                },
+              ]}
+            />
+          </Card>
+        );
+      })}
     </Space>
   );
 
