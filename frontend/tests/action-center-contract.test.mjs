@@ -32,3 +32,11 @@ test('action center persists structured error recovery guidance', () => {
   assert.match(actionCenterSource, /lastActionError\.detail\.retryable/);
   assert.match(actionCenterSource, /需先处理条件/);
 });
+
+test('action center keeps workspace issue actions renderable by generic cards', () => {
+  assert.match(actionCenterSource, /workspaces: \{ label: '项目空间'/);
+  assert.match(actionCenterSource, /groupedActions\[group\]/);
+  assert.match(actionCenterSource, /navigate\(item\.path\)/);
+  assert.match(actionCenterSource, /item\.source/);
+  assert.match(actionCenterSource, /来源：\{item\.source\}/);
+});

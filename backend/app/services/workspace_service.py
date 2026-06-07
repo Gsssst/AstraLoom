@@ -6,10 +6,11 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.db.models.notification import Notification
 from app.db.models.paper import Paper, UserPaper
 from app.db.models.research import ResearchProject
 from app.db.models.user import User
@@ -355,6 +356,7 @@ class WorkspaceService:
         issue_type: str = "feedback",
         priority: str = "medium",
         labels: Optional[list[str]] = None,
+        resource_reference: Optional[dict] = None,
     ) -> dict | None:
         access = await self.get_space_for_user(space_id, user)
         if not access:
@@ -369,7 +371,7 @@ class WorkspaceService:
             issue_type=self._normalize_issue_type(issue_type) or "feedback",
             priority=self._normalize_issue_priority(priority) or "medium",
             labels=self._normalize_issue_labels(labels),
-            metadata_json={},
+            metadata_json={"resource_reference": self._normalize_issue_resource_reference(resource_reference)},
         )
         self.session.add(issue)
         await self.session.flush()
@@ -379,8 +381,14 @@ class WorkspaceService:
             "issue_created",
             resource_type="issues",
             resource_id=str(issue.id),
-            metadata={"title": issue.title, "status": issue.status, "priority": issue.priority},
+            metadata={
+                "title": issue.title,
+                "status": issue.status,
+                "priority": issue.priority,
+                "resource_reference": (issue.metadata_json or {}).get("resource_reference"),
+            },
         )
+        self._notify_issue_members(space, user, issue, "issue_created")
         await self.session.commit()
         loaded = await self._issue_for_space(space.id, str(issue.id))
         return await self.issue_to_dict(loaded or issue, include_comments=True)
@@ -428,6 +436,11 @@ class WorkspaceService:
         if updates.get("labels") is not None:
             issue.labels = self._normalize_issue_labels(updates["labels"])
             changed.append("labels")
+        if updates.get("resource_reference") is not None:
+            metadata = dict(issue.metadata_json or {})
+            metadata["resource_reference"] = self._normalize_issue_resource_reference(updates["resource_reference"])
+            issue.metadata_json = metadata
+            changed.append("resource_reference")
         if "assignee_id" in updates:
             issue.assignee_id = await self._member_user_id(space, updates.get("assignee_id"))
             changed.append("assignee_id")
@@ -456,8 +469,14 @@ class WorkspaceService:
                 action,
                 resource_type="issues",
                 resource_id=str(issue.id),
-                metadata={"title": issue.title, "fields": changed, "status": issue.status},
+                metadata={
+                    "title": issue.title,
+                    "fields": changed,
+                    "status": issue.status,
+                    "resource_reference": (issue.metadata_json or {}).get("resource_reference"),
+                },
             )
+            self._notify_issue_members(space, user, issue, action)
             await self.session.commit()
         loaded = await self._issue_for_space(space.id, str(issue.id))
         return await self.issue_to_dict(loaded or issue, include_comments=True)
@@ -488,8 +507,9 @@ class WorkspaceService:
             "issue_commented",
             resource_type="issues",
             resource_id=str(issue.id),
-            metadata={"title": issue.title},
+            metadata={"title": issue.title, "resource_reference": (issue.metadata_json or {}).get("resource_reference")},
         )
+        self._notify_issue_members(space, user, issue, "issue_commented")
         await self.session.commit()
         await self.session.refresh(comment)
         return await self.comment_to_dict(comment)
@@ -614,7 +634,8 @@ class WorkspaceService:
         if include_summary:
             data["summary"] = await self.build_summary(space)
             data["dashboard"] = self.build_dashboard(data["summary"])
-            data["next_actions"] = self._next_actions(data["summary"])
+            data["issue_summary"] = await self._open_issue_summary(space, limit=5)
+            data["next_actions"] = self._next_actions(data["summary"], data["issue_summary"])
             data["activities"] = await self.recent_activities_for_space(space, limit=20)
         return data
 
@@ -641,7 +662,8 @@ class WorkspaceService:
         """Build a concise, workspace-scoped context block for advisory AI chat."""
         summary = await self.build_summary(space)
         dashboard = self.build_dashboard(summary)
-        next_actions = self._next_actions(summary)
+        issue_summary = await self._open_issue_summary(space, limit=8)
+        next_actions = self._next_actions(summary, issue_summary)
         activities = await self.recent_activities_for_space(space, limit=8)
         linked = summary.get("linked_resources") or {}
         recent = summary.get("recent_resources") or {}
@@ -650,8 +672,9 @@ class WorkspaceService:
             "recent_resources": recent,
             "dashboard": dashboard,
             "next_actions": next_actions,
+            "open_issues": issue_summary,
         }
-        references = self._assistant_references(linked, activities)
+        references = self._assistant_references(linked, activities, issue_summary)
         lines = [
             "你是项目空间 AI 助手，只能基于下面给出的项目空间上下文提供建议。",
             "如果上下文不足以支持结论，请明确说明缺少哪些论文、研究方向、草稿或活动记录。",
@@ -664,6 +687,7 @@ class WorkspaceService:
             self._assistant_resource_section("已绑定论文", linked.get("papers") or []),
             self._assistant_resource_section("已绑定研究方向", linked.get("research_projects") or []),
             self._assistant_resource_section("已绑定写作草稿", linked.get("writing_projects") or []),
+            self._assistant_issue_section(issue_summary),
             self._assistant_next_actions_section(next_actions),
             self._assistant_activity_section(activities),
         ]
@@ -948,6 +972,7 @@ class WorkspaceService:
             "closed_by_id": str(issue.closed_by_id) if issue.closed_by_id else None,
             "closed_by_name": self._display_name(closed_by) if closed_by else None,
             "closed_at": issue.closed_at.isoformat() if issue.closed_at else "",
+            "resource_reference": (issue.metadata_json or {}).get("resource_reference") or None,
             "comment_count": len(issue.comments or []),
             "created_at": issue.created_at.isoformat() if issue.created_at else "",
             "updated_at": issue.updated_at.isoformat() if issue.updated_at else "",
@@ -969,6 +994,39 @@ class WorkspaceService:
             "created_at": comment.created_at.isoformat() if comment.created_at else "",
             "updated_at": comment.updated_at.isoformat() if comment.updated_at else "",
         }
+
+    async def _open_issue_summary(self, space: ProjectSpace, limit: int = 5) -> list[dict]:
+        result = await self.session.execute(
+            select(ProjectSpaceIssue)
+            .where(ProjectSpaceIssue.space_id == space.id, ProjectSpaceIssue.status == "open")
+            .options(selectinload(ProjectSpaceIssue.comments))
+            .order_by(
+                case(
+                    (ProjectSpaceIssue.priority == "urgent", 0),
+                    (ProjectSpaceIssue.priority == "high", 1),
+                    (ProjectSpaceIssue.priority == "medium", 2),
+                    else_=3,
+                ),
+                desc(ProjectSpaceIssue.updated_at),
+            )
+            .limit(max(1, min(limit, 20)))
+        )
+        issues = result.scalars().unique().all()
+        rows = []
+        for issue in issues:
+            rows.append({
+                "id": str(issue.id),
+                "title": issue.title,
+                "status": issue.status,
+                "issue_type": issue.issue_type,
+                "priority": issue.priority,
+                "labels": issue.labels or [],
+                "comment_count": len(issue.comments or []),
+                "resource_reference": (issue.metadata_json or {}).get("resource_reference") or None,
+                "path": f"/workspaces/{issue.space_id}?issue={issue.id}",
+                "updated_at": issue.updated_at.isoformat() if issue.updated_at else "",
+            })
+        return rows
 
     async def _issue_for_space(self, space_id, issue_id: str) -> ProjectSpaceIssue | None:
         try:
@@ -1012,6 +1070,41 @@ class WorkspaceService:
     def _display_name(self, user: User) -> str:
         return user.display_name or user.username or user.email or "未知用户"
 
+    def _notify_issue_members(
+        self,
+        space: ProjectSpace,
+        actor: User,
+        issue: ProjectSpaceIssue,
+        action: str,
+    ) -> None:
+        labels = {
+            "issue_created": "新反馈 Issue",
+            "issue_commented": "Issue 新评论",
+            "issue_closed": "Issue 已关闭",
+            "issue_reopened": "Issue 已重新打开",
+            "issue_updated": "Issue 已更新",
+        }
+        title = f"{labels.get(action, 'Issue 更新')}：{issue.title}"
+        content = f"{actor.display_name or actor.username} 在项目空间「{space.name}」中{labels.get(action, '更新了 Issue')}。"
+        for member in space.members or []:
+            if str(member.user_id) == str(actor.id):
+                continue
+            self.session.add(Notification(
+                user_id=member.user_id,
+                title=title,
+                content=content,
+                category="workspace_issue",
+                metadata_json={
+                    "workspace_id": str(space.id),
+                    "workspace_name": space.name,
+                    "issue_id": str(issue.id),
+                    "issue_title": issue.title,
+                    "issue_status": issue.status,
+                    "path": f"/workspaces/{space.id}?issue={issue.id}",
+                    "action": action,
+                },
+            ))
+
     def _assistant_resource_section(self, title: str, items: list[dict], limit: int = 6) -> str:
         if not items:
             return f"{title}：暂无"
@@ -1021,6 +1114,19 @@ class WorkspaceService:
         extra = len(items) - limit
         if extra > 0:
             rows.append(f"...另有 {extra} 个资源未展开")
+        return "\n".join(rows)
+
+    def _assistant_issue_section(self, issues: list[dict], limit: int = 6) -> str:
+        if not issues:
+            return "开放反馈 Issue：暂无"
+        rows = ["开放反馈 Issue："]
+        for index, issue in enumerate(issues[:limit], start=1):
+            ref = issue.get("resource_reference") or {}
+            ref_label = f"｜关联 {ref.get('resource_type')} {ref.get('title') or ref.get('resource_id')}" if ref else ""
+            rows.append(
+                f"{index}. [{issue.get('priority')}] {issue.get('title')}"
+                f"｜{issue.get('issue_type')}｜{issue.get('path')}{ref_label}"
+            )
         return "\n".join(rows)
 
     def _assistant_next_actions_section(self, actions: list[dict], limit: int = 5) -> str:
@@ -1043,7 +1149,7 @@ class WorkspaceService:
             )
         return "\n".join(rows)
 
-    def _assistant_references(self, linked: dict, activities: list[dict], limit_per_type: int = 5) -> list[dict]:
+    def _assistant_references(self, linked: dict, activities: list[dict], issues: Optional[list[dict]] = None, limit_per_type: int = 5) -> list[dict]:
         references: list[dict] = []
         for rtype, label in [
             ("papers", "空间论文"),
@@ -1067,6 +1173,15 @@ class WorkspaceService:
                 "resource_id": item.get("resource_id") or item.get("id"),
                 "title": (item.get("metadata_json") or {}).get("title") or item.get("action"),
                 "path": None,
+            })
+        for item in (issues or [])[:5]:
+            references.append({
+                "source": "workspace",
+                "source_label": "开放 Issue",
+                "resource_type": "issues",
+                "resource_id": item.get("id"),
+                "title": item.get("title"),
+                "path": item.get("path"),
             })
         return references
 
@@ -1121,6 +1236,21 @@ class WorkspaceService:
                 rows.append(normalized)
         return rows[:8]
 
+    def _normalize_issue_resource_reference(self, reference: Optional[dict]) -> Optional[dict]:
+        if not reference:
+            return None
+        resource_type = self._normalize_resource_type(reference.get("resource_type") or reference.get("type"))
+        resource_id = str(reference.get("resource_id") or reference.get("id") or "").strip()
+        if not resource_type or not resource_id:
+            return None
+        return {
+            "resource_type": resource_type,
+            "resource_id": resource_id[:120],
+            "title": str(reference.get("title") or "").strip()[:300],
+            "path": str(reference.get("path") or "").strip()[:500],
+            "source_label": str(reference.get("source_label") or "").strip()[:80],
+        }
+
     def _record_activity(
         self,
         space: ProjectSpace,
@@ -1168,9 +1298,17 @@ class WorkspaceService:
             "path": f"/writing?project={project.id}",
         }
 
-    def _next_actions(self, summary: dict) -> list[dict]:
+    def _next_actions(self, summary: dict, issue_summary: Optional[list[dict]] = None) -> list[dict]:
         counts = summary.get("counts") or {}
         actions = []
+        for issue in issue_summary or []:
+            if issue.get("priority") in {"urgent", "high"}:
+                actions.append({
+                    "label": f"处理 Issue：{issue.get('title')}",
+                    "path": issue.get("path"),
+                    "kind": "issue",
+                    "priority": issue.get("priority"),
+                })
         if counts.get("recent_papers", 0) == 0 and counts.get("linked_papers", 0) == 0:
             actions.append({"label": "去论文库入库论文", "path": "/papers", "kind": "papers"})
         if counts.get("recent_research_projects", 0) == 0:

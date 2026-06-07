@@ -11,7 +11,7 @@ from app.db.models.notification import Notification
 from app.db.models.paper import Paper, UserPaper
 from app.db.models.research import ResearchIdea, ResearchProject
 from app.db.models.user import User
-from app.db.models.workspace import ProjectSpace, ProjectSpaceMember
+from app.db.models.workspace import ProjectSpace, ProjectSpaceIssue, ProjectSpaceMember
 from app.db.models.writing import WritingProject
 
 
@@ -262,7 +262,7 @@ class WorkflowActionService:
             .where(ProjectSpaceMember.user_id == user.id, ProjectSpace.status != "deleted")
         )
         if active_spaces:
-            return [self.action(
+            actions = [self.action(
                 "workspaces:review-dashboard",
                 "workspaces",
                 "low",
@@ -272,6 +272,36 @@ class WorkflowActionService:
                 "workspace-dashboard",
                 {"count": active_spaces},
             )]
+            result = await self.session.execute(
+                select(ProjectSpaceIssue, ProjectSpace)
+                .join(ProjectSpace, ProjectSpace.id == ProjectSpaceIssue.space_id)
+                .join(ProjectSpaceMember, ProjectSpaceMember.space_id == ProjectSpace.id)
+                .where(
+                    ProjectSpaceMember.user_id == user.id,
+                    ProjectSpace.status != "deleted",
+                    ProjectSpaceIssue.status == "open",
+                    ProjectSpaceIssue.priority.in_(["urgent", "high"]),
+                )
+                .order_by(ProjectSpaceIssue.updated_at.desc())
+                .limit(5)
+            )
+            for issue, space in result.all():
+                actions.append(self.action(
+                    f"workspace-issue:{issue.id}",
+                    "workspaces",
+                    "high",
+                    f"处理高优先级 Issue：{issue.title}",
+                    f"项目空间「{space.name}」有 {issue.priority} 级反馈待处理。",
+                    f"/workspaces/{space.id}?issue={issue.id}",
+                    "workspace-issue",
+                    {
+                        "workspace_id": str(space.id),
+                        "workspace_name": space.name,
+                        "issue_id": str(issue.id),
+                        "priority": issue.priority,
+                    },
+                ))
+            return actions
         return [self.action(
             "workspaces:create-space",
             "workspaces",

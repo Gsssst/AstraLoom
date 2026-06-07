@@ -20,6 +20,7 @@ import Markdown from '../components/Markdown';
 import PDFViewer from '../components/PDFViewer';
 import ThinkingPanel from '../components/ThinkingPanel';
 import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
+import WorkspaceIssueReporter from '../components/WorkspaceIssueReporter';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useThemeStore } from '../stores/useThemeStore';
 
@@ -646,7 +647,18 @@ const PaperDetailPage: React.FC = () => {
           </Card>
           {isAuthenticated && (
             <div style={{ marginTop: 16 }}>
-              <WorkspaceResourceLinks resourceType="papers" resourceId={paper.id} title="所属项目空间" />
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                <Space>
+                  <Text strong>资源反馈</Text>
+                  <WorkspaceIssueReporter
+                    resourceType="papers"
+                    resourceId={paper.id}
+                    resourceTitle={paper.title}
+                    resourcePath={`/papers/${paper.id}`}
+                  />
+                </Space>
+                <WorkspaceResourceLinks resourceType="papers" resourceId={paper.id} title="所属项目空间" />
+              </Space>
             </div>
           )}
           <Divider style={{ marginTop: 16 }}>摘要</Divider>

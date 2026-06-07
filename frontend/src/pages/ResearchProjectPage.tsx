@@ -12,6 +12,7 @@ import {
 } from '@ant-design/icons';
 import api from '../services/api';
 import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
+import WorkspaceIssueReporter from '../components/WorkspaceIssueReporter';
 import PageShell from '../components/PageShell';
 import ApiErrorAlert from '../components/ApiErrorAlert';
 import {
@@ -1042,7 +1043,18 @@ const ResearchProjectPage: React.FC = () => {
             <Text type="secondary">已保存 Proposal：{ideas.length}</Text>
           </Card>
           <div style={{ marginBottom: 14 }}>
-            <WorkspaceResourceLinks resourceType="research_projects" resourceId={project.id} title="所属项目空间" />
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space>
+                <Text strong>资源反馈</Text>
+                <WorkspaceIssueReporter
+                  resourceType="research_projects"
+                  resourceId={project.id}
+                  resourceTitle={project.name}
+                  resourcePath={`/research/${project.id}`}
+                />
+              </Space>
+              <WorkspaceResourceLinks resourceType="research_projects" resourceId={project.id} title="所属项目空间" />
+            </Space>
           </div>
           <Card
             title={<Space><span>相关论文</span>{papersCached && <Tag color="green">缓存</Tag>}</Space>}

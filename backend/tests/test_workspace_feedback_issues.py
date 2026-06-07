@@ -46,6 +46,20 @@ def test_workspace_issue_normalizers_keep_tracker_values_stable():
     assert service._normalize_issue_priority("urgent") == "urgent"
     assert service._normalize_issue_priority("blocker") is None
     assert service._normalize_issue_labels([" UI ", "ui", "Bug", ""]) == ["ui", "bug"]
+    assert service._normalize_issue_resource_reference({
+        "type": "paper",
+        "id": "paper-1",
+        "title": "  Grounded Agents  ",
+        "path": "/papers/paper-1",
+        "source_label": "资源反馈",
+    }) == {
+        "resource_type": "papers",
+        "resource_id": "paper-1",
+        "title": "Grounded Agents",
+        "path": "/papers/paper-1",
+        "source_label": "资源反馈",
+    }
+    assert service._normalize_issue_resource_reference({"type": "unknown", "id": "x"}) is None
 
 
 def test_workspace_issue_activity_records_lifecycle_metadata():
@@ -72,6 +86,35 @@ def test_workspace_issue_activity_records_lifecycle_metadata():
     assert activity.metadata_json["title"] == "上传按钮太挤"
 
 
+def test_workspace_issue_notifications_target_other_members():
+    added = []
+    session = SimpleNamespace(add=lambda item: added.append(item))
+    service = WorkspaceService(session)
+    actor_id = uuid4()
+    viewer_id = uuid4()
+    space_id = uuid4()
+    issue_id = uuid4()
+    actor = SimpleNamespace(id=actor_id, display_name="Alice", username="alice")
+    space = SimpleNamespace(
+        id=space_id,
+        name="Paper Workspace",
+        members=[
+            SimpleNamespace(user_id=actor_id, role="owner"),
+            SimpleNamespace(user_id=viewer_id, role="viewer"),
+        ],
+    )
+    issue = SimpleNamespace(id=issue_id, title="对话框排版问题", status="open")
+
+    service._notify_issue_members(space, actor, issue, "issue_commented")
+
+    assert len(added) == 1
+    notification = added[0]
+    assert str(notification.user_id) == str(viewer_id)
+    assert notification.category == "workspace_issue"
+    assert notification.metadata_json["path"] == f"/workspaces/{space_id}?issue={issue_id}"
+    assert notification.metadata_json["action"] == "issue_commented"
+
+
 @pytest.mark.asyncio
 async def test_workspace_issue_serialization_includes_comments_and_author_names(monkeypatch):
     user_id = uuid4()
@@ -92,6 +135,14 @@ async def test_workspace_issue_serialization_includes_comments_and_author_names(
         assignee_id=None,
         closed_by_id=None,
         closed_at=None,
+        metadata_json={
+            "resource_reference": {
+                "resource_type": "papers",
+                "resource_id": "paper-1",
+                "title": "Grounded Agents",
+                "path": "/papers/paper-1",
+            }
+        },
         comments=[
             SimpleNamespace(
                 id=uuid4(),
@@ -114,9 +165,51 @@ async def test_workspace_issue_serialization_includes_comments_and_author_names(
     result = await service.issue_to_dict(issue, include_comments=True)
 
     assert result["creator_name"] == "Alice"
+    assert result["resource_reference"]["path"] == "/papers/paper-1"
     assert result["comment_count"] == 1
     assert result["comments"][0]["author_name"] == "Alice"
     assert result["comments"][0]["content"] == "需要折叠上下文"
+
+
+def test_workspace_issue_summaries_feed_next_actions_and_assistant_context():
+    service = WorkspaceService(SimpleNamespace())
+    issue = {
+        "id": "issue-1",
+        "title": "修复图片上传",
+        "issue_type": "bug",
+        "priority": "high",
+        "labels": ["ui"],
+        "path": "/workspaces/space-1?issue=issue-1",
+        "resource_reference": {
+            "resource_type": "papers",
+            "resource_id": "paper-1",
+            "title": "Grounded Agents",
+            "path": "/papers/paper-1",
+        },
+    }
+
+    actions = service._next_actions({"counts": {}}, [issue])
+    assert actions[0] == {
+        "label": "处理 Issue：修复图片上传",
+        "path": "/workspaces/space-1?issue=issue-1",
+        "kind": "issue",
+        "priority": "high",
+    }
+
+    issue_section = service._assistant_issue_section([issue])
+    assert "开放反馈 Issue" in issue_section
+    assert "修复图片上传" in issue_section
+    assert "关联 papers Grounded Agents" in issue_section
+
+    references = service._assistant_references({}, [], [issue])
+    assert references == [{
+        "source": "workspace",
+        "source_label": "开放 Issue",
+        "resource_type": "issues",
+        "resource_id": "issue-1",
+        "title": "修复图片上传",
+        "path": "/workspaces/space-1?issue=issue-1",
+    }]
 
 
 @pytest.mark.asyncio

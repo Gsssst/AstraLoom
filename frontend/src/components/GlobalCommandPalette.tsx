@@ -3,6 +3,7 @@ import { Avatar, Empty, Input, List, Modal, Space, Spin, Tag, Typography } from 
 import {
   AppstoreOutlined,
   BookOutlined,
+  BugOutlined,
   CommentOutlined,
   ExperimentOutlined,
   FileTextOutlined,
@@ -18,7 +19,7 @@ import { useAuthStore } from '../stores/useAuthStore';
 
 const { Text } = Typography;
 
-type CommandKind = 'route' | 'action' | 'paper' | 'research' | 'workspace' | 'writing';
+type CommandKind = 'route' | 'action' | 'paper' | 'research' | 'workspace' | 'issue' | 'writing';
 
 interface CommandItem {
   id: string;
@@ -136,7 +137,8 @@ export const searchResources = async (query: string): Promise<{ items: CommandIt
   }
 
   if (workspacesResult.status === 'fulfilled') {
-    for (const space of asArray(workspacesResult.value.data, 'workspaces')
+    const spaces = asArray(workspacesResult.value.data, 'workspaces');
+    for (const space of spaces
       .filter((space: any) => includesQuery(normalizeSearchProbe('workspace', space.name || '', space.description || ''), trimmed))
       .slice(0, 4)) {
       items.push({
@@ -149,6 +151,41 @@ export const searchResources = async (query: string): Promise<{ items: CommandIt
         kind: 'workspace',
       });
     }
+    const issueMatches: CommandItem[] = [];
+    for (const space of spaces) {
+      for (const issue of Array.isArray(space.issue_summary) ? space.issue_summary : []) {
+        const resourceReference = issue.resource_reference || {};
+        const labels = Array.isArray(issue.labels) ? issue.labels : [];
+        const probe = normalizeSearchProbe(
+          'issue',
+          issue.title || '',
+          [
+            space.name,
+            issue.issue_type,
+            issue.priority,
+            resourceReference.title,
+            resourceReference.resource_type,
+          ].filter(Boolean).join(' '),
+          labels,
+        );
+        if (!issue?.id || !includesQuery(probe, trimmed)) continue;
+        issueMatches.push({
+          id: `workspace-issue-${space.id}-${issue.id}`,
+          group: '反馈 Issue',
+          title: issue.title || '未命名 Issue',
+          subtitle: [
+            space.name || '项目空间',
+            issue.priority ? `优先级：${issue.priority}` : null,
+            resourceReference.title ? `关联：${resourceReference.title}` : null,
+          ].filter(Boolean).join(' · '),
+          path: issue.path || `/workspaces/${space.id}?issue=${issue.id}`,
+          icon: <BugOutlined />,
+          kind: 'issue',
+          keywords: [issue.issue_type, issue.priority, resourceReference.resource_type, resourceReference.resource_id, ...labels].filter(Boolean),
+        });
+      }
+    }
+    items.push(...issueMatches.slice(0, 6));
   }
 
   if (writingResult.status === 'fulfilled') {
@@ -297,7 +334,7 @@ const GlobalCommandPalette: React.FC<GlobalCommandPaletteProps> = ({ open, onOpe
           size="large"
           allowClear
           prefix={<SearchOutlined />}
-          placeholder="搜索页面、论文、研究方向、项目空间或写作项目"
+          placeholder="搜索页面、论文、研究方向、项目空间、Issue 或写作项目"
           value={query}
           onChange={event => setQuery(event.target.value)}
           onKeyDown={handleKeyDown}

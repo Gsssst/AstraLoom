@@ -49,6 +49,7 @@ class WorkspaceIssueCreateRequest(BaseModel):
     issue_type: str = Field(default="feedback", pattern="^(feedback|bug|idea|question|task)$")
     priority: str = Field(default="medium", pattern="^(low|medium|high|urgent)$")
     labels: list[str] = Field(default_factory=list, max_length=8)
+    resource_reference: Optional[dict] = None
 
 
 class WorkspaceIssueUpdateRequest(BaseModel):
@@ -59,6 +60,7 @@ class WorkspaceIssueUpdateRequest(BaseModel):
     priority: Optional[str] = Field(default=None, pattern="^(low|medium|high|urgent)$")
     labels: Optional[list[str]] = Field(default=None, max_length=8)
     assignee_id: Optional[str] = None
+    resource_reference: Optional[dict] = None
 
 
 class WorkspaceIssueCommentRequest(BaseModel):
@@ -271,6 +273,7 @@ async def create_workspace_issue(
         issue_type=req.issue_type,
         priority=req.priority,
         labels=req.labels,
+        resource_reference=req.resource_reference,
     )
     if issue is None:
         raise HTTPException(status_code=404, detail="项目空间未找到")

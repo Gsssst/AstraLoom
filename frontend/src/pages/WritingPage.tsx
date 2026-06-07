@@ -14,6 +14,7 @@ import {
 import api from '../services/api';
 import Markdown from '../components/Markdown';
 import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
+import WorkspaceIssueReporter from '../components/WorkspaceIssueReporter';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
 import PageShell from '../components/PageShell';
 import ApiErrorAlert from '../components/ApiErrorAlert';
@@ -1259,6 +1260,12 @@ const WritingPage: React.FC = () => {
                   <Button size="small" onClick={async () => { const r = await api.get(`/writing/projects/${selectedProject.id}/export?format=markdown`); handleCopy(r.data.data); }} style={{ borderRadius: 8 }}>导出 MD</Button>
                   <Button size="small" onClick={async () => { const r = await api.get(`/writing/projects/${selectedProject.id}/export?format=bibtex`); handleCopy(r.data.data || ''); }} style={{ borderRadius: 8 }}>导出 BibTeX</Button>
                   <Button size="small" onClick={handleDownloadDocx} style={{ borderRadius: 8 }}>导出 Word</Button>
+                  <WorkspaceIssueReporter
+                    resourceType="writing_projects"
+                    resourceId={selectedProject.id}
+                    resourceTitle={selectedProject.title}
+                    resourcePath={`/writing?project=${selectedProject.id}`}
+                  />
                 </Space>
               </Card>
               <div style={{ marginBottom: 16 }}>

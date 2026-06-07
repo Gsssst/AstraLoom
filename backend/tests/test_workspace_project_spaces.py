@@ -313,9 +313,13 @@ async def test_workspace_list_includes_launchpad_summary(monkeypatch):
     async def _activities(_space, limit=20):
         return []
 
+    async def _open_issue_summary(_space, limit=5):
+        return []
+
     monkeypatch.setattr(service, "_members_to_dict", _members_to_dict)
     monkeypatch.setattr(service, "build_summary", _build_summary)
     monkeypatch.setattr(service, "recent_activities_for_space", _activities)
+    monkeypatch.setattr(service, "_open_issue_summary", _open_issue_summary)
 
     rows = await service.list_spaces(SimpleNamespace(id=user_id))
 

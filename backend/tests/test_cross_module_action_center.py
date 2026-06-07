@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from app.core.security import get_current_user
 from app.main import app
 from app.services.workflow_action_service import WorkflowActionService
@@ -91,3 +93,33 @@ def test_workflow_action_can_describe_executable_maintenance():
     assert action["endpoint"] == "/papers/maintenance/backfill-full-text?limit=5"
     assert action["requires_admin"] is True
     assert action["path"] == "/settings"
+
+
+@pytest.mark.asyncio
+async def test_workspace_actions_include_high_priority_issue_deep_links(monkeypatch):
+    service = WorkflowActionService(SimpleNamespace())
+    user = SimpleNamespace(id="user-1")
+    space = SimpleNamespace(id="space-1", name="Paper Workspace")
+    issue = SimpleNamespace(id="issue-1", title="修复图片上传", priority="urgent")
+
+    async def fake_scalar_count(_query):
+        return 1
+
+    class Result:
+        def all(self):
+            return [(issue, space)]
+
+    async def fake_execute(_query):
+        return Result()
+
+    monkeypatch.setattr(service, "_scalar_count", fake_scalar_count)
+    service.session.execute = fake_execute
+
+    actions = await service._workspace_actions(user)
+    issue_actions = [item for item in actions if item["source"] == "workspace-issue"]
+
+    assert issue_actions
+    assert issue_actions[0]["group"] == "workspaces"
+    assert issue_actions[0]["priority"] == "high"
+    assert issue_actions[0]["path"] == "/workspaces/space-1?issue=issue-1"
+    assert issue_actions[0]["metadata"]["issue_id"] == "issue-1"
