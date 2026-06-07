@@ -367,6 +367,68 @@ def test_iteration_timeline_sparse_proposal_still_has_core_events():
     assert timeline["summary"]["event_count"] >= 3
 
 
+def test_proposal_progress_board_groups_empty_project():
+    service = ResearchPipelineService(_Session())
+    project = SimpleNamespace(id=uuid4(), name="Empty", description="", keywords=[])
+
+    board = service.build_proposal_progress_board(project, [], experiments=[])
+
+    assert board["summary"]["total"] == 0
+    assert board["summary"]["actionable"] == 0
+    assert board["summary"]["recommended"] is None
+    assert all(group["count"] == 0 for group in board["groups"])
+
+
+def test_proposal_progress_board_classifies_ready_for_writing():
+    service = ResearchPipelineService(_Session())
+    project = SimpleNamespace(id=uuid4(), name="Grounded QA", description="", keywords=[])
+    idea = _copilot_idea()
+    idea.project_id = project.id
+
+    board = service.build_proposal_progress_board(project, [idea], experiments=[])
+    item = next(item for group in board["groups"] for item in group["items"])
+
+    assert item["status"] == "ready_for_writing"
+    assert item["recommended_action"]["type"] == "writing"
+    assert item["priority"] >= 70
+    assert item["signals"]["evidence_count"] == 2
+
+
+def test_proposal_progress_board_classifies_needs_evidence_and_feedback_evolution():
+    service = ResearchPipelineService(_Session())
+    project = SimpleNamespace(id=uuid4(), name="Grounded QA", description="", keywords=[])
+    sparse = _copilot_idea()
+    sparse.id = uuid4()
+    sparse.project_id = project.id
+    sparse.title = "Sparse proposal"
+    sparse.evidence_json = {"scope": "local_library", "items": []}
+    sparse.referenced_papers = {"paper_ids": []}
+    feedback = _copilot_idea()
+    feedback.id = uuid4()
+    feedback.project_id = project.id
+    feedback.title = "Feedback proposal"
+    experiments = [{
+        "experiment_id": "exp-1",
+        "idea_id": str(feedback.id),
+        "name": "First run",
+        "dataset": "Bench",
+        "results": {"score": 0.74},
+        "notes": "Needs iteration",
+    }]
+
+    board = service.build_proposal_progress_board(project, [sparse, feedback], experiments=experiments)
+    items = {item["title"]: item for group in board["groups"] for item in group["items"]}
+
+    assert items["Sparse proposal"]["status"] == "needs_evidence"
+    assert items["Sparse proposal"]["recommended_action"]["type"] == "evidence"
+    assert "证据覆盖不足" in items["Sparse proposal"]["blockers"]
+    assert items["Feedback proposal"]["status"] == "needs_evolution"
+    assert items["Feedback proposal"]["recommended_action"]["type"] == "evolve"
+    assert board["summary"]["recommended"] == items["Feedback proposal"]["idea_id"]
+    assert board["summary"]["counts"]["needs_evidence"] == 1
+    assert board["summary"]["counts"]["needs_evolution"] == 1
+
+
 def test_experiment_execution_pack_explains_missing_setup():
     service = ResearchIdeaWorkbenchService(_Session())
     idea = SimpleNamespace(

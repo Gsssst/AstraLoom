@@ -273,6 +273,33 @@ class IdeaTimelineResponse(BaseModel):
     events: list[IdeaTimelineEvent]
 
 
+class ProposalBoardItem(BaseModel):
+    idea_id: str
+    title: str
+    status: str
+    label: str
+    priority: int
+    manual_status: str
+    recommended_action: dict[str, str]
+    blockers: list[str] = []
+    signals: dict[str, Any]
+    summary: str
+    created_at: str
+
+
+class ProposalBoardGroup(BaseModel):
+    status: str
+    label: str
+    count: int
+    items: list[ProposalBoardItem]
+
+
+class ProposalBoardResponse(BaseModel):
+    project_id: str
+    summary: dict[str, Any]
+    groups: list[ProposalBoardGroup]
+
+
 class WritingDraftResponse(BaseModel):
     project: dict
     evidence_status: str
@@ -790,6 +817,29 @@ async def compare_ideas(
         raise HTTPException(status_code=404, detail="Proposal 未找到")
     idea_by_id = {idea.id: idea for idea in ideas}
     return [_idea_response(idea_by_id[idea_id]) for idea_id in idea_ids]
+
+
+@router.get("/projects/{project_id}/proposal-board", response_model=ProposalBoardResponse)
+async def get_project_proposal_board(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """返回研究方向下 Proposal 的推进状态、优先级和下一步动作看板。"""
+    project = await _get_owned_project(db, project_id, current_user)
+    result = await db.execute(
+        select(ResearchIdea)
+        .where(ResearchIdea.project_id == project.id)
+        .order_by(ResearchIdea.created_at.desc())
+    )
+    ideas = list(result.scalars().all())
+    experiments = await ExperimentService(db).get_experiments(str(project.id))
+    board = ResearchPipelineService(db).build_proposal_progress_board(
+        project,
+        ideas,
+        experiments=experiments,
+    )
+    return ProposalBoardResponse(**board)
 
 
 @router.get("/ideas/{idea_id}", response_model=IdeaResponse)

@@ -24,6 +24,17 @@ COPILOT_MODE_PROMPTS = {
     "writer": "你是论文写作顾问，优先帮助整理贡献点、related work 角度、claim 边界和写作准备度。",
 }
 
+PROPOSAL_BOARD_STATUSES = [
+    ("needs_evidence", "需要补证据"),
+    ("needs_experiment_design", "需要补实验设计"),
+    ("ready_for_experiment", "准备跑实验"),
+    ("needs_evolution", "已有反馈，适合演化"),
+    ("ready_for_writing", "准备写作"),
+    ("draft_review", "待筛选"),
+    ("implemented", "已有代码"),
+    ("rejected", "已淘汰"),
+]
+
 
 class ResearchPipelineService:
     """科研自动化 Pipeline 服务。"""
@@ -522,6 +533,189 @@ class ResearchPipelineService:
             },
             "events": events,
         }
+
+    def build_proposal_progress_board(
+        self,
+        project: ResearchProject,
+        ideas: list[ResearchIdea],
+        *,
+        experiments: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        """Build a deterministic board that explains what each Proposal needs next."""
+        experiments = experiments or []
+        items = sorted(
+            [self._proposal_board_item(project, idea, experiments) for idea in ideas],
+            key=lambda item: item["priority"],
+            reverse=True,
+        )
+        status_meta = {key: label for key, label in PROPOSAL_BOARD_STATUSES}
+        groups = [
+            {
+                "status": key,
+                "label": label,
+                "count": len(group_items),
+                "items": group_items,
+            }
+            for key, label in PROPOSAL_BOARD_STATUSES
+            for group_items in [[item for item in items if item["status"] == key]]
+        ]
+        actionable = [item for item in items if item["status"] not in {"implemented", "rejected"}]
+        recommended = actionable[0] if actionable else None
+        return {
+            "project_id": str(project.id),
+            "summary": {
+                "total": len(items),
+                "actionable": len(actionable),
+                "recommended": recommended["idea_id"] if recommended else None,
+                "counts": {key: len([item for item in items if item["status"] == key]) for key in status_meta},
+            },
+            "groups": groups,
+        }
+
+    def _proposal_board_item(
+        self,
+        project: ResearchProject,
+        idea: ResearchIdea,
+        experiments: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        workbench = ResearchIdeaWorkbenchService(self.session)
+        validation = workbench.validate_idea(idea, project)
+        execution = workbench.build_experiment_execution_pack(idea, project, experiments=experiments)
+        linked_experiments = [item for item in experiments if str(item.get("idea_id") or "") == str(idea.id)]
+        has_experiment_results = any(item.get("results") for item in linked_experiments)
+        coverage = validation.get("coverage") or {}
+        readiness = validation.get("writing_readiness") or {}
+        collision = validation.get("collision_risk") or {}
+        execution_readiness = execution.get("readiness") or {}
+        evidence_count = int(coverage.get("evidence_count") or len((idea.evidence_json or {}).get("items", []) or []))
+        experiment_completeness = float(coverage.get("experiment_completeness") or 0)
+        review_score = float((idea.review_json or {}).get("aggregate_score") or (((idea.novelty_score or 0) + (idea.feasibility_score or 0)) / 2))
+        blockers = self._proposal_board_blockers(validation, execution)
+        status, action = self._proposal_board_status_and_action(
+            idea,
+            validation,
+            execution,
+            has_experiment_results,
+            blockers,
+        )
+        priority = self._proposal_board_priority(
+            status,
+            review_score,
+            evidence_count,
+            experiment_completeness,
+            has_experiment_results,
+            collision.get("level"),
+            idea.status,
+        )
+        return {
+            "idea_id": str(idea.id),
+            "title": idea.title,
+            "status": status,
+            "label": dict(PROPOSAL_BOARD_STATUSES).get(status, status),
+            "priority": priority,
+            "manual_status": idea.status,
+            "recommended_action": action,
+            "blockers": blockers[:5],
+            "signals": {
+                "review_score": round(review_score, 2),
+                "evidence_count": evidence_count,
+                "experiment_completeness": round(experiment_completeness, 2),
+                "writing_readiness": readiness.get("status"),
+                "collision_level": collision.get("level"),
+                "execution_status": execution_readiness.get("status"),
+                "experiment_feedback_count": len(linked_experiments),
+                "has_experiment_results": has_experiment_results,
+                "discussion_turns": len(idea.discussion_log or []),
+                "evolution_round": (idea.evolution_json or {}).get("round") or (2 if idea.parent_idea_id else 1),
+            },
+            "summary": self._proposal_board_summary(idea, validation, execution),
+            "created_at": self._iso_timestamp(getattr(idea, "created_at", None)),
+        }
+
+    @staticmethod
+    def _proposal_board_blockers(validation: dict[str, Any], execution: dict[str, Any]) -> list[str]:
+        blockers = []
+        coverage = validation.get("coverage") or {}
+        if not coverage.get("has_enough_evidence"):
+            blockers.append("证据覆盖不足")
+        for risk in validation.get("feasibility_risks") or []:
+            message = risk.get("message") if isinstance(risk, dict) else str(risk)
+            if message:
+                blockers.append(str(message))
+        for task in execution.get("minimum_tasks") or []:
+            if task.get("status") != "ready":
+                blockers.append(f"补齐实验设置：{task.get('label')}")
+        return list(dict.fromkeys(blockers))
+
+    @staticmethod
+    def _proposal_board_status_and_action(
+        idea: ResearchIdea,
+        validation: dict[str, Any],
+        execution: dict[str, Any],
+        has_experiment_results: bool,
+        blockers: list[str],
+    ) -> tuple[str, dict[str, str]]:
+        coverage = validation.get("coverage") or {}
+        readiness = validation.get("writing_readiness") or {}
+        execution_readiness = execution.get("readiness") or {}
+        if idea.status == "rejected":
+            return "rejected", {"type": "restore", "label": "恢复待筛选", "target": "decision"}
+        if idea.status == "implemented":
+            return "implemented", {"type": "timeline", "label": "查看迭代轨迹", "target": "timeline"}
+        if has_experiment_results:
+            return "needs_evolution", {"type": "evolve", "label": "根据反馈演化", "target": "copilot"}
+        if readiness.get("status") == "ready" and execution_readiness.get("status") == "ready":
+            return "ready_for_writing", {"type": "writing", "label": "生成写作草稿", "target": "writing"}
+        if not coverage.get("has_enough_evidence"):
+            return "needs_evidence", {"type": "evidence", "label": "补充证据", "target": "evidence"}
+        if execution_readiness.get("status") == "needs_setup" or any("实验设置" in item for item in blockers):
+            return "needs_experiment_design", {"type": "execution", "label": "完善实验推进包", "target": "execution"}
+        if execution_readiness.get("status") == "ready":
+            return "ready_for_experiment", {"type": "experiment", "label": "记录第一轮实验", "target": "experiment"}
+        return "draft_review", {"type": "copilot", "label": "用 Copilot 继续评审", "target": "copilot"}
+
+    @staticmethod
+    def _proposal_board_priority(
+        status: str,
+        review_score: float,
+        evidence_count: int,
+        experiment_completeness: float,
+        has_experiment_results: bool,
+        collision_level: Any,
+        manual_status: str,
+    ) -> int:
+        if manual_status == "rejected":
+            return 0
+        if manual_status == "implemented":
+            return 20
+        score = (review_score * 7) + min(evidence_count, 6) * 4 + experiment_completeness * 20
+        if has_experiment_results:
+            score += 18
+        if status == "ready_for_writing":
+            score += 16
+        elif status == "ready_for_experiment":
+            score += 10
+        elif status == "needs_evolution":
+            score += 14
+        elif status == "needs_evidence":
+            score -= 8
+        if collision_level == "high":
+            score -= 18
+        elif collision_level == "medium":
+            score -= 6
+        return max(0, min(100, round(score)))
+
+    @staticmethod
+    def _proposal_board_summary(
+        idea: ResearchIdea,
+        validation: dict[str, Any],
+        execution: dict[str, Any],
+    ) -> str:
+        validation_summary = validation.get("summary") or ""
+        execution_label = ((execution.get("readiness") or {}).get("label") or "")
+        if validation_summary and execution_label:
+            return f"{validation_summary}；{execution_label}"
+        return validation_summary or execution_label or idea.description or "暂无推进摘要"
 
     def _discussion_timeline_events(self, idea: ResearchIdea, fallback_timestamp: str) -> list[dict[str, Any]]:
         assistant_entries = [

@@ -138,6 +138,41 @@ interface IdeaTimeline {
   summary: { event_count: number; discussion_milestones: number; experiment_count: number; child_version_count: number; latest_event_type?: string };
   events: TimelineEvent[];
 }
+interface ProposalBoardItem {
+  idea_id: string;
+  title: string;
+  status: string;
+  label: string;
+  priority: number;
+  manual_status: string;
+  recommended_action: { type: string; label: string; target: string };
+  blockers: string[];
+  signals: {
+    review_score?: number;
+    evidence_count?: number;
+    experiment_completeness?: number;
+    writing_readiness?: string;
+    collision_level?: string;
+    execution_status?: string;
+    experiment_feedback_count?: number;
+    has_experiment_results?: boolean;
+    discussion_turns?: number;
+    evolution_round?: number;
+  };
+  summary: string;
+  created_at: string;
+}
+interface ProposalBoardGroup {
+  status: string;
+  label: string;
+  count: number;
+  items: ProposalBoardItem[];
+}
+interface ProposalBoard {
+  project_id: string;
+  summary: { total: number; actionable: number; recommended?: string | null; counts: Record<string, number> };
+  groups: ProposalBoardGroup[];
+}
 interface IdeaRun {
   id: string; project_id: string; status: string; stage: string; progress: number;
   message?: string; error?: string; evidence_map?: Record<string, Evidence[] | string | object>;
@@ -198,6 +233,16 @@ const timelineSeverityColors: Record<string, string> = {
   warning: 'orange',
   danger: 'red',
   info: 'blue',
+};
+const proposalBoardStatusColors: Record<string, string> = {
+  needs_evidence: 'orange',
+  needs_experiment_design: 'gold',
+  ready_for_experiment: 'blue',
+  needs_evolution: 'purple',
+  ready_for_writing: 'green',
+  draft_review: 'default',
+  implemented: 'cyan',
+  rejected: 'red',
 };
 const copilotModeOptions: { value: CopilotMode; label: string }[] = [
   { value: 'mentor', label: '导师' },
@@ -272,6 +317,8 @@ const ResearchProjectPage: React.FC = () => {
   const [timelineIdea, setTimelineIdea] = useState<Idea | null>(null);
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [timelineData, setTimelineData] = useState<IdeaTimeline | null>(null);
+  const [proposalBoard, setProposalBoard] = useState<ProposalBoard | null>(null);
+  const [proposalBoardLoading, setProposalBoardLoading] = useState(false);
   const [validationMap, setValidationMap] = useState<Record<string, { loading: boolean; data?: IdeaValidation }>>({});
   const [executionPackMap, setExecutionPackMap] = useState<Record<string, { loading: boolean; data?: ExperimentExecutionPack }>>({});
   const [activeWorkbenchTab, setActiveWorkbenchTab] = useState('evidence');
@@ -307,6 +354,19 @@ const ResearchProjectPage: React.FC = () => {
       setPapersLoading(false);
     }
   };
+  const loadProposalBoard = async (id = projectId) => {
+    if (!id) return;
+    setProposalBoardLoading(true);
+    try {
+      const response = await api.get(`/research/projects/${id}/proposal-board`);
+      setProposalBoard(response.data);
+      setPageActionError(null);
+    } catch (error) {
+      showPageError('加载 Proposal 推进看板失败', error, '加载 Proposal 推进看板失败');
+    } finally {
+      setProposalBoardLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!projectId) return;
@@ -317,6 +377,7 @@ const ResearchProjectPage: React.FC = () => {
     loadRelatedPapers(projectId);
     Promise.all([
       loadProject(),
+      loadProposalBoard(projectId),
       api.get(`/research/projects/${projectId}/idea-runs/latest`).then(response => setRun(response.data)).catch(() => {}),
       api.get(`/research/projects/${projectId}/experiments`).then(response => setExperiments(response.data)).catch(() => {}),
     ]).then(() => setPageActionError(null)).catch(error => showPageError('加载研究工作台失败', error, '加载研究工作台失败')).finally(() => setLoading(false));
@@ -377,8 +438,9 @@ const ResearchProjectPage: React.FC = () => {
         });
       }
       await loadProject();
+      await loadProposalBoard();
       if (!generationCancelRequestedRef.current && finalRunStatus === 'complete') {
-        setActiveWorkbenchTab('proposals');
+        setActiveWorkbenchTab('proposal-board');
         setPageActionError(null);
         message.success('Idea 工作台已生成新的 Proposal');
       } else if (!generationCancelRequestedRef.current && finalRunStatus === 'failed') {
@@ -481,6 +543,7 @@ const ResearchProjectPage: React.FC = () => {
       const response = await api.post(`/research/ideas/${ideaId}/discuss/evolve`, { focus });
       setIdeas(previous => [response.data, ...previous]);
       setCopilotIdea(response.data);
+      loadProposalBoard();
       setPageActionError(null);
       message.success('已根据 Copilot 讨论生成下一版 Proposal');
     } catch (error) { showPageError('根据 Copilot 讨论演化失败', error, '根据 Copilot 讨论演化失败'); }
@@ -526,6 +589,7 @@ const ResearchProjectPage: React.FC = () => {
     try {
       const response = await api.patch(`/research/ideas/${ideaId}/decision`, { status });
       setIdeas(previous => previous.map(idea => idea.id === ideaId ? response.data : idea));
+      loadProposalBoard();
       setPageActionError(null);
       message.success(status === 'pinned' ? '已收藏 Proposal' : status === 'rejected' ? '已标记为淘汰' : '已恢复为待筛选');
     } catch (error) { showPageError('更新 Proposal 状态失败', error, '更新 Proposal 状态失败'); }
@@ -550,6 +614,7 @@ const ResearchProjectPage: React.FC = () => {
       setIdeas(previous => [response.data, ...previous]);
       setEvolvingIdea(null);
       setEvolutionFocus('');
+      loadProposalBoard();
       setPageActionError(null);
       message.success('已生成一个可追溯的 Proposal 新版本');
     } catch (error) { showPageError('Proposal 演化失败', error, 'Proposal 演化失败'); }
@@ -601,6 +666,37 @@ const ResearchProjectPage: React.FC = () => {
       setTimelineLoading(false);
     }
   };
+  const handleBoardAction = (item: ProposalBoardItem) => {
+    const idea = ideas.find(candidate => candidate.id === item.idea_id);
+    if (!idea) return message.warning('Proposal 已不在当前列表中');
+    const actionType = item.recommended_action.type;
+    if (actionType === 'evidence') {
+      setActiveWorkbenchTab('evidence');
+      return;
+    }
+    if (actionType === 'execution') {
+      setActiveWorkbenchTab('proposals');
+      loadExecutionPack(idea.id);
+      return;
+    }
+    if (actionType === 'experiment') {
+      openExperiment(idea);
+      return;
+    }
+    if (actionType === 'writing') {
+      createWritingDraft(idea);
+      return;
+    }
+    if (actionType === 'evolve' || actionType === 'copilot') {
+      openCopilot(idea);
+      return;
+    }
+    if (actionType === 'restore') {
+      updateDecision(idea.id, 'draft');
+      return;
+    }
+    openTimeline(idea);
+  };
   const openExperiment = (idea: Idea) => {
     setExperimentIdea(idea);
     setExperimentName('');
@@ -621,6 +717,7 @@ const ResearchProjectPage: React.FC = () => {
       });
       setExperiments(previous => [response.data.experiment, ...previous]);
       setExperimentOpen(false);
+      loadProposalBoard();
       setPageActionError(null);
       message.success('实验反馈已记录');
     } catch (error) { showPageError('保存实验反馈失败', error, '保存实验反馈失败'); }
@@ -630,6 +727,7 @@ const ResearchProjectPage: React.FC = () => {
     try {
       const response = await api.post(`/research/ideas/${experiment.idea_id}/evolve-from-feedback`, { experiment_id: experiment.experiment_id });
       setIdeas(previous => [response.data, ...previous]);
+      loadProposalBoard();
       setPageActionError(null);
       message.success('已根据实验反馈生成下一轮 Proposal');
     } catch (error) { showPageError('根据实验反馈演化失败', error, '根据实验反馈演化失败'); }
@@ -1092,6 +1190,85 @@ const ResearchProjectPage: React.FC = () => {
     </Space>
   );
 
+  const proposalBoardTab = proposalBoardLoading ? (
+    <WorkflowLoadingState
+      title="正在计算 Proposal 推进看板"
+      description="正在汇总验证、实验、讨论和演化信号。"
+      icon={<ExperimentOutlined />}
+    />
+  ) : !proposalBoard || proposalBoard.summary.total === 0 ? (
+    <WorkflowEmptyState
+      title="推进看板还没有 Proposal"
+      description="生成 Proposal 后，这里会按下一步动作自动分组。"
+      icon={<ExperimentOutlined />}
+      action={<Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate}>生成 Proposal</Button>}
+    />
+  ) : (
+    <Space direction="vertical" size={14} style={{ width: '100%' }}>
+      <Card size="small" style={{ borderRadius: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <Space wrap>
+            <Tag color="blue">全部 {proposalBoard.summary.total}</Tag>
+            <Tag color="green">可推进 {proposalBoard.summary.actionable}</Tag>
+            {proposalBoard.summary.recommended && <Tag color="purple">推荐 {ideas.find(idea => idea.id === proposalBoard.summary.recommended)?.title || proposalBoard.summary.recommended}</Tag>}
+          </Space>
+          <Button size="small" icon={<ReloadOutlined />} loading={proposalBoardLoading} onClick={() => loadProposalBoard()}>刷新看板</Button>
+        </div>
+      </Card>
+      <Row gutter={[12, 12]}>
+        {proposalBoard.groups.filter(group => group.count > 0).map(group => (
+          <Col xs={24} md={12} xl={8} key={group.status}>
+            <Card
+              size="small"
+              title={<Space wrap><Tag color={proposalBoardStatusColors[group.status] || 'default'}>{group.label}</Tag><Text type="secondary">{group.count}</Text></Space>}
+              style={{ borderRadius: 8, minHeight: 220 }}
+            >
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                {group.items.map(item => {
+                  const idea = ideas.find(candidate => candidate.id === item.idea_id);
+                  return (
+                    <div
+                      key={item.idea_id}
+                      style={{
+                        border: '1px solid #edf0f7',
+                        borderRadius: 8,
+                        padding: 12,
+                        background: '#fbfcff',
+                      }}
+                    >
+                      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                        <Space wrap>
+                          <Text strong>{item.title}</Text>
+                          <Tag color={item.priority >= 75 ? 'green' : item.priority >= 45 ? 'blue' : 'orange'}>优先级 {item.priority}</Tag>
+                          <Tag>{statusLabels[item.manual_status] || item.manual_status}</Tag>
+                        </Space>
+                        <Paragraph ellipsis={{ rows: 2 }} style={{ marginBottom: 0 }}>{item.summary}</Paragraph>
+                        <Space wrap>
+                          <Tag>证据 {item.signals.evidence_count ?? 0}</Tag>
+                          <Tag>实验 {Math.round((item.signals.experiment_completeness || 0) * 100)}%</Tag>
+                          <Tag>反馈 {item.signals.experiment_feedback_count ?? 0}</Tag>
+                          <Tag>讨论 {item.signals.discussion_turns ?? 0}</Tag>
+                        </Space>
+                        {item.blockers.length > 0 && (
+                          <Space wrap>{item.blockers.slice(0, 3).map(blocker => <Tag color="orange" key={blocker}>{blocker}</Tag>)}</Space>
+                        )}
+                        <Space wrap>
+                          <Button type="primary" size="small" onClick={() => handleBoardAction(item)}>{item.recommended_action.label}</Button>
+                          {idea && <Button size="small" onClick={() => openTimeline(idea)}>轨迹</Button>}
+                          {idea && <Button size="small" onClick={() => openCopilot(idea)}>Copilot</Button>}
+                        </Space>
+                      </Space>
+                    </div>
+                  );
+                })}
+              </Space>
+            </Card>
+          </Col>
+        ))}
+      </Row>
+    </Space>
+  );
+
   const experimentTab = experiments.length === 0 ? (
     <WorkflowEmptyState
       title="还没有实验反馈"
@@ -1353,7 +1530,7 @@ const ResearchProjectPage: React.FC = () => {
         <Space wrap style={{ marginTop: 12 }}>
           {generating && <Button danger icon={<StopOutlined />} onClick={handleStopGeneration}>停止当前生成</Button>}
           {!generating && (runHasTerminalError || runWasCancelled) && <Button type="primary" icon={<ReloadOutlined />} onClick={handleGenerate}>{runWasCancelled ? '重新开始生成' : '重试生成'}</Button>}
-          {runCompleted && ideas.length > 0 && <Button type="primary" ghost icon={<ExperimentOutlined />} onClick={() => setActiveWorkbenchTab('proposals')}>查看 Top Proposal</Button>}
+          {runCompleted && ideas.length > 0 && <Button type="primary" ghost icon={<ExperimentOutlined />} onClick={() => setActiveWorkbenchTab('proposal-board')}>查看推进看板</Button>}
         </Space>
         {runHasTerminalError && <Alert type="error" showIcon message="最近一次运行失败" description={<Space direction="vertical" size={4}><Text>{run.error}</Text><Text type="secondary">最后阶段：{currentStageTitle}</Text></Space>} style={{ marginTop: 12 }} />}
         {runWasCancelled && <Alert type="warning" showIcon message="生成已停止" description={`已保留 ${currentStageTitle} 阶段之前的进度和中间产物，可随时重新开始。`} style={{ marginTop: 12 }} />}
@@ -1418,6 +1595,7 @@ const ResearchProjectPage: React.FC = () => {
               { key: 'evidence', label: <Space><FileSearchOutlined />证据地图 <Tag>{evidenceItems.length}</Tag></Space>, children: evidenceTab },
               { key: 'gaps', label: <Space><NodeIndexOutlined />Gap Map <Tag>{gaps.length}</Tag></Space>, children: gapTab },
               { key: 'candidates', label: <Space><BulbOutlined />候选池 <Tag>{candidates.length}</Tag></Space>, children: candidateTab },
+              { key: 'proposal-board', label: <Space><ExperimentOutlined />推进看板 <Tag color="blue">{proposalBoard?.summary.total || ideas.length}</Tag></Space>, children: proposalBoardTab },
               { key: 'proposals', label: <Space><ExperimentOutlined />Top Proposal <Tag color="purple">{ideas.length}</Tag></Space>, children: proposalTab },
               { key: 'experiments', label: <Space><ExperimentOutlined />实验反馈 <Tag>{experiments.length}</Tag></Space>, children: experimentTab },
             ]} />
