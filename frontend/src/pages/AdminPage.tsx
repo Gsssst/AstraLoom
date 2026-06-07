@@ -9,11 +9,12 @@ import {
 } from '@ant-design/icons';
 import api from '../services/api';
 import { useAuthStore } from '../stores/useAuthStore';
+import PageShell from '../components/PageShell';
+import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
 
-const { Title, Text, Paragraph } = Typography;
+const { Text, Paragraph } = Typography;
 
 const cardStyle = { borderRadius: 14, border: '1px solid #f0f0f0' };
-const heroGradient = 'linear-gradient(135deg, #232526 0%, #667eea 50%, #764ba2 100%)';
 const activityLabel: Record<string, string> = {
   space_created: '创建项目空间',
   space_updated: '更新项目空间',
@@ -35,6 +36,7 @@ const AdminPage: React.FC = () => {
   const [userQuery, setUserQuery] = useState('');
   const [workspaceQuery, setWorkspaceQuery] = useState('');
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
+  const [adminActionError, setAdminActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
 
   const isAdmin = user?.role === 'admin';
 
@@ -52,8 +54,11 @@ const AdminPage: React.FC = () => {
       setUsers(usersRes.data.users || []);
       setWorkspaces(spacesRes.data.workspaces || []);
       setActivities(activitiesRes.data.activities || []);
+      setAdminActionError(null);
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '管理员数据加载失败');
+      const detail = getApiErrorDetails(error, { fallback: '管理员数据加载失败' });
+      setAdminActionError({ title: '管理员数据加载失败', detail });
+      message.warning(detail.message);
     } finally {
       setLoading(false);
     }
@@ -68,10 +73,13 @@ const AdminPage: React.FC = () => {
     try {
       const response = await api.patch(`/admin/users/${target.id}`, updates);
       setUsers(prev => prev.map(item => item.id === target.id ? response.data : item));
+      setAdminActionError(null);
       message.success('用户权限已更新');
       await fetchAdminData();
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '用户更新失败');
+      const detail = getApiErrorDetails(error, { fallback: '用户更新失败' });
+      setAdminActionError({ title: '用户更新失败', detail });
+      message.warning(detail.message);
     } finally {
       setUpdatingUserId(null);
     }
@@ -93,33 +101,39 @@ const AdminPage: React.FC = () => {
   const counts = overview?.counts || {};
 
   return (
-    <div style={{ maxWidth: 1320, margin: '0 auto' }}>
-      <Card
-        style={{ borderRadius: 18, marginBottom: 20, background: heroGradient, color: '#fff', overflow: 'hidden' }}
-        styles={{ body: { padding: 28 } }}
-      >
-        <Row align="middle" justify="space-between" gutter={[16, 16]}>
-          <Col>
-            <Space size={14}>
-              <div style={{
-                width: 56, height: 56, borderRadius: 16, background: 'rgba(255,255,255,0.18)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26,
-              }}>
-                <SafetyCertificateOutlined />
-              </div>
-              <div>
-                <Title level={2} style={{ color: '#fff', margin: 0 }}>管理员后台</Title>
-                <Text style={{ color: 'rgba(255,255,255,0.78)' }}>用户权限、项目空间与系统治理概览</Text>
-              </div>
+    <PageShell
+      title="管理员后台"
+      subtitle="用户权限、项目空间与系统治理概览。"
+      icon={<SafetyCertificateOutlined />}
+      maxWidth={1320}
+      actions={(
+        <Button icon={<ReloadOutlined />} onClick={fetchAdminData} loading={loading} style={{ borderRadius: 10 }}>
+          刷新
+        </Button>
+      )}
+    >
+      {adminActionError ? (
+        <Alert
+          type={adminActionError.detail.severity === 'error' ? 'error' : 'warning'}
+          showIcon
+          closable
+          onClose={() => setAdminActionError(null)}
+          style={{ borderRadius: 12, marginBottom: 16 }}
+          message={`${adminActionError.title}：${adminActionError.detail.message}`}
+          description={(
+            <Space direction="vertical" size={6}>
+              <Text>{adminActionError.detail.recovery}</Text>
+              <Space size={6} wrap>
+                <Tag color="orange">{adminActionError.detail.category}</Tag>
+                <Tag color={adminActionError.detail.retryable ? 'blue' : 'default'}>
+                  {adminActionError.detail.retryable ? '可重试' : '需先处理条件'}
+                </Tag>
+                {adminActionError.detail.status && <Tag>HTTP {adminActionError.detail.status}</Tag>}
+              </Space>
             </Space>
-          </Col>
-          <Col>
-            <Button icon={<ReloadOutlined />} onClick={fetchAdminData} loading={loading} style={{ borderRadius: 10 }}>
-              刷新
-            </Button>
-          </Col>
-        </Row>
-      </Card>
+          )}
+        />
+      ) : null}
 
       {overview?.risk_hints?.length > 0 && (
         <Alert
@@ -304,7 +318,7 @@ const AdminPage: React.FC = () => {
           <Alert type="info" showIcon message="暂无空间活动" description="创建空间、绑定资源或管理成员后，这里会出现治理时间线。" />
         )}
       </Card>
-    </div>
+    </PageShell>
   );
 };
 

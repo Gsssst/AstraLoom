@@ -26,6 +26,10 @@ const paperDigestSource = readFileSync(
   new URL('../src/pages/PaperDigestInboxPage.tsx', import.meta.url),
   'utf8',
 );
+const adminSource = readFileSync(
+  new URL('../src/pages/AdminPage.tsx', import.meta.url),
+  'utf8',
+);
 
 test('page shell exposes stable layout class hooks', () => {
   for (const className of [
@@ -94,4 +98,17 @@ test('paper digest inbox adopts page shell with recovery guidance', () => {
   assert.match(paperDigestSource, /digestActionError\.detail\.recovery/);
   assert.match(paperDigestSource, /需先处理条件/);
   assert.doesNotMatch(paperDigestSource, /heroGradient/);
+});
+
+test('admin page adopts page shell with recovery guidance', () => {
+  assert.match(adminSource, /import PageShell from '\.\.\/components\/PageShell'/);
+  assert.match(adminSource, /<PageShell/);
+  assert.match(adminSource, /title="管理员后台"/);
+  assert.match(adminSource, /maxWidth=\{1320\}/);
+  assert.match(adminSource, /刷新/);
+  assert.match(adminSource, /getApiErrorDetails/);
+  assert.match(adminSource, /adminActionError/);
+  assert.match(adminSource, /adminActionError\.detail\.recovery/);
+  assert.match(adminSource, /需先处理条件/);
+  assert.doesNotMatch(adminSource, /heroGradient/);
 });
