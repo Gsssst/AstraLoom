@@ -11,4 +11,4 @@
 ## 3. Verification
 
 - [x] 3.1 Run frontend contract tests, frontend build, and OpenSpec validation.
-- [ ] 3.2 Commit implementation, archive the OpenSpec change, validate specs, and commit the archive.
+- [x] 3.2 Commit implementation, archive the OpenSpec change, validate specs, and commit the archive.
