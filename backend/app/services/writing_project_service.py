@@ -874,6 +874,7 @@ class WritingProjectService:
                               **kwargs) -> dict | None:
         """更新项目。"""
         from app.db.models.writing import WritingProject
+        from sqlalchemy.orm import selectinload
         from app.services.workspace_service import WorkspaceService
 
         try:
@@ -884,6 +885,7 @@ class WritingProjectService:
         result = await self.session.execute(
             select(WritingProject)
             .where(WritingProject.id == pid)
+            .options(selectinload(WritingProject.sections))
         )
         project = result.scalar_one_or_none()
         if not project:

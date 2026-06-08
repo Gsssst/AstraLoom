@@ -1,5 +1,6 @@
 """写作助手闭环能力回归测试。"""
 
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -24,6 +25,14 @@ def _paper(**overrides):
     }
     data.update(overrides)
     return SimpleNamespace(**data)
+
+
+def test_update_project_eager_loads_sections_before_serialization():
+    source = Path("app/services/writing_project_service.py").read_text()
+    update_block = source.split("async def update_project", 1)[1].split("async def bind_submission_profile", 1)[0]
+
+    assert "selectinload(WritingProject.sections)" in update_block
+    assert "return self._project_to_dict(project)" in update_block
 
 
 @pytest.mark.asyncio
