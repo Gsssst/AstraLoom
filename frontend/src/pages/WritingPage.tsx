@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import {
   Alert, Card, Button, Input, Tag, Typography, Space, message,
   Tabs, Select, Tooltip, List, Divider, Row, Col, Empty, Segmented, Upload,
+  Collapse,
 } from 'antd';
 import {
   EditOutlined, SearchOutlined, FileTextOutlined,
@@ -86,6 +87,7 @@ const workbenchStageSteps = [
 ];
 
 const workbenchTargetLabels: Record<string, string> = {
+  brief: '写作准备包',
   sections: '章节',
   evidence: '证据',
   'evidence-table': '证据表',
@@ -100,6 +102,87 @@ const workbenchPriorityLabels: Record<string, string> = {
   low: '可稍后',
 };
 
+type WritingBriefEvidenceRef = {
+  id?: string;
+  marker?: string;
+  title?: string;
+  role_label?: string;
+  snippet?: string;
+  paper_id?: string;
+};
+
+type WritingBriefClaim = {
+  claim?: string;
+  status?: string;
+  evidence_refs?: WritingBriefEvidenceRef[];
+  writing_use?: string;
+  priority?: number;
+};
+
+type WritingBriefOutlineItem = {
+  section?: string;
+  purpose?: string;
+  seed_content?: string;
+  evidence_ids?: string[];
+};
+
+type WritingBriefContribution = {
+  step?: number;
+  claim?: string;
+  evidence_status?: string;
+  writing_goal?: string;
+};
+
+type ProposalWritingBrief = {
+  title_candidates?: string[];
+  abstract_draft?: string;
+  contribution_chain?: WritingBriefContribution[];
+  section_outline?: WritingBriefOutlineItem[];
+  claim_evidence_map?: WritingBriefClaim[];
+  unsafe_claims?: string[];
+  evidence_gaps?: string[];
+  experiment_writing_plan?: string[];
+  limitations?: string[];
+  evidence_status?: string;
+  evidence_count?: number;
+  local_paper_count?: number;
+  source_project_name?: string;
+};
+
+const getProjectWritingBrief = (project: any): ProposalWritingBrief | null => {
+  const brief = project?.metadata_json?.writing_brief;
+  return brief && typeof brief === 'object' ? brief : null;
+};
+
+const getBriefClaimStatusCounts = (brief?: ProposalWritingBrief | null) => {
+  const claims = brief?.claim_evidence_map || [];
+  return {
+    total: claims.length,
+    supported: claims.filter(item => item.status === 'supported').length,
+    partial: claims.filter(item => item.status === 'partially_supported').length,
+    unsupported: claims.filter(item => item.status === 'unsupported').length,
+  };
+};
+
+const hasWritingBriefRisk = (brief?: ProposalWritingBrief | null) => {
+  const counts = getBriefClaimStatusCounts(brief);
+  return Boolean((brief?.unsafe_claims || []).length || (brief?.evidence_gaps || []).length || counts.unsupported);
+};
+
+const claimStatusLabel = (status?: string) => {
+  if (status === 'supported') return '已支撑';
+  if (status === 'partially_supported') return '部分支撑';
+  if (status === 'unsupported') return '缺证据';
+  return '待确认';
+};
+
+const claimStatusColor = (status?: string) => {
+  if (status === 'supported') return 'green';
+  if (status === 'partially_supported') return 'gold';
+  if (status === 'unsupported') return 'red';
+  return 'default';
+};
+
 const stageStepState = (activeKey?: string) => {
   const activeIndex = Math.max(0, workbenchStageSteps.findIndex(step => step.key === activeKey));
   return workbenchStageSteps.map((step, index) => ({
@@ -108,7 +191,7 @@ const stageStepState = (activeKey?: string) => {
   }));
 };
 
-const buildWorkbenchBlockers = (summary: any) => {
+const buildWorkbenchBlockers = (summary: any, brief?: ProposalWritingBrief | null) => {
   const blockers: { key: string; label: string; severity: 'high' | 'medium' | 'low'; target: string }[] = [];
   const progress = summary?.progress || {};
   const evidence = summary?.evidence || {};
@@ -116,9 +199,19 @@ const buildWorkbenchBlockers = (summary: any) => {
   const submission = summary?.submission || {};
   const evidenceTotal = evidence.total || 0;
   const localEvidence = evidence.local || 0;
+  const briefCounts = getBriefClaimStatusCounts(brief);
 
   if (progress.empty_sections > 0) {
     blockers.push({ key: 'empty-sections', label: `空章节 ${progress.empty_sections}`, severity: 'high', target: 'sections' });
+  }
+  if (briefCounts.unsupported > 0) {
+    blockers.push({ key: 'unsupported-brief-claims', label: `未支撑 Claim ${briefCounts.unsupported}`, severity: 'high', target: 'brief' });
+  }
+  if ((brief?.unsafe_claims || []).length > 0) {
+    blockers.push({ key: 'unsafe-brief-claims', label: `风险 Claim ${brief?.unsafe_claims?.length || 0}`, severity: 'high', target: 'brief' });
+  }
+  if ((brief?.evidence_gaps || []).length > 0) {
+    blockers.push({ key: 'brief-evidence-gaps', label: `证据缺口 ${brief?.evidence_gaps?.length || 0}`, severity: 'medium', target: 'evidence' });
   }
   if (progress.short_sections > 0) {
     blockers.push({ key: 'short-sections', label: `偏短章节 ${progress.short_sections}`, severity: 'medium', target: 'sections' });
@@ -224,7 +317,13 @@ const WritingPage: React.FC = () => {
   const exportStatusColor = (status?: string) => status === 'ready' ? 'green' : status === 'needs_attention' ? 'gold' : 'red';
   const riskColor = (risk?: string) => risk === 'high' ? 'red' : risk === 'medium' ? 'gold' : risk === 'low' ? 'blue' : 'green';
   const priorityColor = (priority?: string) => priority === 'high' ? 'red' : priority === 'medium' ? 'gold' : 'blue';
+  const selectedWritingBrief = getProjectWritingBrief(selectedProject);
+  const selectedBriefClaimCounts = getBriefClaimStatusCounts(selectedWritingBrief);
   const scrollToWorkbenchTarget = (target?: string) => {
+    if (target === 'brief') {
+      document.getElementById('writing-brief-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
     if (target === 'submission-template' || target === 'export') {
       document.getElementById('writing-export-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       return;
@@ -429,6 +528,11 @@ const WritingPage: React.FC = () => {
       nextContent,
       activeSectionId ? `已插入到「${target.title}」` : `未检测到当前编辑章节，已插入到「${target.title}」`,
     );
+  };
+  const handleResolveBriefClaim = (claim: string) => {
+    setCiteText(claim);
+    setActiveTab('citations');
+    message.info('已把该 Claim 放入引用推荐输入，可继续检索支撑证据');
   };
   const handleGenerateEvidenceTable = async () => {
     if (!selectedProject?.id) return;
@@ -837,6 +941,261 @@ const WritingPage: React.FC = () => {
     </ToolCard>
   );
 
+  const renderWritingBriefWorkbenchPanel = (brief: ProposalWritingBrief | null) => {
+    if (!brief) return null;
+    const counts = getBriefClaimStatusCounts(brief);
+    const riskActive = hasWritingBriefRisk(brief);
+    const titleCandidates = brief.title_candidates || [];
+    const claimMap = brief.claim_evidence_map || [];
+    const unsafeClaims = brief.unsafe_claims || [];
+    const evidenceGaps = brief.evidence_gaps || [];
+    const outline = brief.section_outline || [];
+    const contributions = brief.contribution_chain || [];
+    const limitations = brief.limitations || [];
+    const experimentPlan = brief.experiment_writing_plan || [];
+
+    return (
+      <Card
+        id="writing-brief-panel"
+        style={{ ...cardStyle, marginBottom: 16, borderTop: `3px solid ${riskActive ? '#faad14' : '#52c41a'}` }}
+        styles={{ body: { padding: 18 } }}
+        title={<Space><BulbOutlined /> Proposal 写作准备包</Space>}
+        extra={
+          <Space size={6} wrap>
+            <Tag color={brief.evidence_status === 'sufficient' ? 'green' : 'orange'}>
+              {brief.evidence_status === 'sufficient' ? '证据可用' : '证据不足'}
+            </Tag>
+            <Tag color="blue">Claim {counts.total}</Tag>
+            <Tag color={counts.unsupported ? 'red' : 'green'}>未支撑 {counts.unsupported}</Tag>
+            <Tag color={unsafeClaims.length ? 'red' : 'green'}>风险 {unsafeClaims.length}</Tag>
+          </Space>
+        }
+      >
+        <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <Alert
+            type={riskActive ? 'warning' : 'success'}
+            showIcon
+            message={riskActive ? '写作前需要处理 Proposal 风险' : 'Proposal brief 可作为写作起点'}
+            description={brief.abstract_draft || '当前写作准备包没有摘要草稿。'}
+            style={{ borderRadius: 10 }}
+          />
+
+          <Row gutter={[10, 10]}>
+            <Col xs={12} md={6}>
+              <div style={{ borderRadius: 10, border: '1px solid #f0f0f0', padding: 10 }}>
+                <Text type="secondary">Claim 支撑</Text>
+                <Title level={4} style={{ margin: '4px 0' }}>{counts.supported}/{counts.total}</Title>
+                <Text type="secondary">部分 {counts.partial} · 缺证据 {counts.unsupported}</Text>
+              </div>
+            </Col>
+            <Col xs={12} md={6}>
+              <div style={{ borderRadius: 10, border: '1px solid #f0f0f0', padding: 10 }}>
+                <Text type="secondary">证据缺口</Text>
+                <Title level={4} style={{ margin: '4px 0' }}>{evidenceGaps.length}</Title>
+                <Text type="secondary">定稿前补强</Text>
+              </div>
+            </Col>
+            <Col xs={12} md={6}>
+              <div style={{ borderRadius: 10, border: '1px solid #f0f0f0', padding: 10 }}>
+                <Text type="secondary">章节骨架</Text>
+                <Title level={4} style={{ margin: '4px 0' }}>{outline.length}</Title>
+                <Text type="secondary">建议映射到草稿</Text>
+              </div>
+            </Col>
+            <Col xs={12} md={6}>
+              <div style={{ borderRadius: 10, border: '1px solid #f0f0f0', padding: 10 }}>
+                <Text type="secondary">证据来源</Text>
+                <Title level={4} style={{ margin: '4px 0' }}>{brief.local_paper_count || 0}/{brief.evidence_count || 0}</Title>
+                <Text type="secondary">本地 / 总数</Text>
+              </div>
+            </Col>
+          </Row>
+
+          {titleCandidates.length > 0 && (
+            <div>
+              <Text strong>标题候选</Text>
+              <Space size={8} wrap style={{ marginTop: 8, width: '100%' }}>
+                {titleCandidates.map(title => (
+                  <Tag
+                    key={title}
+                    color="geekblue"
+                    style={{ borderRadius: 999, maxWidth: '100%', whiteSpace: 'normal', overflowWrap: 'anywhere', cursor: 'pointer' }}
+                    onClick={() => handleCopy(title)}
+                  >
+                    {title}
+                  </Tag>
+                ))}
+              </Space>
+            </div>
+          )}
+
+          <Collapse
+            bordered={false}
+            items={[
+              {
+                key: 'outline',
+                label: `章节骨架 (${outline.length})`,
+                children: outline.length ? (
+                  <List
+                    size="small"
+                    dataSource={outline}
+                    renderItem={(item) => (
+                      <List.Item>
+                        <div style={{ width: '100%', minWidth: 0 }}>
+                          <Space wrap>
+                            <Tag color="blue">{item.section || '未命名章节'}</Tag>
+                            {(item.evidence_ids || []).map(id => <Tag key={id}>{id}</Tag>)}
+                          </Space>
+                          <Text style={{ display: 'block', marginTop: 6 }}>{item.purpose}</Text>
+                          {item.seed_content && <Paragraph type="secondary" style={{ margin: '4px 0 0', overflowWrap: 'anywhere' }}>{item.seed_content}</Paragraph>}
+                        </div>
+                      </List.Item>
+                    )}
+                  />
+                ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无章节骨架" />,
+              },
+              {
+                key: 'contribution',
+                label: `贡献链 (${contributions.length})`,
+                children: contributions.length ? (
+                  <List
+                    size="small"
+                    dataSource={contributions}
+                    renderItem={(item) => (
+                      <List.Item
+                        actions={[
+                          <Button key="copy" size="small" onClick={() => handleCopy(item.claim || '')} style={{ borderRadius: 8 }}>复制</Button>,
+                        ]}
+                      >
+                        <div style={{ width: '100%', minWidth: 0 }}>
+                          <Space wrap>
+                            <Tag color="purple">Step {item.step || '-'}</Tag>
+                            <Tag color={claimStatusColor(item.evidence_status)}>{claimStatusLabel(item.evidence_status)}</Tag>
+                          </Space>
+                          <Text style={{ display: 'block', marginTop: 6, overflowWrap: 'anywhere' }}>{item.claim}</Text>
+                          <Text type="secondary" style={{ display: 'block', marginTop: 4 }}>{item.writing_goal}</Text>
+                        </div>
+                      </List.Item>
+                    )}
+                  />
+                ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无贡献链" />,
+              },
+              {
+                key: 'claims',
+                label: `Claim-Evidence Map (${claimMap.length})`,
+                children: claimMap.length ? (
+                  <List
+                    size="small"
+                    dataSource={claimMap}
+                    renderItem={(item) => (
+                      <List.Item
+                        actions={[
+                          <Button key="copy" size="small" onClick={() => handleCopy(item.claim || '')} style={{ borderRadius: 8 }}>复制 Claim</Button>,
+                          <Button key="resolve" size="small" type={item.status === 'unsupported' ? 'primary' : 'default'} onClick={() => handleResolveBriefClaim(item.claim || '')} style={{ borderRadius: 8 }}>
+                            去核对证据
+                          </Button>,
+                        ]}
+                      >
+                        <div style={{ width: '100%', minWidth: 0 }}>
+                          <Space wrap>
+                            <Tag color={claimStatusColor(item.status)}>{claimStatusLabel(item.status)}</Tag>
+                            {(item.evidence_refs || []).map(ref => (
+                              <Tag
+                                key={ref.id || ref.marker || ref.title}
+                                color="purple"
+                                style={{ cursor: ref.marker ? 'pointer' : 'default' }}
+                                onClick={() => ref.marker && handleCopy(ref.marker)}
+                              >
+                                {ref.marker || ref.id || 'Evidence'}
+                              </Tag>
+                            ))}
+                          </Space>
+                          <Text style={{ display: 'block', marginTop: 6, overflowWrap: 'anywhere' }}>{item.claim}</Text>
+                          <Text type="secondary" style={{ display: 'block', marginTop: 4 }}>{item.writing_use}</Text>
+                        </div>
+                      </List.Item>
+                    )}
+                  />
+                ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无 Claim-Evidence 映射" />,
+              },
+              {
+                key: 'risks',
+                label: `风险与缺口 (${unsafeClaims.length + evidenceGaps.length + limitations.length})`,
+                children: (
+                  <Row gutter={[12, 12]}>
+                    <Col xs={24} md={8}>
+                      <Alert
+                        type={unsafeClaims.length ? 'warning' : 'success'}
+                        showIcon
+                        message="暂不应直接写成结论"
+                        description={unsafeClaims.length ? (
+                          <Space direction="vertical" size={4}>
+                            {unsafeClaims.slice(0, 6).map(item => <Text key={item} style={{ overflowWrap: 'anywhere' }}>{item}</Text>)}
+                          </Space>
+                        ) : '暂无明确风险 claim。'}
+                        style={{ borderRadius: 10 }}
+                      />
+                    </Col>
+                    <Col xs={24} md={8}>
+                      <Alert
+                        type={evidenceGaps.length ? 'warning' : 'success'}
+                        showIcon
+                        message="证据缺口"
+                        description={evidenceGaps.length ? (
+                          <Space direction="vertical" size={4}>
+                            {evidenceGaps.slice(0, 6).map(item => <Text key={item} style={{ overflowWrap: 'anywhere' }}>{item}</Text>)}
+                          </Space>
+                        ) : '暂无明确证据缺口。'}
+                        style={{ borderRadius: 10 }}
+                      />
+                    </Col>
+                    <Col xs={24} md={8}>
+                      <Alert
+                        type={limitations.length ? 'info' : 'success'}
+                        showIcon
+                        message="限制与反驳点"
+                        description={limitations.length ? (
+                          <Space direction="vertical" size={4}>
+                            {limitations.slice(0, 6).map(item => <Text key={item} style={{ overflowWrap: 'anywhere' }}>{item}</Text>)}
+                          </Space>
+                        ) : '暂无需要单列的限制。'}
+                        style={{ borderRadius: 10 }}
+                      />
+                    </Col>
+                  </Row>
+                ),
+              },
+              {
+                key: 'experiment',
+                label: `实验写作计划 (${experimentPlan.length})`,
+                children: experimentPlan.length ? (
+                  <List
+                    size="small"
+                    dataSource={experimentPlan}
+                    renderItem={(item, index) => (
+                      <List.Item>
+                        <Space align="start">
+                          <Tag color="cyan">{index + 1}</Tag>
+                          <Text style={{ overflowWrap: 'anywhere' }}>{item}</Text>
+                        </Space>
+                      </List.Item>
+                    )}
+                  />
+                ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无实验写作计划" />,
+              },
+            ]}
+          />
+
+          <Space wrap>
+            {brief.abstract_draft && <Button icon={<CopyOutlined />} onClick={() => handleCopy(brief.abstract_draft || '')} style={{ borderRadius: 8 }}>复制摘要草稿</Button>}
+            <Button icon={<BookOutlined />} onClick={() => scrollToWorkbenchTarget('evidence')} style={{ borderRadius: 8 }}>查看证据卡</Button>
+            <Button icon={<SearchOutlined />} onClick={() => scrollToWorkbenchTarget('citations')} style={{ borderRadius: 8 }}>校验章节引用</Button>
+          </Space>
+        </Space>
+      </Card>
+    );
+  };
+
   const workbenchOverviewPanel = selectedProject ? (
     <Card
       loading={workbenchLoading}
@@ -844,9 +1203,19 @@ const WritingPage: React.FC = () => {
       styles={{ body: { padding: 18 } }}
     >
       {workbenchSummary ? (() => {
-        const blockers = buildWorkbenchBlockers(workbenchSummary);
+        const blockers = buildWorkbenchBlockers(workbenchSummary, selectedWritingBrief);
         const stageSteps = stageStepState(workbenchSummary.stage?.key);
-        const primaryAction = (workbenchSummary.next_actions || [])[0];
+        const briefAction = hasWritingBriefRisk(selectedWritingBrief) ? {
+          key: 'writing-brief-risk',
+          label: '处理 Proposal 写作风险',
+          reason: `写作准备包中有 ${selectedBriefClaimCounts.unsupported} 个未支撑 Claim、${selectedWritingBrief?.unsafe_claims?.length || 0} 个风险 Claim。`,
+          priority: 'high',
+          target: 'brief',
+        } : null;
+        const nextActions = briefAction
+          ? [briefAction, ...(workbenchSummary.next_actions || []).filter((action: any) => action.key !== briefAction.key)]
+          : (workbenchSummary.next_actions || []);
+        const primaryAction = nextActions[0];
         return (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Row gutter={[12, 12]} align="middle">
@@ -902,7 +1271,7 @@ const WritingPage: React.FC = () => {
                     <Col><Text type="secondary" style={{ fontSize: 12 }}>按当前项目状态排序</Text></Col>
                   </Row>
                   <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                    {(workbenchSummary.next_actions || []).map((action: any) => (
+                    {nextActions.map((action: any) => (
                       <div key={action.key} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 10px', borderRadius: 10, background: '#fff', border: '1px solid #f0f0f0' }}>
                         <Tag color={priorityColor(action.priority)} style={{ marginTop: 1 }}>{workbenchPriorityLabels[action.priority] || action.priority}</Tag>
                         <div style={{ flex: 1, minWidth: 0 }}>
@@ -977,6 +1346,11 @@ const WritingPage: React.FC = () => {
             {workbenchSummary.quick_links?.length > 0 && (
               <Space size={8} wrap>
                 <Text type="secondary" style={{ fontSize: 12 }}>快速跳转</Text>
+                {selectedWritingBrief && (
+                  <Button size="small" onClick={() => scrollToWorkbenchTarget('brief')} style={{ borderRadius: 999 }}>
+                    写作准备包
+                  </Button>
+                )}
                 {workbenchSummary.quick_links.map((link: any) => (
                   <Button key={link.key} size="small" onClick={() => scrollToWorkbenchTarget(link.target)} style={{ borderRadius: 999 }}>
                     {link.label}
@@ -1237,6 +1611,7 @@ const WritingPage: React.FC = () => {
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 16, alignItems: 'start' }}>
             <div>
               {workbenchOverviewPanel}
+              {renderWritingBriefWorkbenchPanel(selectedWritingBrief)}
               <Card style={{ ...cardStyle, marginBottom: 16 }} styles={{ body: { padding: '12px 20px' } }}>
                 <Space wrap>
                   <Text strong style={{ fontSize: 15 }}>{selectedProject.title}</Text>

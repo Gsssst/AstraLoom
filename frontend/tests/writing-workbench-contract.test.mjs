@@ -66,6 +66,33 @@ test('paper workbench exposes action-first stage strip and blockers', () => {
   assert.match(writingPageSource, /快速跳转/);
 });
 
+test('paper workbench surfaces preserved proposal writing brief', () => {
+  assert.match(writingPageSource, /type ProposalWritingBrief/);
+  assert.match(writingPageSource, /getProjectWritingBrief/);
+  assert.match(writingPageSource, /metadata_json\?\.writing_brief/);
+  assert.match(writingPageSource, /renderWritingBriefWorkbenchPanel/);
+  assert.match(writingPageSource, /Proposal 写作准备包/);
+  assert.match(writingPageSource, /标题候选/);
+  assert.match(writingPageSource, /章节骨架/);
+  assert.match(writingPageSource, /贡献链/);
+  assert.match(writingPageSource, /Claim-Evidence Map/);
+  assert.match(writingPageSource, /暂不应直接写成结论/);
+  assert.match(writingPageSource, /证据缺口/);
+  assert.match(writingPageSource, /实验写作计划/);
+});
+
+test('paper workbench folds writing brief risks into guidance', () => {
+  assert.match(writingPageSource, /hasWritingBriefRisk/);
+  assert.match(writingPageSource, /getBriefClaimStatusCounts/);
+  assert.match(writingPageSource, /buildWorkbenchBlockers\(workbenchSummary, selectedWritingBrief\)/);
+  assert.match(writingPageSource, /unsupported-brief-claims/);
+  assert.match(writingPageSource, /unsafe-brief-claims/);
+  assert.match(writingPageSource, /brief-evidence-gaps/);
+  assert.match(writingPageSource, /处理 Proposal 写作风险/);
+  assert.match(writingPageSource, /scrollToWorkbenchTarget\('brief'\)/);
+  assert.match(writingPageSource, /handleResolveBriefClaim/);
+});
+
 test('citation recommendation UI exposes evidence decision loop', () => {
   assert.match(writingPageSource, /引用决策概览/);
   assert.match(writingPageSource, /decision_label/);
