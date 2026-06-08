@@ -87,12 +87,14 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
       <div ref={contentRef} className="paper-pdf-scroll">
         {loading && <Spin style={{ marginTop: 40 }} />}
         <Document file={url} onLoadSuccess={onDocLoad} loading={<Spin style={{ marginTop: 40 }} />}>
-          <Page
-            pageNumber={pageNumber}
-            renderTextLayer={true}
-            renderAnnotationLayer={true}
-            width={pageWidth}
-          />
+          <div className="paper-pdf-page">
+            <Page
+              pageNumber={pageNumber}
+              renderTextLayer={true}
+              renderAnnotationLayer={true}
+              width={pageWidth}
+            />
+          </div>
         </Document>
       </div>
     </div>

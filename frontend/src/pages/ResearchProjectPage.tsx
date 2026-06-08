@@ -223,6 +223,16 @@ interface ExperimentExecutionPack {
   risks: { level: string; message: string }[];
   next_actions: string[];
 }
+type ProposalNextActionKind = 'evidence' | 'copilot' | 'validation' | 'execution' | 'experiment' | 'code' | 'writing' | 'timeline' | 'review_revision';
+interface ProposalNextAction {
+  key: ProposalNextActionKind;
+  label: string;
+  description: string;
+  priority: 'primary' | 'normal';
+  icon: React.ReactNode;
+  loading?: boolean;
+  onClick: () => void;
+}
 interface TimelineEvent {
   id: string;
   type: string;
@@ -2148,6 +2158,147 @@ const ResearchProjectPage: React.FC = () => {
     );
   };
 
+  const buildProposalNextActions = (idea: Idea): ProposalNextAction[] => {
+    const evidenceCount = proposalEvidenceCount(idea);
+    const validation = validationMap[idea.id];
+    const executionPack = executionPackMap[idea.id];
+    const writingBrief = writingBriefMap[idea.id];
+    const discussionTurns = idea.discussion_log?.length || getDiscuss(idea.id).log.length;
+    const experimentFeedbackCount = experiments.filter(experiment => experiment.idea_id === idea.id).length;
+    const hasGeneratedProject = !!idea.generated_code_project || !!idea.generated_code;
+    const proposalReview = idea.review_json?.proposal_review;
+    const actions: ProposalNextAction[] = [];
+
+    if (evidenceCount < 3) {
+      actions.push({
+        key: 'evidence',
+        label: '补证据',
+        description: `当前证据 ${evidenceCount} 条，先回到证据地图补强引用基础。`,
+        priority: 'primary',
+        icon: <FileSearchOutlined />,
+        onClick: () => setActiveWorkbenchTab('evidence'),
+      });
+    }
+    if (!validation?.data) {
+      actions.push({
+        key: 'validation',
+        label: '验证闭环',
+        description: '检查相似工作、可行性风险和写作就绪度。',
+        priority: actions.length === 0 ? 'primary' : 'normal',
+        icon: <FileSearchOutlined />,
+        loading: validation?.loading,
+        onClick: () => loadIdeaValidation(idea.id),
+      });
+    }
+    if (!executionPack?.data) {
+      actions.push({
+        key: 'execution',
+        label: '实验推进包',
+        description: '把最小实验拆成可执行任务、指标和风险。',
+        priority: actions.length === 0 ? 'primary' : 'normal',
+        icon: <ExperimentOutlined />,
+        loading: executionPack?.loading,
+        onClick: () => loadExecutionPack(idea.id),
+      });
+    }
+    if (experimentFeedbackCount === 0) {
+      actions.push({
+        key: 'experiment',
+        label: '记录实验',
+        description: '补充实验结果或失败案例，推动下一轮演化。',
+        priority: 'normal',
+        icon: <ExperimentOutlined />,
+        onClick: () => openExperiment(idea),
+      });
+    }
+    if (!hasGeneratedProject) {
+      actions.push({
+        key: 'code',
+        label: '生成项目包',
+        description: '生成按项目组织的训练、评估和分析代码。',
+        priority: 'normal',
+        icon: <CodeOutlined />,
+        loading: codeMap[idea.id]?.loading,
+        onClick: () => handleGenCode(idea.id),
+      });
+    }
+    if (!writingBrief?.data) {
+      actions.push({
+        key: 'writing',
+        label: '写作准备',
+        description: '生成标题候选、章节骨架和 claim-evidence map。',
+        priority: 'normal',
+        icon: <FileTextOutlined />,
+        loading: writingBrief?.loading,
+        onClick: () => loadWritingBrief(idea.id, true),
+      });
+    }
+    if (discussionTurns === 0) {
+      actions.push({
+        key: 'copilot',
+        label: '和 AI 讨论',
+        description: '围绕风险、反例和下一版方向继续迭代。',
+        priority: actions.length === 0 ? 'primary' : 'normal',
+        icon: <MessageOutlined />,
+        onClick: () => openCopilot(idea),
+      });
+    }
+    if (proposalReview?.writing_readiness === 'blocked' || proposalReview?.writing_readiness === 'needs_revision') {
+      actions.push({
+        key: 'review_revision',
+        label: '按审稿修订',
+        description: proposalReview.next_revision_focus || '根据结构化审稿包生成更稳的一版。',
+        priority: 'primary',
+        icon: <ReloadOutlined />,
+        onClick: () => openReviewRevision(idea),
+      });
+    }
+    actions.push({
+      key: 'timeline',
+      label: '看轨迹',
+      description: '查看讨论、验证、实验和子版本的完整推进历史。',
+      priority: actions.length === 0 ? 'primary' : 'normal',
+      icon: <HistoryOutlined />,
+      onClick: () => openTimeline(idea),
+    });
+
+    const unique = new Map<string, ProposalNextAction>();
+    actions.forEach(action => {
+      if (!unique.has(action.key)) unique.set(action.key, action);
+    });
+    return Array.from(unique.values()).slice(0, 6);
+  };
+
+  const renderProposalNextActions = (idea: Idea) => {
+    const actions = buildProposalNextActions(idea);
+    return (
+      <Card
+        size="small"
+        className="proposal-next-actions"
+        title={<Space wrap><ThunderboltOutlined /><Text strong>下一步动作</Text><Tag color="blue">{actions.length}</Tag></Space>}
+        style={{ borderRadius: 12, margin: '14px 0', background: '#fbfcff' }}
+      >
+        <div className="proposal-next-action-grid">
+          {actions.map(action => (
+            <button
+              key={action.key}
+              type="button"
+              className={`proposal-next-action is-${action.priority}`}
+              onClick={action.onClick}
+              disabled={!!action.loading}
+            >
+              <span className="proposal-next-action-icon">{action.icon}</span>
+              <span className="proposal-next-action-copy">
+                <strong>{action.loading ? '处理中...' : action.label}</strong>
+                <small>{action.description}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      </Card>
+    );
+  };
+
   const renderProposal = (idea: Idea) => {
     const review = idea.review_json;
     const plan = idea.experiment_plan;
@@ -2165,6 +2316,7 @@ const ResearchProjectPage: React.FC = () => {
         {idea.hypothesis && <Alert type="success" showIcon message="可证伪假设" description={idea.hypothesis} style={{ marginBottom: 14 }} />}
         <Paragraph style={{ whiteSpace: 'pre-wrap' }}>{idea.description || '暂无描述'}</Paragraph>
         {idea.approach && <Paragraph><Text strong>技术草图：</Text>{idea.approach}</Paragraph>}
+        {renderProposalNextActions(idea)}
         {review && <>
           <Divider>六维评审</Divider>
           <Row gutter={[8, 8]}>
