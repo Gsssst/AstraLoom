@@ -51,6 +51,18 @@ test('bulk action bar groups selected-paper actions without losing existing work
   assert.match(papersPageSource, /清空选择/);
 });
 
+test('paper library exposes owner filter, importer tags, and custom group report prompt', () => {
+  assert.match(papersPageSource, /const paperSearchSources = \['local', 'mine'/);
+  assert.match(papersPageSource, /value: 'mine', label: '👤 我的'/);
+  assert.match(papersPageSource, /owner = source === 'mine' \? 'mine' : undefined/);
+  assert.match(papersPageSource, /source: searchSource, owner/);
+  assert.match(papersPageSource, /imported_by_username/);
+  assert.match(papersPageSource, /导入：\{paper\.imported_by_username\}/);
+  assert.match(papersPageSource, /reportPrompt/);
+  assert.match(papersPageSource, /custom_prompt: reportPrompt\.trim\(\) \|\| undefined/);
+  assert.match(papersPageSource, /自定义汇报要求/);
+});
+
 test('bulk action bar has responsive hooks for narrow screens', () => {
   assert.match(responsiveSource, /\.paper-bulk-action-bar/);
   assert.match(responsiveSource, /\.paper-bulk-action-count/);

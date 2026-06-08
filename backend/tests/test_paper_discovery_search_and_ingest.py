@@ -78,8 +78,8 @@ async def test_personal_ingestion_uses_signed_preview_and_saves_for_current_user
     stored = SimpleNamespace(id=uuid4())
     calls = []
 
-    async def fake_ingest(_self, paper, auto_download):
-        calls.append(("ingest", paper.metadata["remote_id"], auto_download))
+    async def fake_ingest(_self, paper, auto_download, imported_by_user=None):
+        calls.append(("ingest", paper.metadata["remote_id"], auto_download, imported_by_user.id))
         return stored, True
 
     async def fake_save(_self, user_id, paper_id):
@@ -87,7 +87,7 @@ async def test_personal_ingestion_uses_signed_preview_and_saves_for_current_user
 
     monkeypatch.setattr(papers_api.PaperIngestionService, "ingest_paper", fake_ingest)
     monkeypatch.setattr(papers_api.PaperEnhanceService, "save_paper", fake_save)
-    user = SimpleNamespace(id=uuid4())
+    user = SimpleNamespace(id=uuid4(), username="gst")
 
     response = await papers_api.ingest_personal_paper(
         papers_api.PersonalIngestRequest(
@@ -102,7 +102,7 @@ async def test_personal_ingestion_uses_signed_preview_and_saves_for_current_user
     assert response.success == 1
     assert response.paper_ids == [str(stored.id)]
     assert calls == [
-        ("ingest", "W123", False),
+        ("ingest", "W123", False, user.id),
         ("save", str(user.id), str(stored.id)),
     ]
 
@@ -120,6 +120,49 @@ def test_remote_paper_brief_preserves_full_abstract_for_detail_modal():
 
     assert len(brief.abstract) == 500
     assert brief.abstract_full == full_abstract
+
+
+def test_local_paper_brief_exposes_importer_metadata():
+    user_id = uuid4()
+    paper = SimpleNamespace(
+        id=uuid4(),
+        title="Imported paper",
+        authors=["Alice"],
+        year=2026,
+        abstract="A",
+        arxiv_id=None,
+        doi=None,
+        source="manual",
+        citation_count=0,
+        created_at=SimpleNamespace(isoformat=lambda: "2026-06-08T00:00:00"),
+        metadata_json={},
+        source_url=None,
+        imported_by_user_id=user_id,
+        imported_by_username="gst",
+    )
+
+    brief = papers_api._paper_brief(paper)
+
+    assert brief.imported_by_user_id == str(user_id)
+    assert brief.imported_by_username == "gst"
+
+
+def test_paper_imported_by_user_matches_id_and_username_fallback():
+    user_id = uuid4()
+    user = SimpleNamespace(id=str(user_id), username="gst")
+
+    assert papers_api._paper_imported_by_user(
+        SimpleNamespace(imported_by_user_id=user_id, imported_by_username="other"),
+        user,
+    )
+    assert papers_api._paper_imported_by_user(
+        SimpleNamespace(imported_by_user_id=None, imported_by_username="gst"),
+        user,
+    )
+    assert not papers_api._paper_imported_by_user(
+        SimpleNamespace(imported_by_user_id=None, imported_by_username="other"),
+        user,
+    )
 
 
 @pytest.mark.asyncio

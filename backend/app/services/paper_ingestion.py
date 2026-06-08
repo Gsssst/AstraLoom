@@ -70,6 +70,7 @@ class PaperIngestionService:
         self,
         paper: PaperResult,
         auto_download: bool = True,
+        imported_by_user=None,
     ) -> tuple[Optional[Paper], bool]:
         """入库单篇论文。
 
@@ -107,6 +108,8 @@ class PaperIngestionService:
             source_url=paper.source_url,
             citation_count=paper.citation_count,
             metadata_json=metadata_json,
+            imported_by_user_id=getattr(imported_by_user, "id", None) if imported_by_user else None,
+            imported_by_username=self._importer_username(imported_by_user),
         )
 
         self.session.add(new_paper)
@@ -138,6 +141,7 @@ class PaperIngestionService:
         self,
         papers: List[PaperResult],
         auto_download: bool = True,
+        imported_by_user=None,
     ) -> dict:
         """批量入库论文。
 
@@ -148,7 +152,11 @@ class PaperIngestionService:
 
         for paper in papers:
             try:
-                ingested, is_new = await self.ingest_paper(paper, auto_download=auto_download)
+                ingested, is_new = await self.ingest_paper(
+                    paper,
+                    auto_download=auto_download,
+                    imported_by_user=imported_by_user,
+                )
                 if ingested:
                     result["paper_ids"].append(str(ingested.id))
                 if is_new:
@@ -170,6 +178,7 @@ class PaperIngestionService:
         year_from: Optional[int] = None,
         year_to: Optional[int] = None,
         auto_download: bool = True,
+        imported_by_user=None,
     ) -> dict:
         """搜索论文并自动入库。"""
         papers = await search_scholarly_papers(
@@ -183,7 +192,7 @@ class PaperIngestionService:
         if not papers:
             return {"success": 0, "skipped": 0, "error": 0, "paper_ids": [], "errors": [], "total_found": 0}
 
-        result = await self.ingest_batch(papers, auto_download=auto_download)
+        result = await self.ingest_batch(papers, auto_download=auto_download, imported_by_user=imported_by_user)
         result["total_found"] = len(papers)
         return result
 
@@ -191,6 +200,7 @@ class PaperIngestionService:
         self,
         arxiv_ids: List[str],
         auto_download: bool = True,
+        imported_by_user=None,
     ) -> dict:
         """通过 arXiv ID 列表检索并入库。"""
         papers = []
@@ -201,20 +211,26 @@ class PaperIngestionService:
             else:
                 logger.warning(f"arXiv ID 未找到: {aid}")
 
-        return await self.ingest_batch(papers, auto_download=auto_download)
+        return await self.ingest_batch(papers, auto_download=auto_download, imported_by_user=imported_by_user)
 
     async def ingest_remote(
         self,
         source: str,
         remote_id: str,
         auto_download: bool = False,
+        imported_by_user=None,
     ) -> tuple[Optional[Paper], bool]:
         """Resolve a provider identifier and ingest one trusted remote preview."""
 
         paper = await resolve_remote_paper(source, remote_id)
         if not paper:
             return None, False
-        return await self.ingest_paper(paper, auto_download=auto_download)
+        return await self.ingest_paper(paper, auto_download=auto_download, imported_by_user=imported_by_user)
+
+    def _importer_username(self, user) -> str | None:
+        if not user:
+            return None
+        return getattr(user, "username", None) or getattr(user, "display_name", None)
 
     async def _assign_categories(self, paper: Paper, category_names: List[str]):
         """为论文设置分类标签。"""

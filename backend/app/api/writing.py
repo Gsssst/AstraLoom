@@ -149,12 +149,89 @@ class ExportRequest(BaseModel):
 class ReportRequest(BaseModel):
     paper_ids: List[str] = Field(..., min_length=1, description="论文 ID 列表")
     title: str = Field(default="组会报告", description="报告主标题")
+    custom_prompt: Optional[str] = Field(default=None, max_length=4000, description="自定义组会报告生成要求")
 
 
 class FeishuReportRequest(BaseModel):
     paper_ids: List[str] = Field(..., min_length=1)
     title: str = Field(default="组会报告")
     feishu_url: str = Field(..., description="飞书文档链接")
+    custom_prompt: Optional[str] = Field(default=None, max_length=4000, description="自定义组会报告生成要求")
+
+
+REPORT_EAST_ASIA_FONT = "宋体"
+REPORT_LATIN_FONT = "Times New Roman"
+
+
+def _set_run_fonts(run, east_asia: str = REPORT_EAST_ASIA_FONT, latin: str = REPORT_LATIN_FONT) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    run.font.name = latin
+    rpr = run._element.get_or_add_rPr()
+    rfonts = rpr.rFonts
+    if rfonts is None:
+        rfonts = OxmlElement("w:rFonts")
+        rpr.append(rfonts)
+    rfonts.set(qn("w:eastAsia"), east_asia)
+    rfonts.set(qn("w:ascii"), latin)
+    rfonts.set(qn("w:hAnsi"), latin)
+
+
+def _set_style_fonts(style, east_asia: str = REPORT_EAST_ASIA_FONT, latin: str = REPORT_LATIN_FONT) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    style.font.name = latin
+    rpr = style._element.get_or_add_rPr()
+    rfonts = rpr.rFonts
+    if rfonts is None:
+        rfonts = OxmlElement("w:rFonts")
+        rpr.append(rfonts)
+    rfonts.set(qn("w:eastAsia"), east_asia)
+    rfonts.set(qn("w:ascii"), latin)
+    rfonts.set(qn("w:hAnsi"), latin)
+
+
+def _apply_paragraph_fonts(paragraph) -> None:
+    for run in paragraph.runs:
+        _set_run_fonts(run)
+
+
+def _configure_report_doc_fonts(doc) -> None:
+    from docx.shared import Pt
+
+    _set_style_fonts(doc.styles["Normal"])
+    doc.styles["Normal"].font.size = Pt(11)
+
+
+def _add_report_heading(doc, text: str, level: int):
+    paragraph = doc.add_heading(text, level=level)
+    _apply_paragraph_fonts(paragraph)
+    return paragraph
+
+
+def _add_report_paragraph(doc, text: str = "", style: str | None = None):
+    paragraph = doc.add_paragraph(text, style=style)
+    _apply_paragraph_fonts(paragraph)
+    return paragraph
+
+
+def _add_markdown_report(doc, markdown: str) -> None:
+    for raw_line in (markdown or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            _add_report_paragraph(doc, "")
+        elif line.startswith("### "):
+            _add_report_heading(doc, line[4:].strip(), level=3)
+        elif line.startswith("## "):
+            _add_report_heading(doc, line[3:].strip(), level=2)
+        elif line.startswith("# "):
+            _add_report_heading(doc, line[2:].strip(), level=1)
+        elif line.startswith("- "):
+            _add_report_paragraph(doc, line[2:].strip(), style="List Bullet")
+        else:
+            _add_report_paragraph(doc, line)
 
 
 @router.post("/group-report")
@@ -162,7 +239,7 @@ async def generate_group_report(req: ReportRequest, db: AsyncSession = Depends(g
     """生成组会报告（结构化总结 + Word 下载）。"""
     from app.services.report_service import ReportService
     service = ReportService(db)
-    result = await service.generate_report(req.paper_ids, req.title)
+    result = await service.generate_report(req.paper_ids, req.title, custom_prompt=req.custom_prompt)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
 
@@ -172,30 +249,32 @@ async def generate_group_report(req: ReportRequest, db: AsyncSession = Depends(g
     from datetime import datetime
 
     doc = Document()
-    doc.styles['Normal'].font.name = 'Arial'
-    doc.styles['Normal'].font.size = __import__('docx.shared', fromlist=['Pt']).Pt(11)
+    _configure_report_doc_fonts(doc)
 
-    doc.add_heading(req.title, level=0)
-    doc.add_paragraph(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    doc.add_paragraph(f"共 {result['paper_count']} 篇论文")
-    doc.add_paragraph("")
+    _add_report_heading(doc, req.title, level=0)
+    _add_report_paragraph(doc, f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    _add_report_paragraph(doc, f"共 {result['paper_count']} 篇论文")
+    _add_report_paragraph(doc, "")
 
-    for i, pdata in enumerate(result["papers"], 1):
-        doc.add_heading(f"{pdata['title']}", level=1)
-        doc.add_paragraph(f"作者: {pdata['authors']}  |  年份: {pdata['year']}  |  arXiv: {pdata.get('arxiv_id', 'N/A')}")
+    if result.get("custom_report"):
+        _add_markdown_report(doc, result["custom_report"])
+    else:
+        for i, pdata in enumerate(result["papers"], 1):
+            _add_report_heading(doc, f"{pdata['title']}", level=1)
+            _add_report_paragraph(doc, f"作者: {pdata['authors']}  |  年份: {pdata['year']}  |  arXiv: {pdata.get('arxiv_id', 'N/A')}")
 
-        for section_name, section_content in pdata["sections"].items():
-            if section_content:
-                doc.add_heading(section_name, level=2)
-                # 解析 Markdown 要点为 Word 列表
-                for line in section_content.split("\n"):
-                    line = line.strip()
-                    if line.startswith("- "):
-                        doc.add_paragraph(line[2:], style='List Bullet')
-                    elif line:
-                        doc.add_paragraph(line)
+            for section_name, section_content in pdata["sections"].items():
+                if section_content:
+                    _add_report_heading(doc, section_name, level=2)
+                    # 解析 Markdown 要点为 Word 列表
+                    for line in section_content.split("\n"):
+                        line = line.strip()
+                        if line.startswith("- "):
+                            _add_report_paragraph(doc, line[2:], style='List Bullet')
+                        elif line:
+                            _add_report_paragraph(doc, line)
 
-        doc.add_paragraph("")
+            _add_report_paragraph(doc, "")
 
     # 输出为 bytes
     file_stream = io.BytesIO()
@@ -214,24 +293,28 @@ async def generate_group_report(req: ReportRequest, db: AsyncSession = Depends(g
 async def generate_report_markdown(
     paper_ids: str = Query(..., description="论文 ID，逗号分隔"),
     title: str = Query(default="组会报告"),
+    custom_prompt: Optional[str] = Query(default=None, max_length=4000),
     db: AsyncSession = Depends(get_db),
 ):
     """生成组会报告 Markdown 文本（可直接粘贴到飞书/Notion）。"""
     ids = [p.strip() for p in paper_ids.split(",") if p.strip()]
     from app.services.report_service import ReportService
     service = ReportService(db)
-    result = await service.generate_report(ids, title)
+    result = await service.generate_report(ids, title, custom_prompt=custom_prompt)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
 
     md = f"# {result['title']}\n\n生成时间: {result['generated_at'][:19]}  |  共 {result['paper_count']} 篇\n\n---\n\n"
-    for i, pdata in enumerate(result["papers"], 1):
-        md += f"## {i}. {pdata['title']}\n\n"
-        md += f"**作者**: {pdata['authors']}  |  **年份**: {pdata['year']}  |  **arXiv**: {pdata.get('arxiv_id', 'N/A')}\n\n"
-        for section_name, section_content in pdata["sections"].items():
-            if section_content:
-                md += f"### {section_name}\n\n{section_content}\n\n"
-        md += "---\n\n"
+    if result.get("custom_report"):
+        md += result["custom_report"].strip() + "\n"
+    else:
+        for i, pdata in enumerate(result["papers"], 1):
+            md += f"## {i}. {pdata['title']}\n\n"
+            md += f"**作者**: {pdata['authors']}  |  **年份**: {pdata['year']}  |  **arXiv**: {pdata.get('arxiv_id', 'N/A')}\n\n"
+            for section_name, section_content in pdata["sections"].items():
+                if section_content:
+                    md += f"### {section_name}\n\n{section_content}\n\n"
+            md += "---\n\n"
 
     return TextResponse(result=md)
 
@@ -244,19 +327,22 @@ async def write_report_to_feishu(req: FeishuReportRequest, db: AsyncSession = De
     ids = req.paper_ids
     from app.services.report_service import ReportService
     service = ReportService(db)
-    result = await service.generate_report(ids, req.title)
+    result = await service.generate_report(ids, req.title, custom_prompt=req.custom_prompt)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
 
     # 2. 生成 Markdown
     md = f"# {result['title']}\n\n生成时间: {result['generated_at'][:19]}  |  共 {result['paper_count']} 篇\n\n---\n\n"
-    for i, pdata in enumerate(result["papers"], 1):
-        md += f"## {i}. {pdata['title']}\n\n"
-        md += f"**作者**: {pdata['authors']}  |  **年份**: {pdata['year']}  |  **arXiv**: {pdata.get('arxiv_id', 'N/A')}\n\n"
-        for section_name, section_content in pdata["sections"].items():
-            if section_content:
-                md += f"### {section_name}\n\n{section_content}\n\n"
-        md += "---\n\n"
+    if result.get("custom_report"):
+        md += result["custom_report"].strip() + "\n"
+    else:
+        for i, pdata in enumerate(result["papers"], 1):
+            md += f"## {i}. {pdata['title']}\n\n"
+            md += f"**作者**: {pdata['authors']}  |  **年份**: {pdata['year']}  |  **arXiv**: {pdata.get('arxiv_id', 'N/A')}\n\n"
+            for section_name, section_content in pdata["sections"].items():
+                if section_content:
+                    md += f"### {section_name}\n\n{section_content}\n\n"
+            md += "---\n\n"
 
     # 3. 写入飞书
     try:
@@ -280,13 +366,14 @@ async def write_report_to_feishu(req: FeishuReportRequest, db: AsyncSession = De
 async def generate_report_json(
     paper_ids: str = Query(..., description="论文 ID，逗号分隔"),
     title: str = Query(default="组会报告"),
+    custom_prompt: Optional[str] = Query(default=None, max_length=4000),
     db: AsyncSession = Depends(get_db),
 ):
     """生成组会报告 JSON（用于前端预览）。"""
     ids = [p.strip() for p in paper_ids.split(",") if p.strip()]
     from app.services.report_service import ReportService
     service = ReportService(db)
-    result = await service.generate_report(ids, title)
+    result = await service.generate_report(ids, title, custom_prompt=custom_prompt)
     return result
 
 

@@ -34,6 +34,10 @@ class Paper(BaseModel):
     embedding: Mapped[Optional[Any]] = mapped_column(Vector(384), nullable=True)
     metadata_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     tags: Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)  # AI 自动提取的关键词标签
+    imported_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    imported_by_username: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
 
     # 多对多关联分类
     categories: Mapped[List["Category"]] = relationship(

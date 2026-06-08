@@ -136,15 +136,22 @@ class ReportService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    def _custom_prompt_text(self, custom_prompt: str | None) -> str:
+        return (custom_prompt or "").strip()[:4000]
+
+    def _paper_context(self, paper: Paper, *, full_text_limit: int = 10000) -> str:
+        return f"""标题: {paper.title}
+作者: {', '.join(paper.authors[:5]) if isinstance(paper.authors, list) else str(paper.authors)[:200]}
+年份: {paper.year or 'N/A'}
+arXiv: {paper.arxiv_id or 'N/A'}
+摘要: {paper.abstract or '无'}
+全文: {paper.full_text[:full_text_limit] if paper.full_text else '无全文'}"""
+
     async def summarize_paper_sections(self, paper: Paper) -> dict:
         """AI 总结论文各个部分（学术深度版）。"""
         prompt = f"""你是一位资深学术研究者，正在撰写详细的论文阅读报告。请基于以下论文内容，进行全面深入的结构化总结。使用学术风格的中文撰写，每个部分充实详细。
 
-标题: {paper.title}
-作者: {', '.join(paper.authors[:5]) if isinstance(paper.authors, list) else str(paper.authors)[:200]}
-年份: {paper.year or 'N/A'}
-摘要: {paper.abstract or '无'}
-全文: {paper.full_text[:10000] if paper.full_text else '无全文'}
+{self._paper_context(paper)}
 
 按以下 Markdown 格式严格输出，每个部分 3-5 个要点，每个要点用 `- ` 开头：
 
@@ -210,7 +217,31 @@ class ReportService:
             logger.error(f"论文总结失败: {e}")
             return {"背景与动机": "", "方法": "", "结果": "", "局限": "", "启示": f"总结失败: {str(e)}"}
 
-    async def generate_report(self, paper_ids: List[str], title: str = "组会报告") -> dict:
+    async def generate_custom_report(self, papers: list[Paper], title: str, custom_prompt: str) -> str:
+        """Generate one report across all selected papers using user-provided instructions."""
+        paper_blocks = []
+        for index, paper in enumerate(papers, 1):
+            paper_blocks.append(f"## 论文 {index}\n{self._paper_context(paper, full_text_limit=6000)}")
+        prompt = f"""你是一位资深学术研究者，正在准备组会汇报材料。
+
+报告标题: {title}
+
+用户自定义汇报要求如下。它们优先于默认逐篇论文汇报结构；如果用户要求横向比较、主题式汇报、方法脉络、批判性分析或其他结构，请按用户要求组织。必须基于给定论文资料，不要编造文献不存在的实验或结论。
+
+{custom_prompt}
+
+可用论文资料:
+
+{chr(10).join(paper_blocks)}
+
+请输出一份中文 Markdown 报告。"""
+        return await llm_service.chat(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=4096,
+        )
+
+    async def generate_report(self, paper_ids: List[str], title: str = "组会报告", custom_prompt: str | None = None) -> dict:
         """生成组会报告（含结构化总结）。"""
         from uuid import UUID
 
@@ -232,6 +263,27 @@ class ReportService:
         await asyncio.gather(*[ensure_full_text(p) for p in papers], return_exceptions=True)
         # 2. commit 全文到 DB
         await self.session.commit()
+
+        custom_prompt_text = self._custom_prompt_text(custom_prompt)
+        if custom_prompt_text:
+            custom_report = await self.generate_custom_report(papers, title, custom_prompt_text)
+            return {
+                "title": title,
+                "papers": [
+                    {
+                        "title": paper.title,
+                        "authors": ", ".join(paper.authors[:5]) if isinstance(paper.authors, list) else str(paper.authors),
+                        "year": paper.year,
+                        "arxiv_id": paper.arxiv_id,
+                        "sections": {},
+                    }
+                    for paper in papers
+                ],
+                "paper_count": len(papers),
+                "custom_prompt": custom_prompt_text,
+                "custom_report": custom_report,
+                "generated_at": str(__import__("datetime").datetime.now()),
+            }
 
         # 3. 并行生成所有论文的结构化总结
         tasks = [self.summarize_paper_sections(p) for p in papers]

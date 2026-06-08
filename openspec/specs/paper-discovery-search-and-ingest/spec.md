@@ -27,6 +27,7 @@ The system SHALL allow an authenticated user to add a single remote preview to t
 #### Scenario: regular user adds an OpenAlex preview
 - **WHEN** a logged-in non-admin user clicks “加入论文库” on an OpenAlex preview
 - **THEN** the server resolves the OpenAlex work, stores or reuses the paper record, and marks it saved for that user
+- **AND** newly stored paper records identify the importing account.
 
 #### Scenario: unauthenticated user views remote results
 - **WHEN** an unauthenticated user views a remote preview
@@ -35,6 +36,28 @@ The system SHALL allow an authenticated user to add a single remote preview to t
 #### Scenario: bulk ingestion permissions remain restricted
 - **WHEN** a non-admin user calls the administrator bulk-ingestion endpoint
 - **THEN** the server rejects the request
+
+### Requirement: Paper library exposes importer ownership
+The paper library SHALL expose the account that originally imported each local paper.
+
+#### Scenario: User views local paper results
+- **WHEN** the paper library renders local paper cards
+- **THEN** each paper with importer metadata shows an account tag for that importer.
+
+#### Scenario: Historical papers are migrated
+- **WHEN** existing paper rows are migrated to the new ownership metadata
+- **THEN** they are labeled as imported by `gst`.
+
+### Requirement: Paper library can filter to my imported papers
+The paper library SHALL allow an authenticated user to view papers imported by their own account.
+
+#### Scenario: User selects my paper filter
+- **WHEN** an authenticated user selects the "我的" filter
+- **THEN** the local paper search returns papers imported by that user.
+
+#### Scenario: User changes away from my paper filter
+- **WHEN** the user switches back to broader paper-library filters
+- **THEN** the library returns the normal local/global paper results.
 
 ### Requirement: Clear remote discovery failures
 The interface SHALL surface a useful remote-discovery error message when the backend reports an upstream failure.
@@ -54,4 +77,3 @@ The paper library frontend SHALL show persistent structured recovery guidance fo
 #### Scenario: Paper library action succeeds after a previous failure
 - **WHEN** a paper library API action succeeds after an earlier failure
 - **THEN** stale paper-library recovery guidance is cleared when the successful action makes it obsolete.
-

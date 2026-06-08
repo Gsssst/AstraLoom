@@ -35,6 +35,8 @@ interface PaperItem {
   pdf_url?: string | null;
   source_url?: string | null;
   read_status?: ReadingStatus | null;
+  imported_by_user_id?: string | null;
+  imported_by_username?: string | null;
   recommendation_kind?: string;
   recommendation_reason?: string;
 }
@@ -80,7 +82,7 @@ type DiagnosticTab = 'hybrid' | 'bm25' | 'dense';
 type PaperResultStateFilter = 'all' | 'local' | 'importable' | 'imported' | 'open_pdf' | 'missing_remote_id';
 
 const remoteSearchSources = ['scholarly', 'arxiv', 'semantic_scholar', 'openalex', 'google_scholar'];
-const paperSearchSources = ['local', 'saved', 'collection', 'reading', 'maintenance', ...remoteSearchSources];
+const paperSearchSources = ['local', 'mine', 'saved', 'collection', 'reading', 'maintenance', ...remoteSearchSources];
 const readingStatusMeta: Record<ReadingStatus, { label: string; color: 'default' | 'processing' | 'success' }> = {
   unread: { label: '待读', color: 'default' },
   reading: { label: '阅读中', color: 'processing' },
@@ -248,6 +250,7 @@ const PapersPage: React.FC = () => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [reportTitle, setReportTitle] = useState('组会报告');
+  const [reportPrompt, setReportPrompt] = useState('');
   const [reportLoading, setReportLoading] = useState(false);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [deleteModal, setDeleteModal] = useState<{ open: boolean; paper: PaperItem | null }>({ open: false, paper: null });
@@ -380,7 +383,9 @@ const PapersPage: React.FC = () => {
         const r = await api.get(ep, { params: source === 'reading' ? { status: readingStatus } : undefined });
         setPapers(r.data.map((p: any) => ({ ...p, id: p.id })));
       } else {
-        const r = await api.get('/papers/search', { params: { q: searchQuery, source, sort, page: requestedPage, page_size: 30, year_from: yearFrom, year_to: yearTo } });
+        const searchSource = source === 'mine' ? 'local' : source;
+        const owner = source === 'mine' ? 'mine' : undefined;
+        const r = await api.get('/papers/search', { params: { q: searchQuery, source: searchSource, owner, sort, page: requestedPage, page_size: 30, year_from: yearFrom, year_to: yearTo } });
         setPapers(r.data.items);
         setRemotePage(requestedPage);
       }
@@ -437,7 +442,11 @@ const PapersPage: React.FC = () => {
     setReportLoading(true);
     try {
       if (format === 'docx') {
-        const r = await api.post('/writing/group-report', { paper_ids: Array.from(selectedIds), title: reportTitle }, { responseType: 'blob', timeout: 120000 });
+        const r = await api.post('/writing/group-report', {
+          paper_ids: Array.from(selectedIds),
+          title: reportTitle,
+          custom_prompt: reportPrompt.trim() || undefined,
+        }, { responseType: 'blob', timeout: 120000 });
         const url = URL.createObjectURL(new Blob([r.data])); const a = document.createElement('a');
         a.href = url; a.download = `${reportTitle}_${new Date().toISOString().slice(0, 10)}.docx`; a.click();
         setPageActionError(null);
@@ -1103,6 +1112,7 @@ const PapersPage: React.FC = () => {
           <Col xs={24} sm={4}><Select value={source} onChange={updateSource} style={{ width: '100%', borderRadius: 10 }}
             options={[
               { value: 'local', label: '📚 全部论文' },
+              { value: 'mine', label: '👤 我的' },
               { value: 'saved', label: '⭐ 收藏' },
               { value: 'collection', label: '🗂️ 自定义分类' },
               { value: 'reading', label: '📖 阅读列表' },
@@ -1423,6 +1433,7 @@ const PapersPage: React.FC = () => {
                       {paper.authors?.slice(0, 2).map((a, i) => <Tag key={i} icon={<UserOutlined />} style={{ borderRadius: 6 }}>{a}</Tag>)}
                       {paper.arxiv_id && <Tag color="#b31b1b" style={{ borderRadius: 6 }}>arXiv:{paper.arxiv_id}</Tag>}
                       <Tag color={sc(paper.source)} style={{ borderRadius: 6 }}>{sl(paper.source)}</Tag>
+                      {paper.imported_by_username && <Tag icon={<UserOutlined />} color="purple" style={{ borderRadius: 6 }}>导入：{paper.imported_by_username}</Tag>}
                       <Tag color={resultState.color} style={{ borderRadius: 6 }}>{resultState.label}</Tag>
                       {paper.read_status && <Tag color={readingStatusMeta[paper.read_status].color} style={{ borderRadius: 6 }}>{readingStatusMeta[paper.read_status].label}</Tag>}
                       {paper.citation_count > 0 && <Tag icon={<RiseOutlined />} color="orange" style={{ borderRadius: 6 }}>引用 {paper.citation_count}</Tag>}
@@ -1577,6 +1588,7 @@ const PapersPage: React.FC = () => {
             <Space size={6} wrap>
               {detailPaper.year && <Tag icon={<CalendarOutlined />} color="blue">{detailPaper.year}</Tag>}
               <Tag color={sc(detailPaper.source)}>{sl(detailPaper.source)}</Tag>
+              {detailPaper.imported_by_username && <Tag icon={<UserOutlined />} color="purple">导入：{detailPaper.imported_by_username}</Tag>}
               {detailPaper.arxiv_id && <Tag color="#b31b1b">arXiv:{detailPaper.arxiv_id}</Tag>}
               {detailPaper.doi && <Tag>DOI:{detailPaper.doi}</Tag>}
             </Space>
@@ -1617,11 +1629,26 @@ const PapersPage: React.FC = () => {
       <Modal title="生成组会报告" open={reportModalOpen} onCancel={() => setReportModalOpen(false)}
         footer={[<Button key="cancel" onClick={() => setReportModalOpen(false)}>取消</Button>, <Button key="md" icon={<FileTextOutlined />} loading={reportLoading} onClick={async () => {
           const ids = Array.from(selectedIds).join(',');
-          try { const r = await api.get(`/writing/group-report-md?paper_ids=${ids}&title=${encodeURIComponent(reportTitle)}`); await navigator.clipboard.writeText(r.data.result); setPageActionError(null); message.success('已复制，可粘贴到飞书'); setReportModalOpen(false); } catch (error) { showPageError('复制 Markdown 报告失败', error, '复制 Markdown 报告失败'); }
+          try {
+            const r = await api.get('/writing/group-report-md', { params: { paper_ids: ids, title: reportTitle, custom_prompt: reportPrompt.trim() || undefined }, timeout: 120000 });
+            await navigator.clipboard.writeText(r.data.result);
+            setPageActionError(null);
+            message.success('已复制，可粘贴到飞书');
+            setReportModalOpen(false);
+          } catch (error) { showPageError('复制 Markdown 报告失败', error, '复制 Markdown 报告失败'); }
         }}>复制 MD</Button>, <Button key="docx" type="primary" icon={<FileTextOutlined />} loading={reportLoading} onClick={() => handleReport('docx')}>下载 Word</Button>]}>
         <Space direction="vertical" style={{ width: '100%' }}>
           <Text>已选择 {selectedIds.size} 篇论文</Text>
           <Input placeholder="报告标题" value={reportTitle} onChange={e => setReportTitle(e.target.value)} style={{ borderRadius: 10 }} />
+          <Input.TextArea
+            placeholder="可选：输入自定义汇报要求。留空时使用默认逐篇论文报告；填写后会按你的要求生成整体组会报告，例如横向比较、按方法脉络汇报、只讲实验设计或从批判性角度分析。"
+            value={reportPrompt}
+            onChange={e => setReportPrompt(e.target.value)}
+            autoSize={{ minRows: 4, maxRows: 8 }}
+            maxLength={4000}
+            showCount
+            style={{ borderRadius: 10 }}
+          />
         </Space>
       </Modal>
       </div>

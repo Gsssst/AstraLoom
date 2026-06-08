@@ -50,6 +50,8 @@ class PaperBrief(BaseModel):
     pdf_url: Optional[str] = None
     source_url: Optional[str] = None
     read_status: Optional[str] = None
+    imported_by_user_id: Optional[str] = None
+    imported_by_username: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -397,7 +399,17 @@ def _paper_brief(paper, *, remote: bool = False) -> PaperBrief:
         remote_ingest_token=create_remote_ingest_token(paper) if remote else None,
         pdf_url=getattr(paper, "pdf_url", None) if remote else (metadata or {}).get("pdf_url"),
         source_url=getattr(paper, "source_url", None),
+        imported_by_user_id=None if remote else str(getattr(paper, "imported_by_user_id", None)) if getattr(paper, "imported_by_user_id", None) else None,
+        imported_by_username=None if remote else getattr(paper, "imported_by_username", None),
     )
+
+
+def _paper_imported_by_user(paper: Paper, user) -> bool:
+    if not user:
+        return False
+    if paper.imported_by_user_id and str(paper.imported_by_user_id) == str(user.id):
+        return True
+    return bool(not paper.imported_by_user_id and paper.imported_by_username == user.username)
 
 
 @router.get("/suggest")
@@ -419,7 +431,9 @@ async def search_papers(
     page_size: int = Query(default=20, ge=1, le=50),
     sort: str = Query(default="created_desc", description="排序: created_desc, created_asc, year_desc, year_asc, title"),
     search_mode: str = Query(default="hybrid", pattern="^(hybrid|dense|bm25)$", description="检索模式: hybrid, dense, bm25"),
+    owner: Optional[str] = Query(default=None, pattern="^(mine)$", description="归属筛选: mine"),
     db: AsyncSession = Depends(get_db),
+    user=Depends(get_optional_user),
 ):
     """搜索论文 — 支持混合检索（BM25 + Dense）。"""
     items = []
@@ -449,6 +463,15 @@ async def search_papers(
                 year_from=year_from,
                 year_to=year_to,
             )
+            if owner == "mine":
+                if not user:
+                    paper_scores = []
+                else:
+                    paper_scores = [
+                        (paper, score)
+                        for paper, score in paper_scores
+                        if _paper_imported_by_user(paper, user)
+                    ]
             total = len(paper_scores)
             for paper, _score in paper_scores[page_size * (page - 1):page_size * page]:
                 items.append(_paper_brief(paper))
@@ -459,6 +482,17 @@ async def search_papers(
                 query = query.join(PaperCategory).join(Category).where(Category.name == category)
             if year_from: query = query.where(Paper.year >= year_from)
             if year_to: query = query.where(Paper.year <= year_to)
+            if owner == "mine":
+                if not user:
+                    query = query.where(Paper.id.is_(None))
+                else:
+                    query = query.where(
+                        (Paper.imported_by_user_id == user.id)
+                        | (
+                            (Paper.imported_by_user_id.is_(None))
+                            & (Paper.imported_by_username == user.username)
+                        )
+                    )
             count_query = select(func.count()).select_from(query.subquery())
             total_result = await db.execute(count_query)
             total = total_result.scalar() or 0
@@ -510,6 +544,7 @@ async def ingest_papers(
         result = await service.ingest_by_ids(
             arxiv_ids=req.arxiv_ids,
             auto_download=req.auto_download,
+            imported_by_user=user,
         )
     else:
         result = await service.search_and_ingest(
@@ -517,6 +552,7 @@ async def ingest_papers(
             max_results=req.max_results,
             source=req.source,
             auto_download=req.auto_download,
+            imported_by_user=user,
         )
 
     return IngestResponse(
@@ -542,12 +578,13 @@ async def ingest_personal_paper(
     service = PaperIngestionService(db)
     preview = read_remote_ingest_token(req.remote_ingest_token) if req.remote_ingest_token else None
     if preview and preview.source == req.source and preview.metadata.get("remote_id") == req.remote_id:
-        paper, is_new = await service.ingest_paper(preview, auto_download=req.auto_download)
+        paper, is_new = await service.ingest_paper(preview, auto_download=req.auto_download, imported_by_user=user)
     else:
         paper, is_new = await service.ingest_remote(
             source=req.source,
             remote_id=req.remote_id,
             auto_download=req.auto_download,
+            imported_by_user=user,
         )
     if not paper:
         raise HTTPException(status_code=404, detail="未能从远程学术源解析这篇论文，请稍后重试")
@@ -599,18 +636,7 @@ async def semantic_search(
 
     return [
         SemanticSearchResult(
-            paper=PaperBrief(
-                id=str(p.id),
-                title=p.title,
-                authors=p.authors,
-                year=p.year,
-                abstract=p.abstract[:500] if p.abstract else None,
-                arxiv_id=p.arxiv_id,
-                doi=p.doi,
-                source=p.source,
-                citation_count=p.citation_count,
-                created_at=p.created_at.isoformat() if p.created_at else "",
-            ),
+            paper=_paper_brief(p),
             similarity=round(score, 4),
         )
         for p, score in results
@@ -879,6 +905,8 @@ async def get_paper_detail(
         source_url=paper.source_url,
         pdf_path=paper.pdf_path,
         citation_count=paper.citation_count,
+        imported_by_user_id=str(paper.imported_by_user_id) if paper.imported_by_user_id else None,
+        imported_by_username=paper.imported_by_username,
         full_text_preview=paper.full_text[:5000] if paper.full_text else None,
         tags=paper.tags,
         categories=[
@@ -1146,7 +1174,7 @@ async def get_reading_list(status: Literal["unread", "reading", "completed"] = Q
     """获取阅读列表。"""
     result = await db.execute(select(Paper).join(UserPaper).where(UserPaper.user_id==user.id, UserPaper.read_status==status).order_by(UserPaper.created_at.desc()).limit(50))
     papers = result.scalars().all()
-    return [PaperBrief(id=str(p.id),title=p.title,authors=p.authors,year=p.year,abstract=p.abstract[:300] if p.abstract else None,arxiv_id=p.arxiv_id,doi=p.doi,source=p.source,citation_count=p.citation_count,created_at=p.created_at.isoformat() if p.created_at else "",read_status=status) for p in papers]
+    return [{**_paper_brief(p).model_dump(), "read_status": status} for p in papers]
 
 @router.delete("/{paper_id}/save")
 async def unsave_paper(paper_id: str, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
@@ -1183,16 +1211,7 @@ async def get_saved_papers(db: AsyncSession = Depends(get_db), user=Depends(get_
     """获取用户收藏的论文。"""
     enhance = PaperEnhanceService(db)
     papers = await enhance.get_saved_papers(str(user.id))
-    return [
-        PaperBrief(
-            id=str(p.id), title=p.title, authors=p.authors, year=p.year,
-            abstract=p.abstract[:500] if p.abstract else None,
-            arxiv_id=p.arxiv_id, doi=p.doi, source=p.source,
-            citation_count=p.citation_count,
-            created_at=p.created_at.isoformat() if p.created_at else "",
-        )
-        for p in papers
-    ]
+    return [_paper_brief(p) for p in papers]
 
 
 @router.post("/{paper_id}/load-full-text")
@@ -1579,7 +1598,8 @@ async def import_bibtex(file: UploadFile = File(...), db: AsyncSession = Depends
             existing = (await db.execute(select(Paper).where(Paper.title == title.group(1).strip()))).scalar_one_or_none()
             if existing: skipped += 1; continue
             p = Paper(title=title.group(1).strip(), authors=author.group(1).split(' and ') if author else [],
-                       year=int(year.group(1)) if year else None, arxiv_id=arxiv.group(1) if arxiv else None, source="bibtex_import")
+                       year=int(year.group(1)) if year else None, arxiv_id=arxiv.group(1) if arxiv else None, source="bibtex_import",
+                       imported_by_user_id=user.id, imported_by_username=user.username)
             db.add(p); imported += 1
         except: skipped += 1
     await db.commit()
@@ -1604,7 +1624,8 @@ async def import_zotero_csv(file: UploadFile = File(...), db: AsyncSession = Dep
             year = int(row["Publication Year"]) if row.get("Publication Year","").isdigit() else None
             authors = [a.strip() for a in row.get("Author","").split(";") if a.strip()]
             doi = row.get("DOI","").strip() or None
-            p = Paper(title=title, authors=authors, year=year, doi=doi, abstract=row.get("Abstract Note","")[:500] or None, source="zotero_import")
+            p = Paper(title=title, authors=authors, year=year, doi=doi, abstract=row.get("Abstract Note","")[:500] or None, source="zotero_import",
+                      imported_by_user_id=user.id, imported_by_username=user.username)
             db.add(p); imported += 1
         except: skipped += 1
     await db.commit()
