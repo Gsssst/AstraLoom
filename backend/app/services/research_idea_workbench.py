@@ -2017,6 +2017,180 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             },
         }
 
+    async def build_proposal_review_package(
+        self,
+        idea: ResearchIdea,
+        project: Optional[ResearchProject] = None,
+    ) -> dict[str, Any]:
+        """Create and persist reviewer-style guidance for proposal revision."""
+        validation = self.validate_idea(idea, project)
+        execution = self.build_experiment_execution_pack(idea, project)
+        review = idea.review_json or {}
+        prompt = f"""你是严格但建设性的论文审稿人。请基于 Proposal、证据、验证和实验推进信息，输出结构化审稿包。
+只输出合法 JSON，不要使用 Markdown 代码块。JSON 格式：
+{{
+  "summary": "一句话审稿结论",
+  "contributions": ["最多 4 条潜在贡献"],
+  "weakest_assumptions": ["最多 4 条最弱假设"],
+  "reviewer_objections": ["最多 5 条拒稿/质疑点"],
+  "required_experiments": ["最多 5 个必要实验"],
+  "revision_plan": ["最多 5 个修订动作"],
+  "writing_readiness": "ready|needs_revision|blocked",
+  "next_revision_focus": "下一版 Proposal 应聚焦的一句话"
+}}
+
+Proposal：{json.dumps({
+            "title": idea.title,
+            "description": idea.description,
+            "hypothesis": idea.hypothesis,
+            "approach": idea.approach,
+            "novelty": idea.novelty,
+            "review": review,
+            "experiment_plan": idea.experiment_plan,
+            "evidence": idea.evidence_json,
+            "evolution": idea.evolution_json,
+        }, ensure_ascii=False)[:12000]}
+验证：{json.dumps(validation, ensure_ascii=False)[:8000]}
+实验推进：{json.dumps(execution, ensure_ascii=False)[:6000]}
+"""
+        parsed = await self._chat_json(prompt)
+        package = self.normalize_proposal_review_package(parsed, idea, validation, execution)
+        current_review = dict(idea.review_json or {})
+        current_review["proposal_review"] = package
+        idea.review_json = current_review
+        await self.session.commit()
+        await self.session.refresh(idea)
+        return package
+
+    def normalize_proposal_review_package(
+        self,
+        value: Any,
+        idea: ResearchIdea,
+        validation: Optional[dict[str, Any]] = None,
+        execution: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        data = value if isinstance(value, dict) else {}
+        validation = validation or self.validate_idea(idea)
+        execution = execution or self.build_experiment_execution_pack(idea)
+        readiness = (validation.get("writing_readiness") or {}).get("status")
+        objections = self._string_list(data.get("reviewer_objections"), limit=5)
+        if not objections:
+            objections = self._string_list((idea.review_json or {}).get("adversarial_review", {}).get("objections"), limit=5)
+        required_experiments = self._string_list(data.get("required_experiments"), limit=5)
+        if not required_experiments:
+            required_experiments = self._string_list(execution.get("next_actions"), limit=5)
+        weakest = self._string_list(data.get("weakest_assumptions"), limit=4)
+        if not weakest:
+            weakest = self._string_list(validation.get("feasibility_risks"), limit=4)
+        revision_plan = self._string_list(data.get("revision_plan"), limit=5)
+        if not revision_plan:
+            revision_plan = list(dict.fromkeys([*weakest, *required_experiments]))[:5]
+        writing_readiness = str(data.get("writing_readiness") or ("ready" if readiness == "ready" and not objections else "needs_revision")).strip()
+        if writing_readiness not in {"ready", "needs_revision", "blocked"}:
+            writing_readiness = "needs_revision"
+        next_focus = str(data.get("next_revision_focus") or "").strip()
+        if not next_focus:
+            next_focus = revision_plan[0] if revision_plan else "补强证据、实验设置和可证伪假设"
+        return {
+            "summary": str(data.get("summary") or f"{idea.title} 需要围绕证据、实验和 novelty 做一次审稿式修订。")[:600],
+            "contributions": self._string_list(data.get("contributions"), limit=4) or [str(idea.novelty or idea.description or "潜在贡献仍需进一步明确。")[:240]],
+            "weakest_assumptions": weakest[:4],
+            "reviewer_objections": objections[:5],
+            "required_experiments": required_experiments[:5],
+            "revision_plan": revision_plan[:5],
+            "writing_readiness": writing_readiness,
+            "next_revision_focus": next_focus[:600],
+        }
+
+    async def revise_idea_from_review(
+        self,
+        idea: ResearchIdea,
+        project: ResearchProject,
+        *,
+        focus: str = "",
+    ) -> ResearchIdea:
+        review_package = ((idea.review_json or {}).get("proposal_review") or {})
+        if not isinstance(review_package, dict) or not review_package:
+            review_package = await self.build_proposal_review_package(idea, project)
+        focus_text = str(focus or "").strip() or str(review_package.get("next_revision_focus") or "").strip()
+        if review_package.get("revision_plan"):
+            focus_text = f"{focus_text}\n审稿修订计划：{'；'.join(review_package.get('revision_plan') or [])}".strip()
+        child = await self.evolve_idea(idea, project, focus=focus_text)
+        evolution = dict(child.evolution_json or {})
+        evolution["source"] = "proposal_review"
+        evolution["review_focus"] = review_package.get("next_revision_focus")
+        evolution["review_objections"] = review_package.get("reviewer_objections") or []
+        evolution["required_experiments"] = review_package.get("required_experiments") or []
+        child.evolution_json = evolution
+        await self.session.commit()
+        await self.session.refresh(child)
+        return child
+
+    def compare_idea_versions(
+        self,
+        idea: ResearchIdea,
+        parent: Optional[ResearchIdea] = None,
+    ) -> dict[str, Any]:
+        if not parent:
+            return {
+                "idea_id": str(idea.id),
+                "has_parent": False,
+                "current": self._idea_version_snapshot(idea),
+                "parent": None,
+                "changes": [],
+                "revision_rationale": (idea.evolution_json or {}).get("rationale"),
+            }
+        fields = [
+            ("title", "标题", parent.title, idea.title),
+            ("hypothesis", "可证伪假设", parent.hypothesis, idea.hypothesis),
+            ("approach", "技术路线", parent.approach, idea.approach),
+            ("description", "描述", parent.description, idea.description),
+        ]
+        changes = [
+            {"field": key, "label": label, "before": before or "", "after": after or ""}
+            for key, label, before, after in fields
+            if (before or "") != (after or "")
+        ]
+        parent_plan = parent.experiment_plan or {}
+        child_plan = idea.experiment_plan or {}
+        if parent_plan != child_plan:
+            changes.append({"field": "experiment_plan", "label": "最小实验", "before": parent_plan, "after": child_plan})
+        parent_evidence = len((parent.evidence_json or {}).get("items") or [])
+        child_evidence = len((idea.evidence_json or {}).get("items") or [])
+        if parent_evidence != child_evidence:
+            changes.append({"field": "evidence_count", "label": "证据数量", "before": parent_evidence, "after": child_evidence})
+        return {
+            "idea_id": str(idea.id),
+            "parent_idea_id": str(parent.id),
+            "has_parent": True,
+            "current": self._idea_version_snapshot(idea),
+            "parent": self._idea_version_snapshot(parent),
+            "changes": changes,
+            "revision_rationale": (idea.evolution_json or {}).get("rationale"),
+            "review_source": {
+                "source": (idea.evolution_json or {}).get("source"),
+                "review_focus": (idea.evolution_json or {}).get("review_focus"),
+                "review_objections": (idea.evolution_json or {}).get("review_objections") or [],
+                "required_experiments": (idea.evolution_json or {}).get("required_experiments") or [],
+            },
+        }
+
+    @staticmethod
+    def _idea_version_snapshot(idea: ResearchIdea) -> dict[str, Any]:
+        review = idea.review_json or {}
+        return {
+            "id": str(idea.id),
+            "title": idea.title,
+            "status": idea.status,
+            "hypothesis": idea.hypothesis,
+            "approach": idea.approach,
+            "experiment_plan": idea.experiment_plan or {},
+            "evidence_count": len((idea.evidence_json or {}).get("items") or []),
+            "review_score": review.get("aggregate_score") or ((idea.feasibility_score or 0) + (idea.novelty_score or 0)) / 2,
+            "proposal_review": review.get("proposal_review"),
+            "evolution": idea.evolution_json or {},
+        }
+
     @staticmethod
     def _execution_task(key: str, label: str, value: Any, missing_tip: str) -> dict[str, Any]:
         if isinstance(value, list):

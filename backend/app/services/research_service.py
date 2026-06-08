@@ -26,6 +26,7 @@ COPILOT_MODE_PROMPTS = {
 }
 
 PROPOSAL_BOARD_STATUSES = [
+    ("review_revision", "审稿修订"),
     ("needs_evidence", "需要补证据"),
     ("needs_experiment_design", "需要补实验设计"),
     ("ready_for_experiment", "准备跑实验"),
@@ -478,6 +479,7 @@ class ResearchPipelineService:
                 "severity": "info",
                 "tags": self._timeline_tags([
                     f"第 {evolution.get('round') or 2} 轮",
+                    "审稿修订" if evolution.get("source") == "proposal_review" else "",
                     "实验反馈驱动" if evolution.get("experiment_feedback") else "",
                     f"父版本 {idea.parent_idea_id}" if idea.parent_idea_id else "",
                 ]),
@@ -485,6 +487,34 @@ class ResearchPipelineService:
                     "focus": evolution.get("focus"),
                     "parent_idea_id": str(idea.parent_idea_id) if idea.parent_idea_id else evolution.get("parent_idea_id"),
                     "experiment_feedback": evolution.get("experiment_feedback"),
+                    "review_focus": evolution.get("review_focus"),
+                    "review_objections": evolution.get("review_objections") or [],
+                    "required_experiments": evolution.get("required_experiments") or [],
+                },
+            })
+
+        review_json = idea.review_json or {}
+        proposal_review = review_json.get("proposal_review") if isinstance(review_json.get("proposal_review"), dict) else {}
+        if proposal_review:
+            events.append({
+                "id": f"{idea.id}:proposal_review",
+                "type": "proposal_review",
+                "title": "结构化审稿包",
+                "summary": proposal_review.get("summary") or proposal_review.get("next_revision_focus") or "已生成审稿式修订建议。",
+                "timestamp": created_at,
+                "severity": "success" if proposal_review.get("writing_readiness") == "ready" else "warning",
+                "tags": self._timeline_tags([
+                    f"异议 {len(proposal_review.get('reviewer_objections') or [])}",
+                    f"实验 {len(proposal_review.get('required_experiments') or [])}",
+                    proposal_review.get("writing_readiness"),
+                ]),
+                "details": {
+                    "contributions": proposal_review.get("contributions") or [],
+                    "weakest_assumptions": proposal_review.get("weakest_assumptions") or [],
+                    "reviewer_objections": proposal_review.get("reviewer_objections") or [],
+                    "required_experiments": proposal_review.get("required_experiments") or [],
+                    "revision_plan": proposal_review.get("revision_plan") or [],
+                    "next_revision_focus": proposal_review.get("next_revision_focus"),
                 },
             })
 
@@ -559,7 +589,7 @@ class ResearchPipelineService:
         """Build a deterministic board that explains what each Proposal needs next."""
         experiments = experiments or []
         items = sorted(
-            [self._proposal_board_item(project, idea, experiments) for idea in ideas],
+            [self._proposal_board_item(project, idea, experiments, project_ideas=ideas) for idea in ideas],
             key=lambda item: item["priority"],
             reverse=True,
         )
@@ -592,6 +622,8 @@ class ResearchPipelineService:
         project: ResearchProject,
         idea: ResearchIdea,
         experiments: list[dict[str, Any]],
+        *,
+        project_ideas: Optional[list[ResearchIdea]] = None,
     ) -> dict[str, Any]:
         workbench = ResearchIdeaWorkbenchService(self.session)
         validation = workbench.validate_idea(idea, project)
@@ -604,14 +636,24 @@ class ResearchPipelineService:
         execution_readiness = execution.get("readiness") or {}
         evidence_count = int(coverage.get("evidence_count") or len((idea.evidence_json or {}).get("items", []) or []))
         experiment_completeness = float(coverage.get("experiment_completeness") or 0)
-        review_score = float((idea.review_json or {}).get("aggregate_score") or (((idea.novelty_score or 0) + (idea.feasibility_score or 0)) / 2))
+        review_json = idea.review_json or {}
+        proposal_review = review_json.get("proposal_review") if isinstance(review_json.get("proposal_review"), dict) else {}
+        has_child_versions = any(str(getattr(item, "parent_idea_id", "") or "") == str(idea.id) for item in project_ideas or [])
+        review_score = float(review_json.get("aggregate_score") or (((idea.novelty_score or 0) + (idea.feasibility_score or 0)) / 2))
         blockers = self._proposal_board_blockers(validation, execution)
+        for objection in proposal_review.get("reviewer_objections") or []:
+            blockers.append(str(objection))
+        for experiment in proposal_review.get("required_experiments") or []:
+            blockers.append(f"审稿要求实验：{experiment}")
+        blockers = list(dict.fromkeys(blockers))
         status, action = self._proposal_board_status_and_action(
             idea,
             validation,
             execution,
             has_experiment_results,
             blockers,
+            proposal_review=proposal_review,
+            has_child_versions=has_child_versions,
         )
         priority = self._proposal_board_priority(
             status,
@@ -642,6 +684,9 @@ class ResearchPipelineService:
                 "has_experiment_results": has_experiment_results,
                 "discussion_turns": len(idea.discussion_log or []),
                 "evolution_round": (idea.evolution_json or {}).get("round") or (2 if idea.parent_idea_id else 1),
+                "proposal_review_readiness": proposal_review.get("writing_readiness"),
+                "review_objection_count": len(proposal_review.get("reviewer_objections") or []),
+                "has_child_versions": has_child_versions,
             },
             "summary": self._proposal_board_summary(idea, validation, execution),
             "created_at": self._iso_timestamp(getattr(idea, "created_at", None)),
@@ -669,16 +714,29 @@ class ResearchPipelineService:
         execution: dict[str, Any],
         has_experiment_results: bool,
         blockers: list[str],
+        *,
+        proposal_review: Optional[dict[str, Any]] = None,
+        has_child_versions: bool = False,
     ) -> tuple[str, dict[str, str]]:
         coverage = validation.get("coverage") or {}
         readiness = validation.get("writing_readiness") or {}
         execution_readiness = execution.get("readiness") or {}
+        proposal_review = proposal_review or {}
         if idea.status == "rejected":
             return "rejected", {"type": "restore", "label": "恢复待筛选", "target": "decision"}
         if idea.status == "implemented":
             return "implemented", {"type": "timeline", "label": "查看迭代轨迹", "target": "timeline"}
+        if has_child_versions:
+            return "needs_evolution", {"type": "version_compare", "label": "查看修订版本", "target": "comparison"}
         if has_experiment_results:
             return "needs_evolution", {"type": "evolve", "label": "根据反馈演化", "target": "copilot"}
+        review_blocking = (
+            proposal_review.get("writing_readiness") in {"blocked", "needs_revision"}
+            or bool(proposal_review.get("reviewer_objections"))
+            or bool(proposal_review.get("required_experiments"))
+        )
+        if review_blocking:
+            return "review_revision", {"type": "review_revision", "label": "按审稿意见修订", "target": "review"}
         if readiness.get("status") == "ready" and execution_readiness.get("status") == "ready":
             return "ready_for_writing", {"type": "writing", "label": "生成写作草稿", "target": "writing"}
         if not coverage.get("has_enough_evidence"):
@@ -708,6 +766,8 @@ class ResearchPipelineService:
             score += 18
         if status == "ready_for_writing":
             score += 16
+        elif status == "review_revision":
+            score += 12
         elif status == "ready_for_experiment":
             score += 10
         elif status == "needs_evolution":

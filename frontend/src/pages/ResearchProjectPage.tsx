@@ -65,6 +65,16 @@ interface GapFeedbackDraft {
   labels: GapFeedbackLabel[];
   note: string;
 }
+interface ProposalReviewPackage {
+  summary: string;
+  contributions: string[];
+  weakest_assumptions: string[];
+  reviewer_objections: string[];
+  required_experiments: string[];
+  revision_plan: string[];
+  writing_readiness: 'ready' | 'needs_revision' | 'blocked' | string;
+  next_revision_focus: string;
+}
 interface Review {
   scores: Record<string, number>; rationale: string; uncertainty: string; recommendation: string;
   aggregate_score?: number;
@@ -92,6 +102,7 @@ interface Review {
     verdict: 'advance' | 'revise' | 'reject'; penalty: number;
     objections: string[]; required_fixes: string[]; summary: string;
   };
+  proposal_review?: ProposalReviewPackage | null;
   search_tree?: { round?: number; operator?: string; parent_title?: string | null; lineage?: string[]; source?: string };
 }
 interface Candidate {
@@ -151,7 +162,17 @@ interface Idea {
   created_at?: string;
   generated_code: string | null; generated_code_project?: CodeProjectManifest | null; evidence_json?: { items?: Evidence[]; scope?: string; collection_sources?: { id: string; name: string; evidence_count: number }[] } | null;
   review_json?: Review | null; experiment_plan?: ExperimentPlan | null;
-  parent_idea_id?: string | null; evolution_json?: { focus?: string; rationale?: string; round?: number; experiment_feedback?: ExperimentRecord } | null;
+  parent_idea_id?: string | null;
+  evolution_json?: {
+    focus?: string;
+    rationale?: string;
+    round?: number;
+    source?: string;
+    review_focus?: string;
+    review_objections?: string[];
+    required_experiments?: string[];
+    experiment_feedback?: ExperimentRecord;
+  } | null;
   discussion_log?: CopilotLogEntry[];
 }
 type CopilotMode = 'mentor' | 'skeptic' | 'experiment_designer' | 'writer';
@@ -239,6 +260,9 @@ interface ProposalBoardItem {
     has_experiment_results?: boolean;
     discussion_turns?: number;
     evolution_round?: number;
+    proposal_review_readiness?: string;
+    review_objection_count?: number;
+    has_child_versions?: boolean;
   };
   summary: string;
   created_at: string;
@@ -253,6 +277,39 @@ interface ProposalBoard {
   project_id: string;
   summary: { total: number; actionable: number; recommended?: string | null; counts: Record<string, number> };
   groups: ProposalBoardGroup[];
+}
+interface ProposalVersionSnapshot {
+  id: string;
+  title: string;
+  status: string;
+  hypothesis?: string | null;
+  approach?: string | null;
+  experiment_plan?: ExperimentPlan | Record<string, any>;
+  evidence_count?: number;
+  review_score?: number;
+  proposal_review?: ProposalReviewPackage | null;
+  evolution?: Record<string, any>;
+}
+interface ProposalVersionChange {
+  field: string;
+  label: string;
+  before: any;
+  after: any;
+}
+interface ProposalVersionComparison {
+  idea_id: string;
+  parent_idea_id?: string;
+  has_parent: boolean;
+  current: ProposalVersionSnapshot;
+  parent?: ProposalVersionSnapshot | null;
+  changes: ProposalVersionChange[];
+  revision_rationale?: string | null;
+  review_source?: {
+    source?: string | null;
+    review_focus?: string | null;
+    review_objections?: string[];
+    required_experiments?: string[];
+  };
 }
 interface IdeaRun {
   id: string; project_id: string; status: string; stage: string; progress: number;
@@ -355,12 +412,14 @@ const noveltyLabels: Record<string, string> = { likely_novel: '可能新颖', in
 const noveltyColors: Record<string, string> = { likely_novel: 'green', incremental: 'gold', too_similar: 'red' };
 const adversarialLabels: Record<string, string> = { advance: '建议推进', revise: '需要修改', reject: '暂不推进' };
 const adversarialColors: Record<string, string> = { advance: 'green', revise: 'orange', reject: 'red' };
-const readinessColors: Record<string, string> = { ready: 'green', needs_validation: 'orange', blocked: 'red' };
+const readinessColors: Record<string, string> = { ready: 'green', needs_validation: 'orange', needs_revision: 'orange', blocked: 'red' };
+const proposalReviewReadinessLabels: Record<string, string> = { ready: '可进入写作', needs_revision: '需要修订', blocked: '暂不推进' };
 const executionReadinessColors: Record<string, string> = { ready: 'green', needs_setup: 'orange', needs_iteration: 'purple' };
 const riskColors: Record<string, string> = { high: 'red', medium: 'orange', low: 'green' };
 const timelineTypeLabels: Record<string, string> = {
   created: '创建',
   evolution: '演化来源',
+  proposal_review: '审稿包',
   validation: '验证',
   execution: '实验推进',
   discussion: 'Copilot',
@@ -379,6 +438,7 @@ const proposalBoardStatusColors: Record<string, string> = {
   ready_for_experiment: 'blue',
   needs_evolution: 'purple',
   ready_for_writing: 'green',
+  review_revision: 'volcano',
   draft_review: 'default',
   implemented: 'cyan',
   rejected: 'red',
@@ -475,6 +535,14 @@ const ResearchProjectPage: React.FC = () => {
   const [evolvingIdea, setEvolvingIdea] = useState<Idea | null>(null);
   const [evolutionFocus, setEvolutionFocus] = useState('');
   const [evolving, setEvolving] = useState(false);
+  const [reviewingIdeaIds, setReviewingIdeaIds] = useState<Set<string>>(new Set());
+  const [reviewRevisionIdea, setReviewRevisionIdea] = useState<Idea | null>(null);
+  const [reviewRevisionFocus, setReviewRevisionFocus] = useState('');
+  const [reviewRevisionLoading, setReviewRevisionLoading] = useState(false);
+  const [versionComparisonOpen, setVersionComparisonOpen] = useState(false);
+  const [versionComparisonIdea, setVersionComparisonIdea] = useState<Idea | null>(null);
+  const [versionComparisonLoading, setVersionComparisonLoading] = useState(false);
+  const [versionComparison, setVersionComparison] = useState<ProposalVersionComparison | null>(null);
   const [importingEvidence, setImportingEvidence] = useState<Set<string>>(new Set());
   const [draftingIdeaIds, setDraftingIdeaIds] = useState<Set<string>>(new Set());
   const [experiments, setExperiments] = useState<ExperimentRecord[]>([]);
@@ -1006,6 +1074,83 @@ const ResearchProjectPage: React.FC = () => {
       setPageActionError(null);
     } catch (error) { showPageError('加载 Proposal 比较失败', error, '加载 Proposal 比较失败'); }
   };
+  const refreshProposalReviewPackage = async (idea: Idea) => {
+    setReviewingIdeaIds(previous => new Set(previous).add(idea.id));
+    try {
+      const response = await api.post(`/research/ideas/${idea.id}/review-package`);
+      const proposalReview = response.data as ProposalReviewPackage;
+      setIdeas(previous => previous.map(item => item.id === idea.id ? {
+        ...item,
+        review_json: { ...(item.review_json || {}), proposal_review: proposalReview } as Review,
+      } : item));
+      if (copilotIdea?.id === idea.id) {
+        setCopilotIdea(previous => previous ? { ...previous, review_json: { ...(previous.review_json || {}), proposal_review: proposalReview } as Review } : previous);
+      }
+      if (reviewRevisionIdea?.id === idea.id) {
+        setReviewRevisionIdea(previous => previous ? { ...previous, review_json: { ...(previous.review_json || {}), proposal_review: proposalReview } as Review } : previous);
+      }
+      loadProposalBoard();
+      setPageActionError(null);
+      message.success('结构化审稿包已更新');
+      return proposalReview;
+    } catch (error) {
+      showPageError('生成结构化审稿包失败', error, '生成结构化审稿包失败');
+      return null;
+    } finally {
+      setReviewingIdeaIds(previous => {
+        const next = new Set(previous);
+        next.delete(idea.id);
+        return next;
+      });
+    }
+  };
+  const openReviewRevision = async (idea: Idea) => {
+    let proposalReview = idea.review_json?.proposal_review || null;
+    if (!proposalReview) {
+      proposalReview = await refreshProposalReviewPackage(idea);
+      if (!proposalReview) return;
+    }
+    const currentIdea = ideas.find(item => item.id === idea.id) || idea;
+    setReviewRevisionIdea({
+      ...currentIdea,
+      review_json: { ...(currentIdea.review_json || {}), proposal_review: proposalReview } as Review,
+    });
+    setReviewRevisionFocus(proposalReview.next_revision_focus || '');
+  };
+  const reviseFromReview = async () => {
+    if (!reviewRevisionIdea) return;
+    setReviewRevisionLoading(true);
+    try {
+      const response = await api.post(`/research/ideas/${reviewRevisionIdea.id}/revise-from-review`, { focus: reviewRevisionFocus });
+      const child = response.data as Idea;
+      setIdeas(previous => [child, ...previous.filter(item => item.id !== child.id)]);
+      setReviewRevisionIdea(null);
+      setReviewRevisionFocus('');
+      setActiveWorkbenchTab('proposals');
+      loadProposalBoard();
+      setPageActionError(null);
+      message.success('已根据审稿意见生成 Proposal 子版本');
+    } catch (error) {
+      showPageError('按审稿意见修订失败', error, '按审稿意见修订失败');
+    } finally {
+      setReviewRevisionLoading(false);
+    }
+  };
+  const openVersionComparison = async (idea: Idea) => {
+    setVersionComparisonIdea(idea);
+    setVersionComparisonOpen(true);
+    setVersionComparisonLoading(true);
+    try {
+      const response = await api.get(`/research/ideas/${idea.id}/version-comparison`);
+      setVersionComparison(response.data as ProposalVersionComparison);
+      setPageActionError(null);
+    } catch (error) {
+      setVersionComparison(null);
+      showPageError('加载 Proposal 版本对比失败', error, '加载 Proposal 版本对比失败');
+    } finally {
+      setVersionComparisonLoading(false);
+    }
+  };
   const evolveProposal = async () => {
     if (!evolvingIdea) return;
     setEvolving(true);
@@ -1089,6 +1234,17 @@ const ResearchProjectPage: React.FC = () => {
     }
     if (actionType === 'evolve' || actionType === 'copilot') {
       openCopilot(idea);
+      return;
+    }
+    if (actionType === 'review_revision') {
+      openReviewRevision(idea);
+      return;
+    }
+    if (actionType === 'version_compare') {
+      const latestChild = ideas
+        .filter(candidate => candidate.parent_idea_id === idea.id)
+        .sort((first, second) => (new Date(second.created_at || 0).getTime()) - (new Date(first.created_at || 0).getTime()))[0];
+      openVersionComparison(latestChild || idea);
       return;
     }
     if (actionType === 'restore') {
@@ -1683,6 +1839,130 @@ const ResearchProjectPage: React.FC = () => {
     );
   };
 
+  const renderProposalReviewPanel = (idea: Idea) => {
+    const proposalReview = idea.review_json?.proposal_review || null;
+    const reviewReadiness = proposalReview?.writing_readiness || 'missing';
+    const hasChildVersion = ideas.some(candidate => candidate.parent_idea_id === idea.id);
+    const latestChild = ideas
+      .filter(candidate => candidate.parent_idea_id === idea.id)
+      .sort((first, second) => (new Date(second.created_at || 0).getTime()) - (new Date(first.created_at || 0).getTime()))[0];
+    const compareTarget = idea.parent_idea_id ? idea : latestChild;
+    return (
+      <Card
+        size="small"
+        className="proposal-review-package"
+        title={(
+          <Space wrap>
+            <FileSearchOutlined />
+            <Text strong>结构化审稿包</Text>
+            {proposalReview ? (
+              <Tag color={readinessColors[reviewReadiness] || 'default'}>
+                {proposalReviewReadinessLabels[reviewReadiness] || reviewReadiness}
+              </Tag>
+            ) : <Tag color="default">未生成</Tag>}
+          </Space>
+        )}
+        extra={(
+          <Space wrap>
+            <Button
+              size="small"
+              icon={<ReloadOutlined />}
+              loading={reviewingIdeaIds.has(idea.id)}
+              onClick={() => refreshProposalReviewPackage(idea)}
+            >
+              {proposalReview ? '刷新审稿包' : '生成审稿包'}
+            </Button>
+            <Button
+              size="small"
+              type="primary"
+              ghost
+              disabled={!proposalReview || (idea.status !== 'draft' && idea.status !== 'pinned')}
+              onClick={() => openReviewRevision(idea)}
+            >
+              按审稿意见修订
+            </Button>
+            {compareTarget && (
+              <Button size="small" onClick={() => openVersionComparison(compareTarget)}>
+                版本对比
+              </Button>
+            )}
+          </Space>
+        )}
+        style={{ borderRadius: 12, marginTop: 14, marginBottom: 12, background: '#fcfdff' }}
+      >
+        {proposalReview ? (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Alert
+              showIcon
+              type={reviewReadiness === 'ready' ? 'success' : reviewReadiness === 'blocked' ? 'error' : 'warning'}
+              message="审稿结论"
+              description={proposalReview.summary || '已生成审稿式修订建议。'}
+            />
+            <Row gutter={[12, 12]}>
+              <Col xs={24} lg={12}>
+                <div className="proposal-review-section">
+                  <Text strong>潜在贡献</Text>
+                  <Space wrap style={{ marginTop: 8 }}>
+                    {(proposalReview.contributions || []).length > 0
+                      ? proposalReview.contributions.map(item => <Tag color="green" key={item}>{item}</Tag>)
+                      : <Text type="secondary">暂无明确贡献点</Text>}
+                  </Space>
+                </div>
+              </Col>
+              <Col xs={24} lg={12}>
+                <div className="proposal-review-section">
+                  <Text strong>最弱假设</Text>
+                  <Space wrap style={{ marginTop: 8 }}>
+                    {(proposalReview.weakest_assumptions || []).length > 0
+                      ? proposalReview.weakest_assumptions.map(item => <Tag color="orange" key={item}>{item}</Tag>)
+                      : <Text type="secondary">暂无明显弱假设</Text>}
+                  </Space>
+                </div>
+              </Col>
+            </Row>
+            <Row gutter={[12, 12]}>
+              <Col xs={24} lg={12}>
+                <div className="proposal-review-section">
+                  <Text strong>审稿异议</Text>
+                  <List
+                    size="small"
+                    dataSource={proposalReview.reviewer_objections || []}
+                    locale={{ emptyText: '暂无阻塞性异议' }}
+                    renderItem={(item, index) => <List.Item>{index + 1}. {item}</List.Item>}
+                  />
+                </div>
+              </Col>
+              <Col xs={24} lg={12}>
+                <div className="proposal-review-section">
+                  <Text strong>必要实验</Text>
+                  <List
+                    size="small"
+                    dataSource={proposalReview.required_experiments || []}
+                    locale={{ emptyText: '暂无新增必要实验' }}
+                    renderItem={(item, index) => <List.Item>{index + 1}. {item}</List.Item>}
+                  />
+                </div>
+              </Col>
+            </Row>
+            <div className="proposal-review-section">
+              <Text strong>修订计划</Text>
+              <List
+                size="small"
+                dataSource={proposalReview.revision_plan || []}
+                locale={{ emptyText: '暂无修订计划' }}
+                renderItem={(item, index) => <List.Item>{index + 1}. {item}</List.Item>}
+              />
+            </div>
+            <Alert type="info" showIcon message="下一版修订焦点" description={proposalReview.next_revision_focus || '补强证据、实验设置和可证伪假设'} />
+            {hasChildVersion && <Text type="secondary">已有基于该 Proposal 的子版本，可通过版本对比查看核心改动。</Text>}
+          </Space>
+        ) : (
+          <Text type="secondary">生成后会把贡献、最弱假设、审稿异议、必要实验、修订计划和写作就绪度收束在这里。</Text>
+        )}
+      </Card>
+    );
+  };
+
   const renderProposal = (idea: Idea) => {
     const review = idea.review_json;
     const plan = idea.experiment_plan;
@@ -1808,6 +2088,7 @@ const ResearchProjectPage: React.FC = () => {
             </Space>
           </>}
         </>}
+        {renderProposalReviewPanel(idea)}
         <Divider>实验推进包</Divider>
         <Card size="small" style={{ borderRadius: 12, marginBottom: 12, background: '#fbfaff' }}>
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -2121,6 +2402,13 @@ const ResearchProjectPage: React.FC = () => {
                           <Tag>实验 {Math.round((item.signals.experiment_completeness || 0) * 100)}%</Tag>
                           <Tag>反馈 {item.signals.experiment_feedback_count ?? 0}</Tag>
                           <Tag>讨论 {item.signals.discussion_turns ?? 0}</Tag>
+                          {item.signals.proposal_review_readiness && (
+                            <Tag color={readinessColors[item.signals.proposal_review_readiness] || 'default'}>
+                              审稿 {proposalReviewReadinessLabels[item.signals.proposal_review_readiness] || item.signals.proposal_review_readiness}
+                            </Tag>
+                          )}
+                          {(item.signals.review_objection_count || 0) > 0 && <Tag color="volcano">异议 {item.signals.review_objection_count}</Tag>}
+                          {item.signals.has_child_versions && <Tag color="cyan">已有修订版</Tag>}
                         </Space>
                         {item.blockers.length > 0 && (
                           <Space wrap style={{ width: '100%', minWidth: 0 }}>
@@ -2360,6 +2648,114 @@ const ResearchProjectPage: React.FC = () => {
       )}
     </Drawer>
   );
+  const renderVersionComparisonDrawer = () => {
+    const renderSnapshot = (snapshot?: ProposalVersionSnapshot | null, label = '版本') => {
+      if (!snapshot) return <Text type="secondary">暂无版本数据</Text>;
+      return (
+        <Card size="small" title={<Space wrap><Tag>{label}</Tag><Text strong>{snapshot.title}</Text></Space>} style={{ borderRadius: 12, height: '100%' }}>
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Space wrap>
+              <Tag>{statusLabels[snapshot.status] || snapshot.status}</Tag>
+              <Tag color="purple">评审 {Number(snapshot.review_score || 0).toFixed(1)}</Tag>
+              <Tag color="blue">证据 {snapshot.evidence_count ?? 0}</Tag>
+              {snapshot.proposal_review?.writing_readiness && (
+                <Tag color={readinessColors[snapshot.proposal_review.writing_readiness] || 'default'}>
+                  {proposalReviewReadinessLabels[snapshot.proposal_review.writing_readiness] || snapshot.proposal_review.writing_readiness}
+                </Tag>
+              )}
+            </Space>
+            <Paragraph style={{ marginBottom: 0 }}><Text strong>假设：</Text>{snapshot.hypothesis || '暂无'}</Paragraph>
+            <Paragraph style={{ marginBottom: 0 }}><Text strong>技术路线：</Text>{snapshot.approach || '暂无'}</Paragraph>
+            <Paragraph style={{ marginBottom: 0 }}><Text strong>最小实验：</Text>{(snapshot.experiment_plan as ExperimentPlan)?.dataset || '暂无数据集'}</Paragraph>
+          </Space>
+        </Card>
+      );
+    };
+    return (
+      <Drawer
+        title={<Space wrap><HistoryOutlined style={{ color: '#1677ff' }} /><Text strong>Proposal 版本对比</Text>{versionComparisonIdea && <Tag color="blue">{versionComparisonIdea.title}</Tag>}</Space>}
+        width={920}
+        open={versionComparisonOpen}
+        onClose={() => setVersionComparisonOpen(false)}
+        extra={versionComparisonIdea && <Button type="primary" ghost icon={<ReloadOutlined />} loading={versionComparisonLoading} onClick={() => openVersionComparison(versionComparisonIdea)}>刷新</Button>}
+      >
+        {versionComparisonLoading ? (
+          <WorkflowLoadingState
+            title="正在加载版本对比"
+            description="正在对比父版本和当前修订版本的核心字段。"
+            icon={<HistoryOutlined />}
+          />
+        ) : versionComparison ? (
+          <Space direction="vertical" size={14} style={{ width: '100%' }}>
+            {!versionComparison.has_parent && (
+              <Alert type="info" showIcon message="当前 Proposal 没有父版本" description="版本对比会在审稿修订、Copilot 演化或实验反馈演化生成子版本后显示父子差异。" />
+            )}
+            {versionComparison.review_source?.source === 'proposal_review' && (
+              <Alert
+                type="success"
+                showIcon
+                message="审稿修订来源"
+                description={versionComparison.review_source.review_focus || '该版本由结构化审稿包驱动生成。'}
+              />
+            )}
+            <Row gutter={[12, 12]}>
+              <Col xs={24} lg={12}>{renderSnapshot(versionComparison.parent, '父版本')}</Col>
+              <Col xs={24} lg={12}>{renderSnapshot(versionComparison.current, versionComparison.has_parent ? '当前版本' : '当前 Proposal')}</Col>
+            </Row>
+            {versionComparison.revision_rationale && <Alert type="info" showIcon message="修订说明" description={versionComparison.revision_rationale} />}
+            {versionComparison.review_source?.review_objections?.length ? (
+              <Card size="small" title="继承的审稿异议" style={{ borderRadius: 12 }}>
+                <Space wrap>
+                  {versionComparison.review_source.review_objections.map(item => <Tag color="volcano" key={item}>{item}</Tag>)}
+                </Space>
+              </Card>
+            ) : null}
+            {versionComparison.changes.length > 0 ? (
+              <Card size="small" title="字段级变化" style={{ borderRadius: 12 }}>
+                <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                  {versionComparison.changes.map(change => (
+                    <div className="proposal-version-change" key={change.field}>
+                      <Text strong>{change.label}</Text>
+                      <Row gutter={[8, 8]} style={{ marginTop: 6 }}>
+                        <Col xs={24} md={12}>
+                          <div className="proposal-version-side">
+                            <Text type="secondary">修改前</Text>
+                            <Paragraph style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>
+                              {typeof change.before === 'object' ? JSON.stringify(change.before, null, 2) : change.before || '暂无'}
+                            </Paragraph>
+                          </div>
+                        </Col>
+                        <Col xs={24} md={12}>
+                          <div className="proposal-version-side is-after">
+                            <Text type="secondary">修改后</Text>
+                            <Paragraph style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>
+                              {typeof change.after === 'object' ? JSON.stringify(change.after, null, 2) : change.after || '暂无'}
+                            </Paragraph>
+                          </div>
+                        </Col>
+                      </Row>
+                    </div>
+                  ))}
+                </Space>
+              </Card>
+            ) : (
+              <WorkflowEmptyState
+                title="暂无明显字段变化"
+                description="当前版本和父版本的标题、假设、技术路线、实验计划与证据数量基本一致。"
+                icon={<HistoryOutlined />}
+              />
+            )}
+          </Space>
+        ) : (
+          <WorkflowEmptyState
+            title="暂无版本对比"
+            description="请从 Proposal 详情或推进看板打开一个修订版本。"
+            icon={<HistoryOutlined />}
+          />
+        )}
+      </Drawer>
+    );
+  };
 
   return (
     <PageShell
@@ -2514,6 +2910,32 @@ const ResearchProjectPage: React.FC = () => {
         <Paragraph type="secondary">原 Proposal 会完整保留，新版本会记录父子关系和演化理由。可以填写你希望优先改进的方向。</Paragraph>
         <TextArea value={evolutionFocus} onChange={event => setEvolutionFocus(event.target.value)} autoSize={{ minRows: 3, maxRows: 6 }} placeholder="例如：优先降低实验成本，或者增强跨数据集泛化验证" />
       </Modal>
+      <Modal
+        open={!!reviewRevisionIdea}
+        title="按审稿意见修订 Proposal"
+        confirmLoading={reviewRevisionLoading}
+        onOk={reviseFromReview}
+        onCancel={() => { setReviewRevisionIdea(null); setReviewRevisionFocus(''); }}
+        okText="生成修订版"
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Paragraph type="secondary">原 Proposal 会保留，新版本会记录审稿来源、主要异议和必要实验。</Paragraph>
+          {reviewRevisionIdea?.review_json?.proposal_review && (
+            <Alert
+              showIcon
+              type={reviewRevisionIdea.review_json.proposal_review.writing_readiness === 'blocked' ? 'error' : 'warning'}
+              message={reviewRevisionIdea.review_json.proposal_review.summary || '结构化审稿包'}
+              description={reviewRevisionIdea.review_json.proposal_review.revision_plan?.slice(0, 3).join('；') || reviewRevisionIdea.review_json.proposal_review.next_revision_focus}
+            />
+          )}
+          <TextArea
+            value={reviewRevisionFocus}
+            onChange={event => setReviewRevisionFocus(event.target.value)}
+            autoSize={{ minRows: 4, maxRows: 8 }}
+            placeholder="补充这一版最应该优先处理的审稿意见，例如：先把 novelty 和跨数据集实验讲清楚"
+          />
+        </Space>
+      </Modal>
       <Modal open={experimentOpen} title="记录实验反馈" onOk={saveExperiment} onCancel={() => setExperimentOpen(false)} okText="保存反馈">
         <Space direction="vertical" style={{ width: '100%' }}>
           <Input prefix={<PlusOutlined />} value={experimentName} onChange={event => setExperimentName(event.target.value)} placeholder="实验名称，例如：跨数据集 baseline" />
@@ -2530,6 +2952,7 @@ const ResearchProjectPage: React.FC = () => {
       </Modal>
       {renderCopilotPanel()}
       {renderTimelineDrawer()}
+      {renderVersionComparisonDrawer()}
     </PageShell>
   );
 };

@@ -348,6 +348,59 @@ body {
   overflow-wrap: anywhere;
 }
 
+.proposal-review-package .ant-card-head {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.proposal-review-package .ant-card-head-title,
+.proposal-review-package .ant-card-extra,
+.proposal-review-package .ant-alert-description,
+.proposal-review-section,
+.proposal-review-section .ant-list-item,
+.proposal-review-section .ant-tag,
+.proposal-version-change,
+.proposal-version-side {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.proposal-review-section {
+  height: 100%;
+  padding: 10px;
+  border: 1px solid #eef2f7;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.proposal-review-section .ant-list {
+  margin-top: 6px;
+}
+
+.proposal-version-change {
+  padding: 10px;
+  border: 1px solid #eef2f7;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.proposal-version-side {
+  height: 100%;
+  padding: 9px;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.proposal-version-side.is-after {
+  background: #f6ffed;
+}
+
+.proposal-version-side .ant-typography {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .gap-selection-panel,
 .gap-selection-signal {
   border-radius: 8px;

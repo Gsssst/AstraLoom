@@ -344,6 +344,10 @@ class IdeaDiscussEvolveRequest(BaseModel):
     focus: str = Field(default="", max_length=1000)
 
 
+class ReviewGuidedRevisionRequest(BaseModel):
+    focus: str = Field(default="", max_length=1000)
+
+
 class ExternalEvidenceImportRequest(BaseModel):
     paper_id: str = Field(..., min_length=1)
     auto_download: bool = True
@@ -1084,6 +1088,66 @@ async def get_idea_execution_pack(
         project,
         experiments=experiments,
     )
+
+
+@router.post("/ideas/{idea_id}/review-package", response_model=dict[str, Any])
+async def create_idea_review_package(
+    idea_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """生成或刷新 Proposal 的结构化审稿包。"""
+    idea = await _get_owned_idea(db, idea_id, current_user)
+    project = await _get_owned_project(db, str(idea.project_id), current_user)
+    try:
+        return await ResearchIdeaWorkbenchService(db).build_proposal_review_package(idea, project)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Proposal 审稿包生成失败: {str(exc)}")
+
+
+@router.post("/ideas/{idea_id}/revise-from-review", response_model=IdeaResponse, status_code=201)
+async def revise_idea_from_review(
+    idea_id: str,
+    req: ReviewGuidedRevisionRequest = ReviewGuidedRevisionRequest(),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """基于结构化审稿意见创建 Proposal 子版本。"""
+    idea = await _get_owned_idea(db, idea_id, current_user)
+    if idea.status not in {"draft", "pinned"}:
+        raise HTTPException(status_code=409, detail="仅待筛选或已收藏的 Proposal 可以继续修订")
+    project = await _get_owned_project(db, str(idea.project_id), current_user)
+    try:
+        child = await ResearchIdeaWorkbenchService(db).revise_idea_from_review(
+            idea,
+            project,
+            focus=req.focus.strip(),
+        )
+        return _idea_response(child)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Proposal 审稿修订失败: {str(exc)}")
+
+
+@router.get("/ideas/{idea_id}/version-comparison", response_model=dict[str, Any])
+async def get_idea_version_comparison(
+    idea_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """返回 Proposal 与父版本的结构化差异。"""
+    idea = await _get_owned_idea(db, idea_id, current_user)
+    parent = None
+    if idea.parent_idea_id:
+        result = await db.execute(
+            select(ResearchIdea)
+            .join(ResearchProject, ResearchIdea.project_id == ResearchProject.id)
+            .where(
+                ResearchIdea.id == idea.parent_idea_id,
+                ResearchProject.user_id == current_user.id,
+            )
+        )
+        parent = result.scalar_one_or_none()
+    return ResearchIdeaWorkbenchService(db).compare_idea_versions(idea, parent)
 
 
 @router.post("/ideas/{idea_id}/writing-draft", response_model=WritingDraftResponse, status_code=201)

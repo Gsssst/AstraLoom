@@ -1223,6 +1223,241 @@ async def test_evolution_increments_existing_round_and_preserves_experiment_feed
     assert child.evolution_json["experiment_feedback"]["experiment_id"] == "exp-1"
 
 
+@pytest.mark.asyncio
+async def test_proposal_review_package_fallback_persists_structured_guidance(monkeypatch):
+    session = _Session()
+    service = ResearchIdeaWorkbenchService(session)
+    idea = SimpleNamespace(
+        id=uuid4(),
+        project_id=uuid4(),
+        title="Sparse evidence proposal",
+        description="Use retrieval traces to improve grounded answers.",
+        hypothesis="Trace-aware retrieval reduces hallucination.",
+        approach="Train a verifier on retrieval traces.",
+        novelty="Links traces to answer reliability.",
+        feasibility_score=7,
+        novelty_score=8,
+        review_json={"adversarial_review": {"objections": ["Novelty over existing RAG verifiers is unclear."]}},
+        experiment_plan={"dataset": "", "baselines": [], "metrics": [], "steps": []},
+        evidence_json={"items": [{"paper_id": "p1", "title": "Trace RAG", "score": 0.7}]},
+        referenced_papers={"paper_ids": ["p1"]},
+        evolution_json={},
+    )
+    project = SimpleNamespace(name="Grounded QA", description="", keywords=[])
+
+    async def empty_chat_json(_prompt):
+        return {}
+
+    monkeypatch.setattr(service, "_chat_json", empty_chat_json)
+
+    package = await service.build_proposal_review_package(idea, project)
+
+    assert package["writing_readiness"] in {"needs_revision", "blocked"}
+    assert "Novelty over existing RAG verifiers is unclear." in package["reviewer_objections"]
+    assert package["revision_plan"]
+    assert package["next_revision_focus"]
+    assert idea.review_json["proposal_review"] == package
+    assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_review_guided_revision_creates_child_with_review_provenance(monkeypatch):
+    session = _Session()
+    service = ResearchIdeaWorkbenchService(session)
+    parent = SimpleNamespace(
+        id=uuid4(),
+        project_id=uuid4(),
+        title="Parent proposal",
+        status="draft",
+        review_json={"proposal_review": {
+            "next_revision_focus": "Clarify novelty and add cross-dataset evaluation.",
+            "revision_plan": ["Differentiate from RAG verifiers", "Add cross-dataset benchmark"],
+            "reviewer_objections": ["Novelty is unclear"],
+            "required_experiments": ["Cross-dataset evaluation"],
+        }},
+    )
+    project = SimpleNamespace(name="Grounded QA", description="", keywords=[])
+    child = SimpleNamespace(id=uuid4(), evolution_json={"rationale": "Sharper novelty."})
+    captured = {}
+
+    async def fake_evolve(idea, _project, *, focus="", **_kwargs):
+        captured["idea"] = idea
+        captured["focus"] = focus
+        return child
+
+    monkeypatch.setattr(service, "evolve_idea", fake_evolve)
+
+    result = await service.revise_idea_from_review(parent, project, focus="Prioritize novelty.")
+
+    assert result is child
+    assert captured["idea"] is parent
+    assert "Prioritize novelty." in captured["focus"]
+    assert "Differentiate from RAG verifiers" in captured["focus"]
+    assert child.evolution_json["source"] == "proposal_review"
+    assert child.evolution_json["review_focus"] == "Clarify novelty and add cross-dataset evaluation."
+    assert child.evolution_json["review_objections"] == ["Novelty is unclear"]
+    assert child.evolution_json["required_experiments"] == ["Cross-dataset evaluation"]
+    assert session.commits == 1
+
+
+def test_version_comparison_reports_parent_child_changes():
+    service = ResearchIdeaWorkbenchService(_Session())
+    parent = SimpleNamespace(
+        id=uuid4(),
+        title="Parent proposal",
+        status="draft",
+        hypothesis="Old hypothesis",
+        approach="Old approach",
+        description="Old description",
+        experiment_plan={"dataset": "A", "baselines": ["BERT"], "metrics": ["F1"], "steps": ["run"]},
+        evidence_json={"items": [{"paper_id": "p1"}]},
+        review_json={"aggregate_score": 7},
+        feasibility_score=7,
+        novelty_score=7,
+        evolution_json={},
+    )
+    child = SimpleNamespace(
+        id=uuid4(),
+        title="Child proposal",
+        status="draft",
+        hypothesis="New hypothesis",
+        approach="New approach",
+        description="Old description",
+        experiment_plan={"dataset": "A+B", "baselines": ["BERT", "RAG"], "metrics": ["F1"], "steps": ["run", "ablate"]},
+        evidence_json={"items": [{"paper_id": "p1"}, {"paper_id": "p2"}]},
+        review_json={"aggregate_score": 8, "proposal_review": {"writing_readiness": "needs_revision"}},
+        feasibility_score=8,
+        novelty_score=8,
+        evolution_json={"rationale": "Adds stronger benchmark.", "source": "proposal_review", "review_focus": "Benchmark"},
+    )
+
+    comparison = service.compare_idea_versions(child, parent)
+
+    assert comparison["has_parent"] is True
+    assert comparison["parent_idea_id"] == str(parent.id)
+    assert comparison["revision_rationale"] == "Adds stronger benchmark."
+    assert comparison["review_source"]["source"] == "proposal_review"
+    changed_fields = {item["field"] for item in comparison["changes"]}
+    assert {"title", "hypothesis", "approach", "experiment_plan", "evidence_count"}.issubset(changed_fields)
+
+
+def test_iteration_timeline_includes_proposal_review_event():
+    service = ResearchPipelineService(_Session())
+    idea = SimpleNamespace(
+        id=uuid4(),
+        project_id=uuid4(),
+        title="Reviewed proposal",
+        status="draft",
+        description="Description",
+        hypothesis="Hypothesis",
+        approach="Approach",
+        feasibility_score=7,
+        novelty_score=8,
+        evidence_json={"items": [{"paper_id": "p1"}, {"paper_id": "p2"}]},
+        referenced_papers={"paper_ids": ["p1", "p2"]},
+        experiment_plan={"dataset": "D", "baselines": ["B"], "metrics": ["F1"], "steps": ["s1", "s2", "s3"]},
+        review_json={"proposal_review": {
+            "summary": "Needs one revision.",
+            "contributions": ["Trace-aware evaluation"],
+            "weakest_assumptions": ["Trace labels transfer"],
+            "reviewer_objections": ["Novelty unclear"],
+            "required_experiments": ["Cross-domain test"],
+            "revision_plan": ["Add baseline"],
+            "writing_readiness": "needs_revision",
+            "next_revision_focus": "Add baseline",
+        }},
+        evolution_json={},
+        parent_idea_id=None,
+        discussion_log=[],
+        created_at=None,
+    )
+
+    timeline = service.build_iteration_timeline(idea, SimpleNamespace(id=idea.project_id, name="Grounded QA", description="", keywords=[]))
+
+    review_events = [event for event in timeline["events"] if event["type"] == "proposal_review"]
+    assert len(review_events) == 1
+    assert review_events[0]["title"] == "结构化审稿包"
+    assert review_events[0]["details"]["reviewer_objections"] == ["Novelty unclear"]
+
+
+def test_proposal_board_groups_review_blockers_and_child_versions():
+    service = ResearchPipelineService(_Session())
+    project = SimpleNamespace(id=uuid4(), name="Grounded QA", description="", keywords=[])
+    parent_id = uuid4()
+    parent = SimpleNamespace(
+        id=parent_id,
+        project_id=project.id,
+        title="Parent proposal",
+        status="draft",
+        description="Description",
+        hypothesis="Hypothesis",
+        approach="Approach",
+        feasibility_score=8,
+        novelty_score=8,
+        evidence_json={"items": [{"paper_id": "p1"}, {"paper_id": "p2"}]},
+        referenced_papers={"paper_ids": ["p1", "p2"]},
+        experiment_plan={"dataset": "D", "baselines": ["B"], "metrics": ["F1"], "steps": ["s1", "s2", "s3"]},
+        review_json={"aggregate_score": 8},
+        evolution_json={},
+        parent_idea_id=None,
+        discussion_log=[],
+        created_at=None,
+    )
+    blocked = SimpleNamespace(
+        id=uuid4(),
+        project_id=project.id,
+        title="Blocked proposal",
+        status="draft",
+        description="Description",
+        hypothesis="Hypothesis",
+        approach="Approach",
+        feasibility_score=8,
+        novelty_score=8,
+        evidence_json={"items": [{"paper_id": "p1"}, {"paper_id": "p2"}]},
+        referenced_papers={"paper_ids": ["p1", "p2"]},
+        experiment_plan={"dataset": "D", "baselines": ["B"], "metrics": ["F1"], "steps": ["s1", "s2", "s3"]},
+        review_json={"aggregate_score": 8, "proposal_review": {
+            "summary": "Needs revision.",
+            "reviewer_objections": ["Novelty unclear"],
+            "required_experiments": ["Cross-domain test"],
+            "writing_readiness": "needs_revision",
+        }},
+        evolution_json={},
+        parent_idea_id=None,
+        discussion_log=[],
+        created_at=None,
+    )
+    child = SimpleNamespace(
+        id=uuid4(),
+        project_id=project.id,
+        title="Child proposal",
+        status="draft",
+        description="Description",
+        hypothesis="Hypothesis",
+        approach="Approach",
+        feasibility_score=8,
+        novelty_score=8,
+        evidence_json={"items": [{"paper_id": "p1"}, {"paper_id": "p2"}]},
+        referenced_papers={"paper_ids": ["p1", "p2"]},
+        experiment_plan={"dataset": "D", "baselines": ["B"], "metrics": ["F1"], "steps": ["s1", "s2", "s3"]},
+        review_json={"aggregate_score": 8},
+        evolution_json={"source": "proposal_review", "round": 2},
+        parent_idea_id=parent_id,
+        discussion_log=[],
+        created_at=None,
+    )
+
+    board = service.build_proposal_progress_board(project, [parent, blocked, child])
+
+    blocked_items = [item for group in board["groups"] if group["status"] == "review_revision" for item in group["items"]]
+    parent_items = [item for group in board["groups"] for item in group["items"] if item["idea_id"] == str(parent.id)]
+    assert blocked_items[0]["idea_id"] == str(blocked.id)
+    assert blocked_items[0]["recommended_action"]["type"] == "review_revision"
+    assert blocked_items[0]["signals"]["review_objection_count"] == 1
+    assert parent_items[0]["signals"]["has_child_versions"] is True
+    assert parent_items[0]["recommended_action"]["type"] == "version_compare"
+
+
 class _ScalarResult:
     def __init__(self, value):
         self.value = value
