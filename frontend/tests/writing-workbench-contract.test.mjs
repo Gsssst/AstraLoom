@@ -18,13 +18,53 @@ const sectionEditorSource = readFileSync(
 test('writing assistant exposes paper and grant workbench modes', () => {
   assert.match(writingPageSource, /写论文助手/);
   assert.match(writingPageSource, /写本子助手/);
-  assert.match(writingPageSource, /论文项目工作台/);
+  assert.match(writingPageSource, /论文章节工作台/);
 });
 
-test('writing page defaults to project-first paper workflow', () => {
+test('writing page defaults to manuscript-first paper workflow', () => {
   assert.match(writingPageSource, /useState(?:<[^>]+>)?\('paper'\)/);
-  assert.match(writingPageSource, /useState\('project'\)/);
+  assert.match(writingPageSource, /useState<[^>]+>\('manuscript'\)/);
   assert.doesNotMatch(writingPageSource, /key: 'grant', label:/);
+});
+
+test('paper workflow separates manuscript, survey, and auxiliary tools', () => {
+  assert.match(writingPageSource, /paperWorkflow/);
+  assert.match(writingPageSource, /manuscriptWorkbench/);
+  assert.match(writingPageSource, /surveyWorkflowPanel/);
+  assert.match(writingPageSource, /auxiliaryToolsPanel/);
+  assert.match(writingPageSource, /正文写作按章节推进/);
+  assert.match(writingPageSource, /综述、Related Work 对比表、研究空白和参考文献作为独立 workflow/);
+});
+
+test('manuscript workbench is active-section focused', () => {
+  assert.match(writingPageSource, /activeSectionId/);
+  assert.match(writingPageSource, /activeSection = selectedProject/);
+  assert.match(writingPageSource, /章节导航/);
+  assert.match(writingPageSource, /当前章节 LaTeX 源码/);
+  assert.doesNotMatch(writingPageSource, /projectSections\.map\(s => \(\s*<SectionEditor/s);
+});
+
+test('manuscript workbench exposes latex preview diagnostics', () => {
+  assert.match(writingPageSource, /preview-section/);
+  assert.match(writingPageSource, /preview-manuscript/);
+  assert.match(writingPageSource, /latexPreviewChecks/);
+  assert.match(writingPageSource, /manuscriptPreview/);
+  assert.match(sectionEditorSource, /LaTeX 源码/);
+  assert.match(sectionEditorSource, /LaTeX 预览检查/);
+  assert.match(sectionEditorSource, /查看编译日志/);
+});
+
+test('section editor exposes section-scoped AI assistant actions', () => {
+  assert.match(sectionEditorSource, /当前章节 AI 助手/);
+  assert.match(sectionEditorSource, /起草本节/);
+  assert.match(sectionEditorSource, /改进论证/);
+  assert.match(sectionEditorSource, /补证据引用/);
+  assert.match(sectionEditorSource, /Claim 安全/);
+  assert.match(sectionEditorSource, /润色源码/);
+  assert.match(sectionEditorSource, /修复 LaTeX/);
+  assert.match(writingPageSource, /section_action/);
+  assert.match(writingPageSource, /section_source/);
+  assert.match(writingPageSource, /phases: \['writer'\]/);
 });
 
 test('project creation clarifies structure templates are not official submission formats', () => {

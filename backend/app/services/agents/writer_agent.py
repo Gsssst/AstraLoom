@@ -70,13 +70,14 @@ class WriterAgent(BaseAgent):
 4. 技术路线明确可行
 5. 字数 800-2000 字""",
 
-        "full_chapter": """你是一位资深学术研究者。
-撰写论文章节。基于提供的论文和笔记，写出完整、规范的学术内容。
+        "full_chapter": """你是一位资深学术研究者和 LaTeX 论文写作助手。
+撰写或改进论文章节。基于提供的论文、笔记、当前章节源码和诊断信息，写出完整、规范的学术内容。
 要求：
 1. 遵循学术写作规范
 2. 逻辑清晰、论证充分
-3. 正确引用相关文献 [1][2]
-4. 直接输出章节内容""",
+3. 当前章节使用 LaTeX body 源码，保留公式、命令、引用、label、表格和 figure 环境
+4. 只处理用户指定的当前章节，不改写无关章节
+5. 直接输出可粘贴回当前章节的 LaTeX 源码或明确的修改建议""",
     }
 
     @property
@@ -164,6 +165,42 @@ class WriterAgent(BaseAgent):
             title = input_data.get("title", "")
             key_points = input_data.get("key_points", "")
             return f"论文标题: {title}\n\n关键要点:\n{key_points}"
+
+        if task_type == "full_chapter" and input_data.get("section_title"):
+            action_labels = {
+                "draft": "起草当前章节",
+                "improve": "改进当前章节论证",
+                "insert_evidence": "补充证据与引用",
+                "claim_safety": "检查并降低 Claim 风险",
+                "polish": "润色当前章节 LaTeX 源码",
+                "repair_latex": "解释并修复当前章节 LaTeX 编译问题",
+            }
+            action = input_data.get("section_action", "improve")
+            parts = [
+                f"项目标题: {input_data.get('project_title', '')}",
+                f"当前章节: {input_data.get('section_title', '')}",
+                f"动作目标: {action_labels.get(action, action)}",
+                "",
+                "## 当前章节 LaTeX source",
+                "```latex",
+                input_data.get("section_source", ""),
+                "```",
+            ]
+            if input_data.get("project_context"):
+                parts.extend(["", "## 项目上下文", str(input_data.get("project_context"))])
+            if input_data.get("writing_brief"):
+                parts.extend(["", "## Proposal 写作准备包摘要", str(input_data.get("writing_brief"))[:2500]])
+            if input_data.get("evidence_summary"):
+                parts.extend(["", "## 证据卡摘要", str(input_data.get("evidence_summary"))[:2500]])
+            if input_data.get("citation_diagnostics"):
+                parts.extend(["", "## 引用与 Claim 诊断", str(input_data.get("citation_diagnostics"))[:2500]])
+            if input_data.get("latex_diagnostics"):
+                parts.extend(["", "## LaTeX 编译诊断", str(input_data.get("latex_diagnostics"))[:2500]])
+            parts.extend([
+                "",
+                "请围绕当前章节执行动作目标。若是起草/润色/修复，请输出可直接替换当前章节 body 的 LaTeX 源码；若是检查风险，请输出问题清单和可执行改写建议。",
+            ])
+            return "\n".join(parts)
 
         if task_type in ("related_work", "literature_review", "full_chapter"):
             topic = input_data.get("topic", "")

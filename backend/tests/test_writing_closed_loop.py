@@ -35,6 +35,19 @@ def test_update_project_eager_loads_sections_before_serialization():
     assert "return self._project_to_dict(project)" in update_block
 
 
+def test_latex_section_preview_wraps_body_in_document():
+    tex = latex_processor.render_section_preview_tex(
+        "Method",
+        r"We optimize $\mathcal{L}$ with \cite{smith2024}.",
+        project_title="Grounding Paper",
+    )
+
+    assert r"\documentclass{article}" in tex
+    assert r"\section{Method}" in tex
+    assert r"\cite{smith2024}" in tex
+    assert r"\end{document}" in tex
+
+
 @pytest.mark.asyncio
 async def test_recommend_citations_returns_role_and_match(monkeypatch):
     service = WritingAssistantService(SimpleNamespace())
@@ -178,6 +191,58 @@ async def test_bind_submission_profile_updates_project_metadata(monkeypatch):
     assert profile["year"] == "2026"
     assert profile["template_source"] == "cvpr2026.zip"
     assert profile["style_files"] == ["cvpr.sty"]
+
+
+@pytest.mark.asyncio
+async def test_preview_latex_section_returns_compile_diagnostics(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+
+    async def fake_get_project(_project_id, _user_id):
+        return {"id": "project-1", "title": "Grounding Paper", "sections": []}
+
+    async def fake_compile(tex):
+        return {"success": True, "errors": [], "warnings": ["Citation undefined"], "log": tex[-120:]}
+
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+    monkeypatch.setattr(latex_processor, "compile_check", fake_compile)
+
+    result = await service.preview_latex_section(
+        "project-1",
+        "user-1",
+        "Method",
+        r"We optimize $\mathcal{L}$.",
+        section_id="section-1",
+    )
+
+    assert result["scope"] == "section"
+    assert result["section_id"] == "section-1"
+    assert result["success"] is True
+    assert r"\section{Method}" in result["tex"]
+
+
+@pytest.mark.asyncio
+async def test_preview_latex_manuscript_uses_project_sections(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+
+    async def fake_get_project(_project_id, _user_id):
+        return {
+            "id": "project-1",
+            "title": "Grounding Paper",
+            "sections": [{"title": "Introduction", "level": 1, "content": r"We cite \cite{smith2024}."}],
+        }
+
+    async def fake_compile(tex):
+        return {"success": False, "errors": ["pdflatex 未安装，无法进行编译检查"], "warnings": [], "log": ""}
+
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+    monkeypatch.setattr(latex_processor, "compile_check", fake_compile)
+
+    result = await service.preview_latex_manuscript("project-1", "user-1")
+
+    assert result["scope"] == "manuscript"
+    assert result["success"] is False
+    assert "pdflatex 未安装" in result["errors"][0]
+    assert r"\section{Introduction}" in result["tex"]
 
 
 @pytest.mark.asyncio

@@ -325,6 +325,19 @@ class LatexProcessor:
         lines.append(r"\end{document}")
         return "\n".join(lines)
 
+    def render_section_preview_tex(self, section_title: str, section_source: str,
+                                   project_title: str = "Section Preview") -> str:
+        """Wrap one section body in a minimal compilable LaTeX document."""
+        return self.render_to_tex(
+            project_title=project_title or "Section Preview",
+            sections=[{
+                "title": section_title or "Section",
+                "level": 1,
+                "content": section_source or "",
+            }],
+            template="article",
+        )
+
     def _markdown_to_latex(self, md_text: str) -> str:
         """简化的 Markdown → LaTeX 转换。"""
         text = md_text

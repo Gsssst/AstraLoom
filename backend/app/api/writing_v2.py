@@ -93,6 +93,12 @@ class SectionQualityCheckRequest(BaseModel):
     text: str = Field(..., description="需要评估质量的章节文本")
 
 
+class LatexSectionPreviewRequest(BaseModel):
+    section_id: Optional[str] = Field(default=None, description="章节 ID")
+    title: str = Field(default="Section", description="章节标题")
+    source: str = Field(default="", description="章节 LaTeX 源码")
+
+
 # ============== Pipeline 流式端点 ==============
 
 @router.post("/pipeline/stream")
@@ -646,6 +652,41 @@ async def get_project_publication_package(
     if package is None:
         raise HTTPException(status_code=404, detail="项目未找到")
     return package
+
+
+@router.post("/projects/{project_id}/latex/preview-section")
+async def preview_project_latex_section(
+    project_id: str,
+    req: LatexSectionPreviewRequest,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compile-check one section body inside a minimal LaTeX document wrapper."""
+    service = WritingProjectService(db)
+    result = await service.preview_latex_section(
+        project_id=project_id,
+        user_id=str(user.id),
+        title=req.title,
+        source=req.source,
+        section_id=req.section_id,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    return result
+
+
+@router.post("/projects/{project_id}/latex/preview-manuscript")
+async def preview_project_latex_manuscript(
+    project_id: str,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compile-check the assembled manuscript LaTeX export."""
+    service = WritingProjectService(db)
+    result = await service.preview_latex_manuscript(project_id, str(user.id))
+    if result is None:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    return result
 
 
 @router.post("/projects/{project_id}/submission-template")

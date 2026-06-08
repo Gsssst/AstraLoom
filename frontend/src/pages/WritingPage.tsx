@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
   Alert, Card, Button, Input, Tag, Typography, Space, message,
-  Tabs, Select, Tooltip, List, Divider, Row, Col, Empty, Segmented, Upload,
+  Select, Tooltip, List, Divider, Row, Col, Empty, Segmented, Upload,
   Collapse,
 } from 'antd';
 import {
@@ -10,7 +10,7 @@ import {
   CopyOutlined, BulbOutlined,
   BookOutlined, FormOutlined, ReadOutlined, SwapOutlined,
   AuditOutlined, FolderOutlined, RocketOutlined, DownloadOutlined,
-  FileZipOutlined, UploadOutlined,
+  FileZipOutlined, UploadOutlined, CodeOutlined, RobotOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import Markdown from '../components/Markdown';
@@ -19,8 +19,8 @@ import WorkspaceIssueReporter from '../components/WorkspaceIssueReporter';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
 import PageShell from '../components/PageShell';
 import ApiErrorAlert from '../components/ApiErrorAlert';
-import { WorkflowEmptyState, WorkflowProgressState } from '../components/WorkflowState';
-import { DiffViewer, PipelineProgress, WritingProjectPanel, SectionEditor } from '../components/writing';
+import { WorkflowEmptyState } from '../components/WorkflowState';
+import { DiffViewer, WritingProjectPanel, SectionEditor } from '../components/writing';
 import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
 
 const { Title, Text, Paragraph } = Typography;
@@ -233,7 +233,7 @@ const buildWorkbenchBlockers = (summary: any, brief?: ProposalWritingBrief | nul
 const WritingPage: React.FC = () => {
   const location = useLocation();
   const [assistantMode, setAssistantMode] = useState<'paper' | 'grant'>('paper');
-  const [activeTab, setActiveTab] = useState('project');
+  const [paperWorkflow, setPaperWorkflow] = useState<'manuscript' | 'survey' | 'tools'>('manuscript');
 
   // ── 状态 ──
   const [citeText, setCiteText] = useState('');
@@ -284,6 +284,11 @@ const WritingPage: React.FC = () => {
   const [citationChecking, setCitationChecking] = useState<Record<string, boolean>>({});
   const [qualityChecks, setQualityChecks] = useState<Record<string, any>>({});
   const [qualityChecking, setQualityChecking] = useState<Record<string, boolean>>({});
+  const [latexPreviewChecks, setLatexPreviewChecks] = useState<Record<string, any>>({});
+  const [latexPreviewing, setLatexPreviewing] = useState<Record<string, boolean>>({});
+  const [manuscriptPreview, setManuscriptPreview] = useState<any>(null);
+  const [manuscriptPreviewing, setManuscriptPreviewing] = useState(false);
+  const [sectionAiState, setSectionAiState] = useState<Record<string, { loading?: boolean; action?: string; status?: string; output?: string }>>({});
   const [draftTopic, setDraftTopic] = useState('');
   const [draftLoading, setDraftLoading] = useState(false);
   const [projectRefreshSignal, setProjectRefreshSignal] = useState(0);
@@ -297,12 +302,6 @@ const WritingPage: React.FC = () => {
   const [submissionTemplateFile, setSubmissionTemplateFile] = useState<any>(null);
   const [submissionInspection, setSubmissionInspection] = useState<any>(null);
   const [submissionUploading, setSubmissionUploading] = useState(false);
-  const [pipelinePhases, setPipelinePhases] = useState<string[]>([]);
-  const [pipelineCurrentPhase, setPipelineCurrentPhase] = useState<string | null>(null);
-  const [pipelinePhaseStatuses, setPipelinePhaseStatuses] = useState<Record<string, 'pending' | 'running' | 'complete' | 'error'>>({});
-  const [pipelineStatusText, setPipelineStatusText] = useState('');
-  const [pipelineRunning, setPipelineRunning] = useState(false);
-  const [pipelineAbort, setPipelineAbort] = useState<AbortController | null>(null);
   const [pageActionError, setPageActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
 
   const showPageError = useCallback((title: string, error: unknown, fallback = title) => {
@@ -358,11 +357,12 @@ const WritingPage: React.FC = () => {
     const projectId = params.get('project');
     if (!projectId) return;
     setAssistantMode('paper');
-    setActiveTab('project');
+    setPaperWorkflow('manuscript');
     api.get(`/writing/projects/${projectId}`)
       .then(response => {
         setSelectedProject(response.data);
         setProjectSections(response.data.sections || []);
+        setActiveSectionId((response.data.sections || [])[0]?.id || null);
         setPageActionError(null);
       })
       .catch(error => showPageError('无法打开写作项目', error, '无法打开写作项目'));
@@ -375,6 +375,9 @@ const WritingPage: React.FC = () => {
       setEvidenceTable(null);
       setCitationChecks({});
       setQualityChecks({});
+      setLatexPreviewChecks({});
+      setManuscriptPreview(null);
+      setSectionAiState({});
       setExportReadiness(null);
       setExportPackage(null);
       setWorkbenchSummary(null);
@@ -382,6 +385,9 @@ const WritingPage: React.FC = () => {
     }
     setCitationChecks({});
     setQualityChecks({});
+    setLatexPreviewChecks({});
+    setManuscriptPreview(null);
+    setSectionAiState({});
     setEvidenceLoading(true);
     api.get(`/writing/projects/${selectedProject.id}/evidence-cards`)
       .then(response => {
@@ -475,7 +481,11 @@ const WritingPage: React.FC = () => {
     setSelectedProject(p);
     setProjectSections(p.sections || []);
     setCitationChecks({});
-    setActiveSectionId(null);
+    setQualityChecks({});
+    setLatexPreviewChecks({});
+    setManuscriptPreview(null);
+    setSectionAiState({});
+    setActiveSectionId((p.sections || [])[0]?.id || null);
     setEvidenceTable(null);
     const profile = p.metadata_json?.submission_profile || {};
     setSubmissionVenue(profile.venue || '');
@@ -531,8 +541,8 @@ const WritingPage: React.FC = () => {
   };
   const handleResolveBriefClaim = (claim: string) => {
     setCiteText(claim);
-    setActiveTab('citations');
-    message.info('已把该 Claim 放入引用推荐输入，可继续检索支撑证据');
+    setPaperWorkflow('tools');
+    message.info('已把该 Claim 放入引用推荐输入，可在辅助工具区继续检索支撑证据');
   };
   const handleGenerateEvidenceTable = async () => {
     if (!selectedProject?.id) return;
@@ -605,6 +615,134 @@ const WritingPage: React.FC = () => {
       showPageError('质量评估失败', error, '质量评估失败');
     } finally {
       setQualityChecking(prev => ({ ...prev, [section.id]: false }));
+    }
+  };
+  const handlePreviewSectionLatex = async (section: any) => {
+    if (!selectedProject?.id) return;
+    setLatexPreviewing(prev => ({ ...prev, [section.id]: true }));
+    try {
+      const response = await api.post(`/writing/projects/${selectedProject.id}/latex/preview-section`, {
+        section_id: section.id,
+        title: section.title || 'Section',
+        source: section.content || '',
+      });
+      setLatexPreviewChecks(prev => ({ ...prev, [section.id]: response.data }));
+      setPageActionError(null);
+      message.success(response.data.success ? '当前章节 LaTeX 检查通过' : '当前章节 LaTeX 检查完成，请查看诊断');
+    } catch (error) {
+      showPageError('LaTeX 章节预览失败', error, 'LaTeX 章节预览失败');
+    } finally {
+      setLatexPreviewing(prev => ({ ...prev, [section.id]: false }));
+    }
+  };
+  const handlePreviewManuscriptLatex = async () => {
+    if (!selectedProject?.id) return;
+    setManuscriptPreviewing(true);
+    try {
+      const response = await api.post(`/writing/projects/${selectedProject.id}/latex/preview-manuscript`);
+      setManuscriptPreview(response.data);
+      setPageActionError(null);
+      message.success(response.data.success ? '整篇 LaTeX 检查通过' : '整篇 LaTeX 检查完成，请查看诊断');
+    } catch (error) {
+      showPageError('整篇 LaTeX 预览失败', error, '整篇 LaTeX 预览失败');
+    } finally {
+      setManuscriptPreviewing(false);
+    }
+  };
+  const handleSectionAiAction = async (section: any, action: string) => {
+    if (!selectedProject?.id) return;
+    const sectionId = section.id;
+    const evidenceSummary = evidenceCards.slice(0, 8).map((card: any) => ({
+      marker: card.citation_marker,
+      role: card.role_label,
+      title: card.title,
+      snippet: card.snippet,
+    }));
+    setSectionAiState(prev => ({
+      ...prev,
+      [sectionId]: { loading: true, action, status: '正在准备当前章节上下文...', output: '' },
+    }));
+    try {
+      const token = localStorage.getItem('access_token');
+      const resp = await fetch('/api/writing/pipeline/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          task_type: 'full_chapter',
+          phases: ['writer'],
+          input_data: {
+            topic: selectedProject.title,
+            project_title: selectedProject.title,
+            section_action: action,
+            section_id: section.id,
+            section_title: section.title || 'Section',
+            section_source: section.content || '',
+            project_context: selectedProject.metadata_json?.writing_context || {},
+            writing_brief: selectedWritingBrief || {},
+            evidence_summary: evidenceSummary,
+            citation_diagnostics: citationChecks[section.id] || qualityChecks[section.id] || {},
+            latex_diagnostics: latexPreviewChecks[section.id] || manuscriptPreview || {},
+          },
+        }),
+      });
+      if (!resp.ok || !resp.body) throw new Error(`AI 请求失败：${resp.status}`);
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() || '';
+        for (const frame of frames) {
+          for (const line of frame.split('\n').filter(item => item.startsWith('data: '))) {
+            const payload = line.slice(6);
+            if (payload === '[DONE]') continue;
+            const event = JSON.parse(payload);
+            if (event.type === 'status') {
+              setSectionAiState(prev => ({
+                ...prev,
+                [sectionId]: {
+                  ...(prev[sectionId] || {}),
+                  loading: true,
+                  action,
+                  status: typeof event.content === 'string' ? event.content : 'AI 正在处理当前章节...',
+                },
+              }));
+            } else if (event.type === 'content') {
+              setSectionAiState(prev => ({
+                ...prev,
+                [sectionId]: {
+                  ...(prev[sectionId] || {}),
+                  loading: true,
+                  action,
+                  status: 'AI 正在生成当前章节建议...',
+                  output: `${prev[sectionId]?.output || ''}${event.content || ''}`,
+                },
+              }));
+            } else if (event.type === 'error') {
+              throw new Error(typeof event.content === 'string' ? event.content : event.content?.message || 'AI 章节助手失败');
+            } else if (event.type === 'done') {
+              setSectionAiState(prev => ({
+                ...prev,
+                [sectionId]: { ...(prev[sectionId] || {}), loading: false, action, status: 'AI 建议已生成' },
+              }));
+            }
+          }
+        }
+      }
+      setSectionAiState(prev => ({
+        ...prev,
+        [sectionId]: { ...(prev[sectionId] || {}), loading: false, action, status: 'AI 建议已生成' },
+      }));
+      setPageActionError(null);
+    } catch (error) {
+      setSectionAiState(prev => ({
+        ...prev,
+        [sectionId]: { ...(prev[sectionId] || {}), loading: false, action, status: 'AI 章节助手失败' },
+      }));
+      showPageError('AI 章节助手失败', error, 'AI 章节助手失败');
     }
   };
   const handleLoadExportPackage = async () => {
@@ -684,38 +822,6 @@ const WritingPage: React.FC = () => {
       setSubmissionUploading(false);
     }
   };
-  const handleCancelPipeline = () => { pipelineAbort?.abort(); setPipelineRunning(false); };
-  const handlePipelineTask = async (taskType: string, inputData: any) => {
-    setPipelineRunning(true); setPipelinePhases([]); setPipelinePhaseStatuses({}); setPipelineStatusText('正在启动...'); setPipelineCurrentPhase(null);
-    const ctrl = new AbortController(); setPipelineAbort(ctrl);
-    try {
-      const t = localStorage.getItem('access_token');
-      const resp = await fetch('/api/writing/pipeline/stream', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` },
-        body: JSON.stringify({ task_type: taskType, input_data: inputData }), signal: ctrl.signal,
-      });
-      const reader = resp.body!.getReader(); const dec = new TextDecoder(); let buf = '';
-      while (true) {
-        const { done, value } = await reader.read(); if (done) break;
-        buf += dec.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-        const frames = buf.split('\n\n'); buf = frames.pop() || '';
-        for (const f of frames) for (const l of f.split('\n').filter(x => x.startsWith('data: '))) {
-          const d = l.slice(6); if (d === '[DONE]') continue;
-          try {
-            const ev = JSON.parse(d);
-            if (ev.type === 'pipeline_start') setPipelinePhases(ev.metadata?.phases || []);
-            else if (ev.type === 'phase_start') { setPipelineCurrentPhase(ev.phase); setPipelinePhaseStatuses(p => ({ ...p, [ev.phase!]: 'running' })); setPipelineStatusText(`${ev.phase} 阶段...`); }
-            else if (ev.type === 'phase_complete') setPipelinePhaseStatuses(p => ({ ...p, [ev.phase!]: 'complete' }));
-            else if (ev.type === 'status') setPipelineStatusText(typeof ev.content === 'string' ? ev.content : '');
-            else if (ev.type === 'error') { setPipelinePhaseStatuses(p => ({ ...p, [ev.phase!]: 'error' })); showPageError('Pipeline 执行失败', { message: typeof ev.content === 'string' ? ev.content : '出错' }, typeof ev.content === 'string' ? ev.content : '出错'); }
-            else if (ev.type === 'done') { setPipelineStatusText('完成'); setPageActionError(null); }
-          } catch { /* ignore */ }
-        }
-      }
-    } catch (e: any) { if (e.name !== 'AbortError') showPageError('Pipeline 执行失败', e, 'Pipeline 执行失败'); }
-    finally { setPipelineRunning(false); setPipelineAbort(null); }
-  };
-
   // ── 申请书处理器 ──
   const handleGrantWrite = async () => {
     if (!grantTopic.trim()) { message.warning('请填写项目主题'); return; }
@@ -1593,29 +1699,51 @@ const WritingPage: React.FC = () => {
     </Card>
   ) : null;
 
-  const projectTab = (
+  const activeSection = selectedProject
+    ? (projectSections.find(section => section.id === activeSectionId) || projectSections[0] || null)
+    : null;
+  const activeSectionAi = activeSection ? sectionAiState[activeSection.id] || {} : {};
+  const latexDiagnosticPanel = (diagnostic: any, scopeLabel: string) => diagnostic ? (
+    <Alert
+      type={diagnostic.success ? ((diagnostic.warnings || []).length ? 'warning' : 'success') : 'error'}
+      showIcon
+      message={diagnostic.success ? `${scopeLabel} LaTeX 检查通过` : `${scopeLabel} LaTeX 检查未通过`}
+      description={(
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Space size={6} wrap>
+            <Tag color={(diagnostic.errors || []).length ? 'red' : 'green'}>错误 {(diagnostic.errors || []).length}</Tag>
+            <Tag color={(diagnostic.warnings || []).length ? 'gold' : 'green'}>警告 {(diagnostic.warnings || []).length}</Tag>
+            <Tag>{diagnostic.scope || scopeLabel}</Tag>
+          </Space>
+          {(diagnostic.errors || []).slice(0, 5).map((item: string) => (
+            <Text key={item} type="danger" style={{ overflowWrap: 'anywhere' }}>{item}</Text>
+          ))}
+          {(diagnostic.warnings || []).slice(0, 5).map((item: string) => (
+            <Text key={item} type="secondary" style={{ overflowWrap: 'anywhere' }}>{item}</Text>
+          ))}
+        </Space>
+      )}
+      style={{ borderRadius: 10 }}
+    />
+  ) : null;
+
+  const manuscriptWorkbench = (
     <div style={{ display: 'flex', gap: 20 }}>
       <div style={{ width: 280, flexShrink: 0 }}>
         <WritingProjectPanel onSelectProject={handleSelectProject} selectedProjectId={selectedProject?.id} refreshSignal={projectRefreshSignal} />
       </div>
       <div style={{ flex: 1, minHeight: 400 }}>
-        <Card style={{ ...cardStyle, marginBottom: 16 }} styles={{ body: { padding: 16 } }}>
-          <Text strong>从研究方向创建综述草稿</Text>
-          <Text type="secondary" style={{ display: 'block', fontSize: 12, margin: '4px 0 12px' }}>自动创建章节、Related Work 对比表、研究空白和参考文献，作为后续写作起点。</Text>
-          <Row gutter={12}>
-            <Col flex="auto"><Input placeholder="例如：video grounding in multimodal large language models" value={draftTopic} onChange={e => setDraftTopic(e.target.value)} style={inputStyle} /></Col>
-            <Col><Button type="primary" icon={<RocketOutlined />} loading={draftLoading} onClick={handleCreateReviewDraft} style={primaryBtn}>创建综述草稿</Button></Col>
-          </Row>
-        </Card>
         {selectedProject ? (
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 16, alignItems: 'start' }}>
             <div>
               {workbenchOverviewPanel}
               {renderWritingBriefWorkbenchPanel(selectedWritingBrief)}
-              <Card style={{ ...cardStyle, marginBottom: 16 }} styles={{ body: { padding: '12px 20px' } }}>
-                <Space wrap>
-                  <Text strong style={{ fontSize: 15 }}>{selectedProject.title}</Text>
-                  <Tag color="blue" style={{ borderRadius: 6 }}>{selectedProject.template_type?.toUpperCase()}</Tag>
+              <Card style={{ ...cardStyle, marginBottom: 16 }} styles={{ body: { padding: '14px 18px' } }}>
+                <Row gutter={[12, 12]} align="middle">
+                  <Col flex="auto">
+                    <Space wrap>
+                      <Text strong style={{ fontSize: 16 }}>{selectedProject.title}</Text>
+                      <Tag color="geekblue" icon={<CodeOutlined />}>章节 LaTeX 工作台</Tag>
                   {selectedProject.metadata_json?.writing_context?.research_project_name && (
                     <Tag color="purple" style={{ borderRadius: 6 }}>
                       研究方向：{selectedProject.metadata_json.writing_context.research_project_name}
@@ -1631,91 +1759,176 @@ const WritingPage: React.FC = () => {
                       目标：{selectedProject.metadata_json.writing_context.target_venue} {selectedProject.metadata_json.writing_context.target_year || ''}
                     </Tag>
                   )}
-                  <Button type="primary" size="small" icon={<RocketOutlined />} loading={pipelineRunning} onClick={() => handlePipelineTask('full_chapter', { topic: selectedProject.title })} style={{ borderRadius: 8 }}>AI 辅助写作</Button>
-                  <Button size="small" onClick={async () => { const r = await api.get(`/writing/projects/${selectedProject.id}/export?format=markdown`); handleCopy(r.data.data); }} style={{ borderRadius: 8 }}>导出 MD</Button>
-                  <Button size="small" onClick={async () => { const r = await api.get(`/writing/projects/${selectedProject.id}/export?format=bibtex`); handleCopy(r.data.data || ''); }} style={{ borderRadius: 8 }}>导出 BibTeX</Button>
-                  <Button size="small" onClick={handleDownloadDocx} style={{ borderRadius: 8 }}>导出 Word</Button>
+                    </Space>
+                    <Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
+                      正文写作按章节推进；综述生成和一次性工具已移到独立 workflow。模板配置只保留在投稿导出包中。
+                    </Text>
+                  </Col>
+                  <Col>
+                    <Space wrap>
+                      <Button icon={<CodeOutlined />} loading={manuscriptPreviewing} onClick={handlePreviewManuscriptLatex} style={{ borderRadius: 8 }}>
+                        整篇 LaTeX 检查
+                      </Button>
+                      <Button size="small" onClick={async () => { const r = await api.get(`/writing/projects/${selectedProject.id}/export?format=markdown`); handleCopy(r.data.data); }} style={{ borderRadius: 8 }}>导出 MD</Button>
+                      <Button size="small" onClick={async () => { const r = await api.get(`/writing/projects/${selectedProject.id}/export?format=bibtex`); handleCopy(r.data.data || ''); }} style={{ borderRadius: 8 }}>导出 BibTeX</Button>
+                      <Button size="small" onClick={handleDownloadDocx} style={{ borderRadius: 8 }}>导出 Word</Button>
                   <WorkspaceIssueReporter
                     resourceType="writing_projects"
                     resourceId={selectedProject.id}
                     resourceTitle={selectedProject.title}
                     resourcePath={`/writing?project=${selectedProject.id}`}
                   />
-                </Space>
+                    </Space>
+                  </Col>
+                </Row>
               </Card>
               <div style={{ marginBottom: 16 }}>
                 <WorkspaceResourceLinks resourceType="writing_projects" resourceId={selectedProject.id} title="所属项目空间" />
               </div>
-              {pipelineRunning && (
-                <div style={{ marginBottom: 12 }}>
-                  <WorkflowProgressState
-                    title="AI 辅助写作正在运行"
-                    description="系统会按检索、阅读、写作、审阅和引用验证阶段推进当前项目。"
-                    phase={pipelineCurrentPhase || pipelinePhases[0] || '启动'}
-                    statusText={pipelineStatusText || '正在启动...'}
-                    icon={<RocketOutlined />}
-                    action={<Button size="small" danger onClick={handleCancelPipeline} style={{ borderRadius: 8 }}>取消</Button>}
-                    compact
-                    style={{ marginBottom: 10 }}
-                  />
-                  <PipelineProgress phases={pipelinePhases} currentPhase={pipelineCurrentPhase} phaseStatuses={pipelinePhaseStatuses} statusText={pipelineStatusText} onCancel={handleCancelPipeline} />
-                </div>
-              )}
-              {publicationExportPanel}
-              <div id="writing-sections-panel">
-                {projectSections.map(s => (
-                  <SectionEditor
-                    key={s.id}
-                    section={s}
-                    onUpdate={handleUpdateSection}
-                    onFocus={section => setActiveSectionId(section.id)}
-                    onCheckCitations={handleCheckSectionCitations}
-                    onCheckQuality={handleCheckSectionQuality}
-                    checking={citationChecking[s.id]}
-                    qualityChecking={qualityChecking[s.id]}
-                    citationCheck={citationChecks[s.id]}
-                    qualityCheck={qualityChecks[s.id]}
-                  />
-                ))}
+              {manuscriptPreview && <div style={{ marginBottom: 16 }}>{latexDiagnosticPanel(manuscriptPreview, '整篇')}</div>}
+              <div id="writing-sections-panel" style={{ display: 'grid', gridTemplateColumns: '220px minmax(0, 1fr)', gap: 16, alignItems: 'start', marginBottom: 16 }}>
+                <Card
+                  title={<Space><FileTextOutlined /> 章节导航</Space>}
+                  style={{ ...cardStyle, position: 'sticky', top: 12 }}
+                  styles={{ body: { padding: 10, maxHeight: 640, overflowY: 'auto' } }}
+                  extra={<Tag>{projectSections.length}</Tag>}
+                >
+                  {projectSections.length ? (
+                    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                      {projectSections.map((section, index) => {
+                        const selected = activeSection?.id === section.id;
+                        const hasLatexIssue = latexPreviewChecks[section.id] && !latexPreviewChecks[section.id].success;
+                        return (
+                          <Button
+                            key={section.id}
+                            block
+                            type={selected ? 'primary' : 'default'}
+                            onClick={() => setActiveSectionId(section.id)}
+                            style={{
+                              height: 'auto',
+                              minHeight: 46,
+                              borderRadius: 10,
+                              textAlign: 'left',
+                              whiteSpace: 'normal',
+                              padding: '8px 10px',
+                            }}
+                          >
+                            <div style={{ width: '100%', minWidth: 0 }}>
+                              <Space size={6} wrap>
+                                <Tag color={selected ? 'blue' : 'default'}>{index + 1}</Tag>
+                                {hasLatexIssue && <Tag color="red">LaTeX</Tag>}
+                              </Space>
+                              <Text strong style={{ display: 'block', color: selected ? '#fff' : undefined, overflowWrap: 'anywhere' }}>{section.title || 'Untitled'}</Text>
+                              <Text type={selected ? undefined : 'secondary'} style={{ fontSize: 12, color: selected ? 'rgba(255,255,255,0.82)' : undefined }}>
+                                {section.word_count || 0} 字 · {section.status || 'draft'}
+                              </Text>
+                            </div>
+                          </Button>
+                        );
+                      })}
+                    </Space>
+                  ) : (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无章节" />
+                  )}
+                </Card>
+                <Card
+                  title={<Space><CodeOutlined /> 当前章节 LaTeX 源码</Space>}
+                  style={cardStyle}
+                  extra={activeSection && <Tag color="blue">{activeSection.title || 'Untitled'}</Tag>}
+                >
+                  {activeSection ? (
+                    <SectionEditor
+                      key={activeSection.id}
+                      section={activeSection}
+                      onUpdate={handleUpdateSection}
+                      onFocus={section => setActiveSectionId(section.id)}
+                      onCheckCitations={handleCheckSectionCitations}
+                      onCheckQuality={handleCheckSectionQuality}
+                      onPreviewLatex={handlePreviewSectionLatex}
+                      onSectionAiAction={handleSectionAiAction}
+                      checking={citationChecking[activeSection.id]}
+                      qualityChecking={qualityChecking[activeSection.id]}
+                      previewing={latexPreviewing[activeSection.id]}
+                      citationCheck={citationChecks[activeSection.id]}
+                      qualityCheck={qualityChecks[activeSection.id]}
+                      latexPreview={latexPreviewChecks[activeSection.id]}
+                      aiRunning={activeSectionAi.loading}
+                      aiRunningAction={activeSectionAi.action}
+                      aiStatus={activeSectionAi.status}
+                      aiOutput={activeSectionAi.output}
+                    />
+                  ) : (
+                    <WorkflowEmptyState
+                      title="当前项目还没有章节"
+                      description="请先在左侧项目面板创建章节结构，再按章节写作 LaTeX 源码。"
+                      icon={<FileTextOutlined />}
+                    />
+                  )}
+                </Card>
               </div>
+              {publicationExportPanel}
             </div>
             <div>{evidencePanel}</div>
           </div>
         ) : (
           <WorkflowEmptyState
-            title="选择或创建一个写作项目开始"
-            description="使用章节管理器组织论文结构，把证据卡、引用校验和导出预检放到同一个写作流程里。"
+            title="选择或创建一个论文项目开始"
+            description="正文写作会按章节组织，每个章节都可以编辑 LaTeX 源码、运行预览检查并唤出当前章节 AI 助手。"
             icon={<FolderOutlined />}
-            action={<Button type="primary" icon={<RocketOutlined />} onClick={handleCreateReviewDraft} loading={draftLoading} style={{ borderRadius: 10 }}>从研究方向创建草稿</Button>}
           />
         )}
       </div>
     </div>
   );
 
-  const paperTabItems = [
-    { key: 'project', label: <span><FolderOutlined /> 论文项目工作台</span>, children: projectTab },
-    { key: 'citations', label: <span><SearchOutlined /> 引用推荐</span>, children: citationTab },
-    { key: 'related-work', label: <span><BookOutlined /> Related Work</span>, children: relatedWorkTab },
-    { key: 'polish', label: <span><FormOutlined /> 文本润色</span>, children: polishTab },
-    { key: 'abstract', label: <span><FileTextOutlined /> 摘要生成</span>, children: abstractTab },
-    { key: 'lit-review', label: <span><ReadOutlined /> 文献综述</span>, children: litReviewTab },
-    { key: 'compare', label: <span><SwapOutlined /> 论文对比</span>, children: compareTab },
-  ];
+  const surveyWorkflowPanel = (
+    <div style={{ display: 'grid', gridTemplateColumns: '280px minmax(0, 1fr)', gap: 20, alignItems: 'start' }}>
+      <WritingProjectPanel onSelectProject={handleSelectProject} selectedProjectId={selectedProject?.id} refreshSignal={projectRefreshSignal} />
+      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        <Card style={cardStyle} styles={{ body: { padding: 16 } }}>
+          <Text strong>从研究方向创建综述草稿</Text>
+          <Text type="secondary" style={{ display: 'block', fontSize: 12, margin: '4px 0 12px' }}>综述、Related Work 对比表、研究空白和参考文献作为独立 workflow 处理，不再混在正文编辑器顶部。</Text>
+          <Row gutter={12}>
+            <Col flex="auto"><Input placeholder="例如：video grounding in multimodal large language models" value={draftTopic} onChange={e => setDraftTopic(e.target.value)} style={inputStyle} /></Col>
+            <Col><Button type="primary" icon={<RocketOutlined />} loading={draftLoading} onClick={handleCreateReviewDraft} style={primaryBtn}>创建综述草稿</Button></Col>
+          </Row>
+        </Card>
+        <Row gutter={[16, 16]}>
+          <Col xs={24} xl={12}>{relatedWorkTab}</Col>
+          <Col xs={24} xl={12}>{litReviewTab}</Col>
+          <Col xs={24}>{compareTab}</Col>
+        </Row>
+      </Space>
+    </div>
+  );
+
+  const auxiliaryToolsPanel = (
+    <Row gutter={[16, 16]}>
+      <Col xs={24} xl={12}>{citationTab}</Col>
+      <Col xs={24} xl={12}>{abstractTab}</Col>
+      <Col xs={24}>{polishTab}</Col>
+    </Row>
+  );
+
+  const paperWorkflowContent = paperWorkflow === 'manuscript'
+    ? manuscriptWorkbench
+    : paperWorkflow === 'survey'
+      ? surveyWorkflowPanel
+      : auxiliaryToolsPanel;
 
   return (
     <PageShell
       title={assistantMode === 'paper' ? '写作工作台' : '基金申请助手'}
       subtitle="以项目为中心管理论文、本子、证据、引用校验和导出预检。"
       icon={<EditOutlined />}
-      maxWidth={assistantMode === 'paper' && activeTab === 'project' ? 1360 : 980}
+      maxWidth={assistantMode === 'paper' && paperWorkflow === 'manuscript' ? 1360 : 1100}
       actions={(
         <Segmented
           value={assistantMode}
           onChange={(value) => {
             const mode = value as 'paper' | 'grant';
             setAssistantMode(mode);
-            if (mode === 'paper') setActiveTab('project');
+            if (mode === 'paper') setPaperWorkflow('manuscript');
           }}
           options={[
             { label: '写论文助手', value: 'paper', icon: <FileTextOutlined /> },
@@ -1756,7 +1969,7 @@ const WritingPage: React.FC = () => {
             icon: <BookOutlined />,
             onClick: () => {
               setAssistantMode('paper');
-              setActiveTab('project');
+              setPaperWorkflow('manuscript');
               scrollToWorkbenchTarget('evidence');
             },
           },
@@ -1769,7 +1982,7 @@ const WritingPage: React.FC = () => {
             icon: <DownloadOutlined />,
             onClick: () => {
               setAssistantMode('paper');
-              setActiveTab('project');
+              setPaperWorkflow('manuscript');
               scrollToWorkbenchTarget('export');
             },
           },
@@ -1782,16 +1995,20 @@ const WritingPage: React.FC = () => {
             type="info"
             showIcon
             style={{ borderRadius: 12, marginBottom: 18 }}
-            message="写论文助手现在以项目为中心"
-            description="内置 ACL/CVPR/NeurIPS 等只是章节结构模板，不等于当年官方投稿格式。真正投稿前应导入或核对会议官网模板；后续我们会把官方模板导入做成独立流程。"
+            message="写论文助手现在按章节写作"
+            description="正文工作台默认按章节编辑 LaTeX 源码；综述、Related Work 和一次性辅助工具被拆到独立 workflow。官方模板不作为写正文的入口，只在导出预检里使用。"
           />
-          <Tabs
-            activeKey={activeTab}
-            onChange={setActiveTab}
-            items={paperTabItems}
-            style={{ '--ant-primary-color': '#667eea' } as any}
-            tabBarStyle={{ marginBottom: 20 }}
+          <Segmented
+            value={paperWorkflow}
+            onChange={(value) => setPaperWorkflow(value as 'manuscript' | 'survey' | 'tools')}
+            options={[
+              { label: '论文章节工作台', value: 'manuscript', icon: <CodeOutlined /> },
+              { label: '综述与 Related Work', value: 'survey', icon: <ReadOutlined /> },
+              { label: '辅助工具', value: 'tools', icon: <RobotOutlined /> },
+            ]}
+            style={{ marginBottom: 18 }}
           />
+          {paperWorkflowContent}
         </>
       ) : (
         <>

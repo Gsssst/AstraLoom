@@ -1,6 +1,9 @@
 import React from 'react';
-import { Alert, Button, Input, List, Select, Space, Tag, Typography } from 'antd';
-import { AuditOutlined, CheckCircleOutlined, EditOutlined } from '@ant-design/icons';
+import { Alert, Button, Collapse, Input, List, Select, Space, Tag, Typography, message } from 'antd';
+import {
+  AuditOutlined, BulbOutlined, CheckCircleOutlined, CodeOutlined,
+  CopyOutlined, EditOutlined, RobotOutlined, RocketOutlined,
+} from '@ant-design/icons';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -20,11 +23,21 @@ interface SectionEditorProps {
   onFocus?: (section: Section) => void;
   onCheckCitations?: (section: Section) => void;
   onCheckQuality?: (section: Section) => void;
+  onPreviewLatex?: (section: Section) => void;
+  onSectionAiAction?: (section: Section, action: SectionAiAction) => void;
   checking?: boolean;
   qualityChecking?: boolean;
+  previewing?: boolean;
   citationCheck?: any;
   qualityCheck?: any;
+  latexPreview?: any;
+  aiRunning?: boolean;
+  aiRunningAction?: string;
+  aiStatus?: string;
+  aiOutput?: string;
 }
+
+type SectionAiAction = 'draft' | 'improve' | 'insert_evidence' | 'claim_safety' | 'polish' | 'repair_latex';
 
 const statusColor = (status?: string) => {
   if (status === 'strong') return 'green';
@@ -39,16 +52,39 @@ const safetyAlertType = (status?: string) => {
   return 'warning';
 };
 
+const latexPreviewType = (preview?: any) => {
+  if (!preview) return 'info';
+  if (preview.success) return preview.warnings?.length ? 'warning' : 'success';
+  return 'error';
+};
+
+const sectionAiActions: { key: SectionAiAction; label: string; icon: React.ReactNode }[] = [
+  { key: 'draft', label: '起草本节', icon: <RocketOutlined /> },
+  { key: 'improve', label: '改进论证', icon: <BulbOutlined /> },
+  { key: 'insert_evidence', label: '补证据引用', icon: <AuditOutlined /> },
+  { key: 'claim_safety', label: 'Claim 安全', icon: <CheckCircleOutlined /> },
+  { key: 'polish', label: '润色源码', icon: <EditOutlined /> },
+  { key: 'repair_latex', label: '修复 LaTeX', icon: <CodeOutlined /> },
+];
+
 const SectionEditor: React.FC<SectionEditorProps> = ({
   section,
   onUpdate,
   onFocus,
   onCheckCitations,
   onCheckQuality,
+  onPreviewLatex,
+  onSectionAiAction,
   checking,
   qualityChecking,
+  previewing,
   citationCheck,
   qualityCheck,
+  latexPreview,
+  aiRunning,
+  aiRunningAction,
+  aiStatus,
+  aiOutput,
 }) => {
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     onUpdate(section.id, { title: e.target.value });
@@ -62,11 +98,17 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
     onUpdate(section.id, { status });
   };
 
+  const handleCopyAiOutput = async () => {
+    if (!aiOutput) return;
+    await navigator.clipboard.writeText(aiOutput);
+    message.success('已复制 AI 建议');
+  };
+
   return (
     <div style={{ marginBottom: 8 }}>
       <div style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        marginBottom: 4,
+        marginBottom: 8,
       }}>
         <Input
           value={section.title}
@@ -77,6 +119,17 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
           prefix={<EditOutlined style={{ color: '#999' }} />}
         />
         <Space>
+          {onPreviewLatex && (
+            <Button
+              size="small"
+              icon={<CodeOutlined />}
+              loading={previewing}
+              onClick={() => onPreviewLatex(section)}
+              style={{ borderRadius: 8 }}
+            >
+              LaTeX 预览检查
+            </Button>
+          )}
           {onCheckQuality && (
             <Button
               size="small"
@@ -117,14 +170,149 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
           </Text>
         </Space>
       </div>
+      <div style={{ marginBottom: 8 }}>
+        <Space size={6} wrap>
+          <Tag color="geekblue" icon={<CodeOutlined />}>LaTeX 源码</Tag>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            当前章节内容会作为 LaTeX body 保存，保留公式、命令、引用、label、表格和 figure 环境。
+          </Text>
+        </Space>
+      </div>
       <TextArea
         value={section.content || ''}
         onChange={handleContentChange}
         onFocus={() => onFocus?.(section)}
-        rows={8}
-        placeholder="开始写作..."
-        style={{ borderRadius: 8, fontSize: 14, lineHeight: 1.8 }}
+        rows={18}
+        placeholder={'输入本章节 LaTeX 源码，例如：\\paragraph{Motivation} ... \\cite{smith2024}\\n\\begin{equation}\\n  \\mathcal{L}=...\\n\\end{equation}'}
+        style={{
+          borderRadius: 8,
+          fontSize: 13,
+          lineHeight: 1.65,
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+        }}
       />
+      {latexPreview && (
+        <div style={{ marginTop: 8 }}>
+          <Alert
+            type={latexPreviewType(latexPreview) as any}
+            showIcon
+            message={
+              <Space wrap>
+                <Text strong>{latexPreview.success ? 'LaTeX 检查通过' : 'LaTeX 检查未通过'}</Text>
+                <Tag color={latexPreview.success ? 'green' : 'red'}>{latexPreview.scope === 'manuscript' ? '整篇' : '当前章节'}</Tag>
+                <Tag color={(latexPreview.errors || []).length ? 'red' : 'green'}>错误 {(latexPreview.errors || []).length}</Tag>
+                <Tag color={(latexPreview.warnings || []).length ? 'gold' : 'green'}>警告 {(latexPreview.warnings || []).length}</Tag>
+              </Space>
+            }
+            description={
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                {(latexPreview.errors || []).length > 0 && (
+                  <List
+                    size="small"
+                    dataSource={latexPreview.errors}
+                    renderItem={(item: string) => (
+                      <List.Item style={{ padding: '4px 0' }}>
+                        <Text type="danger" style={{ overflowWrap: 'anywhere' }}>{item}</Text>
+                      </List.Item>
+                    )}
+                  />
+                )}
+                {(latexPreview.warnings || []).length > 0 && (
+                  <List
+                    size="small"
+                    dataSource={latexPreview.warnings}
+                    renderItem={(item: string) => (
+                      <List.Item style={{ padding: '4px 0' }}>
+                        <Text type="secondary" style={{ overflowWrap: 'anywhere' }}>{item}</Text>
+                      </List.Item>
+                    )}
+                  />
+                )}
+                {latexPreview.log && (
+                  <Collapse
+                    size="small"
+                    ghost
+                    items={[{
+                      key: 'latex-log',
+                      label: '查看编译日志',
+                      children: (
+                        <pre style={{
+                          margin: 0,
+                          maxHeight: 220,
+                          overflow: 'auto',
+                          whiteSpace: 'pre-wrap',
+                          fontSize: 12,
+                          lineHeight: 1.55,
+                        }}>
+                          {latexPreview.log}
+                        </pre>
+                      ),
+                    }]}
+                  />
+                )}
+              </Space>
+            }
+            style={{ borderRadius: 10 }}
+          />
+        </div>
+      )}
+      {onSectionAiAction && (
+        <div style={{ marginTop: 12, padding: 12, borderRadius: 10, border: '1px solid #e6f4ff', background: '#f6fbff' }}>
+          <RowLikeHeader
+            title={<Space><RobotOutlined /> 当前章节 AI 助手</Space>}
+            extra={<Tag color="blue">{section.title || '未命名章节'}</Tag>}
+          />
+          <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 10 }}>
+            AI 请求会带上当前章节标题、LaTeX 源码、项目上下文、证据卡、引用校验和 LaTeX 诊断，只处理当前章节。
+          </Text>
+          <Space size={8} wrap>
+            {sectionAiActions.map(action => (
+              <Button
+                key={action.key}
+                size="small"
+                icon={action.icon}
+                loading={aiRunning && aiRunningAction === action.key}
+                disabled={aiRunning && aiRunningAction !== action.key}
+                onClick={() => onSectionAiAction(section, action.key)}
+                style={{ borderRadius: 8 }}
+              >
+                {action.label}
+              </Button>
+            ))}
+          </Space>
+          {(aiStatus || aiOutput) && (
+            <div style={{ marginTop: 10 }}>
+              <Alert
+                type={aiRunning ? 'info' : aiOutput ? 'success' : 'warning'}
+                showIcon
+                message={aiStatus || 'AI 建议已生成'}
+                description={aiOutput ? (
+                  <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                    <pre style={{
+                      margin: 0,
+                      maxHeight: 260,
+                      overflow: 'auto',
+                      whiteSpace: 'pre-wrap',
+                      fontSize: 12,
+                      lineHeight: 1.6,
+                      background: '#fff',
+                      border: '1px solid #f0f0f0',
+                      borderRadius: 8,
+                      padding: 10,
+                    }}>
+                      {aiOutput}
+                    </pre>
+                    <Button size="small" icon={<CopyOutlined />} onClick={handleCopyAiOutput} style={{ borderRadius: 8 }}>
+                      复制 AI 建议
+                    </Button>
+                  </Space>
+                ) : undefined}
+                style={{ borderRadius: 10 }}
+              />
+            </div>
+          )}
+        </div>
+      )}
       {citationCheck && (
         <div style={{ marginTop: 8 }}>
           <Alert
@@ -272,5 +460,12 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
     </div>
   );
 };
+
+const RowLikeHeader: React.FC<{ title: React.ReactNode; extra?: React.ReactNode }> = ({ title, extra }) => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+    <Text strong>{title}</Text>
+    {extra}
+  </div>
+);
 
 export default SectionEditor;

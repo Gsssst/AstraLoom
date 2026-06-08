@@ -1631,6 +1631,55 @@ class WritingProjectService:
             template="article",
         )
 
+    async def preview_latex_section(
+        self,
+        project_id: str,
+        user_id: str,
+        title: str,
+        source: str,
+        section_id: Optional[str] = None,
+    ) -> dict | None:
+        """Compile-check a single section body as LaTeX source."""
+        project = await self.get_project(project_id, user_id)
+        if not project:
+            return None
+
+        from app.services.latex_processor import latex_processor
+        tex = latex_processor.render_section_preview_tex(
+            section_title=title,
+            section_source=source,
+            project_title=project.get("title") or "Section Preview",
+        )
+        result = await latex_processor.compile_check(tex)
+        return {
+            "project_id": project_id,
+            "section_id": section_id,
+            "scope": "section",
+            "title": title,
+            "tex": tex,
+            **result,
+        }
+
+    async def preview_latex_manuscript(self, project_id: str, user_id: str) -> dict | None:
+        """Compile-check the assembled manuscript LaTeX export."""
+        project = await self.get_project(project_id, user_id)
+        if not project:
+            return None
+
+        from app.services.latex_processor import latex_processor
+        tex = latex_processor.render_to_tex(
+            project.get("title") or "Manuscript",
+            project.get("sections", []),
+            template="article",
+        )
+        result = await latex_processor.compile_check(tex)
+        return {
+            "project_id": project_id,
+            "scope": "manuscript",
+            "tex": tex,
+            **result,
+        }
+
     async def export_to_docx_bytes(self, project_id: str, user_id: str):
         """导出为 Word (.docx) bytes。"""
         project = await self.get_project(project_id, user_id)
