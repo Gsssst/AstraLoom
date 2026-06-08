@@ -28,11 +28,17 @@ The system SHALL treat each manuscript section body as editable LaTeX source.
 ### Requirement: LaTeX Preview Checks Are Available
 The system SHALL provide compile/preview checks for the active section and assembled manuscript.
 
-#### Scenario: User checks current section
-- **WHEN** the user requests preview for the active section
-- **THEN** the system compiles or validates the section inside a minimal LaTeX document wrapper
+#### Scenario: Preview active section as assembled manuscript
+- **WHEN** the user requests preview from the active section editor
+- **THEN** the system compiles the full manuscript document
+- **AND** replaces the matching manuscript section with the active editor draft before compilation
 - **AND** returns success status, warnings, errors, and compiler log details
-- **AND** when compilation produces a PDF, returns a PDF preview URL for the compiled section.
+- **AND** when compilation produces a PDF, returns a PDF preview URL for the compiled manuscript
+- **AND** identifies that the PDF scope is the manuscript.
+
+#### Scenario: Preview active section draft without matching persisted section
+- **WHEN** the user requests preview from the active section editor and the section id is not found in the project sections
+- **THEN** the system includes the active section draft in the assembled manuscript preview instead of compiling only the draft in isolation.
 
 #### Scenario: User checks entire manuscript
 - **WHEN** the user requests preview for the whole manuscript
