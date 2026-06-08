@@ -39,10 +39,12 @@ test('bulk action bar groups selected-paper actions without losing existing work
   assert.match(papersPageSource, /paper-bulk-action-bar/);
   assert.match(papersPageSource, /role="toolbar"/);
   assert.match(papersPageSource, /已选 \{selectedCount\} 篇/);
+  assert.match(papersPageSource, /paper-bulk-action-groups/);
   assert.match(papersPageSource, /paper-bulk-action-section-wide/);
+  assert.match(papersPageSource, /paper-bulk-action-controls/);
   assert.match(papersPageSource, /加入分类/);
   assert.match(papersPageSource, /新建分类/);
-  assert.match(papersPageSource, /阅读状态/);
+  assert.match(papersPageSource, /阅读/);
   assert.match(papersPageSource, /BibTeX/);
   assert.match(papersPageSource, /Markdown/);
   assert.match(papersPageSource, /JSON/);
@@ -87,8 +89,10 @@ test('paper library exposes readiness filters, processing status, and report pre
 test('bulk action bar has responsive hooks for narrow screens', () => {
   assert.match(responsiveSource, /\.paper-bulk-action-bar/);
   assert.match(responsiveSource, /\.paper-bulk-action-count/);
+  assert.match(responsiveSource, /\.paper-bulk-action-groups/);
   assert.match(responsiveSource, /\.paper-bulk-action-section/);
   assert.match(responsiveSource, /\.paper-bulk-action-label/);
+  assert.match(responsiveSource, /\.paper-bulk-action-controls/);
   assert.match(responsiveSource, /\.paper-bulk-action-select/);
   assert.match(responsiveSource, /@media \(max-width: 767px\)/);
   assert.match(responsiveSource, /width: calc\(100vw - 20px\)/);

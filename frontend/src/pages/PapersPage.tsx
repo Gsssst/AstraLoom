@@ -1685,55 +1685,65 @@ const PapersPage: React.FC = () => {
             )}
           </div>
 
-          <div className="paper-bulk-action-section paper-bulk-action-section-wide">
-            <Text className="paper-bulk-action-label" type="secondary">分类</Text>
-            <Select
-              size="small"
-              placeholder="选择分类"
-              value={targetCollectionId}
-              onChange={setTargetCollectionId}
-              options={collectionOptions}
-              className="paper-bulk-action-select"
-              suffixIcon={<FolderOutlined />}
-            />
-            <Button size="small" icon={<FolderAddOutlined />} loading={addingCollection} onClick={handleAddSelectedToCollection}>
-              加入分类
-            </Button>
-            <Button size="small" icon={<FolderAddOutlined />} loading={creatingCollection} onClick={handleCreateCollection}>
-              新建分类
-            </Button>
-          </div>
+          <div className="paper-bulk-action-groups">
+            <div className="paper-bulk-action-section paper-bulk-action-section-wide">
+              <Text className="paper-bulk-action-label" type="secondary">分类</Text>
+              <div className="paper-bulk-action-controls">
+                <Select
+                  size="small"
+                  placeholder="选择分类"
+                  value={targetCollectionId}
+                  onChange={setTargetCollectionId}
+                  options={collectionOptions}
+                  className="paper-bulk-action-select"
+                  suffixIcon={<FolderOutlined />}
+                />
+                <Button size="small" icon={<FolderAddOutlined />} loading={addingCollection} onClick={handleAddSelectedToCollection}>
+                  加入分类
+                </Button>
+                <Button size="small" icon={<FolderAddOutlined />} loading={creatingCollection} onClick={handleCreateCollection}>
+                  新建分类
+                </Button>
+              </div>
+            </div>
 
-          <div className="paper-bulk-action-section">
-            <Text className="paper-bulk-action-label" type="secondary">阅读状态</Text>
-            <Button size="small" icon={<RollbackOutlined />} loading={updatingStatusIds.size > 0} onClick={() => handleBulkReadStatus('unread')}>
-              待读
-            </Button>
-            <Button size="small" icon={<PlayCircleOutlined />} loading={updatingStatusIds.size > 0} onClick={() => handleBulkReadStatus('reading')}>
-              阅读中
-            </Button>
-            <Button size="small" icon={<CheckCircleOutlined />} loading={updatingStatusIds.size > 0} onClick={() => handleBulkReadStatus('completed')}>
-              已完成
-            </Button>
-          </div>
+            <div className="paper-bulk-action-section">
+              <Text className="paper-bulk-action-label" type="secondary">阅读</Text>
+              <div className="paper-bulk-action-controls">
+                <Button size="small" icon={<RollbackOutlined />} loading={updatingStatusIds.size > 0} onClick={() => handleBulkReadStatus('unread')}>
+                  待读
+                </Button>
+                <Button size="small" icon={<PlayCircleOutlined />} loading={updatingStatusIds.size > 0} onClick={() => handleBulkReadStatus('reading')}>
+                  阅读中
+                </Button>
+                <Button size="small" icon={<CheckCircleOutlined />} loading={updatingStatusIds.size > 0} onClick={() => handleBulkReadStatus('completed')}>
+                  已完成
+                </Button>
+              </div>
+            </div>
 
-          <div className="paper-bulk-action-section">
-            <Text className="paper-bulk-action-label" type="secondary">导出</Text>
-            <Button size="small" icon={<DownloadOutlined />} onClick={() => handleExportSelected('bibtex')}>BibTeX</Button>
-            <Button size="small" onClick={() => handleExportSelected('markdown')}>Markdown</Button>
-            <Button size="small" onClick={() => handleExportSelected('json')}>JSON</Button>
-          </div>
+            <div className="paper-bulk-action-section">
+              <Text className="paper-bulk-action-label" type="secondary">导出</Text>
+              <div className="paper-bulk-action-controls">
+                <Button size="small" icon={<DownloadOutlined />} onClick={() => handleExportSelected('bibtex')}>BibTeX</Button>
+                <Button size="small" onClick={() => handleExportSelected('markdown')}>Markdown</Button>
+                <Button size="small" onClick={() => handleExportSelected('json')}>JSON</Button>
+              </div>
+            </div>
 
-          <div className="paper-bulk-action-section">
-            <Text className="paper-bulk-action-label" type="secondary">后续任务</Text>
-            <Button size="small" icon={<FileTextOutlined />} onClick={() => setReportModalOpen(true)}>
-              组会报告
-            </Button>
-            {isAdmin && (
-              <Button size="small" icon={<TagsOutlined />} onClick={handleBatchTagSelected}>
-                标签
-              </Button>
-            )}
+            <div className="paper-bulk-action-section">
+              <Text className="paper-bulk-action-label" type="secondary">任务</Text>
+              <div className="paper-bulk-action-controls">
+                <Button size="small" icon={<FileTextOutlined />} onClick={() => setReportModalOpen(true)}>
+                  组会报告
+                </Button>
+                {isAdmin && (
+                  <Button size="small" icon={<TagsOutlined />} onClick={handleBatchTagSelected}>
+                    标签
+                  </Button>
+                )}
+              </div>
+            </div>
           </div>
 
           <Button
