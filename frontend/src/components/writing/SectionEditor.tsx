@@ -33,6 +33,12 @@ const statusColor = (status?: string) => {
   return 'red';
 };
 
+const safetyAlertType = (status?: string) => {
+  if (status === 'low_risk') return 'success';
+  if (status === 'no_claims') return 'info';
+  return 'warning';
+};
+
 const SectionEditor: React.FC<SectionEditorProps> = ({
   section,
   onUpdate,
@@ -122,7 +128,7 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
       {citationCheck && (
         <div style={{ marginTop: 8 }}>
           <Alert
-            type={citationCheck.summary?.evidence_warning ? 'warning' : 'success'}
+            type={(citationCheck.summary?.evidence_warning || citationCheck.claim_safety_summary?.risky) ? 'warning' : 'success'}
             showIcon
             message={
               <Space wrap>
@@ -131,42 +137,91 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
                 <Tag color="gold">部分 {citationCheck.summary?.partial || 0}</Tag>
                 <Tag color="red">弱/缺失 {(citationCheck.summary?.weak || 0) + (citationCheck.summary?.missing || 0)}</Tag>
                 <Tag color="blue">未校验 {citationCheck.summary?.unchecked || 0}</Tag>
+                {citationCheck.claim_safety_summary && (
+                  <Tag color={citationCheck.claim_safety_summary.risky ? 'red' : 'green'}>
+                    Claim 风险 {citationCheck.claim_safety_summary.risky || 0}
+                  </Tag>
+                )}
               </Space>
             }
             description={
-              <List
-                size="small"
-                dataSource={citationCheck.checks || []}
-                renderItem={(item: any) => (
-                  <List.Item style={{ padding: '6px 0' }}>
-                    <div style={{ width: '100%' }}>
+              <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                {citationCheck.claim_safety_summary && (
+                  <Alert
+                    type={safetyAlertType(citationCheck.claim_safety_summary.status) as any}
+                    showIcon
+                    message={
                       <Space wrap>
-                        <Tag color={statusColor(item.status)}>{item.citation || '无引用'}</Tag>
-                        <Text strong>{item.label}</Text>
-                        {item.decision_label && <Tag color={statusColor(item.status)}>{item.decision_label}</Tag>}
-                        {item.card?.title && <Text type="secondary">{item.card.title}</Text>}
+                        <Text strong>Claim 安全检查：{citationCheck.claim_safety_summary.status_label}</Text>
+                        <Tag color="green">稳 {citationCheck.claim_safety_summary.strong || 0}</Tag>
+                        <Tag color="gold">部分 {citationCheck.claim_safety_summary.partial || 0}</Tag>
+                        <Tag color="red">缺引用 {citationCheck.claim_safety_summary.missing || 0}</Tag>
+                        <Tag color="red">弱支撑 {citationCheck.claim_safety_summary.weak || 0}</Tag>
+                        <Tag color="blue">外部未校验 {citationCheck.claim_safety_summary.unchecked || 0}</Tag>
                       </Space>
-                      <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 4 }}>
-                        {item.explanation}
-                      </Text>
-                      {item.decision_action && (
-                        <Alert
-                          type={item.status === 'weak' || item.status === 'missing' ? 'warning' : 'info'}
-                          showIcon
-                          message="建议下一步"
-                          description={`${item.decision_action}${item.decision_warning ? `：${item.decision_warning}` : ''}`}
-                          style={{ borderRadius: 8, marginTop: 6, padding: '6px 10px' }}
-                        />
-                      )}
-                      {item.match_terms?.length > 0 && (
-                        <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
-                          命中术语：{item.match_terms.join('、')}
-                        </Text>
-                      )}
-                    </div>
-                  </List.Item>
+                    }
+                    description={citationCheck.claim_safety_summary.next_action}
+                    style={{ borderRadius: 8, padding: '8px 10px' }}
+                  />
                 )}
-              />
+                {(citationCheck.claim_diagnostics || []).length > 0 && (
+                  <List
+                    size="small"
+                    dataSource={(citationCheck.claim_diagnostics || []).filter((item: any) => ['missing', 'weak', 'unchecked'].includes(item.status)).slice(0, 6)}
+                    locale={{ emptyText: '未发现高风险 claim' }}
+                    renderItem={(item: any) => (
+                      <List.Item style={{ padding: '6px 0' }}>
+                        <div style={{ width: '100%', minWidth: 0 }}>
+                          <Space wrap>
+                            <Tag color={statusColor(item.status)}>{item.label}</Tag>
+                            {(item.citations || []).map((citation: string) => <Tag key={citation}>{citation}</Tag>)}
+                            {(item.evidence_titles || []).map((title: string) => <Text key={title} type="secondary">{title}</Text>)}
+                          </Space>
+                          <Text style={{ display: 'block', fontSize: 12, marginTop: 4, overflowWrap: 'anywhere' }}>
+                            {item.sentence}
+                          </Text>
+                          <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 4 }}>
+                            建议：{item.decision_action}{item.decision_warning ? `；${item.decision_warning}` : ''}
+                          </Text>
+                        </div>
+                      </List.Item>
+                    )}
+                  />
+                )}
+                <List
+                  size="small"
+                  dataSource={citationCheck.checks || []}
+                  renderItem={(item: any) => (
+                    <List.Item style={{ padding: '6px 0' }}>
+                      <div style={{ width: '100%' }}>
+                        <Space wrap>
+                          <Tag color={statusColor(item.status)}>{item.citation || '无引用'}</Tag>
+                          <Text strong>{item.label}</Text>
+                          {item.decision_label && <Tag color={statusColor(item.status)}>{item.decision_label}</Tag>}
+                          {item.card?.title && <Text type="secondary">{item.card.title}</Text>}
+                        </Space>
+                        <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 4 }}>
+                          {item.explanation}
+                        </Text>
+                        {item.decision_action && (
+                          <Alert
+                            type={item.status === 'weak' || item.status === 'missing' ? 'warning' : 'info'}
+                            showIcon
+                            message="建议下一步"
+                            description={`${item.decision_action}${item.decision_warning ? `：${item.decision_warning}` : ''}`}
+                            style={{ borderRadius: 8, marginTop: 6, padding: '6px 10px' }}
+                          />
+                        )}
+                        {item.match_terms?.length > 0 && (
+                          <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+                            命中术语：{item.match_terms.join('、')}
+                          </Text>
+                        )}
+                      </div>
+                    </List.Item>
+                      )}
+                />
+              </Space>
             }
             style={{ borderRadius: 10 }}
           />

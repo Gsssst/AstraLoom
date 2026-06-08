@@ -1153,6 +1153,7 @@ class WritingProjectService:
         writer = WritingAssistantService(self.session)
 
         if not citations:
+            claim_diagnostics = self._build_claim_diagnostics(text or "", [], cards)
             return {
                 "project_id": project_id,
                 "section_id": section_id,
@@ -1167,6 +1168,8 @@ class WritingProjectService:
                     "card": None,
                 }],
                 "summary": self._citation_summary([{"status": "missing"}]),
+                "claim_diagnostics": claim_diagnostics,
+                "claim_safety_summary": self._claim_safety_summary(claim_diagnostics),
                 "recommendations": self._recommend_evidence_cards(cards),
             }
 
@@ -1248,12 +1251,150 @@ class WritingProjectService:
                 "card": card,
             })
 
+        claim_diagnostics = self._build_claim_diagnostics(text or "", checks, cards)
         return {
             "project_id": project_id,
             "section_id": section_id,
             "checks": checks,
             "summary": self._citation_summary(checks),
+            "claim_diagnostics": claim_diagnostics,
+            "claim_safety_summary": self._claim_safety_summary(claim_diagnostics),
             "recommendations": self._recommend_evidence_cards(cards),
+        }
+
+    def _build_claim_diagnostics(self, text: str, checks: list[dict], cards: list[dict]) -> list[dict]:
+        claims = self._extract_claim_sentences(text)
+        diagnostics: list[dict] = []
+        for index, item in enumerate(claims, start=1):
+            sentence = item["sentence"]
+            mentions = self._extract_citation_mentions(sentence)
+            sentence_checks = [
+                check for check in checks
+                if check.get("citation") and any(mention["raw"] == check.get("citation") for mention in mentions)
+            ]
+            if not mentions:
+                status = "missing"
+                label = "缺少引用"
+                action = "为该 claim 插入证据卡引用"
+                warning = "关键论断没有引用时，定稿前无法证明它来自项目证据。"
+            elif any(check.get("status") == "missing" for check in sentence_checks) or len(sentence_checks) < len(mentions):
+                status = "missing"
+                label = "引用未匹配"
+                action = "检查引用编号或补充对应证据卡"
+                warning = "引用没有匹配到项目证据卡，不应直接进入终稿。"
+            elif any(check.get("status") == "weak" for check in sentence_checks):
+                status = "weak"
+                label = "支撑较弱"
+                action = "替换为更相关证据，或降低 claim 强度"
+                warning = "弱支撑 claim 容易被审稿人质疑。"
+            elif any(check.get("status") == "unchecked" for check in sentence_checks):
+                status = "unchecked"
+                label = "外部证据未校验"
+                action = "先入库并补全文/补向量，或补充本地证据"
+                warning = "外部证据只能作为临时占位引用。"
+            elif any(check.get("status") == "partial" for check in sentence_checks):
+                status = "partial"
+                label = "部分支撑"
+                action = "补充更直接证据或增加限定语"
+                warning = ""
+            else:
+                status = "strong"
+                label = "支撑较稳"
+                action = "保留当前引用，定稿前人工复核原文"
+                warning = ""
+
+            diagnostics.append({
+                "index": index,
+                "status": status,
+                "label": label,
+                "sentence": sentence[:500],
+                "citations": [mention["raw"] for mention in mentions],
+                "citation_count": len(mentions),
+                "matched_citation_count": len(sentence_checks),
+                "decision_action": action,
+                "decision_warning": warning,
+                "evidence_titles": [
+                    check.get("card", {}).get("title")
+                    for check in sentence_checks
+                    if check.get("card", {}).get("title")
+                ][:3],
+            })
+
+        if not diagnostics and text.strip():
+            return [{
+                "index": 1,
+                "status": "missing",
+                "label": "缺少可识别 claim",
+                "sentence": text.strip()[:500],
+                "citations": [],
+                "citation_count": 0,
+                "matched_citation_count": 0,
+                "decision_action": "先把本节核心结论写成清晰 claim，再插入证据卡引用",
+                "decision_warning": "没有明确 claim 时，引用校验无法判断正文是否被证据支撑。",
+                "evidence_titles": [card.get("title") for card in cards[:3] if card.get("title")],
+            }]
+        return diagnostics
+
+    def _extract_claim_sentences(self, text: str) -> list[dict]:
+        sentences = self._split_sentences_with_spans(text or "")
+        claims = []
+        claim_pattern = re.compile(
+            r"(show|shows|demonstrate|demonstrates|improve|improves|outperform|outperforms|reduce|reduces|"
+            r"enable|enables|lack|lacks|challenge|limitation|significant|robust|state-of-the-art|sota|"
+            r"表明|证明|显示|提升|优于|降低|减少|缺少|不足|局限|挑战|显著|有效|鲁棒|领先|超过)"
+            r"",
+            re.IGNORECASE,
+        )
+        for sentence in sentences:
+            normalized = sentence["sentence"].strip()
+            if len(normalized) < 18:
+                continue
+            has_citation = bool(self._extract_citation_mentions(normalized))
+            if has_citation or claim_pattern.search(normalized) or len(normalized) >= 80:
+                claims.append(sentence)
+            if len(claims) >= 12:
+                break
+        return claims
+
+    def _split_sentences_with_spans(self, text: str) -> list[dict]:
+        results = []
+        pattern = re.compile(r"[^。！？.!?\n]+(?:[。！？.!?]+|$)")
+        for match in pattern.finditer(text or ""):
+            sentence = match.group(0).strip()
+            if sentence:
+                results.append({"sentence": sentence, "start": match.start(), "end": match.end()})
+        return results
+
+    def _claim_safety_summary(self, diagnostics: list[dict]) -> dict:
+        total = len(diagnostics)
+        counts = {
+            "total": total,
+            "strong": len([item for item in diagnostics if item.get("status") == "strong"]),
+            "partial": len([item for item in diagnostics if item.get("status") == "partial"]),
+            "weak": len([item for item in diagnostics if item.get("status") == "weak"]),
+            "missing": len([item for item in diagnostics if item.get("status") == "missing"]),
+            "unchecked": len([item for item in diagnostics if item.get("status") == "unchecked"]),
+        }
+        risky = counts["weak"] + counts["missing"] + counts["unchecked"]
+        if not total:
+            status = "no_claims"
+            label = "暂无可检测 claim"
+            next_action = "先写出本节核心论断，再进行引用安全检查。"
+        elif risky:
+            status = "needs_attention"
+            label = "存在 claim 风险"
+            next_action = "优先处理缺引用、弱支撑和外部未校验 claim。"
+        else:
+            status = "low_risk"
+            label = "claim 风险较低"
+            next_action = "可继续做语言润色，定稿前人工复核原文。"
+        return {
+            **counts,
+            "risky": risky,
+            "status": status,
+            "status_label": label,
+            "next_action": next_action,
+            "claim_coverage": 1 - (counts["missing"] / total) if total else 0,
         }
 
     async def analyze_section_quality(

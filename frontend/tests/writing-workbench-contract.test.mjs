@@ -111,6 +111,17 @@ test('section citation diagnostics expose actionable next steps', () => {
   assert.match(sectionEditorSource, /decision_warning/);
 });
 
+test('section citation diagnostics expose claim safety checks', () => {
+  assert.match(sectionEditorSource, /Claim 安全检查/);
+  assert.match(sectionEditorSource, /claim_safety_summary/);
+  assert.match(sectionEditorSource, /claim_diagnostics/);
+  assert.match(sectionEditorSource, /缺引用/);
+  assert.match(sectionEditorSource, /弱支撑/);
+  assert.match(sectionEditorSource, /外部未校验/);
+  assert.match(sectionEditorSource, /未发现高风险 claim/);
+  assert.match(sectionEditorSource, /safetyAlertType/);
+});
+
 test('section editor exposes draft quality coaching', () => {
   assert.match(sectionEditorSource, /质量评估/);
   assert.match(sectionEditorSource, /章节质量/);

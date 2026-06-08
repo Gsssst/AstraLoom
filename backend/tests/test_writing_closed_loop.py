@@ -698,6 +698,115 @@ async def test_writing_project_section_citation_check_marks_external_unchecked(m
 
 
 @pytest.mark.asyncio
+async def test_writing_project_section_citation_check_flags_uncited_claims(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+
+    async def fake_get_cards(_project_id, _user_id):
+        return {
+            "cards": [{
+                "index": 1,
+                "citation_marker": "[1]",
+                "title": "Video Grounding Benchmarks",
+                "paper_id": str(uuid4()),
+                "local_status": "local",
+                "local_status_label": "已入库",
+                "role_label": "支持证据",
+            }]
+        }
+
+    monkeypatch.setattr(service, "get_evidence_cards", fake_get_cards)
+
+    result = await service.check_section_citations(
+        "project-1",
+        "user-1",
+        "This method significantly improves robust long-video grounding without extra supervision.",
+        section_id="section-1",
+    )
+
+    assert result["claim_safety_summary"]["missing"] >= 1
+    assert result["claim_safety_summary"]["status"] == "needs_attention"
+    assert result["claim_diagnostics"][0]["status"] == "missing"
+    assert result["claim_diagnostics"][0]["decision_action"] == "为该 claim 插入证据卡引用"
+
+
+@pytest.mark.asyncio
+async def test_writing_project_section_citation_check_claim_safety_marks_external_unchecked(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+
+    async def fake_get_cards(_project_id, _user_id):
+        return {
+            "cards": [{
+                "index": 1,
+                "citation_marker": "[1]",
+                "title": "External Evidence",
+                "paper_id": None,
+                "local_status": "external",
+                "local_status_label": "未入库",
+                "role_label": "背景资料",
+            }]
+        }
+
+    monkeypatch.setattr(service, "get_evidence_cards", fake_get_cards)
+
+    result = await service.check_section_citations(
+        "project-1",
+        "user-1",
+        "The field still lacks robust grounding evidence [1].",
+    )
+
+    assert result["claim_safety_summary"]["unchecked"] == 1
+    assert result["claim_diagnostics"][0]["status"] == "unchecked"
+    assert result["claim_diagnostics"][0]["citations"] == ["[1]"]
+    assert "先入库" in result["claim_diagnostics"][0]["decision_action"]
+
+
+@pytest.mark.asyncio
+async def test_writing_project_section_citation_check_claim_safety_marks_weak_support(monkeypatch):
+    paper_id = str(uuid4())
+    paper = _paper(
+        id=paper_id,
+        title="Video Grounding Benchmarks",
+        abstract="Video grounding benchmarks compare temporal localization baseline methods.",
+    )
+
+    class _Rows:
+        def scalar_one_or_none(self):
+            return paper
+
+    class _Session:
+        async def execute(self, _statement):
+            return _Rows()
+
+    service = WritingProjectService(_Session())
+
+    async def fake_get_cards(_project_id, _user_id):
+        return {
+            "cards": [{
+                "index": 1,
+                "citation_marker": "[1]",
+                "title": paper.title,
+                "paper_id": paper_id,
+                "local_status": "local",
+                "local_status_label": "已入库",
+                "role_label": "支持证据",
+            }]
+        }
+
+    monkeypatch.setattr(service, "get_evidence_cards", fake_get_cards)
+
+    result = await service.check_section_citations(
+        "project-1",
+        "user-1",
+        "Our method significantly improves protein folding robustness and reduces medical diagnosis errors [1].",
+    )
+
+    assert result["checks"][0]["status"] == "weak"
+    assert result["claim_safety_summary"]["weak"] == 1
+    assert result["claim_diagnostics"][0]["status"] == "weak"
+    assert result["claim_diagnostics"][0]["decision_action"] == "替换为更相关证据，或降低 claim 强度"
+
+
+@pytest.mark.asyncio
 async def test_writing_section_quality_check_scores_ready_draft(monkeypatch):
     service = WritingProjectService(SimpleNamespace())
 
