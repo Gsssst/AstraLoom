@@ -63,6 +63,16 @@ The system SHALL provide compile/preview checks for the active section and assem
 - **WHEN** LaTeX compilation succeeds but emits warnings
 - **THEN** the UI shows the warning diagnostics and still displays the compiled PDF preview.
 
+#### Scenario: Warning details are collapsed by default
+- **WHEN** LaTeX compilation succeeds or fails with warning diagnostics
+- **THEN** the UI shows the warning count
+- **AND** keeps the warning details available behind a collapsed control
+- **AND** does not expand warning details by default.
+
+#### Scenario: Error details remain visible
+- **WHEN** LaTeX compilation returns errors
+- **THEN** the UI shows error details directly without requiring expansion.
+
 #### Scenario: Preview honors selected manuscript layout
 - **WHEN** the user previews a manuscript with a selected single-column or double-column layout
 - **THEN** the rendered LaTeX document uses the corresponding document class options before compilation.
