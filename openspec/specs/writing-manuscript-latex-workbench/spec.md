@@ -30,6 +30,16 @@ The system SHALL treat each manuscript section body as editable LaTeX source.
 - **WHEN** LaTeX command suggestions are visible
 - **THEN** the user can move through suggestions and apply one using keyboard controls.
 
+#### Scenario: User receives paper citation suggestions
+- **WHEN** the user types inside a LaTeX citation command such as `\cite{`
+- **THEN** the editor offers citation suggestions from the selected writing project's evidence cards
+- **AND** suggestions include enough paper metadata to distinguish entries.
+
+#### Scenario: User inserts an evidence citation
+- **WHEN** the user selects a citation suggestion
+- **THEN** the editor inserts the project's citation marker into the citation command
+- **AND** preserves the current draft content around the citation.
+
 #### Scenario: User exports manuscript
 - **WHEN** the user exports the project as LaTeX
 - **THEN** the system assembles section LaTeX bodies into a valid document skeleton.

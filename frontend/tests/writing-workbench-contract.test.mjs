@@ -111,6 +111,19 @@ test('section editor exposes latex command suggestions', () => {
   assert.match(sectionEditorSource, /Tab/);
 });
 
+test('section editor exposes project paper citation autocomplete', () => {
+  assert.match(sectionEditorSource, /citationSuggestions/);
+  assert.match(sectionEditorSource, /activeCitationSuggestions/);
+  assert.match(sectionEditorSource, /论文库引用/);
+  assert.match(sectionEditorSource, /applyCitationSuggestion/);
+  assert.match(sectionEditorSource, /citationMatch/);
+  assert.match(sectionEditorSource, /setCitationRange/);
+  assert.match(sectionEditorSource, /suggestion\.key/);
+  assert.match(writingPageSource, /projectCitationSuggestions/);
+  assert.match(writingPageSource, /citation_marker/);
+  assert.match(writingPageSource, /citationSuggestions=\{projectCitationSuggestions\}/);
+});
+
 test('writing workbench exposes latex compile layout controls', () => {
   assert.match(writingPageSource, /latexCompileLayout/);
   assert.match(writingPageSource, /compile-settings/);

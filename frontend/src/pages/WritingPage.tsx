@@ -324,6 +324,17 @@ const WritingPage: React.FC = () => {
   const priorityColor = (priority?: string) => priority === 'high' ? 'red' : priority === 'medium' ? 'gold' : 'blue';
   const selectedWritingBrief = getProjectWritingBrief(selectedProject);
   const selectedBriefClaimCounts = getBriefClaimStatusCounts(selectedWritingBrief);
+  const projectCitationSuggestions = evidenceCards
+    .filter((card: any) => card?.citation_marker)
+    .map((card: any) => ({
+      key: card.citation_marker,
+      title: card.title || card.citation_marker,
+      authors: card.authors || '',
+      year: card.year || '',
+      arxiv_id: card.arxiv_id || '',
+      local_status_label: card.local_status_label || card.source_label || '',
+    }))
+    .filter((item: any, index: number, items: any[]) => items.findIndex(other => other.key === item.key) === index);
   const scrollToWorkbenchTarget = (target?: string) => {
     if (target === 'brief') {
       document.getElementById('writing-brief-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2097,6 +2108,7 @@ const WritingPage: React.FC = () => {
                       aiRunningAction={activeSectionAi.action}
                       aiStatus={activeSectionAi.status}
                       aiOutput={activeSectionAi.output}
+                      citationSuggestions={projectCitationSuggestions}
                     />
                   ) : (
                     <WorkflowEmptyState

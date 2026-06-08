@@ -36,9 +36,19 @@ interface SectionEditorProps {
   aiRunningAction?: string;
   aiStatus?: string;
   aiOutput?: string;
+  citationSuggestions?: CitationSuggestion[];
 }
 
 type SectionAiAction = 'draft' | 'improve' | 'insert_evidence' | 'claim_safety' | 'polish' | 'repair_latex';
+
+interface CitationSuggestion {
+  key: string;
+  title: string;
+  authors?: string;
+  year?: string | number;
+  arxiv_id?: string;
+  local_status_label?: string;
+}
 
 const statusColor = (status?: string) => {
   if (status === 'strong') return 'green';
@@ -148,12 +158,15 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
   aiRunningAction,
   aiStatus,
   aiOutput,
+  citationSuggestions = [],
 }) => {
   const [draftTitle, setDraftTitle] = useState(section.title || '');
   const [draftContent, setDraftContent] = useState(section.content || '');
   const [draftStatus, setDraftStatus] = useState(section.status || 'draft');
   const [latexPrefix, setLatexPrefix] = useState('');
   const [latexPrefixRange, setLatexPrefixRange] = useState<{ start: number; end: number } | null>(null);
+  const [citationQuery, setCitationQuery] = useState('');
+  const [citationRange, setCitationRange] = useState<{ start: number; end: number } | null>(null);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -230,19 +243,56 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
       .slice(0, 8);
   }, [latexPrefix, latexPrefixRange]);
 
+  const activeCitationSuggestions = useMemo(() => {
+    if (!citationRange) return [];
+    const normalized = citationQuery.trim().toLowerCase();
+    return citationSuggestions
+      .filter(item => {
+        const probe = [
+          item.key,
+          item.title,
+          item.authors,
+          item.year,
+          item.arxiv_id,
+        ].filter(Boolean).join(' ').toLowerCase();
+        return !normalized || probe.includes(normalized);
+      })
+      .slice(0, 8);
+  }, [citationQuery, citationRange, citationSuggestions]);
+
   const updateLatexSuggestions = (content: string, cursor: number | null) => {
     if (cursor === null || cursor < 0) {
       setLatexPrefixRange(null);
       setLatexPrefix('');
+      setCitationRange(null);
+      setCitationQuery('');
       return;
     }
     const beforeCursor = content.slice(0, cursor);
+    const citationMatch = beforeCursor.match(/\\cite[a-zA-Z*]*(?:\[[^\]\n]*\]\s*)*\{([^{}\n]*)$/);
+    if (citationMatch) {
+      const citationText = citationMatch[1] || '';
+      const lastSeparator = Math.max(citationText.lastIndexOf(','), citationText.lastIndexOf(';'));
+      const rawQuery = citationText.slice(lastSeparator + 1);
+      const leadingWhitespace = rawQuery.length - rawQuery.trimStart().length;
+      const query = rawQuery.trimStart();
+      setCitationQuery(query);
+      setCitationRange({ start: cursor - rawQuery.length + leadingWhitespace, end: cursor });
+      setLatexPrefixRange(null);
+      setLatexPrefix('');
+      setActiveSuggestionIndex(0);
+      return;
+    }
     const match = beforeCursor.match(/\\([A-Za-z]*)$/);
     if (!match) {
       setLatexPrefixRange(null);
       setLatexPrefix('');
+      setCitationRange(null);
+      setCitationQuery('');
       return;
     }
+    setCitationRange(null);
+    setCitationQuery('');
     setLatexPrefix(match[1] || '');
     setLatexPrefixRange({ start: cursor - match[0].length, end: cursor });
     setActiveSuggestionIndex(0);
@@ -260,23 +310,46 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
     window.requestAnimationFrame(() => {
       textAreaRef.current?.focus();
       textAreaRef.current?.setSelectionRange(cursorPosition, cursorPosition);
+      updateLatexSuggestions(nextContent, cursorPosition);
     });
   }, [activeSuggestionIndex, draftContent, latexPrefixRange, latexSuggestions, scheduleSave]);
 
+  const applyCitationSuggestion = useCallback((suggestion = activeCitationSuggestions[activeSuggestionIndex]) => {
+    if (!suggestion || !citationRange) return;
+    const nextContent = `${draftContent.slice(0, citationRange.start)}${suggestion.key}${draftContent.slice(citationRange.end)}`;
+    const cursorPosition = citationRange.start + suggestion.key.length;
+    setDraftContent(nextContent);
+    latestDraftRef.current = { ...latestDraftRef.current, content: nextContent };
+    setCitationRange(null);
+    setCitationQuery('');
+    scheduleSave();
+    window.requestAnimationFrame(() => {
+      textAreaRef.current?.focus();
+      textAreaRef.current?.setSelectionRange(cursorPosition, cursorPosition);
+    });
+  }, [activeCitationSuggestions, activeSuggestionIndex, citationRange, draftContent, scheduleSave]);
+
   const handleContentKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (!latexSuggestions.length) return;
+    const visibleSuggestionCount = activeCitationSuggestions.length || latexSuggestions.length;
+    if (!visibleSuggestionCount) return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setActiveSuggestionIndex(index => (index + 1) % latexSuggestions.length);
+      setActiveSuggestionIndex(index => (index + 1) % visibleSuggestionCount);
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setActiveSuggestionIndex(index => (index - 1 + latexSuggestions.length) % latexSuggestions.length);
+      setActiveSuggestionIndex(index => (index - 1 + visibleSuggestionCount) % visibleSuggestionCount);
     } else if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault();
-      applyLatexSuggestion();
+      if (activeCitationSuggestions.length) {
+        applyCitationSuggestion();
+      } else {
+        applyLatexSuggestion();
+      }
     } else if (e.key === 'Escape') {
       setLatexPrefixRange(null);
       setLatexPrefix('');
+      setCitationRange(null);
+      setCitationQuery('');
     }
   };
 
@@ -387,7 +460,11 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
             updateLatexSuggestions(event.currentTarget.value, event.currentTarget.selectionStart);
           }}
           onBlur={() => {
-            window.setTimeout(() => setLatexPrefixRange(null), 120);
+            window.setTimeout(() => {
+              setLatexPrefixRange(null);
+              setCitationRange(null);
+              setCitationQuery('');
+            }, 120);
             flushDraft();
           }}
           rows={18}
@@ -399,7 +476,7 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
           }}
         />
-        {latexSuggestions.length > 0 && (
+        {(activeCitationSuggestions.length > 0 || latexSuggestions.length > 0) && (
           <div
             className="latex-command-suggestions"
             style={{
@@ -416,9 +493,41 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
             }}
           >
             <div style={{ padding: '6px 10px', borderBottom: '1px solid #eef2f7', background: '#f8fafc' }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>LaTeX 命令补全</Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {activeCitationSuggestions.length ? '论文库引用' : 'LaTeX 命令补全'}
+              </Text>
             </div>
-            {latexSuggestions.map((suggestion, index) => (
+            {activeCitationSuggestions.length > 0 ? activeCitationSuggestions.map((suggestion, index) => (
+              <button
+                key={suggestion.key}
+                type="button"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  applyCitationSuggestion(suggestion);
+                }}
+                style={{
+                  width: '100%',
+                  display: 'grid',
+                  gridTemplateColumns: 'auto minmax(0, 1fr)',
+                  gap: 10,
+                  padding: '8px 10px',
+                  border: 0,
+                  borderBottom: index === activeCitationSuggestions.length - 1 ? 0 : '1px solid #f1f5f9',
+                  background: index === activeSuggestionIndex ? '#e6f4ff' : '#fff',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontFamily: 'inherit',
+                }}
+              >
+                <Text code style={{ fontSize: 12, alignSelf: 'start' }}>{suggestion.key}</Text>
+                <span style={{ minWidth: 0 }}>
+                  <Text strong ellipsis style={{ display: 'block', fontSize: 12 }}>{suggestion.title || 'Untitled'}</Text>
+                  <Text type="secondary" ellipsis style={{ display: 'block', fontSize: 12 }}>
+                    {[suggestion.year, suggestion.authors, suggestion.local_status_label].filter(Boolean).join(' · ')}
+                  </Text>
+                </span>
+              </button>
+            )) : latexSuggestions.map((suggestion, index) => (
               <button
                 key={suggestion.trigger}
                 type="button"
