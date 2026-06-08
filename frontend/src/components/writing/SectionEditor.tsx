@@ -479,14 +479,24 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
                   />
                 )}
                 {(latexPreview.warnings || []).length > 0 && (
-                  <List
+                  <Collapse
                     size="small"
-                    dataSource={latexPreview.warnings}
-                    renderItem={(item: string) => (
-                      <List.Item style={{ padding: '4px 0' }}>
-                        <Text type="secondary" style={{ overflowWrap: 'anywhere' }}>{item}</Text>
-                      </List.Item>
-                    )}
+                    ghost
+                    items={[{
+                      key: 'latex-warnings',
+                      label: `查看 ${latexPreview.warnings.length} 条警告`,
+                      children: (
+                        <List
+                          size="small"
+                          dataSource={latexPreview.warnings}
+                          renderItem={(item: string) => (
+                            <List.Item style={{ padding: '4px 0' }}>
+                              <Text type="secondary" style={{ overflowWrap: 'anywhere' }}>{item}</Text>
+                            </List.Item>
+                          )}
+                        />
+                      ),
+                    }]}
                   />
                 )}
                 {latexPreview.log && (

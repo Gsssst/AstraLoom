@@ -1854,9 +1854,23 @@ const WritingPage: React.FC = () => {
           {(diagnostic.errors || []).slice(0, 5).map((item: string) => (
             <Text key={item} type="danger" style={{ overflowWrap: 'anywhere' }}>{item}</Text>
           ))}
-          {(diagnostic.warnings || []).slice(0, 5).map((item: string) => (
-            <Text key={item} type="secondary" style={{ overflowWrap: 'anywhere' }}>{item}</Text>
-          ))}
+          {(diagnostic.warnings || []).length > 0 && (
+            <Collapse
+              size="small"
+              ghost
+              items={[{
+                key: 'latex-warnings',
+                label: `查看 ${diagnostic.warnings.length} 条警告`,
+                children: (
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    {(diagnostic.warnings || []).map((item: string) => (
+                      <Text key={item} type="secondary" style={{ overflowWrap: 'anywhere' }}>{item}</Text>
+                    ))}
+                  </Space>
+                ),
+              }]}
+            />
+          )}
           {diagnostic.pdf_preview_url && (
             <AuthenticatedPdfPreview previewUrl={diagnostic.pdf_preview_url} title={`${effectiveScopeLabel} PDF 预览`} height={520} />
           )}

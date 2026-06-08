@@ -87,6 +87,7 @@ test('manuscript workbench exposes latex preview diagnostics', () => {
   assert.match(sectionEditorSource, /源码级检查/);
   assert.match(sectionEditorSource, /未安装 pdflatex/);
   assert.match(sectionEditorSource, /查看编译日志/);
+  assert.match(sectionEditorSource, /查看 \$\{latexPreview\.warnings\.length\} 条警告/);
   assert.match(sectionEditorSource, /pdf_preview_url/);
   assert.match(sectionEditorSource, /pdf_scope === 'manuscript'/);
   assert.match(sectionEditorSource, /整篇 PDF 预览/);
@@ -97,6 +98,7 @@ test('manuscript workbench exposes latex preview diagnostics', () => {
   assert.match(authenticatedPdfPreviewSource, /<iframe/);
   assert.match(writingPageSource, /pdf_preview_url/);
   assert.match(writingPageSource, /pdf_scope === 'manuscript'/);
+  assert.match(writingPageSource, /查看 \$\{diagnostic\.warnings\.length\} 条警告/);
 });
 
 test('section editor exposes latex command suggestions', () => {
