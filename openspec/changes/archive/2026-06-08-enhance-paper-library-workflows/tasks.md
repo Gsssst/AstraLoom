@@ -24,4 +24,4 @@
 - [x] 4.1 Add/update backend tests for filters, processing status, insights cache, and report presets.
 - [x] 4.2 Add/update frontend contract tests for migration health, filters, processing status, presets, and insight UI.
 - [x] 4.3 Run targeted backend/frontend tests, frontend build, OpenSpec validation, and diff checks.
-- [ ] 4.4 Commit implementation, archive the OpenSpec change, and commit the archive.
+- [x] 4.4 Commit implementation, archive the OpenSpec change, and commit the archive.
