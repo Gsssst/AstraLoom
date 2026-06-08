@@ -26,4 +26,4 @@
 ## 5. Verification
 
 - [x] 5.1 Run targeted backend/frontend tests, frontend build, OpenSpec validation, and diff checks.
-- [ ] 5.2 Commit implementation, archive the OpenSpec change, and commit the archive.
+- [x] 5.2 Commit implementation, archive the OpenSpec change, and commit the archive.
