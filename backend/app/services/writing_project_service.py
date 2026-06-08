@@ -1683,22 +1683,58 @@ class WritingProjectService:
         source: str,
         section_id: Optional[str] = None,
     ) -> dict | None:
-        """Compile-check a single section body as LaTeX source."""
+        """Compile-check the manuscript with the active section draft merged in."""
         project = await self.get_project(project_id, user_id)
         if not project:
             return None
 
         from app.services.latex_processor import latex_processor
-        tex = latex_processor.render_section_preview_tex(
-            section_title=title,
-            section_source=source,
-            project_title=project.get("title") or "Section Preview",
+
+        project_sections = [dict(section) for section in project.get("sections", [])]
+        preview_id = str(section_id) if section_id else None
+        preview_title = title or "Section"
+        preview_title_normalized = preview_title.strip().lower()
+        target_index = None
+
+        if preview_id:
+            for index, section_data in enumerate(project_sections):
+                if str(section_data.get("id")) == preview_id:
+                    target_index = index
+                    break
+
+        if target_index is None and preview_title_normalized:
+            for index, section_data in enumerate(project_sections):
+                if str(section_data.get("title", "")).strip().lower() == preview_title_normalized:
+                    target_index = index
+                    break
+
+        sections = []
+        for index, section_data in enumerate(project_sections):
+            if index == target_index:
+                section_data["title"] = preview_title
+                section_data["content"] = source or ""
+            sections.append(section_data)
+
+        if target_index is None:
+            sections.append({
+                "id": section_id,
+                "title": preview_title,
+                "level": 1,
+                "content": source or "",
+            })
+
+        tex = latex_processor.render_to_tex(
+            project.get("title") or "Manuscript",
+            sections,
+            template="article",
         )
         result = await latex_processor.compile_check(tex)
         return {
             "project_id": project_id,
             "section_id": section_id,
             "scope": "section",
+            "pdf_scope": "manuscript",
+            "preview_mode": "manuscript_with_active_section",
             "title": title,
             "tex": tex,
             **result,

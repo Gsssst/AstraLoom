@@ -650,7 +650,8 @@ const WritingPage: React.FC = () => {
       });
       setLatexPreviewChecks(prev => ({ ...prev, [section.id]: response.data }));
       setPageActionError(null);
-      message.success(response.data.success ? '当前章节 LaTeX 检查通过' : '当前章节 LaTeX 检查完成，请查看诊断');
+      const previewScope = response.data.pdf_scope === 'manuscript' ? '整篇' : '当前章节';
+      message.success(response.data.success ? `${previewScope} LaTeX 检查通过` : `${previewScope} LaTeX 检查完成，请查看诊断`);
     } catch (error) {
       showPageError('LaTeX 章节预览失败', error, 'LaTeX 章节预览失败');
     } finally {
@@ -1725,14 +1726,19 @@ const WritingPage: React.FC = () => {
     ? (projectSections.find(section => section.id === activeSectionId) || projectSections[0] || null)
     : null;
   const activeSectionAi = activeSection ? sectionAiState[activeSection.id] || {} : {};
-  const latexDiagnosticPanel = (diagnostic: any, scopeLabel: string) => diagnostic ? (
+  const latexDiagnosticScopeLabel = (diagnostic: any, fallback: string) => (
+    diagnostic?.pdf_scope === 'manuscript' || diagnostic?.scope === 'manuscript' ? '整篇' : fallback
+  );
+  const latexDiagnosticPanel = (diagnostic: any, scopeLabel: string) => {
+    const effectiveScopeLabel = latexDiagnosticScopeLabel(diagnostic, scopeLabel);
+    return diagnostic ? (
     <Alert
       type={diagnostic.success ? ((diagnostic.warnings || []).length ? 'warning' : 'success') : 'error'}
       showIcon
       message={
         diagnostic.compiler_available === false
-          ? `${scopeLabel}源码级检查${diagnostic.success ? '通过' : '发现问题'}`
-          : diagnostic.success ? `${scopeLabel} LaTeX 检查通过` : `${scopeLabel} LaTeX 检查未通过`
+          ? `${effectiveScopeLabel}源码级检查${diagnostic.success ? '通过' : '发现问题'}`
+          : diagnostic.success ? `${effectiveScopeLabel} LaTeX 检查通过` : `${effectiveScopeLabel} LaTeX 检查未通过`
       }
       description={(
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -1740,7 +1746,7 @@ const WritingPage: React.FC = () => {
             {diagnostic.compiler_available === false && <Tag color="gold">未安装 pdflatex</Tag>}
             <Tag color={(diagnostic.errors || []).length ? 'red' : 'green'}>错误 {(diagnostic.errors || []).length}</Tag>
             <Tag color={(diagnostic.warnings || []).length ? 'gold' : 'green'}>警告 {(diagnostic.warnings || []).length}</Tag>
-            <Tag>{diagnostic.scope || scopeLabel}</Tag>
+            <Tag>{effectiveScopeLabel}</Tag>
           </Space>
           {(diagnostic.errors || []).slice(0, 5).map((item: string) => (
             <Text key={item} type="danger" style={{ overflowWrap: 'anywhere' }}>{item}</Text>
@@ -1749,13 +1755,14 @@ const WritingPage: React.FC = () => {
             <Text key={item} type="secondary" style={{ overflowWrap: 'anywhere' }}>{item}</Text>
           ))}
           {diagnostic.pdf_preview_url && (
-            <AuthenticatedPdfPreview previewUrl={diagnostic.pdf_preview_url} title={`${scopeLabel} PDF 预览`} height={520} />
+            <AuthenticatedPdfPreview previewUrl={diagnostic.pdf_preview_url} title={`${effectiveScopeLabel} PDF 预览`} height={520} />
           )}
         </Space>
       )}
       style={{ borderRadius: 10 }}
     />
-  ) : null;
+    ) : null;
+  };
 
   const manuscriptWorkbench = (
     <div

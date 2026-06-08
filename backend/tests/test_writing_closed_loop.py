@@ -249,7 +249,14 @@ async def test_preview_latex_section_returns_compile_diagnostics(monkeypatch):
     service = WritingProjectService(SimpleNamespace())
 
     async def fake_get_project(_project_id, _user_id):
-        return {"id": "project-1", "title": "Grounding Paper", "sections": []}
+        return {
+            "id": "project-1",
+            "title": "Grounding Paper",
+            "sections": [
+                {"id": "intro-1", "title": "Introduction", "level": 1, "content": "Original intro."},
+                {"id": "section-1", "title": "Method", "level": 1, "content": "Old method."},
+            ],
+        }
 
     async def fake_compile(tex):
         return {"success": True, "errors": [], "warnings": ["Citation undefined"], "log": tex[-120:]}
@@ -266,9 +273,48 @@ async def test_preview_latex_section_returns_compile_diagnostics(monkeypatch):
     )
 
     assert result["scope"] == "section"
+    assert result["pdf_scope"] == "manuscript"
+    assert result["preview_mode"] == "manuscript_with_active_section"
     assert result["section_id"] == "section-1"
     assert result["success"] is True
+    assert r"\section{Introduction}" in result["tex"]
+    assert "Original intro." in result["tex"]
     assert r"\section{Method}" in result["tex"]
+    assert r"We optimize $\mathcal{L}$." in result["tex"]
+    assert "Old method." not in result["tex"]
+
+
+@pytest.mark.asyncio
+async def test_preview_latex_section_falls_back_to_title_match(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+
+    async def fake_get_project(_project_id, _user_id):
+        return {
+            "id": "project-1",
+            "title": "Grounding Paper",
+            "sections": [
+                {"id": "method-1", "title": "Method", "level": 1, "content": "Old method."},
+            ],
+        }
+
+    async def fake_compile(tex):
+        return {"success": True, "errors": [], "warnings": [], "log": ""}
+
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+    monkeypatch.setattr(latex_processor, "compile_check", fake_compile)
+
+    result = await service.preview_latex_section(
+        "project-1",
+        "user-1",
+        "Method",
+        "Updated method draft.",
+        section_id="missing-section",
+    )
+
+    assert result["pdf_scope"] == "manuscript"
+    assert result["tex"].count(r"\section{Method}") == 1
+    assert "Updated method draft." in result["tex"]
+    assert "Old method." not in result["tex"]
 
 
 @pytest.mark.asyncio

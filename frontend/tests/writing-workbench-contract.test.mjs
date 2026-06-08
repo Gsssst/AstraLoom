@@ -88,12 +88,15 @@ test('manuscript workbench exposes latex preview diagnostics', () => {
   assert.match(sectionEditorSource, /未安装 pdflatex/);
   assert.match(sectionEditorSource, /查看编译日志/);
   assert.match(sectionEditorSource, /pdf_preview_url/);
+  assert.match(sectionEditorSource, /pdf_scope === 'manuscript'/);
+  assert.match(sectionEditorSource, /整篇 PDF 预览/);
   assert.match(sectionEditorSource, /AuthenticatedPdfPreview/);
   assert.match(authenticatedPdfPreviewSource, /responseType: 'blob'/);
   assert.match(authenticatedPdfPreviewSource, /URL\.createObjectURL/);
   assert.match(authenticatedPdfPreviewSource, /URL\.revokeObjectURL/);
   assert.match(authenticatedPdfPreviewSource, /<iframe/);
   assert.match(writingPageSource, /pdf_preview_url/);
+  assert.match(writingPageSource, /pdf_scope === 'manuscript'/);
 });
 
 test('section editor keeps local drafts and debounces persistence', () => {

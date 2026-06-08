@@ -59,6 +59,14 @@ const latexPreviewType = (preview?: any) => {
   return 'error';
 };
 
+const latexPreviewScopeLabel = (preview?: any) => (
+  preview?.pdf_scope === 'manuscript' || preview?.scope === 'manuscript' ? '整篇' : '当前章节'
+);
+
+const latexPreviewTitle = (preview?: any) => (
+  latexPreviewScopeLabel(preview) === '整篇' ? '整篇 PDF 预览' : 'PDF 预览'
+);
+
 const sectionAiActions: { key: SectionAiAction; label: string; icon: React.ReactNode }[] = [
   { key: 'draft', label: '起草本节', icon: <RocketOutlined /> },
   { key: 'improve', label: '改进论证', icon: <BulbOutlined /> },
@@ -268,7 +276,7 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
                     ? (latexPreview.success ? '源码级检查通过' : '源码级检查发现问题')
                     : (latexPreview.success ? 'LaTeX 检查通过' : 'LaTeX 检查未通过')}
                 </Text>
-                <Tag color={latexPreview.success ? 'green' : 'red'}>{latexPreview.scope === 'manuscript' ? '整篇' : '当前章节'}</Tag>
+                <Tag color={latexPreview.success ? 'green' : 'red'}>{latexPreviewScopeLabel(latexPreview)}</Tag>
                 {latexPreview.compiler_available === false && <Tag color="gold">未安装 pdflatex</Tag>}
                 <Tag color={(latexPreview.errors || []).length ? 'red' : 'green'}>错误 {(latexPreview.errors || []).length}</Tag>
                 <Tag color={(latexPreview.warnings || []).length ? 'gold' : 'green'}>警告 {(latexPreview.warnings || []).length}</Tag>
@@ -321,7 +329,7 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
                   />
                 )}
                 {latexPreview.pdf_preview_url && (
-                  <AuthenticatedPdfPreview previewUrl={latexPreview.pdf_preview_url} title="PDF 预览" height={420} />
+                  <AuthenticatedPdfPreview previewUrl={latexPreview.pdf_preview_url} title={latexPreviewTitle(latexPreview)} height={420} />
                 )}
               </Space>
             }
