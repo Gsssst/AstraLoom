@@ -28,6 +28,12 @@ The system SHALL bind target venue/year and inspected template metadata to a wri
 - **WHEN** they bind a submission template profile with detected document class and packages
 - **THEN** the project metadata includes LaTeX compile settings that can be used by preview and export rendering.
 
+#### Scenario: User removes bound template profile
+- **GIVEN** a writing project has a bound submission template profile
+- **WHEN** the user removes the template
+- **THEN** the project no longer reports a bound submission profile
+- **AND** LaTeX compile settings are reset to a safe single-column article configuration.
+
 ### Requirement: Export readiness reflects template profile state
 
 The system SHALL include submission profile state in writing project export readiness.
@@ -57,6 +63,11 @@ The frontend SHALL let users inspect/bind a submission profile from the writing 
 - **GIVEN** a selected writing project
 - **WHEN** the user chooses single-column, double-column, or template-informed layout
 - **THEN** later manuscript preview/export actions use that layout.
+
+#### Scenario: User can remove unwanted template
+- **GIVEN** a selected writing project has a bound template profile
+- **WHEN** the user views template settings
+- **THEN** they can remove the template binding without editing database state manually.
 
 ### Requirement: Template profile binding returns updated project safely
 The system SHALL return the updated writing project after binding a submission template profile without triggering asynchronous lazy-load failures.

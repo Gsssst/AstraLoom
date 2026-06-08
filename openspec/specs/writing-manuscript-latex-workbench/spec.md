@@ -67,6 +67,11 @@ The system SHALL provide compile/preview checks for the active section and assem
 - **WHEN** the user previews a manuscript with a selected single-column or double-column layout
 - **THEN** the rendered LaTeX document uses the corresponding document class options before compilation.
 
+#### Scenario: User chooses preview layout before compiling
+- **WHEN** the user is in the manuscript workbench preview area
+- **THEN** they can choose single-column, double-column, or template-informed layout before running whole-manuscript preview
+- **AND** the preview uses the saved layout choice.
+
 ### Requirement: AI Assistance Is Scoped To Current Section
 The manuscript workbench SHALL provide an AI assistant panel scoped to the active section.
 
