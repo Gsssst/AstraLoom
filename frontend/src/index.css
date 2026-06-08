@@ -401,6 +401,35 @@ body {
   overflow-wrap: anywhere;
 }
 
+.proposal-writing-brief .ant-card-head {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.proposal-writing-brief .ant-card-head-title,
+.proposal-writing-brief .ant-card-extra,
+.proposal-writing-brief .ant-alert-description,
+.proposal-writing-brief-section,
+.proposal-writing-brief-section .ant-list-item,
+.proposal-writing-brief-section .ant-tag,
+.proposal-writing-brief-section .ant-typography {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.proposal-writing-brief-section {
+  height: 100%;
+  padding: 10px;
+  border: 1px solid #eef2f7;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.proposal-writing-brief-section .ant-list {
+  margin-top: 6px;
+}
+
 .gap-selection-panel,
 .gap-selection-signal {
   border-radius: 8px;

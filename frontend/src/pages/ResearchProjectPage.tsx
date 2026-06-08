@@ -311,6 +311,33 @@ interface ProposalVersionComparison {
     required_experiments?: string[];
   };
 }
+interface ProposalWritingBriefEvidenceRef {
+  marker: string;
+  paper_id: string;
+  local_paper_id?: string | null;
+  title: string;
+  year?: number | string | null;
+  role?: string;
+  relevance?: string;
+  score?: number;
+}
+interface ProposalWritingBrief {
+  idea_id: string;
+  project_id: string;
+  title_candidates: string[];
+  abstract_draft: string;
+  contribution_chain: Array<{ step: number; claim: string; evidence_status: string; writing_goal: string }>;
+  section_outline: Array<{ section: string; purpose: string; seed_content?: string; evidence_ids?: string[] }>;
+  claim_evidence_map: Array<{ claim: string; status: string; evidence_refs: ProposalWritingBriefEvidenceRef[]; writing_use: string; priority: number }>;
+  evidence_gaps: string[];
+  experiment_writing_plan: string[];
+  limitations: string[];
+  unsafe_claims: string[];
+  evidence_status: string;
+  evidence_count: number;
+  local_paper_count: number;
+  review_readiness?: string;
+}
 interface IdeaRun {
   id: string; project_id: string; status: string; stage: string; progress: number;
   message?: string; error?: string; evidence_map?: Record<string, Evidence[] | string | object>;
@@ -545,6 +572,7 @@ const ResearchProjectPage: React.FC = () => {
   const [versionComparison, setVersionComparison] = useState<ProposalVersionComparison | null>(null);
   const [importingEvidence, setImportingEvidence] = useState<Set<string>>(new Set());
   const [draftingIdeaIds, setDraftingIdeaIds] = useState<Set<string>>(new Set());
+  const [writingBriefMap, setWritingBriefMap] = useState<Record<string, { loading: boolean; data?: ProposalWritingBrief }>>({});
   const [experiments, setExperiments] = useState<ExperimentRecord[]>([]);
   const [experimentOpen, setExperimentOpen] = useState(false);
   const [experimentIdea, setExperimentIdea] = useState<Idea | null>(null);
@@ -1027,13 +1055,31 @@ const ResearchProjectPage: React.FC = () => {
       showPageError('下载实验项目包失败', error, '下载实验项目包失败');
     }
   };
+  const loadWritingBrief = async (ideaId: string, refresh = false) => {
+    if (!refresh && writingBriefMap[ideaId]?.data) return writingBriefMap[ideaId].data;
+    setWritingBriefMap(previous => ({ ...previous, [ideaId]: { ...previous[ideaId], loading: true } }));
+    try {
+      const response = await api.get(`/research/ideas/${ideaId}/writing-brief`);
+      const brief = response.data as ProposalWritingBrief;
+      setWritingBriefMap(previous => ({ ...previous, [ideaId]: { loading: false, data: brief } }));
+      setPageActionError(null);
+      return brief;
+    } catch (error) {
+      showPageError('加载写作准备包失败', error, '加载写作准备包失败');
+      setWritingBriefMap(previous => ({ ...previous, [ideaId]: { ...previous[ideaId], loading: false } }));
+      return null;
+    }
+  };
   const createWritingDraft = async (idea: Idea) => {
     setDraftingIdeaIds(previous => new Set(previous).add(idea.id));
     try {
       const response = await api.post(`/research/ideas/${idea.id}/writing-draft`);
       const projectId = response.data.project?.id;
+      if (response.data.writing_brief) {
+        setWritingBriefMap(previous => ({ ...previous, [idea.id]: { loading: false, data: response.data.writing_brief } }));
+      }
       setPageActionError(null);
-      message.success(response.data.evidence_status === 'sufficient' ? '写作草稿已创建' : '写作草稿已创建，但证据不足');
+      message.success(response.data.evidence_status === 'sufficient' ? '写作草稿已创建，写作准备包已随项目保存' : '写作草稿已创建，但证据不足，请先补强引用');
       if (projectId) navigate(`/writing?project=${projectId}`);
     } catch (error) {
       showPageError('创建写作草稿失败', error, '创建写作草稿失败');
@@ -1963,6 +2009,145 @@ const ResearchProjectPage: React.FC = () => {
     );
   };
 
+  const renderWritingBriefPanel = (idea: Idea) => {
+    const briefState = writingBriefMap[idea.id] || { loading: false };
+    const brief = briefState.data;
+    const claimStatusColors: Record<string, string> = {
+      supported: 'green',
+      partially_supported: 'orange',
+      unsupported: 'red',
+    };
+    return (
+      <Card
+        size="small"
+        className="proposal-writing-brief"
+        title={(
+          <Space wrap>
+            <FileTextOutlined />
+            <Text strong>写作准备包</Text>
+            {brief ? (
+              <>
+                <Tag color={brief.evidence_status === 'sufficient' ? 'green' : 'orange'}>{brief.evidence_status === 'sufficient' ? '证据可用' : '证据不足'}</Tag>
+                <Tag color="blue">Claim {brief.claim_evidence_map.length}</Tag>
+                <Tag color={brief.unsafe_claims.length ? 'red' : 'green'}>风险 {brief.unsafe_claims.length}</Tag>
+              </>
+            ) : <Tag color="default">未预览</Tag>}
+          </Space>
+        )}
+        extra={(
+          <Space wrap>
+            <Button size="small" icon={<ReloadOutlined />} loading={briefState.loading} onClick={() => loadWritingBrief(idea.id, true)}>
+              {brief ? '刷新准备包' : '生成准备包'}
+            </Button>
+            <Button size="small" type="primary" icon={<FileTextOutlined />} loading={draftingIdeaIds.has(idea.id)} onClick={() => createWritingDraft(idea)}>
+              生成写作草稿
+            </Button>
+          </Space>
+        )}
+        style={{ borderRadius: 12, marginTop: 14, marginBottom: 12, background: '#fcfdff' }}
+      >
+        {brief ? (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Alert
+              showIcon
+              type={brief.unsafe_claims.length ? 'warning' : 'success'}
+              message="写作前检查"
+              description={brief.abstract_draft}
+            />
+            <div className="proposal-writing-brief-section">
+              <Text strong>标题候选</Text>
+              <Space wrap style={{ marginTop: 8 }}>
+                {brief.title_candidates.map(title => <Tag color="geekblue" key={title}>{title}</Tag>)}
+              </Space>
+            </div>
+            <Row gutter={[12, 12]}>
+              <Col xs={24} lg={12}>
+                <div className="proposal-writing-brief-section">
+                  <Text strong>章节骨架</Text>
+                  <List
+                    size="small"
+                    dataSource={brief.section_outline.slice(0, 6)}
+                    renderItem={item => (
+                      <List.Item>
+                        <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                          <Text strong>{item.section}</Text>
+                          <Text type="secondary">{item.purpose}</Text>
+                        </Space>
+                      </List.Item>
+                    )}
+                  />
+                </div>
+              </Col>
+              <Col xs={24} lg={12}>
+                <div className="proposal-writing-brief-section">
+                  <Text strong>贡献链</Text>
+                  <List
+                    size="small"
+                    dataSource={brief.contribution_chain}
+                    locale={{ emptyText: '暂无贡献链' }}
+                    renderItem={item => (
+                      <List.Item>
+                        <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                          <Space wrap><Tag>{item.step}</Tag><Tag color={claimStatusColors[item.evidence_status] || 'default'}>{item.evidence_status}</Tag></Space>
+                          <Text>{item.claim}</Text>
+                        </Space>
+                      </List.Item>
+                    )}
+                  />
+                </div>
+              </Col>
+            </Row>
+            <div className="proposal-writing-brief-section">
+              <Text strong>Claim-Evidence Map</Text>
+              <List
+                size="small"
+                dataSource={brief.claim_evidence_map.slice(0, 6)}
+                renderItem={item => (
+                  <List.Item>
+                    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                      <Space wrap>
+                        <Tag color={claimStatusColors[item.status] || 'default'}>{item.status}</Tag>
+                        <Text strong>{item.claim}</Text>
+                      </Space>
+                      <Space wrap>
+                        {item.evidence_refs.length > 0
+                          ? item.evidence_refs.map(ref => <Tag key={`${item.claim}-${ref.marker}`}>{ref.marker} {ref.title}</Tag>)
+                          : <Tag color="red">暂无证据</Tag>}
+                      </Space>
+                      <Text type="secondary">{item.writing_use}</Text>
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            </div>
+            {(brief.unsafe_claims.length > 0 || brief.evidence_gaps.length > 0) && (
+              <Row gutter={[12, 12]}>
+                <Col xs={24} lg={12}>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message="暂不应直接写成结论"
+                    description={<Space direction="vertical" size={4}>{brief.unsafe_claims.slice(0, 5).map(item => <Text key={item}>{item}</Text>)}</Space>}
+                  />
+                </Col>
+                <Col xs={24} lg={12}>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="证据缺口"
+                    description={<Space direction="vertical" size={4}>{brief.evidence_gaps.slice(0, 5).map(item => <Text key={item}>{item}</Text>)}</Space>}
+                  />
+                </Col>
+              </Row>
+            )}
+          </Space>
+        ) : (
+          <Text type="secondary">生成后会把标题候选、摘要草稿、章节骨架、claim-evidence 映射和不可过度宣称的 claim 汇总到这里，再进入 Writing 项目。</Text>
+        )}
+      </Card>
+    );
+  };
+
   const renderProposal = (idea: Idea) => {
     const review = idea.review_json;
     const plan = idea.experiment_plan;
@@ -2089,6 +2274,7 @@ const ResearchProjectPage: React.FC = () => {
           </>}
         </>}
         {renderProposalReviewPanel(idea)}
+        {renderWritingBriefPanel(idea)}
         <Divider>实验推进包</Divider>
         <Card size="small" style={{ borderRadius: 12, marginBottom: 12, background: '#fbfaff' }}>
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -2261,7 +2447,7 @@ const ResearchProjectPage: React.FC = () => {
           <Button icon={<ExperimentOutlined />} onClick={() => openExperiment(idea)}>记录实验反馈</Button>
           <Button icon={<ExperimentOutlined />} loading={executionPack?.loading} onClick={() => loadExecutionPack(idea.id)}>实验推进包</Button>
           <Button icon={<FileSearchOutlined />} loading={validation?.loading} onClick={() => loadIdeaValidation(idea.id)}>验证闭环</Button>
-          <Button icon={<FileTextOutlined />} loading={draftingIdeaIds.has(idea.id)} onClick={() => createWritingDraft(idea)}>生成写作草稿</Button>
+          <Button icon={<FileTextOutlined />} loading={writingBriefMap[idea.id]?.loading} onClick={() => loadWritingBrief(idea.id, true)}>写作准备包</Button>
           <Button type="primary" icon={<MessageOutlined />} onClick={() => openCopilot(idea)}>打开 Idea Copilot</Button>
         </Space>
         <Card size="small" style={{ borderRadius: 12, marginTop: 14, background: '#fbfcff' }}>

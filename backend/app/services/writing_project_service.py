@@ -423,10 +423,12 @@ class WritingProjectService:
         user_id: str,
         research_project,
         idea,
+        writing_brief: Optional[dict] = None,
     ) -> dict:
         """从证据驱动 Research Idea 创建写作草稿。"""
         evidence_items = list((idea.evidence_json or {}).get("items") or [])
         local_paper_ids = self._extract_local_paper_ids(evidence_items)
+        writing_brief = writing_brief or self.build_research_idea_writing_brief(research_project, idea)
         metadata = {
             "source": "research_idea",
             "source_project_id": str(research_project.id),
@@ -439,6 +441,9 @@ class WritingProjectService:
             ],
             "evidence_items": evidence_items,
             "evidence_status": "sufficient" if local_paper_ids or evidence_items else "insufficient",
+            "writing_brief": writing_brief,
+            "claim_evidence_map": writing_brief.get("claim_evidence_map") or [],
+            "unsafe_claims": writing_brief.get("unsafe_claims") or [],
         }
         project = await self.create_project(
             user_id=user_id,
@@ -449,7 +454,12 @@ class WritingProjectService:
         )
 
         sections_by_title = {section["title"]: section for section in project.get("sections", [])}
-        content_by_title = self._build_research_idea_draft_sections(research_project, idea, evidence_items)
+        content_by_title = self._build_research_idea_draft_sections(
+            research_project,
+            idea,
+            evidence_items,
+            writing_brief=writing_brief,
+        )
         for title, content in content_by_title.items():
             section = sections_by_title.get(title)
             if section:
@@ -466,6 +476,76 @@ class WritingProjectService:
             "evidence_status": metadata["evidence_status"],
             "evidence_count": len(evidence_items),
             "local_paper_count": len(local_paper_ids),
+            "writing_brief": writing_brief,
+        }
+
+    def build_research_idea_writing_brief(self, research_project, idea) -> dict:
+        """Build a bounded, citation-conservative writing brief for a Proposal."""
+        from app.services.research_idea_workbench import ResearchIdeaWorkbenchService
+
+        evidence_items = [item for item in list((idea.evidence_json or {}).get("items") or []) if isinstance(item, dict)]
+        local_paper_ids = self._extract_local_paper_ids(evidence_items)
+        workbench = ResearchIdeaWorkbenchService(self.session)
+        if not hasattr(idea, "referenced_papers"):
+            idea.referenced_papers = {
+                "paper_ids": [
+                    item.get("paper_id")
+                    for item in evidence_items
+                    if item.get("paper_id")
+                ]
+            }
+        if not hasattr(idea, "feasibility_score"):
+            idea.feasibility_score = None
+        if not hasattr(idea, "novelty_score"):
+            idea.novelty_score = None
+        if not hasattr(idea, "project_id"):
+            idea.project_id = getattr(research_project, "id", "")
+        validation = workbench.validate_idea(idea, research_project)
+        execution = workbench.build_experiment_execution_pack(idea, research_project)
+        review = idea.review_json or {}
+        proposal_review = review.get("proposal_review") if isinstance(review.get("proposal_review"), dict) else {}
+        plan = idea.experiment_plan or {}
+        evidence_refs = [self._writing_brief_evidence_ref(item, index) for index, item in enumerate(evidence_items, start=1)]
+
+        claims = self._writing_brief_claims(idea, proposal_review)
+        claim_map = self._build_claim_evidence_map(claims, evidence_refs)
+        unsupported_claims = [item["claim"] for item in claim_map if item["status"] == "unsupported"]
+        evidence_gaps = self._writing_brief_evidence_gaps(validation, execution, proposal_review, evidence_items)
+        unsafe_claims = list(dict.fromkeys([
+            *unsupported_claims,
+            *self._brief_list((validation.get("writing_readiness") or {}).get("reasons"), limit=4),
+            *self._brief_list(proposal_review.get("reviewer_objections"), limit=4),
+        ]))[:8]
+
+        title_candidates = list(dict.fromkeys([
+            str(idea.title or "Untitled Proposal").strip(),
+            f"{idea.title}: Evidence-Grounded Study" if idea.title else "",
+            f"{getattr(research_project, 'name', 'Research')} via {idea.title}" if idea.title else "",
+        ]))
+        title_candidates = [item[:180] for item in title_candidates if item][:3]
+
+        section_outline = self._build_writing_brief_outline(idea, evidence_refs, proposal_review, plan)
+        experiment_plan = self._brief_list(plan.get("steps"), limit=6)
+        if not experiment_plan:
+            experiment_plan = self._brief_list(execution.get("next_actions"), limit=6)
+
+        return {
+            "idea_id": str(idea.id),
+            "project_id": str(getattr(idea, "project_id", getattr(research_project, "id", ""))),
+            "source_project_name": getattr(research_project, "name", ""),
+            "title_candidates": title_candidates,
+            "abstract_draft": self._writing_brief_abstract(research_project, idea, proposal_review, plan),
+            "contribution_chain": self._build_contribution_chain(idea, proposal_review, claim_map),
+            "section_outline": section_outline,
+            "claim_evidence_map": claim_map,
+            "evidence_gaps": evidence_gaps,
+            "experiment_writing_plan": experiment_plan[:6],
+            "limitations": self._writing_brief_limitations(validation, proposal_review, execution),
+            "unsafe_claims": unsafe_claims,
+            "evidence_status": "sufficient" if local_paper_ids or evidence_items else "insufficient",
+            "evidence_count": len(evidence_items),
+            "local_paper_count": len(local_paper_ids),
+            "review_readiness": proposal_review.get("writing_readiness") or (validation.get("writing_readiness") or {}).get("status"),
         }
 
     def _extract_local_paper_ids(self, evidence_items: list[dict]) -> list[str]:
@@ -479,7 +559,15 @@ class WritingProjectService:
     def _looks_like_uuid(self, value: str) -> bool:
         return bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", value or ""))
 
-    def _build_research_idea_draft_sections(self, research_project, idea, evidence_items: list[dict]) -> dict:
+    def _build_research_idea_draft_sections(
+        self,
+        research_project,
+        idea,
+        evidence_items: list[dict],
+        *,
+        writing_brief: Optional[dict] = None,
+    ) -> dict:
+        writing_brief = writing_brief or self.build_research_idea_writing_brief(research_project, idea)
         evidence_table = self._build_evidence_markdown_table(evidence_items)
         references = self._build_evidence_references(evidence_items)
         if not evidence_items:
@@ -494,14 +582,25 @@ class WritingProjectService:
         baselines = "、".join(plan.get("baselines") or []) or "待补充"
         metrics = "、".join(plan.get("metrics") or []) or "待补充"
         steps = "\n".join(f"{index + 1}. {step}" for index, step in enumerate(plan.get("steps") or [])) or "待补充最小实验步骤。"
+        claim_lines = "\n".join(
+            f"- [{item.get('status')}] {item.get('claim')} -> {', '.join(ref.get('marker', '') for ref in item.get('evidence_refs', []) if ref.get('marker')) or '暂无证据'}"
+            for item in writing_brief.get("claim_evidence_map", [])[:6]
+        ) or "- 暂无 claim-evidence 映射。"
+        unsafe_lines = "\n".join(f"- {item}" for item in writing_brief.get("unsafe_claims", [])[:6]) or "- 暂无明确不可写 claim。"
+        outline_lines = "\n".join(
+            f"- **{item.get('section')}**：{item.get('purpose')} {item.get('seed_content') or ''}"
+            for item in writing_brief.get("section_outline", [])[:8]
+        ) or "- 暂无章节骨架。"
 
         related_work = (
             f"{evidence_note}\n\n"
             "下面的证据表按 Proposal 生成时的证据角色保留，写作时建议逐条确认其是否能够支撑对应论断。\n\n"
-            f"{evidence_table}"
+            f"{evidence_table}\n\n"
+            "## Claim-Evidence Map\n\n"
+            f"{claim_lines}"
         )
         return {
-            "Abstract": (
+            "Abstract": writing_brief.get("abstract_draft") or (
                 f"本文围绕「{research_project.name}」中的 Proposal「{idea.title}」展开写作。"
                 f"核心假设是：{idea.hypothesis or '待补充可证伪假设'}。"
                 "当前草稿将 Proposal 的证据、方法定位和最小实验计划转换为可编辑写作结构。"
@@ -510,7 +609,9 @@ class WritingProjectService:
                 f"研究方向：{research_project.name}\n\n"
                 f"{research_project.description or '暂无研究方向描述。'}\n\n"
                 f"Proposal 描述：{idea.description or '暂无描述。'}\n\n"
-                f"技术草图：{idea.approach or '待补充技术路线。'}"
+                f"技术草图：{idea.approach or '待补充技术路线。'}\n\n"
+                "## 写作章节骨架\n\n"
+                f"{outline_lines}"
             ),
             "Related Work": related_work,
             "Related Work Comparison Table": evidence_table,
@@ -522,10 +623,130 @@ class WritingProjectService:
                 f"最小实验数据集：{plan.get('dataset') or '待补充'}\n\n"
                 f"基线方法：{baselines}\n\n"
                 f"评测指标：{metrics}\n\n"
-                f"实验步骤：\n{steps}"
+                f"实验步骤：\n{steps}\n\n"
+                "## 暂不应直接写成结论的 Claim\n\n"
+                f"{unsafe_lines}"
             ),
             "References": references or "暂无引用。建议先导入或补全文证据论文。",
         }
+
+    def _writing_brief_evidence_ref(self, item: dict, index: int) -> dict:
+        local_id = item.get("imported_paper_id") or item.get("paper_id")
+        return {
+            "marker": f"[{index}]",
+            "paper_id": str(item.get("paper_id") or ""),
+            "local_paper_id": str(local_id) if local_id and self._looks_like_uuid(str(local_id)) else None,
+            "title": item.get("title") or "Untitled evidence",
+            "year": item.get("year"),
+            "role": item.get("category") or "evidence",
+            "relevance": item.get("relevance") or item.get("abstract_excerpt") or item.get("source") or "",
+            "score": item.get("score"),
+            "arxiv_id": item.get("arxiv_id"),
+            "doi": item.get("doi"),
+        }
+
+    def _writing_brief_claims(self, idea, proposal_review: dict) -> list[str]:
+        return list(dict.fromkeys([
+            str(idea.hypothesis or "").strip(),
+            str(idea.novelty or "").strip(),
+            str(idea.approach or "").strip(),
+            *self._brief_list(proposal_review.get("contributions"), limit=4),
+        ]))[:8]
+
+    def _build_claim_evidence_map(self, claims: list[str], evidence_refs: list[dict]) -> list[dict]:
+        claim_map = []
+        for index, claim in enumerate([item for item in claims if item], start=1):
+            refs = evidence_refs[:3] if evidence_refs else []
+            status = "supported" if len(refs) >= 2 else "partially_supported" if refs else "unsupported"
+            claim_map.append({
+                "claim": claim[:360],
+                "status": status,
+                "evidence_refs": refs,
+                "writing_use": "可作为正文论断起点，定稿前仍需核对全文证据。" if refs else "证据不足，暂时只能写为待验证假设或未来工作。",
+                "priority": index,
+            })
+        if not claim_map:
+            claim_map.append({
+                "claim": "Proposal 尚未形成明确 claim。",
+                "status": "unsupported",
+                "evidence_refs": [],
+                "writing_use": "先补充可证伪假设和证据。",
+                "priority": 1,
+            })
+        return claim_map
+
+    def _build_contribution_chain(self, idea, proposal_review: dict, claim_map: list[dict]) -> list[dict]:
+        contributions = self._brief_list(proposal_review.get("contributions"), limit=4)
+        if not contributions:
+            contributions = [str(idea.novelty or idea.hypothesis or "待明确贡献点")[:240]]
+        return [
+            {
+                "step": index,
+                "claim": contribution,
+                "evidence_status": claim_map[min(index - 1, len(claim_map) - 1)].get("status") if claim_map else "unsupported",
+                "writing_goal": "把该贡献写成可验证、可被证据支撑的论文贡献句。",
+            }
+            for index, contribution in enumerate(contributions[:4], start=1)
+        ]
+
+    def _build_writing_brief_outline(self, idea, evidence_refs: list[dict], proposal_review: dict, plan: dict) -> list[dict]:
+        return [
+            {"section": "Abstract", "purpose": "压缩问题、假设、方法和证据状态。", "seed_content": str(idea.hypothesis or "")[:240], "evidence_ids": []},
+            {"section": "Introduction", "purpose": "建立研究问题和贡献链。", "seed_content": str(idea.description or "")[:240], "evidence_ids": [ref["paper_id"] for ref in evidence_refs[:3]]},
+            {"section": "Related Work", "purpose": "用现有证据组织相似工作和差异点。", "seed_content": proposal_review.get("summary") or "", "evidence_ids": [ref["paper_id"] for ref in evidence_refs]},
+            {"section": "Method", "purpose": "解释技术路线和关键假设。", "seed_content": str(idea.approach or "")[:240], "evidence_ids": []},
+            {"section": "Experiments", "purpose": "写清数据集、强基线、指标、消融和失败判定。", "seed_content": str(plan.get("dataset") or "")[:180], "evidence_ids": []},
+            {"section": "Limitations", "purpose": "提前保留审稿风险和不可过度宣称的点。", "seed_content": "；".join(self._brief_list(proposal_review.get("reviewer_objections"), limit=3)), "evidence_ids": []},
+        ]
+
+    def _writing_brief_abstract(self, research_project, idea, proposal_review: dict, plan: dict) -> str:
+        readiness = proposal_review.get("writing_readiness")
+        readiness_note = f"当前审稿式写作准备状态为 {readiness}。" if readiness else ""
+        dataset = plan.get("dataset") or "待补充数据集"
+        return (
+            f"本文围绕「{getattr(research_project, 'name', '研究方向')}」中的 Proposal「{idea.title}」展开。"
+            f"核心假设是：{idea.hypothesis or '待补充可证伪假设'}。"
+            f"方法上，草稿将以「{idea.approach or '待补充技术路线'}」为主线，并围绕 {dataset} 设计最小实验。"
+            f"{readiness_note} 定稿前需要逐条核对 claim 与证据引用。"
+        )
+
+    def _writing_brief_evidence_gaps(self, validation: dict, execution: dict, proposal_review: dict, evidence_items: list[dict]) -> list[str]:
+        gaps = []
+        if not evidence_items:
+            gaps.append("缺少 Proposal 证据，Related Work 和贡献论证暂不能定稿。")
+        coverage = validation.get("coverage") or {}
+        if not coverage.get("has_enough_evidence"):
+            gaps.append("证据覆盖不足，至少补充 2 篇可核对论文后再写强结论。")
+        gaps.extend(self._brief_list(execution.get("next_actions"), limit=3))
+        gaps.extend(self._brief_list(proposal_review.get("required_experiments"), limit=3))
+        return list(dict.fromkeys(gaps))[:8]
+
+    def _writing_brief_limitations(self, validation: dict, proposal_review: dict, execution: dict) -> list[str]:
+        limitations = self._brief_list(proposal_review.get("weakest_assumptions"), limit=4)
+        limitations.extend(self._brief_list(proposal_review.get("reviewer_objections"), limit=4))
+        limitations.extend(self._brief_list(validation.get("feasibility_risks"), limit=4))
+        limitations.extend(self._brief_list(execution.get("risks"), limit=4))
+        return list(dict.fromkeys(limitations))[:8]
+
+    def _brief_list(self, value: Any, *, limit: int = 6) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            items = value
+        else:
+            items = [value]
+        result = []
+        for item in items:
+            if isinstance(item, dict):
+                text = item.get("message") or item.get("detail") or item.get("label") or item.get("title") or item.get("claim")
+            else:
+                text = item
+            text = str(text or "").strip()
+            if text and text not in result:
+                result.append(text[:360])
+            if len(result) >= limit:
+                break
+        return result
 
     def _build_evidence_markdown_table(self, evidence_items: list[dict]) -> str:
         header = "| # | 证据论文 | 年份 | 角色 | 相关性 | 可用信息 |\n|---|---|---:|---|---:|---|"

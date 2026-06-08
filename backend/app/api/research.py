@@ -409,6 +409,7 @@ class WritingDraftResponse(BaseModel):
     evidence_status: str
     evidence_count: int
     local_paper_count: int
+    writing_brief: Optional[dict[str, Any]] = None
 
 
 class RelatedPaperRecommendation(BaseModel):
@@ -1148,6 +1149,18 @@ async def get_idea_version_comparison(
         )
         parent = result.scalar_one_or_none()
     return ResearchIdeaWorkbenchService(db).compare_idea_versions(idea, parent)
+
+
+@router.get("/ideas/{idea_id}/writing-brief", response_model=dict[str, Any])
+async def get_idea_writing_brief(
+    idea_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """预览 Proposal 进入写作前的结构化准备包。"""
+    idea = await _get_owned_idea(db, idea_id, current_user)
+    project = await _get_owned_project(db, str(idea.project_id), current_user)
+    return WritingProjectService(db).build_research_idea_writing_brief(project, idea)
 
 
 @router.post("/ideas/{idea_id}/writing-draft", response_model=WritingDraftResponse, status_code=201)

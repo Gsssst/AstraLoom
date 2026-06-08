@@ -430,6 +430,141 @@ async def test_create_review_draft_from_research_idea_marks_weak_evidence(monkey
     assert "暂无可用证据论文" in captured["related_work"]
 
 
+def test_research_idea_writing_brief_maps_claims_to_existing_evidence_only():
+    service = WritingProjectService(SimpleNamespace())
+    local_paper_id = str(uuid4())
+    project = SimpleNamespace(id=uuid4(), name="Video Grounding", description="Ground video events.")
+    idea = SimpleNamespace(
+        id=uuid4(),
+        project_id=project.id,
+        title="Temporal Evidence Grounding",
+        description="Use grounded evidence for temporal localization.",
+        hypothesis="Evidence-aware retrieval improves localization.",
+        approach="Retrieve evidence and compare baselines.",
+        novelty="Evidence-preserving writing loop.",
+        feasibility_score=7,
+        novelty_score=8,
+        referenced_papers={"paper_ids": ["p1", "p2"]},
+        evidence_json={"items": [
+            {
+                "paper_id": "p1",
+                "imported_paper_id": local_paper_id,
+                "title": "Grounding Video Reasoning",
+                "year": 2026,
+                "category": "seed",
+                "score": 0.92,
+                "relevance": "Core evidence for video grounding.",
+            },
+            {
+                "paper_id": "p2",
+                "title": "Temporal Localization Baselines",
+                "year": 2025,
+                "category": "background",
+                "score": 0.81,
+                "relevance": "Baseline evidence.",
+            },
+        ]},
+        review_json={"proposal_review": {
+            "summary": "Good but needs precise claims.",
+            "contributions": ["Evidence-preserving writing loop"],
+            "weakest_assumptions": ["Evidence labels transfer."],
+            "reviewer_objections": ["Need stronger baseline."],
+            "required_experiments": ["Cross-dataset test"],
+            "writing_readiness": "needs_revision",
+        }},
+        experiment_plan={"dataset": "ActivityNet", "baselines": ["Baseline A"], "metrics": ["mIoU"], "steps": ["Run baseline", "Add retrieval", "Ablate evidence"]},
+    )
+
+    brief = service.build_research_idea_writing_brief(project, idea)
+
+    assert brief["evidence_status"] == "sufficient"
+    assert brief["local_paper_count"] == 1
+    assert brief["title_candidates"]
+    assert brief["claim_evidence_map"][0]["status"] == "supported"
+    assert {ref["paper_id"] for ref in brief["claim_evidence_map"][0]["evidence_refs"]} <= {"p1", "p2"}
+    assert "Need stronger baseline." in brief["unsafe_claims"]
+
+
+def test_research_idea_writing_brief_marks_sparse_claims_unsafe():
+    service = WritingProjectService(SimpleNamespace())
+    project = SimpleNamespace(id=uuid4(), name="Sparse Attention", description="")
+    idea = SimpleNamespace(
+        id=uuid4(),
+        project_id=project.id,
+        title="Adaptive Sparse Attention",
+        description=None,
+        hypothesis="Sparse attention improves long-context accuracy.",
+        approach=None,
+        novelty=None,
+        feasibility_score=None,
+        novelty_score=None,
+        referenced_papers={"paper_ids": []},
+        evidence_json={},
+        review_json={},
+        experiment_plan={},
+    )
+
+    brief = service.build_research_idea_writing_brief(project, idea)
+
+    assert brief["evidence_status"] == "insufficient"
+    assert brief["claim_evidence_map"][0]["status"] == "unsupported"
+    assert "Sparse attention improves long-context accuracy." in brief["unsafe_claims"]
+    assert any("证据" in gap for gap in brief["evidence_gaps"])
+
+
+@pytest.mark.asyncio
+async def test_create_review_draft_from_research_idea_persists_writing_brief(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+    project = SimpleNamespace(id=uuid4(), name="Grounded QA", description="")
+    idea = SimpleNamespace(
+        id=uuid4(),
+        project_id=project.id,
+        title="Grounded Answer Writing",
+        description="Use evidence cards for answer writing.",
+        hypothesis="Evidence cards reduce unsupported claims.",
+        approach="Map claims to evidence cards.",
+        novelty="Claim-evidence writing bridge.",
+        feasibility_score=7,
+        novelty_score=8,
+        referenced_papers={"paper_ids": ["p1"]},
+        evidence_json={"items": [{"paper_id": "p1", "title": "Evidence Cards", "category": "seed", "relevance": "Supports claim maps."}]},
+        review_json={},
+        experiment_plan={"dataset": "QA", "baselines": ["Baseline"], "metrics": ["F1"], "steps": ["s1", "s2", "s3"]},
+    )
+    captured = {}
+
+    async def fake_create_project(**kwargs):
+        captured["metadata"] = kwargs["metadata_json"]
+        return {
+            "id": "writing-project-brief",
+            "sections": [
+                {"id": "abstract", "title": "Abstract"},
+                {"id": "intro", "title": "Introduction"},
+                {"id": "related", "title": "Related Work"},
+                {"id": "gaps", "title": "Research Gaps"},
+            ],
+        }
+
+    async def fake_update_section(section_id, user_id, **kwargs):
+        captured.setdefault("sections", {})[section_id] = kwargs["content"]
+        return {}
+
+    async def fake_get_project(project_id, user_id):
+        return {"id": project_id, "metadata_json": captured["metadata"], "sections": []}
+
+    monkeypatch.setattr(service, "create_project", fake_create_project)
+    monkeypatch.setattr(service, "update_section", fake_update_section)
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+
+    result = await service.create_review_draft_from_research_idea("user-1", project, idea)
+
+    assert result["writing_brief"]["claim_evidence_map"]
+    assert captured["metadata"]["writing_brief"]["idea_id"] == str(idea.id)
+    assert captured["metadata"]["claim_evidence_map"]
+    assert "Claim-Evidence Map" in captured["sections"]["related"]
+    assert "写作章节骨架" in captured["sections"]["intro"]
+
+
 @pytest.mark.asyncio
 async def test_writing_project_evidence_cards_normalize_local_and_external(monkeypatch):
     local_paper_id = str(uuid4())
