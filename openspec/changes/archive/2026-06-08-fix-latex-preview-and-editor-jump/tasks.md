@@ -17,4 +17,4 @@
 ## 4. Verification
 
 - [x] 4.1 Run focused backend tests, frontend contract tests, frontend build, and OpenSpec validation.
-- [ ] 4.2 Commit implementation, archive the OpenSpec change, validate specs, and commit the archive.
+- [x] 4.2 Commit implementation, archive the OpenSpec change, validate specs, and commit the archive.
