@@ -6,9 +6,13 @@
 
 import logging
 import re
+from pathlib import Path
 from typing import List, Tuple
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
+
+LATEX_PREVIEW_DIR = Path("/tmp/auto-research-latex-previews")
 
 
 class LatexProcessor:
@@ -358,6 +362,7 @@ class LatexProcessor:
         import tempfile
         import subprocess
         import os
+        import shutil
 
         # 创建临时目录
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -384,6 +389,18 @@ class LatexProcessor:
                             warnings.append(line.strip())
 
                     if not errors or attempt == 2:
+                        pdf_preview = {}
+                        pdf_path = os.path.join(tmpdir, "document.pdf")
+                        if len(errors) == 0 and os.path.exists(pdf_path):
+                            LATEX_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+                            preview_filename = f"{uuid4().hex}.pdf"
+                            preview_path = LATEX_PREVIEW_DIR / preview_filename
+                            shutil.copyfile(pdf_path, preview_path)
+                            pdf_preview = {
+                                "has_pdf_preview": True,
+                                "pdf_filename": preview_filename,
+                                "pdf_preview_url": f"/api/writing/latex/previews/{preview_filename}",
+                            }
                         return {
                             "success": len(errors) == 0,
                             "compiler_available": True,
@@ -391,6 +408,7 @@ class LatexProcessor:
                             "errors": errors,
                             "warnings": warnings,
                             "log": log[-2000:],  # 只返回最后 2000 字符
+                            **pdf_preview,
                         }
 
                     # 自动重试：处理常见问题（如未定义引用需要二次编译）
@@ -406,9 +424,10 @@ class LatexProcessor:
                         "errors": ["编译超时 (>30s)"],
                         "warnings": warnings,
                         "log": "",
+                        "has_pdf_preview": False,
                     }
 
-        return {"success": False, "compiler_available": True, "diagnostic_mode": "compile", "errors": errors, "warnings": warnings, "log": ""}
+        return {"success": False, "compiler_available": True, "diagnostic_mode": "compile", "errors": errors, "warnings": warnings, "log": "", "has_pdf_preview": False}
 
     def _fallback_source_check(self, tex_content: str) -> dict:
         """Return useful source diagnostics when a TeX compiler is unavailable."""
@@ -457,6 +476,7 @@ class LatexProcessor:
             "errors": errors,
             "warnings": warnings,
             "log": "pdflatex unavailable; source-level fallback checks were used.",
+            "has_pdf_preview": False,
         }
 
 

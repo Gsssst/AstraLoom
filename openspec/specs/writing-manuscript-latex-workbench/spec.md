@@ -31,15 +31,22 @@ The system SHALL provide compile/preview checks for the active section and assem
 #### Scenario: User checks current section
 - **WHEN** the user requests preview for the active section
 - **THEN** the system compiles or validates the section inside a minimal LaTeX document wrapper
-- **AND** returns success status, warnings, errors, and compiler log details.
+- **AND** returns success status, warnings, errors, and compiler log details
+- **AND** when compilation produces a PDF, returns a PDF preview URL for the compiled section.
 
 #### Scenario: User checks entire manuscript
 - **WHEN** the user requests preview for the whole manuscript
-- **THEN** the system checks the assembled LaTeX export and returns diagnostics.
+- **THEN** the system checks the assembled LaTeX export and returns diagnostics
+- **AND** when compilation produces a PDF, returns a PDF preview URL for the compiled manuscript.
 
 #### Scenario: LaTeX compiler is unavailable
 - **WHEN** the runtime does not have a LaTeX compiler available
-- **THEN** the UI shows a clear compiler-unavailable diagnostic instead of failing silently.
+- **THEN** the UI shows a clear compiler-unavailable diagnostic instead of failing silently
+- **AND** no PDF preview is shown.
+
+#### Scenario: Compile succeeds with warnings
+- **WHEN** LaTeX compilation succeeds but emits warnings
+- **THEN** the UI shows the warning diagnostics and still displays the compiled PDF preview.
 
 ### Requirement: AI Assistance Is Scoped To Current Section
 The manuscript workbench SHALL provide an AI assistant panel scoped to the active section.
@@ -142,4 +149,3 @@ The manuscript workbench SHALL provide a backend container image that includes `
 - **WHEN** the backend Docker image is built from the project Dockerfile
 - **THEN** the resulting container includes a `pdflatex` executable
 - **AND** section or manuscript LaTeX preview can perform compile checks instead of always using source-level fallback.
-

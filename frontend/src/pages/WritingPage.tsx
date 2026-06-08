@@ -1747,6 +1747,21 @@ const WritingPage: React.FC = () => {
           {(diagnostic.warnings || []).slice(0, 5).map((item: string) => (
             <Text key={item} type="secondary" style={{ overflowWrap: 'anywhere' }}>{item}</Text>
           ))}
+          {diagnostic.pdf_preview_url && (
+            <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 10px', borderBottom: '1px solid #eef0f3' }}>
+                <Text strong>PDF 预览</Text>
+                <Button size="small" href={diagnostic.pdf_preview_url} target="_blank" rel="noreferrer">
+                  打开
+                </Button>
+              </div>
+              <iframe
+                title={`${scopeLabel} LaTeX PDF preview`}
+                src={diagnostic.pdf_preview_url}
+                style={{ width: '100%', height: 520, border: 0, display: 'block' }}
+              />
+            </div>
+          )}
         </Space>
       )}
       style={{ borderRadius: 10 }}

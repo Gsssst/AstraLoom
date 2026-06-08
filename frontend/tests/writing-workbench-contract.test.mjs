@@ -83,6 +83,10 @@ test('manuscript workbench exposes latex preview diagnostics', () => {
   assert.match(sectionEditorSource, /源码级检查/);
   assert.match(sectionEditorSource, /未安装 pdflatex/);
   assert.match(sectionEditorSource, /查看编译日志/);
+  assert.match(sectionEditorSource, /pdf_preview_url/);
+  assert.match(sectionEditorSource, /PDF 预览/);
+  assert.match(sectionEditorSource, /<iframe/);
+  assert.match(writingPageSource, /pdf_preview_url/);
 });
 
 test('section editor keeps local drafts and debounces persistence', () => {

@@ -317,6 +317,30 @@ async def test_latex_compile_check_falls_back_when_pdflatex_missing(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_latex_compile_check_returns_pdf_preview(monkeypatch, tmp_path):
+    import subprocess
+    from app.services import latex_processor as latex_module
+
+    def fake_run(args, **_kwargs):
+        output_dir = args[args.index("-output-directory") + 1]
+        with open(f"{output_dir}/document.pdf", "wb") as pdf:
+            pdf.write(b"%PDF-1.4\n% test preview\n")
+        return subprocess.CompletedProcess(args, 0, stdout="Output written on document.pdf", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(latex_module, "LATEX_PREVIEW_DIR", tmp_path)
+
+    result = await latex_processor.compile_check(
+        latex_processor.render_section_preview_tex("Method", r"We optimize $\mathcal{L}$.")
+    )
+
+    assert result["success"] is True
+    assert result["has_pdf_preview"] is True
+    assert result["pdf_preview_url"].startswith("/api/writing/latex/previews/")
+    assert (tmp_path / result["pdf_filename"]).exists()
+
+
+@pytest.mark.asyncio
 async def test_latex_fallback_reports_source_level_errors(monkeypatch):
     import subprocess
 

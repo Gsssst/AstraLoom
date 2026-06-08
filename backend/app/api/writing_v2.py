@@ -2,10 +2,11 @@
 
 import json
 import logging
+import re
 from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,7 +17,7 @@ from app.services.writing_pipeline import WritingPipeline
 from app.services.diff_engine import diff_engine, PolishVersionManager
 from app.services.citation_verifier import citation_verifier
 from app.services.smart_citation_service import smart_citation_service
-from app.services.latex_processor import latex_processor
+from app.services.latex_processor import LATEX_PREVIEW_DIR, latex_processor
 from app.services.writing_project_service import WritingProjectService
 from app.services.writing_service import WritingAssistantService
 
@@ -715,6 +716,25 @@ async def preview_project_latex_manuscript(
     if result is None:
         raise HTTPException(status_code=404, detail="项目未找到")
     return result
+
+
+@router.get("/latex/previews/{filename}")
+async def get_latex_preview_pdf(
+    filename: str,
+    user=Depends(get_current_user),
+):
+    """Serve a generated LaTeX preview PDF."""
+    if not re.fullmatch(r"[a-f0-9]{32}\.pdf", filename or ""):
+        raise HTTPException(status_code=404, detail="预览文件不存在")
+    path = LATEX_PREVIEW_DIR / filename
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="预览文件不存在")
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        filename=filename,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/projects/{project_id}/submission-template")
