@@ -21,6 +21,15 @@ The system SHALL treat each manuscript section body as editable LaTeX source.
 - **WHEN** the user edits a manuscript section
 - **THEN** the editor labels the content as LaTeX source and preserves LaTeX commands, equations, citations, labels, tables, and figures.
 
+#### Scenario: User receives LaTeX command suggestions
+- **WHEN** the user types a LaTeX command prefix such as `\c` in the section source editor
+- **THEN** the editor offers matching command snippets such as `\cite{}`
+- **AND** selecting a snippet inserts it into the section body without losing the user's current draft.
+
+#### Scenario: User navigates command suggestions by keyboard
+- **WHEN** LaTeX command suggestions are visible
+- **THEN** the user can move through suggestions and apply one using keyboard controls.
+
 #### Scenario: User exports manuscript
 - **WHEN** the user exports the project as LaTeX
 - **THEN** the system assembles section LaTeX bodies into a valid document skeleton.
@@ -53,6 +62,10 @@ The system SHALL provide compile/preview checks for the active section and assem
 #### Scenario: Compile succeeds with warnings
 - **WHEN** LaTeX compilation succeeds but emits warnings
 - **THEN** the UI shows the warning diagnostics and still displays the compiled PDF preview.
+
+#### Scenario: Preview honors selected manuscript layout
+- **WHEN** the user previews a manuscript with a selected single-column or double-column layout
+- **THEN** the rendered LaTeX document uses the corresponding document class options before compilation.
 
 ### Requirement: AI Assistance Is Scoped To Current Section
 The manuscript workbench SHALL provide an AI assistant panel scoped to the active section.
