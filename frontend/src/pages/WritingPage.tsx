@@ -11,6 +11,7 @@ import {
   BookOutlined, FormOutlined, ReadOutlined, SwapOutlined,
   AuditOutlined, FolderOutlined, RocketOutlined, DownloadOutlined,
   FileZipOutlined, UploadOutlined, CodeOutlined, RobotOutlined, PlusOutlined,
+  MenuFoldOutlined, MenuUnfoldOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import Markdown from '../components/Markdown';
@@ -273,6 +274,7 @@ const WritingPage: React.FC = () => {
   const [diffResult, setDiffResult] = useState<any>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [selectedProject, setSelectedProject] = useState<any>(null);
+  const [supportRailCollapsed, setSupportRailCollapsed] = useState(false);
   const [projectSections, setProjectSections] = useState<any[]>([]);
   const [evidenceCards, setEvidenceCards] = useState<any[]>([]);
   const [evidenceCoverage, setEvidenceCoverage] = useState<any>(null);
@@ -1749,12 +1751,65 @@ const WritingPage: React.FC = () => {
   const manuscriptWorkbench = (
     <div
       className="manuscript-workbench-grid"
-      style={{ display: 'grid', gridTemplateColumns: '320px minmax(0, 1fr)', gap: 16, alignItems: 'start' }}
+      data-support-rail-state={supportRailCollapsed ? 'collapsed' : 'expanded'}
+      style={{
+        display: 'grid',
+        gridTemplateColumns: supportRailCollapsed ? '64px minmax(0, 1fr)' : '320px minmax(0, 1fr)',
+        gap: 16,
+        alignItems: 'start',
+      }}
     >
-      <div className="manuscript-support-rail" style={{ display: 'flex', flexDirection: 'column', gap: 14, position: 'sticky', top: 12 }}>
-        <WritingProjectPanel onSelectProject={handleSelectProject} selectedProjectId={selectedProject?.id} refreshSignal={projectRefreshSignal} />
-        {evidencePanel}
-      </div>
+      {supportRailCollapsed ? (
+        <div
+          className="manuscript-support-rail manuscript-support-rail-collapsed"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 12,
+            position: 'sticky',
+            top: 12,
+            padding: 10,
+            border: '1px solid #f0f0f0',
+            borderRadius: 12,
+            background: '#fff',
+            boxShadow: '0 6px 18px rgba(15, 23, 42, 0.06)',
+          }}
+        >
+          <Tooltip title="展开项目与证据栏" placement="right">
+            <Button
+              type="primary"
+              shape="circle"
+              icon={<MenuUnfoldOutlined />}
+              onClick={() => setSupportRailCollapsed(false)}
+              aria-label="展开项目与证据栏"
+            />
+          </Tooltip>
+          <Tooltip title="我的项目" placement="right">
+            <Button shape="circle" icon={<FolderOutlined />} aria-label="我的项目" />
+          </Tooltip>
+          <Tooltip title={`证据卡片 ${evidenceCoverage?.local ?? 0}/${evidenceCoverage?.total ?? 0}`} placement="right">
+            <Button shape="circle" icon={<BookOutlined />} aria-label="证据卡片" />
+          </Tooltip>
+        </div>
+      ) : (
+        <div className="manuscript-support-rail" style={{ display: 'flex', flexDirection: 'column', gap: 14, position: 'sticky', top: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>项目与证据</Text>
+            <Tooltip title="收起项目与证据栏">
+              <Button
+                size="small"
+                icon={<MenuFoldOutlined />}
+                onClick={() => setSupportRailCollapsed(true)}
+                aria-label="收起项目与证据栏"
+                style={{ borderRadius: 8 }}
+              />
+            </Tooltip>
+          </div>
+          <WritingProjectPanel onSelectProject={handleSelectProject} selectedProjectId={selectedProject?.id} refreshSignal={projectRefreshSignal} />
+          {evidencePanel}
+        </div>
+      )}
       <div className="manuscript-editor-main" style={{ minWidth: 0, minHeight: 400 }}>
         {selectedProject ? (
           <>
@@ -1963,7 +2018,7 @@ const WritingPage: React.FC = () => {
       title={assistantMode === 'paper' ? '写作工作台' : '基金申请助手'}
       subtitle="以项目为中心管理论文、本子、证据、引用校验和导出预检。"
       icon={<EditOutlined />}
-      maxWidth={assistantMode === 'paper' && paperWorkflow === 'manuscript' ? 1360 : 1100}
+      maxWidth={assistantMode === 'paper' && paperWorkflow === 'manuscript' ? 1600 : 1100}
       actions={(
         <Segmented
           value={assistantMode}
@@ -2077,6 +2132,11 @@ const WritingPage: React.FC = () => {
           }
           .manuscript-support-rail {
             position: static !important;
+          }
+          .manuscript-support-rail-collapsed {
+            width: 100% !important;
+            flex-direction: row !important;
+            justify-content: flex-start !important;
           }
           #writing-sections-panel {
             grid-template-columns: 1fr !important;

@@ -56,9 +56,20 @@ test('manuscript workbench groups project and evidence in compact support rail',
   assert.match(writingPageSource, /manuscript-workbench-grid/);
   assert.match(writingPageSource, /manuscript-support-rail/);
   assert.match(writingPageSource, /manuscript-editor-main/);
-  assert.match(writingPageSource, /gridTemplateColumns: '320px minmax\(0, 1fr\)'/);
+  assert.match(writingPageSource, /supportRailCollapsed/);
+  assert.match(writingPageSource, /gridTemplateColumns: supportRailCollapsed \? '64px minmax\(0, 1fr\)' : '320px minmax\(0, 1fr\)'/);
   assert.match(writingPageSource, /<WritingProjectPanel[\s\S]*\{evidencePanel\}/);
   assert.match(writingPageSource, /gridTemplateColumns: '240px minmax\(0, 1fr\)'/);
+});
+
+test('manuscript workbench support rail can collapse to widen editor', () => {
+  assert.match(writingPageSource, /data-support-rail-state=\{supportRailCollapsed \? 'collapsed' : 'expanded'\}/);
+  assert.match(writingPageSource, /manuscript-support-rail-collapsed/);
+  assert.match(writingPageSource, /MenuFoldOutlined/);
+  assert.match(writingPageSource, /MenuUnfoldOutlined/);
+  assert.match(writingPageSource, /收起项目与证据栏/);
+  assert.match(writingPageSource, /展开项目与证据栏/);
+  assert.match(writingPageSource, /maxWidth=\{assistantMode === 'paper' && paperWorkflow === 'manuscript' \? 1600 : 1100\}/);
 });
 
 test('manuscript workbench exposes latex preview diagnostics', () => {
