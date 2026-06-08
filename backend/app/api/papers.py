@@ -52,6 +52,11 @@ class PaperBrief(BaseModel):
     read_status: Optional[str] = None
     imported_by_user_id: Optional[str] = None
     imported_by_username: Optional[str] = None
+    has_pdf: bool = False
+    has_full_text: bool = False
+    has_embedding: bool = False
+    has_tags: bool = False
+    processing_status: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -70,6 +75,41 @@ class PaperSearchResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class PaperProcessingStatus(BaseModel):
+    id: str
+    title: str
+    year: Optional[int] = None
+    source: str
+    imported_by_username: Optional[str] = None
+    has_pdf: bool
+    has_full_text: bool
+    has_embedding: bool
+    has_tags: bool
+    status: Literal["ready", "needs_full_text", "needs_embedding", "needs_tags", "needs_processing"]
+    missing: list[str] = []
+    repair_actions: list[dict] = []
+
+
+class PaperProcessingStatusResponse(BaseModel):
+    items: list[PaperProcessingStatus]
+    total: int
+    ready: int
+    needs_processing: int
+
+
+class PaperInsightResponse(BaseModel):
+    paper_id: str
+    generated_at: str
+    evidence_coverage: Literal["abstract_only", "full_text"]
+    contribution: str = ""
+    reusable_methods: str = ""
+    reproducible_experiments: str = ""
+    limitations: str = ""
+    research_gaps: str = ""
+    research_fit: str = ""
+    raw: str = ""
 
 
 class IngestRequest(BaseModel):
@@ -383,6 +423,7 @@ async def _format_diagnostic_hits(
 
 def _paper_brief(paper, *, remote: bool = False) -> PaperBrief:
     metadata = getattr(paper, "metadata", {}) if remote else getattr(paper, "metadata_json", {})
+    processing = _paper_processing_flags(paper) if not remote else {}
     return PaperBrief(
         id="" if remote else str(paper.id),
         title=paper.title,
@@ -401,6 +442,11 @@ def _paper_brief(paper, *, remote: bool = False) -> PaperBrief:
         source_url=getattr(paper, "source_url", None),
         imported_by_user_id=None if remote else str(getattr(paper, "imported_by_user_id", None)) if getattr(paper, "imported_by_user_id", None) else None,
         imported_by_username=None if remote else getattr(paper, "imported_by_username", None),
+        has_pdf=bool(processing.get("has_pdf", False)),
+        has_full_text=bool(processing.get("has_full_text", False)),
+        has_embedding=bool(processing.get("has_embedding", False)),
+        has_tags=bool(processing.get("has_tags", False)),
+        processing_status=processing.get("status"),
     )
 
 
@@ -410,6 +456,84 @@ def _paper_imported_by_user(paper: Paper, user) -> bool:
     if paper.imported_by_user_id and str(paper.imported_by_user_id) == str(user.id):
         return True
     return bool(not paper.imported_by_user_id and paper.imported_by_username == user.username)
+
+
+def _has_tags(tags: Any) -> bool:
+    if not tags:
+        return False
+    if isinstance(tags, dict):
+        return any(bool(value) for value in tags.values())
+    if isinstance(tags, list):
+        return len(tags) > 0
+    return bool(tags)
+
+
+def _paper_processing_flags(paper: Paper) -> dict[str, Any]:
+    metadata = getattr(paper, "metadata_json", None) or {}
+    has_pdf = bool(getattr(paper, "pdf_path", None) or metadata.get("pdf_url"))
+    has_full_text = bool(getattr(paper, "full_text", None) and len(paper.full_text) > 500)
+    has_embedding = getattr(paper, "embedding", None) is not None
+    has_tags = _has_tags(getattr(paper, "tags", None))
+    missing = []
+    if not has_full_text:
+        missing.append("full_text")
+    if not has_embedding:
+        missing.append("embedding")
+    if not has_tags:
+        missing.append("tags")
+    if not missing:
+        status = "ready"
+    elif missing == ["tags"]:
+        status = "needs_tags"
+    elif missing == ["embedding"]:
+        status = "needs_embedding"
+    elif "full_text" in missing and len(missing) == 1:
+        status = "needs_full_text"
+    else:
+        status = "needs_processing"
+    return {
+        "has_pdf": has_pdf,
+        "has_full_text": has_full_text,
+        "has_embedding": has_embedding,
+        "has_tags": has_tags,
+        "missing": missing,
+        "status": status,
+    }
+
+
+def _paper_processing_status(paper: Paper) -> PaperProcessingStatus:
+    flags = _paper_processing_flags(paper)
+    actions = []
+    if not flags["has_full_text"] and paper.arxiv_id:
+        actions.append({"key": "full_text", "label": "补全文", "endpoint": f"/papers/{paper.id}/load-full-text"})
+    if not flags["has_embedding"]:
+        actions.append({"key": "embedding", "label": "生成向量", "endpoint": f"/papers/{paper.id}/embedding"})
+    if not flags["has_tags"]:
+        actions.append({"key": "tags", "label": "AI 标签", "endpoint": f"/papers/{paper.id}/auto-tag"})
+    return PaperProcessingStatus(
+        id=str(paper.id),
+        title=paper.title,
+        year=paper.year,
+        source=paper.source,
+        imported_by_username=paper.imported_by_username,
+        has_pdf=flags["has_pdf"],
+        has_full_text=flags["has_full_text"],
+        has_embedding=flags["has_embedding"],
+        has_tags=flags["has_tags"],
+        status=flags["status"],
+        missing=flags["missing"],
+        repair_actions=actions,
+    )
+
+
+def _parse_bool_filter(value: Optional[str]) -> Optional[bool]:
+    if value in (None, "", "all"):
+        return None
+    if value in ("true", "1", "yes"):
+        return True
+    if value in ("false", "0", "no"):
+        return False
+    return None
 
 
 @router.get("/suggest")
@@ -432,6 +556,11 @@ async def search_papers(
     sort: str = Query(default="created_desc", description="排序: created_desc, created_asc, year_desc, year_asc, title"),
     search_mode: str = Query(default="hybrid", pattern="^(hybrid|dense|bm25)$", description="检索模式: hybrid, dense, bm25"),
     owner: Optional[str] = Query(default=None, pattern="^(mine)$", description="归属筛选: mine"),
+    importer: Optional[str] = Query(default=None, max_length=100, description="导入账号筛选"),
+    local_source: Optional[str] = Query(default=None, max_length=50, description="本地论文来源筛选"),
+    has_full_text: Optional[str] = Query(default=None, description="全文可用筛选: true/false/all"),
+    has_embedding: Optional[str] = Query(default=None, description="向量可用筛选: true/false/all"),
+    read_status: Optional[Literal["unread", "reading", "completed"]] = Query(default=None, description="当前用户阅读状态筛选"),
     db: AsyncSession = Depends(get_db),
     user=Depends(get_optional_user),
 ):
@@ -449,6 +578,46 @@ async def search_papers(
         "title": Paper.title.asc(),
     }
     order_by = sort_map.get(sort, Paper.created_at.desc())
+    full_text_filter = _parse_bool_filter(has_full_text)
+    embedding_filter = _parse_bool_filter(has_embedding)
+
+    def apply_local_filters(query):
+        if category:
+            query = query.join(PaperCategory).join(Category).where(Category.name == category)
+        if year_from: query = query.where(Paper.year >= year_from)
+        if year_to: query = query.where(Paper.year <= year_to)
+        if importer:
+            query = query.where(Paper.imported_by_username == importer)
+        if local_source:
+            query = query.where(Paper.source == local_source)
+        if full_text_filter is True:
+            query = query.where(Paper.full_text.is_not(None), func.length(Paper.full_text) > 500)
+        elif full_text_filter is False:
+            query = query.where((Paper.full_text.is_(None)) | (func.length(Paper.full_text) <= 500))
+        if embedding_filter is True:
+            query = query.where(Paper.embedding.is_not(None))
+        elif embedding_filter is False:
+            query = query.where(Paper.embedding.is_(None))
+        if owner == "mine":
+            if not user:
+                query = query.where(Paper.id.is_(None))
+            else:
+                query = query.where(
+                    (Paper.imported_by_user_id == user.id)
+                    | (
+                        (Paper.imported_by_user_id.is_(None))
+                        & (Paper.imported_by_username == user.username)
+                    )
+                )
+        if read_status:
+            if not user:
+                query = query.where(Paper.id.is_(None))
+            else:
+                query = query.join(UserPaper).where(
+                    UserPaper.user_id == user.id,
+                    UserPaper.read_status == read_status,
+                )
+        return query
 
     # 本地数据库搜索
     if source in ("local", "all"):
@@ -472,27 +641,39 @@ async def search_papers(
                         for paper, score in paper_scores
                         if _paper_imported_by_user(paper, user)
                     ]
+            if importer:
+                paper_scores = [(paper, score) for paper, score in paper_scores if paper.imported_by_username == importer]
+            if local_source:
+                paper_scores = [(paper, score) for paper, score in paper_scores if paper.source == local_source]
+            if full_text_filter is not None:
+                paper_scores = [
+                    (paper, score) for paper, score in paper_scores
+                    if _paper_processing_flags(paper)["has_full_text"] is full_text_filter
+                ]
+            if embedding_filter is not None:
+                paper_scores = [
+                    (paper, score) for paper, score in paper_scores
+                    if _paper_processing_flags(paper)["has_embedding"] is embedding_filter
+                ]
+            if read_status:
+                if not user:
+                    paper_scores = []
+                else:
+                    status_result = await db.execute(
+                        select(UserPaper.paper_id).where(
+                            UserPaper.user_id == user.id,
+                            UserPaper.read_status == read_status,
+                        )
+                    )
+                    status_ids = {row[0] for row in status_result.all()}
+                    paper_scores = [(paper, score) for paper, score in paper_scores if paper.id in status_ids]
             total = len(paper_scores)
             for paper, _score in paper_scores[page_size * (page - 1):page_size * page]:
                 items.append(_paper_brief(paper))
         else:
             # 无查询：按字段排序浏览论文库
             query = select(Paper)
-            if category:
-                query = query.join(PaperCategory).join(Category).where(Category.name == category)
-            if year_from: query = query.where(Paper.year >= year_from)
-            if year_to: query = query.where(Paper.year <= year_to)
-            if owner == "mine":
-                if not user:
-                    query = query.where(Paper.id.is_(None))
-                else:
-                    query = query.where(
-                        (Paper.imported_by_user_id == user.id)
-                        | (
-                            (Paper.imported_by_user_id.is_(None))
-                            & (Paper.imported_by_username == user.username)
-                        )
-                    )
+            query = apply_local_filters(query)
             count_query = select(func.count()).select_from(query.subquery())
             total_result = await db.execute(count_query)
             total = total_result.scalar() or 0
@@ -801,6 +982,29 @@ async def get_retrieval_maintenance_recommendations(
     return await _maintenance_recommendations(db)
 
 
+@router.get("/processing-status", response_model=PaperProcessingStatusResponse)
+async def get_paper_processing_statuses(
+    limit: int = Query(default=30, ge=1, le=100),
+    status: Optional[Literal["all", "ready", "needs_processing"]] = Query(default="all"),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_optional_user),
+):
+    """Return derived processing readiness for local papers."""
+    result = await db.execute(select(Paper).order_by(Paper.created_at.desc()).limit(limit))
+    all_items = [_paper_processing_status(paper) for paper in result.scalars().all()]
+    items = all_items
+    if status == "ready":
+        items = [item for item in all_items if item.status == "ready"]
+    elif status == "needs_processing":
+        items = [item for item in all_items if item.status != "ready"]
+    return PaperProcessingStatusResponse(
+        items=items,
+        total=len(all_items),
+        ready=sum(1 for item in all_items if item.status == "ready"),
+        needs_processing=sum(1 for item in all_items if item.status != "ready"),
+    )
+
+
 @router.get("/maintenance/search-diagnostics", response_model=RetrievalDiagnosticsResponse)
 async def diagnose_retrieval_query(
     q: str = Query(..., min_length=1, max_length=300),
@@ -920,6 +1124,116 @@ async def get_paper_detail(
             for sp in similar
         ],
     )
+
+
+@router.get("/{paper_id}/processing-status", response_model=PaperProcessingStatus)
+async def get_paper_processing_status(
+    paper_id: str,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_optional_user),
+):
+    """Return derived processing readiness for one paper."""
+    from uuid import UUID
+
+    try:
+        pid = UUID(paper_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid paper_id")
+
+    result = await db.execute(select(Paper).where(Paper.id == pid))
+    paper = result.scalar_one_or_none()
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文未找到")
+    return _paper_processing_status(paper)
+
+
+def _parse_insight_sections(text: str) -> dict[str, str]:
+    keys = {
+        "核心贡献": "contribution",
+        "可借鉴方法": "reusable_methods",
+        "可复现实验": "reproducible_experiments",
+        "局限": "limitations",
+        "研究缺口": "research_gaps",
+        "研究方向关联": "research_fit",
+    }
+    parsed = {value: "" for value in keys.values()}
+    current = None
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        matched = False
+        for title, key in keys.items():
+            if title in line and (line.startswith("#") or line.startswith(title)):
+                current = key
+                matched = True
+                break
+        if not matched and current:
+            parsed[current] += raw_line.strip("- ") + "\n"
+    return {key: value.strip() for key, value in parsed.items()}
+
+
+@router.get("/{paper_id}/insights", response_model=PaperInsightResponse)
+async def get_paper_ai_insights(
+    paper_id: str,
+    refresh: bool = Query(default=False),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Generate or return cached AI insight cards for one paper."""
+    from uuid import UUID
+
+    try:
+        pid = UUID(paper_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid paper_id")
+
+    result = await db.execute(select(Paper).where(Paper.id == pid))
+    paper = result.scalar_one_or_none()
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文未找到")
+
+    metadata = dict(paper.metadata_json or {})
+    cached = metadata.get("ai_insights")
+    if cached and not refresh:
+        return PaperInsightResponse(**cached)
+
+    has_full_text = bool(paper.full_text and len(paper.full_text) > 500)
+    context = paper.full_text[:9000] if has_full_text else paper.abstract or ""
+    prompt = f"""你是一位资深科研导师。请基于下面论文资料，输出结构化中文洞察，必须避免编造。
+
+标题: {paper.title}
+作者: {', '.join(paper.authors[:5]) if isinstance(paper.authors, list) else paper.authors}
+年份: {paper.year or 'N/A'}
+摘要: {paper.abstract or '无'}
+正文片段: {context or '无'}
+
+请严格按以下 Markdown 二级标题输出，每部分 2-4 个要点：
+
+## 核心贡献
+## 可借鉴方法
+## 可复现实验
+## 局限
+## 研究缺口
+## 研究方向关联
+"""
+    raw = await llm_service.chat(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.25,
+        max_tokens=2048,
+    )
+    sections = _parse_insight_sections(raw)
+    payload = {
+        "paper_id": str(paper.id),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "evidence_coverage": "full_text" if has_full_text else "abstract_only",
+        "raw": raw,
+        **sections,
+    }
+    metadata["ai_insights"] = payload
+    paper.metadata_json = metadata
+    await db.commit()
+    return PaperInsightResponse(**payload)
 
 
 # --- 论文增强 API ---

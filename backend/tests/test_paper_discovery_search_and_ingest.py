@@ -147,6 +147,37 @@ def test_local_paper_brief_exposes_importer_metadata():
     assert brief.imported_by_username == "gst"
 
 
+def test_local_paper_brief_exposes_processing_readiness():
+    paper = SimpleNamespace(
+        id=uuid4(),
+        title="Ready paper",
+        authors=[],
+        year=2026,
+        abstract="A",
+        arxiv_id=None,
+        doi=None,
+        source="manual",
+        citation_count=0,
+        created_at=SimpleNamespace(isoformat=lambda: "2026-06-08T00:00:00"),
+        metadata_json={"pdf_url": "https://example.test/paper.pdf"},
+        source_url=None,
+        imported_by_user_id=None,
+        imported_by_username="gst",
+        pdf_path=None,
+        full_text="x" * 600,
+        embedding=[0.1],
+        tags=["retrieval"],
+    )
+
+    brief = papers_api._paper_brief(paper)
+
+    assert brief.has_pdf is True
+    assert brief.has_full_text is True
+    assert brief.has_embedding is True
+    assert brief.has_tags is True
+    assert brief.processing_status == "ready"
+
+
 def test_paper_imported_by_user_matches_id_and_username_fallback():
     user_id = uuid4()
     user = SimpleNamespace(id=str(user_id), username="gst")
@@ -163,6 +194,60 @@ def test_paper_imported_by_user_matches_id_and_username_fallback():
         SimpleNamespace(imported_by_user_id=None, imported_by_username="other"),
         user,
     )
+
+
+@pytest.mark.asyncio
+async def test_local_search_applies_readiness_importer_source_and_read_status_filters():
+    class _CountResult:
+        def scalar(self):
+            return 0
+
+    class _Rows:
+        def all(self):
+            return []
+
+    class _PaperResult:
+        def scalars(self):
+            return _Rows()
+
+    class _Db:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement):
+            self.statements.append(str(statement))
+            if len(self.statements) == 1:
+                return _CountResult()
+            return _PaperResult()
+
+    db = _Db()
+    response = await papers_api.search_papers(
+        q="",
+        source="local",
+        category=None,
+        year_from=None,
+        year_to=None,
+        page=1,
+        page_size=10,
+        sort="created_desc",
+        search_mode="hybrid",
+        owner=None,
+        importer="gst",
+        local_source="arxiv",
+        has_full_text="true",
+        has_embedding="false",
+        read_status="completed",
+        db=db,
+        user=SimpleNamespace(id=uuid4(), username="gst"),
+    )
+
+    combined_sql = "\n".join(db.statements)
+    assert response.total == 0
+    assert "papers.imported_by_username" in combined_sql
+    assert "papers.source" in combined_sql
+    assert "length(papers.full_text)" in combined_sql
+    assert "papers.embedding IS NULL" in combined_sql
+    assert "user_papers.read_status" in combined_sql
 
 
 @pytest.mark.asyncio

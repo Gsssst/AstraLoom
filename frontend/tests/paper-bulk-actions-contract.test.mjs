@@ -55,12 +55,33 @@ test('paper library exposes owner filter, importer tags, and custom group report
   assert.match(papersPageSource, /const paperSearchSources = \['local', 'mine'/);
   assert.match(papersPageSource, /value: 'mine', label: '👤 我的'/);
   assert.match(papersPageSource, /owner = source === 'mine' \? 'mine' : undefined/);
-  assert.match(papersPageSource, /source: searchSource, owner/);
+  assert.match(papersPageSource, /source: searchSource/);
+  assert.match(papersPageSource, /owner,/);
   assert.match(papersPageSource, /imported_by_username/);
   assert.match(papersPageSource, /导入：\{paper\.imported_by_username\}/);
   assert.match(papersPageSource, /reportPrompt/);
   assert.match(papersPageSource, /custom_prompt: reportPrompt\.trim\(\) \|\| undefined/);
   assert.match(papersPageSource, /自定义汇报要求/);
+});
+
+test('paper library exposes readiness filters, processing status, and report presets', () => {
+  assert.match(papersPageSource, /migrationHealth/);
+  assert.match(papersPageSource, /\/health\/db/);
+  assert.match(papersPageSource, /\/papers\/processing-status/);
+  assert.match(papersPageSource, /processingStatuses/);
+  assert.match(papersPageSource, /processingStatusFilter/);
+  assert.match(papersPageSource, /runProcessingAction/);
+  assert.match(papersPageSource, /知识库筛选/);
+  assert.match(papersPageSource, /filterFullText/);
+  assert.match(papersPageSource, /filterEmbedding/);
+  assert.match(papersPageSource, /filterReadStatus/);
+  assert.match(papersPageSource, /has_full_text: filterFullText === 'all' \? undefined : filterFullText/);
+  assert.match(papersPageSource, /has_embedding: filterEmbedding === 'all' \? undefined : filterEmbedding/);
+  assert.match(papersPageSource, /read_status: filterReadStatus === 'all' \? undefined : filterReadStatus/);
+  assert.match(papersPageSource, /reportPresetOptions/);
+  assert.match(papersPageSource, /report_preset: reportPreset/);
+  assert.match(papersPageSource, /横向对比/);
+  assert.match(papersPageSource, /实验复现/);
 });
 
 test('bulk action bar has responsive hooks for narrow screens', () => {

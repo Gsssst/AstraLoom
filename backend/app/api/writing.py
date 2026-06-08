@@ -150,6 +150,7 @@ class ReportRequest(BaseModel):
     paper_ids: List[str] = Field(..., min_length=1, description="论文 ID 列表")
     title: str = Field(default="组会报告", description="报告主标题")
     custom_prompt: Optional[str] = Field(default=None, max_length=4000, description="自定义组会报告生成要求")
+    report_preset: str = Field(default="default", pattern="^(default|compare|method_lineage|reproduction|review)$")
 
 
 class FeishuReportRequest(BaseModel):
@@ -157,6 +158,7 @@ class FeishuReportRequest(BaseModel):
     title: str = Field(default="组会报告")
     feishu_url: str = Field(..., description="飞书文档链接")
     custom_prompt: Optional[str] = Field(default=None, max_length=4000, description="自定义组会报告生成要求")
+    report_preset: str = Field(default="default", pattern="^(default|compare|method_lineage|reproduction|review)$")
 
 
 REPORT_EAST_ASIA_FONT = "宋体"
@@ -239,7 +241,7 @@ async def generate_group_report(req: ReportRequest, db: AsyncSession = Depends(g
     """生成组会报告（结构化总结 + Word 下载）。"""
     from app.services.report_service import ReportService
     service = ReportService(db)
-    result = await service.generate_report(req.paper_ids, req.title, custom_prompt=req.custom_prompt)
+    result = await service.generate_report(req.paper_ids, req.title, custom_prompt=req.custom_prompt, report_preset=req.report_preset)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
 
@@ -294,13 +296,14 @@ async def generate_report_markdown(
     paper_ids: str = Query(..., description="论文 ID，逗号分隔"),
     title: str = Query(default="组会报告"),
     custom_prompt: Optional[str] = Query(default=None, max_length=4000),
+    report_preset: str = Query(default="default", pattern="^(default|compare|method_lineage|reproduction|review)$"),
     db: AsyncSession = Depends(get_db),
 ):
     """生成组会报告 Markdown 文本（可直接粘贴到飞书/Notion）。"""
     ids = [p.strip() for p in paper_ids.split(",") if p.strip()]
     from app.services.report_service import ReportService
     service = ReportService(db)
-    result = await service.generate_report(ids, title, custom_prompt=custom_prompt)
+    result = await service.generate_report(ids, title, custom_prompt=custom_prompt, report_preset=report_preset)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
 
@@ -327,7 +330,7 @@ async def write_report_to_feishu(req: FeishuReportRequest, db: AsyncSession = De
     ids = req.paper_ids
     from app.services.report_service import ReportService
     service = ReportService(db)
-    result = await service.generate_report(ids, req.title, custom_prompt=req.custom_prompt)
+    result = await service.generate_report(ids, req.title, custom_prompt=req.custom_prompt, report_preset=req.report_preset)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
 
@@ -367,13 +370,14 @@ async def generate_report_json(
     paper_ids: str = Query(..., description="论文 ID，逗号分隔"),
     title: str = Query(default="组会报告"),
     custom_prompt: Optional[str] = Query(default=None, max_length=4000),
+    report_preset: str = Query(default="default", pattern="^(default|compare|method_lineage|reproduction|review)$"),
     db: AsyncSession = Depends(get_db),
 ):
     """生成组会报告 JSON（用于前端预览）。"""
     ids = [p.strip() for p in paper_ids.split(",") if p.strip()]
     from app.services.report_service import ReportService
     service = ReportService(db)
-    result = await service.generate_report(ids, title, custom_prompt=custom_prompt)
+    result = await service.generate_report(ids, title, custom_prompt=custom_prompt, report_preset=report_preset)
     return result
 
 

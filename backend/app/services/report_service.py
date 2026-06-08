@@ -133,11 +133,24 @@ async def _download_and_parse_full_text(paper: Paper) -> str:
 class ReportService:
     """组会报告生成。"""
 
+    REPORT_PRESETS = {
+        "default": "",
+        "compare": "请不要逐篇罗列。请横向比较这些论文的研究问题、方法路线、实验设置、结论差异和适用边界，并给出对比表式的文字总结。",
+        "method_lineage": "请按方法演进脉络组织报告，讲清楚从早期思路到最新方案的技术路线变化、每篇论文解决的关键瓶颈和仍未解决的问题。",
+        "reproduction": "请从实验复现角度组织报告，重点提取数据集、指标、baseline、关键实现步骤、依赖资源、复现风险和推荐复现顺序。",
+        "review": "请按审稿/批判性分析视角组织报告，重点评价创新性、实验充分性、证据强弱、潜在漏洞、可替代解释和可追问问题。",
+    }
+
     def __init__(self, session: AsyncSession):
         self.session = session
 
     def _custom_prompt_text(self, custom_prompt: str | None) -> str:
         return (custom_prompt or "").strip()[:4000]
+
+    def _combined_report_prompt(self, custom_prompt: str | None, report_preset: str = "default") -> str:
+        preset_text = self.REPORT_PRESETS.get(report_preset or "default", "")
+        custom_text = self._custom_prompt_text(custom_prompt)
+        return "\n\n".join(part for part in [preset_text, custom_text] if part).strip()[:5000]
 
     def _paper_context(self, paper: Paper, *, full_text_limit: int = 10000) -> str:
         return f"""标题: {paper.title}
@@ -241,7 +254,13 @@ arXiv: {paper.arxiv_id or 'N/A'}
             max_tokens=4096,
         )
 
-    async def generate_report(self, paper_ids: List[str], title: str = "组会报告", custom_prompt: str | None = None) -> dict:
+    async def generate_report(
+        self,
+        paper_ids: List[str],
+        title: str = "组会报告",
+        custom_prompt: str | None = None,
+        report_preset: str = "default",
+    ) -> dict:
         """生成组会报告（含结构化总结）。"""
         from uuid import UUID
 
@@ -264,7 +283,7 @@ arXiv: {paper.arxiv_id or 'N/A'}
         # 2. commit 全文到 DB
         await self.session.commit()
 
-        custom_prompt_text = self._custom_prompt_text(custom_prompt)
+        custom_prompt_text = self._combined_report_prompt(custom_prompt, report_preset)
         if custom_prompt_text:
             custom_report = await self.generate_custom_report(papers, title, custom_prompt_text)
             return {
@@ -281,6 +300,7 @@ arXiv: {paper.arxiv_id or 'N/A'}
                 ],
                 "paper_count": len(papers),
                 "custom_prompt": custom_prompt_text,
+                "report_preset": report_preset,
                 "custom_report": custom_report,
                 "generated_at": str(__import__("datetime").datetime.now()),
             }

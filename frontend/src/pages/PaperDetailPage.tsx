@@ -38,6 +38,19 @@ interface PaperData {
   created_at: string;
 }
 
+interface PaperInsight {
+  paper_id: string;
+  generated_at: string;
+  evidence_coverage: 'abstract_only' | 'full_text';
+  contribution: string;
+  reusable_methods: string;
+  reproducible_experiments: string;
+  limitations: string;
+  research_gaps: string;
+  research_fit: string;
+  raw: string;
+}
+
 interface PaperChatReference {
   title: string;
   arxiv_id?: string | null;
@@ -161,6 +174,8 @@ const PaperDetailPage: React.FC = () => {
   const [notes, setNotes] = useState('');
   const [notesLoading, setNotesLoading] = useState(false);
   const [annotations, setAnnotations] = useState<PaperAnnotation[]>([]);
+  const [paperInsight, setPaperInsight] = useState<PaperInsight | null>(null);
+  const [insightLoading, setInsightLoading] = useState(false);
   const [annotationSaving, setAnnotationSaving] = useState(false);
   const [deletingAnnotationIds, setDeletingAnnotationIds] = useState<Set<string>>(new Set());
   const [showPdf, setShowPdf] = useState(false);
@@ -536,6 +551,20 @@ const PaperDetailPage: React.FC = () => {
     catch { message.error('标签提取失败'); } finally { setTagging(false); }
   };
 
+  const handleGenerateInsights = async (refresh = false) => {
+    if (!isAuthenticated) { message.warning('请先登录'); return; }
+    setInsightLoading(true);
+    try {
+      const response = await api.get(`/papers/${paperId}/insights`, { params: { refresh } });
+      setPaperInsight(response.data);
+      message.success(refresh ? '论文洞察已刷新' : '论文洞察已生成');
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '论文洞察生成失败');
+    } finally {
+      setInsightLoading(false);
+    }
+  };
+
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
   if (!paper) return <Empty description="论文未找到" />;
 
@@ -645,6 +674,45 @@ const PaperDetailPage: React.FC = () => {
               ))}
             </Row>
           </Card>
+          {isAuthenticated && (
+            <Card
+              size="small"
+              style={{ marginTop: 16, borderRadius: 12 }}
+              title={<span><BulbOutlined /> AI 论文洞察</span>}
+              extra={(
+                <Space size={6}>
+                  {paperInsight && <Tag color={paperInsight.evidence_coverage === 'full_text' ? 'green' : 'orange'}>{paperInsight.evidence_coverage === 'full_text' ? '基于全文' : '基于摘要'}</Tag>}
+                  <Button size="small" icon={<BulbOutlined />} loading={insightLoading} onClick={() => handleGenerateInsights(!!paperInsight)}>
+                    {paperInsight ? '刷新洞察' : '生成洞察'}
+                  </Button>
+                </Space>
+              )}
+            >
+              {paperInsight ? (
+                <Row gutter={[10, 10]}>
+                  {[
+                    ['核心贡献', paperInsight.contribution],
+                    ['可借鉴方法', paperInsight.reusable_methods],
+                    ['可复现实验', paperInsight.reproducible_experiments],
+                    ['局限', paperInsight.limitations],
+                    ['研究缺口', paperInsight.research_gaps],
+                    ['研究方向关联', paperInsight.research_fit],
+                  ].map(([title, content]) => (
+                    <Col xs={24} md={12} key={title}>
+                      <Card size="small" style={{ height: '100%', borderRadius: 10 }}>
+                        <Text strong>{title}</Text>
+                        <Paragraph style={{ marginTop: 8, marginBottom: 0, whiteSpace: 'pre-wrap', lineHeight: 1.7 }} ellipsis={{ rows: 5, expandable: true }}>
+                          {content || '暂无内容'}
+                        </Paragraph>
+                      </Card>
+                    </Col>
+                  ))}
+                </Row>
+              ) : (
+                <Text type="secondary">生成后会得到核心贡献、可借鉴方法、复现实验、局限、研究缺口和研究方向关联。</Text>
+              )}
+            </Card>
+          )}
           {isAuthenticated && (
             <div style={{ marginTop: 16 }}>
               <Space direction="vertical" size={8} style={{ width: '100%' }}>

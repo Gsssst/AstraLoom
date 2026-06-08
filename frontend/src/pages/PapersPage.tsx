@@ -37,8 +37,28 @@ interface PaperItem {
   read_status?: ReadingStatus | null;
   imported_by_user_id?: string | null;
   imported_by_username?: string | null;
+  has_pdf?: boolean;
+  has_full_text?: boolean;
+  has_embedding?: boolean;
+  has_tags?: boolean;
+  processing_status?: string | null;
   recommendation_kind?: string;
   recommendation_reason?: string;
+}
+
+interface ProcessingStatusItem {
+  id: string;
+  title: string;
+  year?: number | null;
+  source: string;
+  imported_by_username?: string | null;
+  has_pdf: boolean;
+  has_full_text: boolean;
+  has_embedding: boolean;
+  has_tags: boolean;
+  status: string;
+  missing: string[];
+  repair_actions: { key: string; label: string; endpoint: string }[];
 }
 
 interface PaperCollection {
@@ -251,6 +271,7 @@ const PapersPage: React.FC = () => {
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [reportTitle, setReportTitle] = useState('组会报告');
   const [reportPrompt, setReportPrompt] = useState('');
+  const [reportPreset, setReportPreset] = useState('default');
   const [reportLoading, setReportLoading] = useState(false);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [deleteModal, setDeleteModal] = useState<{ open: boolean; paper: PaperItem | null }>({ open: false, paper: null });
@@ -279,19 +300,29 @@ const PapersPage: React.FC = () => {
   const [recommendationPapers, setRecommendationPapers] = useState<PaperItem[]>([]);
   const [recommendationMeta, setRecommendationMeta] = useState<{ query: string; reason: string } | null>(null);
   const [kbHealth, setKbHealth] = useState<any>(null);
+  const [migrationHealth, setMigrationHealth] = useState<any>(null);
   const [kbRecommendations, setKbRecommendations] = useState<any[]>([]);
   const [kbLoading, setKbLoading] = useState(false);
   const [kbAction, setKbAction] = useState<string | null>(null);
+  const [processingStatuses, setProcessingStatuses] = useState<ProcessingStatusItem[]>([]);
+  const [processingLoading, setProcessingLoading] = useState(false);
+  const [processingStatusFilter, setProcessingStatusFilter] = useState<'all' | 'ready' | 'needs_processing'>('needs_processing');
   const [kbQuery, setKbQuery] = useState('');
   const [kbDiagnostics, setKbDiagnostics] = useState<any>(null);
   const [kbDiagTab, setKbDiagTab] = useState<DiagnosticTab>('hybrid');
   const [kbDiagLoading, setKbDiagLoading] = useState(false);
   const [showCoverage, setShowCoverage] = useState(false);
   const [pageActionError, setPageActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
+  const [filterImporter, setFilterImporter] = useState<string | undefined>();
+  const [filterLocalSource, setFilterLocalSource] = useState<string | undefined>();
+  const [filterFullText, setFilterFullText] = useState<'all' | 'true' | 'false'>('all');
+  const [filterEmbedding, setFilterEmbedding] = useState<'all' | 'true' | 'false'>('all');
+  const [filterReadStatus, setFilterReadStatus] = useState<'all' | ReadingStatus>('all');
   const isAuthenticated = !!localStorage.getItem('access_token');
   const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
   const isRemoteSource = remoteSearchSources.includes(source);
   const remoteGuidance = isRemoteSource ? providerGuidance[source] : null;
+  const showKnowledgeFilters = !isRemoteSource && !['collection', 'saved', 'reading', 'maintenance'].includes(source);
   const yearOptions = Array.from({ length: new Date().getFullYear() - 1899 }, (_, index) => {
     const year = new Date().getFullYear() - index;
     return { value: year, label: `${year}` };
@@ -385,15 +416,31 @@ const PapersPage: React.FC = () => {
       } else {
         const searchSource = source === 'mine' ? 'local' : source;
         const owner = source === 'mine' ? 'mine' : undefined;
-        const r = await api.get('/papers/search', { params: { q: searchQuery, source: searchSource, owner, sort, page: requestedPage, page_size: 30, year_from: yearFrom, year_to: yearTo } });
+        const r = await api.get('/papers/search', {
+          params: {
+            q: searchQuery,
+            source: searchSource,
+            owner,
+            sort,
+            page: requestedPage,
+            page_size: 30,
+            year_from: yearFrom,
+            year_to: yearTo,
+            importer: filterImporter,
+            local_source: filterLocalSource,
+            has_full_text: filterFullText === 'all' ? undefined : filterFullText,
+            has_embedding: filterEmbedding === 'all' ? undefined : filterEmbedding,
+            read_status: filterReadStatus === 'all' ? undefined : filterReadStatus,
+          },
+        });
         setPapers(r.data.items);
         setRemotePage(requestedPage);
       }
       setPageActionError(null);
     } catch (e: any) { setPapers([]); showPageError('搜索失败', e, '搜索失败'); } finally { setLoading(false); }
-  }, [isRemoteSource, readingStatus, searchQuery, selectedCollectionId, showPageError, source, sort, yearFrom, yearTo]);
+  }, [filterEmbedding, filterFullText, filterImporter, filterLocalSource, filterReadStatus, isRemoteSource, readingStatus, searchQuery, selectedCollectionId, showPageError, source, sort, yearFrom, yearTo]);
 
-  useEffect(() => { handleSearch(1); }, [source, sort, readingStatus, selectedCollectionId, urlSearchRevision]);
+  useEffect(() => { handleSearch(1); }, [source, sort, readingStatus, selectedCollectionId, urlSearchRevision, filterImporter, filterLocalSource, filterFullText, filterEmbedding, filterReadStatus]);
 
   useEffect(() => { fetchReadingCounts(); }, [fetchReadingCounts, source]);
 
@@ -446,6 +493,7 @@ const PapersPage: React.FC = () => {
           paper_ids: Array.from(selectedIds),
           title: reportTitle,
           custom_prompt: reportPrompt.trim() || undefined,
+          report_preset: reportPreset,
         }, { responseType: 'blob', timeout: 120000 });
         const url = URL.createObjectURL(new Blob([r.data])); const a = document.createElement('a');
         a.href = url; a.download = `${reportTitle}_${new Date().toISOString().slice(0, 10)}.docx`; a.click();
@@ -726,19 +774,23 @@ const PapersPage: React.FC = () => {
     if (!isAdmin) return;
     setKbLoading(true);
     try {
-      const [healthRes, recommendationsRes] = await Promise.all([
+      const [healthRes, recommendationsRes, processingRes, migrationRes] = await Promise.all([
         api.get('/papers/maintenance/health'),
         api.get('/papers/maintenance/recommendations'),
+        api.get('/papers/processing-status', { params: { status: processingStatusFilter, limit: 30 } }),
+        api.get('/health/db').catch(error => ({ data: error.response?.data || { status: 'error', detail: '迁移状态读取失败' } })),
       ]);
       setKbHealth(healthRes.data);
       setKbRecommendations(recommendationsRes.data || []);
+      setProcessingStatuses(processingRes.data?.items || []);
+      setMigrationHealth(migrationRes.data);
       setPageActionError(null);
     } catch (e: any) {
       showPageError('知识库维护状态读取失败', e, '知识库维护状态读取失败');
     } finally {
       setKbLoading(false);
     }
-  }, [isAdmin, showPageError]);
+  }, [isAdmin, processingStatusFilter, showPageError]);
 
   useEffect(() => {
     if (source === 'maintenance') fetchMaintenanceCenter();
@@ -755,6 +807,20 @@ const PapersPage: React.FC = () => {
       showPageError('维护操作失败', e, '维护操作失败');
     } finally {
       setKbAction(null);
+    }
+  }, [fetchMaintenanceCenter, showPageError]);
+
+  const runProcessingAction = useCallback(async (item: ProcessingStatusItem, action: { key: string; label: string; endpoint: string }) => {
+    setProcessingLoading(true);
+    try {
+      await api.post(action.endpoint);
+      setPageActionError(null);
+      message.success(`${action.label} 已执行：${item.title.slice(0, 28)}`);
+      await fetchMaintenanceCenter();
+    } catch (e: any) {
+      showPageError(`${action.label}失败`, e, `${action.label}失败`);
+    } finally {
+      setProcessingLoading(false);
     }
   }, [fetchMaintenanceCenter, showPageError]);
 
@@ -886,6 +952,17 @@ const PapersPage: React.FC = () => {
     return { value: item.id, label: `${item.name}（${item.paper_count || 0}）${suffix}` };
   });
   const weakCollections = collections.filter(item => item.diagnostics && !item.diagnostics.ready_for_idea);
+  const importerOptions = Array.from(new Set(['gst', ...papers.map(item => item.imported_by_username).filter(Boolean) as string[]]))
+    .map(value => ({ value, label: value }));
+  const localSourceOptions = ['arxiv', 'openalex', 'semantic_scholar', 'google_scholar', 'manual', 'bibtex_import', 'zotero_import']
+    .map(value => ({ value, label: sl(value) }));
+  const reportPresetOptions = [
+    { value: 'default', label: '默认逐篇' },
+    { value: 'compare', label: '横向对比' },
+    { value: 'method_lineage', label: '方法脉络' },
+    { value: 'reproduction', label: '实验复现' },
+    { value: 'review', label: '审稿视角' },
+  ];
 
   const maintenanceView = !isAdmin ? (
     <Card style={{ borderRadius: 16, border: '1px solid #f0f0f0' }}>
@@ -904,6 +981,20 @@ const PapersPage: React.FC = () => {
           title={<Space><DatabaseOutlined style={{ color: '#764ba2' }} /><Text strong>知识库维护中心</Text></Space>}
           extra={<Button size="small" icon={<RedoOutlined />} loading={kbLoading} onClick={fetchMaintenanceCenter}>刷新</Button>}
         >
+          {migrationHealth && (
+            <Alert
+              type={migrationHealth.status === 'ok' ? 'success' : 'warning'}
+              showIcon
+              style={{ borderRadius: 10, marginBottom: 14 }}
+              message={migrationHealth.status === 'ok' ? '数据库迁移版本正常' : '数据库迁移需要处理'}
+              description={
+                <Space direction="vertical" size={4}>
+                  <Text type="secondary">当前版本：{migrationHealth.current_revision || '未记录'}；代码版本：{migrationHealth.head_revision || '未知'}</Text>
+                  {migrationHealth.status !== 'ok' && <Text code>docker compose exec -T backend alembic upgrade head</Text>}
+                </Space>
+              }
+            />
+          )}
           <Alert
             type="info"
             showIcon
@@ -952,6 +1043,52 @@ const PapersPage: React.FC = () => {
             </Row>
           </Card>
         )}
+
+        <Card
+          title={<Space><DatabaseOutlined /><Text strong>入库处理状态</Text><Tag color="orange">{processingStatuses.length}</Tag></Space>}
+          extra={(
+            <Segmented
+              size="small"
+              value={processingStatusFilter}
+              onChange={value => setProcessingStatusFilter(String(value) as 'all' | 'ready' | 'needs_processing')}
+              options={[
+                { label: '待处理', value: 'needs_processing' },
+                { label: '已就绪', value: 'ready' },
+                { label: '全部', value: 'all' },
+              ]}
+            />
+          )}
+          style={{ borderRadius: 16 }}
+        >
+          {processingStatuses.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无符合条件的论文处理状态" />
+          ) : (
+            <List
+              size="small"
+              dataSource={processingStatuses}
+              renderItem={item => (
+                <List.Item
+                  actions={isAdmin ? item.repair_actions.slice(0, 2).map(action => (
+                    <Button key={action.key} size="small" loading={processingLoading} onClick={() => runProcessingAction(item, action)}>
+                      {action.label}
+                    </Button>
+                  )) : []}
+                >
+                  <List.Item.Meta
+                    title={<Space wrap><Text strong>{item.title}</Text>{item.year && <Tag>{item.year}</Tag>}<Tag color={item.status === 'ready' ? 'green' : 'orange'}>{item.status === 'ready' ? '已就绪' : '待处理'}</Tag></Space>}
+                    description={<Space size={4} wrap>
+                      <Tag color={item.has_pdf ? 'green' : 'default'}>PDF {item.has_pdf ? '有' : '缺'}</Tag>
+                      <Tag color={item.has_full_text ? 'green' : 'default'}>全文 {item.has_full_text ? '有' : '缺'}</Tag>
+                      <Tag color={item.has_embedding ? 'green' : 'default'}>向量 {item.has_embedding ? '有' : '缺'}</Tag>
+                      <Tag color={item.has_tags ? 'green' : 'default'}>标签 {item.has_tags ? '有' : '缺'}</Tag>
+                      {item.imported_by_username && <Tag color="purple">导入：{item.imported_by_username}</Tag>}
+                    </Space>}
+                  />
+                </List.Item>
+              )}
+            />
+          )}
+        </Card>
 
         <Card title="分类健康度" style={{ borderRadius: 16 }}>
           {collections.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无自定义分类" /> : (
@@ -1354,6 +1491,33 @@ const PapersPage: React.FC = () => {
             </Col>
           )}
         </Row>}
+        {showKnowledgeFilters && (
+          <Row gutter={[8, 8]} align="middle" style={{ marginTop: 8 }}>
+            <Col span={24}>
+              <Space size={8} wrap>
+                <Text type="secondary" style={{ fontSize: 13 }}>知识库筛选</Text>
+                <Select allowClear placeholder="导入账号" value={filterImporter} onChange={setFilterImporter} options={importerOptions} style={{ width: 128 }} />
+                <Select allowClear placeholder="来源" value={filterLocalSource} onChange={setFilterLocalSource} options={localSourceOptions} style={{ width: 140 }} />
+                <Select value={filterFullText} onChange={setFilterFullText} options={[
+                  { value: 'all', label: '全文不限' },
+                  { value: 'true', label: '有全文' },
+                  { value: 'false', label: '缺全文' },
+                ]} style={{ width: 112 }} />
+                <Select value={filterEmbedding} onChange={setFilterEmbedding} options={[
+                  { value: 'all', label: '向量不限' },
+                  { value: 'true', label: '有向量' },
+                  { value: 'false', label: '缺向量' },
+                ]} style={{ width: 112 }} />
+                <Select value={filterReadStatus} onChange={setFilterReadStatus} options={[
+                  { value: 'all', label: '阅读不限' },
+                  { value: 'unread', label: '待读' },
+                  { value: 'reading', label: '阅读中' },
+                  { value: 'completed', label: '已完成' },
+                ]} style={{ width: 120 }} />
+              </Space>
+            </Col>
+          </Row>
+        )}
         {source !== 'maintenance' && papers.length > 0 && (
           <Row gutter={[8, 8]} align="middle" style={{ marginTop: 8 }}>
             <Col flex="auto">
@@ -1435,6 +1599,9 @@ const PapersPage: React.FC = () => {
                       <Tag color={sc(paper.source)} style={{ borderRadius: 6 }}>{sl(paper.source)}</Tag>
                       {paper.imported_by_username && <Tag icon={<UserOutlined />} color="purple" style={{ borderRadius: 6 }}>导入：{paper.imported_by_username}</Tag>}
                       <Tag color={resultState.color} style={{ borderRadius: 6 }}>{resultState.label}</Tag>
+                      {paper.id && <Tag color={paper.has_full_text ? 'green' : 'default'} style={{ borderRadius: 6 }}>全文{paper.has_full_text ? '就绪' : '缺失'}</Tag>}
+                      {paper.id && <Tag color={paper.has_embedding ? 'green' : 'default'} style={{ borderRadius: 6 }}>向量{paper.has_embedding ? '就绪' : '缺失'}</Tag>}
+                      {paper.id && <Tag color={paper.has_tags ? 'green' : 'default'} style={{ borderRadius: 6 }}>标签{paper.has_tags ? '就绪' : '缺失'}</Tag>}
                       {paper.read_status && <Tag color={readingStatusMeta[paper.read_status].color} style={{ borderRadius: 6 }}>{readingStatusMeta[paper.read_status].label}</Tag>}
                       {paper.citation_count > 0 && <Tag icon={<RiseOutlined />} color="orange" style={{ borderRadius: 6 }}>引用 {paper.citation_count}</Tag>}
                       {!paper.id && <Tag color={paper.pdf_url ? 'green' : 'default'} style={{ borderRadius: 6 }}>{paper.pdf_url ? '开放 PDF' : '未返回 PDF'}</Tag>}
@@ -1630,7 +1797,7 @@ const PapersPage: React.FC = () => {
         footer={[<Button key="cancel" onClick={() => setReportModalOpen(false)}>取消</Button>, <Button key="md" icon={<FileTextOutlined />} loading={reportLoading} onClick={async () => {
           const ids = Array.from(selectedIds).join(',');
           try {
-            const r = await api.get('/writing/group-report-md', { params: { paper_ids: ids, title: reportTitle, custom_prompt: reportPrompt.trim() || undefined }, timeout: 120000 });
+            const r = await api.get('/writing/group-report-md', { params: { paper_ids: ids, title: reportTitle, custom_prompt: reportPrompt.trim() || undefined, report_preset: reportPreset }, timeout: 120000 });
             await navigator.clipboard.writeText(r.data.result);
             setPageActionError(null);
             message.success('已复制，可粘贴到飞书');
@@ -1640,6 +1807,11 @@ const PapersPage: React.FC = () => {
         <Space direction="vertical" style={{ width: '100%' }}>
           <Text>已选择 {selectedIds.size} 篇论文</Text>
           <Input placeholder="报告标题" value={reportTitle} onChange={e => setReportTitle(e.target.value)} style={{ borderRadius: 10 }} />
+          <Segmented
+            value={reportPreset}
+            onChange={value => setReportPreset(String(value))}
+            options={reportPresetOptions}
+          />
           <Input.TextArea
             placeholder="可选：输入自定义汇报要求。留空时使用默认逐篇论文报告；填写后会按你的要求生成整体组会报告，例如横向比较、按方法脉络汇报、只讲实验设计或从批判性角度分析。"
             value={reportPrompt}

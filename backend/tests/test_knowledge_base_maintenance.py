@@ -58,6 +58,54 @@ def test_maintenance_routes_are_fixed_paths_and_admin_only():
         assert require_admin in _dependency_calls(path, method)
 
 
+def test_processing_status_route_is_fixed_path_before_paper_detail():
+    paths = [route.path for route in app.routes]
+
+    assert paths.index("/api/papers/processing-status") < paths.index("/api/papers/{paper_id}")
+
+
+def test_processing_flags_and_repair_actions_reflect_missing_artifacts():
+    paper = SimpleNamespace(
+        id=uuid4(),
+        title="Partial paper",
+        year=2026,
+        source="arxiv",
+        arxiv_id="2606.00001",
+        imported_by_username="gst",
+        metadata_json={"pdf_url": "https://arxiv.org/pdf/2606.00001"},
+        pdf_path=None,
+        full_text="too short",
+        embedding=None,
+        tags=[],
+    )
+
+    flags = papers_api._paper_processing_flags(paper)
+    status = papers_api._paper_processing_status(paper)
+
+    assert flags == {
+        "has_pdf": True,
+        "has_full_text": False,
+        "has_embedding": False,
+        "has_tags": False,
+        "missing": ["full_text", "embedding", "tags"],
+        "status": "needs_processing",
+    }
+    assert status.status == "needs_processing"
+    assert [action["key"] for action in status.repair_actions] == ["full_text", "embedding", "tags"]
+
+
+def test_processing_flags_mark_ready_when_full_text_embedding_and_tags_exist():
+    paper = SimpleNamespace(
+        metadata_json={},
+        pdf_path="/data/paper.pdf",
+        full_text="x" * 600,
+        embedding=[0.1, 0.2],
+        tags={"methods": ["retrieval"]},
+    )
+
+    assert papers_api._paper_processing_flags(paper)["status"] == "ready"
+
+
 def test_query_match_sources_reports_matching_fields():
     paper = SimpleNamespace(
         title="Video Grounding with Temporal Localization",

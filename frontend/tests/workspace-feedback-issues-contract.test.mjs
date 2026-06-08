@@ -88,3 +88,16 @@ test('resource pages can submit workspace-linked feedback issues', () => {
     assert.match(source, /<WorkspaceIssueReporter/);
   }
 });
+
+test('paper detail exposes cached AI insight cards', () => {
+  assert.match(paperDetailSource, /interface PaperInsight/);
+  assert.match(paperDetailSource, /paperInsight/);
+  assert.match(paperDetailSource, /insightLoading/);
+  assert.match(paperDetailSource, /handleGenerateInsights/);
+  assert.match(paperDetailSource, /api\.get\(`\/papers\/\$\{paperId\}\/insights`, \{ params: \{ refresh \} \}\)/);
+  assert.match(paperDetailSource, /AI 论文洞察/);
+  assert.match(paperDetailSource, /核心贡献/);
+  assert.match(paperDetailSource, /可借鉴方法/);
+  assert.match(paperDetailSource, /可复现实验/);
+  assert.match(paperDetailSource, /研究方向关联/);
+});

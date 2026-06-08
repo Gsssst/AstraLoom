@@ -68,6 +68,44 @@ async def test_custom_group_report_uses_user_prompt_for_global_report(monkeypatc
     assert result["custom_prompt"] == "不要逐篇汇报，请按方法脉络横向比较。"
 
 
+@pytest.mark.asyncio
+async def test_group_report_preset_combines_with_custom_prompt(monkeypatch):
+    captured = {}
+    paper = SimpleNamespace(
+        id=uuid4(),
+        title="Retrieval Augmented Research",
+        authors=["Alice"],
+        year=2026,
+        arxiv_id=None,
+        abstract="Study retrieval augmented research workflows.",
+        full_text="Full text about retrieval and experiments.",
+    )
+
+    async def fake_ensure_full_text(_paper):
+        return _paper.full_text
+
+    async def fake_chat(messages, **kwargs):
+        captured["messages"] = messages
+        return "## 复现报告\n- 数据集与指标"
+
+    monkeypatch.setattr(report_service, "ensure_full_text", fake_ensure_full_text)
+    monkeypatch.setattr(report_service.llm_service, "chat", fake_chat)
+
+    result = await ReportService(_Session([paper])).generate_report(
+        [str(paper.id)],
+        "复现导向组会",
+        custom_prompt="请最后给出复现优先级。",
+        report_preset="reproduction",
+    )
+
+    prompt = captured["messages"][0]["content"]
+    assert "实验复现角度" in prompt
+    assert "数据集、指标、baseline" in prompt
+    assert "请最后给出复现优先级。" in prompt
+    assert result["report_preset"] == "reproduction"
+    assert "请最后给出复现优先级。" in result["custom_prompt"]
+
+
 def test_group_report_docx_font_helper_sets_latin_and_east_asia_fonts():
     from docx import Document
 
