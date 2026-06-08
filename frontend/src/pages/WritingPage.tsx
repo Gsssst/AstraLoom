@@ -275,7 +275,7 @@ const WritingPage: React.FC = () => {
   const [diffResult, setDiffResult] = useState<any>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [selectedProject, setSelectedProject] = useState<any>(null);
-  const [supportRailCollapsed, setSupportRailCollapsed] = useState(false);
+  const [supportRailCollapsed, setSupportRailCollapsed] = useState(true);
   const [projectSections, setProjectSections] = useState<any[]>([]);
   const [evidenceCards, setEvidenceCards] = useState<any[]>([]);
   const [evidenceCoverage, setEvidenceCoverage] = useState<any>(null);
@@ -1896,6 +1896,7 @@ const WritingPage: React.FC = () => {
     <div
       className="manuscript-workbench-grid"
       data-support-rail-state={supportRailCollapsed ? 'collapsed' : 'expanded'}
+      data-support-rail-hover="enabled"
       style={{
         display: 'grid',
         gridTemplateColumns: supportRailCollapsed ? '64px minmax(0, 1fr)' : '320px minmax(0, 1fr)',
@@ -1906,6 +1907,7 @@ const WritingPage: React.FC = () => {
       {supportRailCollapsed ? (
         <div
           className="manuscript-support-rail manuscript-support-rail-collapsed"
+          onMouseEnter={() => setSupportRailCollapsed(false)}
           style={{
             display: 'flex',
             flexDirection: 'column',
@@ -1937,7 +1939,11 @@ const WritingPage: React.FC = () => {
           </Tooltip>
         </div>
       ) : (
-        <div className="manuscript-support-rail" style={{ display: 'flex', flexDirection: 'column', gap: 14, position: 'sticky', top: 12 }}>
+        <div
+          className="manuscript-support-rail manuscript-support-rail-expanded"
+          onMouseLeave={() => setSupportRailCollapsed(true)}
+          style={{ display: 'flex', flexDirection: 'column', gap: 14, position: 'sticky', top: 12 }}
+        >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
             <Text type="secondary" style={{ fontSize: 12 }}>项目与证据</Text>
             <Tooltip title="收起项目与证据栏">

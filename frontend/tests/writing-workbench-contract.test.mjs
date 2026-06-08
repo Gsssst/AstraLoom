@@ -67,8 +67,13 @@ test('manuscript workbench groups project and evidence in compact support rail',
 });
 
 test('manuscript workbench support rail can collapse to widen editor', () => {
+  assert.match(writingPageSource, /\[supportRailCollapsed, setSupportRailCollapsed\] = useState\(true\)/);
   assert.match(writingPageSource, /data-support-rail-state=\{supportRailCollapsed \? 'collapsed' : 'expanded'\}/);
+  assert.match(writingPageSource, /data-support-rail-hover="enabled"/);
   assert.match(writingPageSource, /manuscript-support-rail-collapsed/);
+  assert.match(writingPageSource, /manuscript-support-rail-expanded/);
+  assert.match(writingPageSource, /onMouseEnter=\{\(\) => setSupportRailCollapsed\(false\)\}/);
+  assert.match(writingPageSource, /onMouseLeave=\{\(\) => setSupportRailCollapsed\(true\)\}/);
   assert.match(writingPageSource, /MenuFoldOutlined/);
   assert.match(writingPageSource, /MenuUnfoldOutlined/);
   assert.match(writingPageSource, /收起项目与证据栏/);
