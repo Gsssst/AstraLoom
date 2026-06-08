@@ -74,6 +74,16 @@ interface PaperPdfQuote {
   pageNumber: number;
 }
 
+type PaperSelectionSource = 'pdf' | 'content';
+
+interface PaperSelectionMenu {
+  text: string;
+  x: number;
+  y: number;
+  source: PaperSelectionSource;
+  pageNumber?: number;
+}
+
 interface PaperAnnotation {
   id: string;
   text: string;
@@ -189,36 +199,55 @@ const PaperDetailPage: React.FC = () => {
   const isAuthenticated = !!localStorage.getItem('access_token');
   const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
 
-  // 划词弹出 Ask 按钮（参考 AlphaXiv）
-  const [selectionPopup, setSelectionPopup] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [selectionMenu, setSelectionMenu] = useState<PaperSelectionMenu | null>(null);
+  const normalizeSelectionMenuPosition = (x: number, y: number) => {
+    const menuHalfWidth = window.innerWidth < 768 ? 24 : 180;
+    return {
+      x: Math.min(Math.max(x, menuHalfWidth), window.innerWidth - menuHalfWidth),
+      y: Math.min(Math.max(y, 72), window.innerHeight - 92),
+    };
+  };
+  const closeSelectionMenu = () => {
+    setSelectionMenu(null);
+    window.getSelection()?.removeAllRanges();
+  };
   useEffect(() => {
-    const handleMouseUp = () => {
-      const sel = window.getSelection(); const text = sel?.toString().trim();
+    const handleMouseUp = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('.paper-selection-menu')) return;
+      const sel = window.getSelection();
+      const text = sel?.toString().trim();
       const selectionElement = sel?.anchorNode instanceof Element ? sel.anchorNode : sel?.anchorNode?.parentElement;
       if (selectionElement?.closest('.paper-pdf-viewer')) {
-        setSelectionPopup(null);
+        setSelectionMenu(null);
+        return;
+      }
+      if (!selectionElement?.closest('.paper-detail-content-panel')) {
+        setSelectionMenu(null);
         return;
       }
       if (text && text.length > 5 && text.length < 500) {
-        const rect = sel?.getRangeAt(0)?.getBoundingClientRect();
-        if (rect) setSelectionPopup({ text, x: rect.left + rect.width / 2, y: rect.top - 45 });
-      } else setSelectionPopup(null);
+        const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
+        const rect = range?.getBoundingClientRect();
+        if (rect) {
+          setSelectionMenu({
+            text,
+            source: 'content',
+            ...normalizeSelectionMenuPosition(rect.left + rect.width / 2, rect.top - 12),
+          });
+        }
+      } else setSelectionMenu(null);
     };
     document.addEventListener('mouseup', handleMouseUp);
     return () => document.removeEventListener('mouseup', handleMouseUp);
   }, []);
-  const handleSelectionAsk = () => {
-    if (selectionPopup) {
-      setQuestion(selectionPopup.text);
-      setSelectionPopup(null);
-      if (isMobile) setMobilePanel('chat');
-    }
-  };
-  const handlePdfTextSelect = (text: string, pageNumber: number) => {
-    setPdfQuote({ text, pageNumber });
-    setSelectionPopup(null);
-    if (isMobile) setMobilePanel('chat');
-    message.success(`已添加第 ${pageNumber} 页引用`);
+  const handlePdfTextSelect = (text: string, pageNumber: number, position: { x: number; y: number }) => {
+    setSelectionMenu({
+      text,
+      pageNumber,
+      source: 'pdf',
+      ...normalizeSelectionMenuPosition(position.x, position.y),
+    });
   };
 
   // AI 问答
@@ -455,14 +484,15 @@ const PaperDetailPage: React.FC = () => {
     await submitPaperQuestion(template.question, template.title);
   };
 
-  const handleSaveAnnotation = async () => {
-    if (!paperId || !pdfQuote) return;
+  const handleSaveAnnotation = async (quoteOverride?: PaperPdfQuote) => {
+    const activeQuote = quoteOverride || pdfQuote;
+    if (!paperId || !activeQuote) return;
     if (!isAuthenticated) { message.warning('请先登录'); return; }
     setAnnotationSaving(true);
     try {
       const response = await api.post(`/papers/${paperId}/annotations`, {
-        text: pdfQuote.text,
-        page: pdfQuote.pageNumber,
+        text: activeQuote.text,
+        page: activeQuote.pageNumber,
         kind: 'quote',
       });
       setAnnotations(prev => [response.data, ...prev]);
@@ -495,6 +525,72 @@ const PaperDetailPage: React.FC = () => {
     } finally {
       setDeletingAnnotationIds(prev => { const next = new Set(prev); next.delete(annotation.id); return next; });
     }
+  };
+
+  const handleSelectionAddToQuestion = () => {
+    if (!selectionMenu) return;
+    const selected = selectionMenu;
+    closeSelectionMenu();
+    if (selected.pageNumber) {
+      setPdfQuote({ text: selected.text, pageNumber: selected.pageNumber });
+      message.success(`已添加第 ${selected.pageNumber} 页引用`);
+    } else {
+      setQuestion(current => current ? `${current}\n\n${selected.text}` : selected.text);
+      message.success('已加入问题草稿');
+    }
+    if (isMobile) setMobilePanel('chat');
+  };
+
+  const handleSelectionExplain = async () => {
+    if (!selectionMenu) return;
+    const selected = selectionMenu;
+    closeSelectionMenu();
+    if (selected.pageNumber) {
+      await submitPaperQuestion(
+        '请解释这段选中内容，并说明它在论文论证中的作用。如果上下文不足，请明确说明。',
+        `解释第 ${selected.pageNumber} 页选段`,
+        { text: selected.text, pageNumber: selected.pageNumber },
+      );
+      return;
+    }
+    await submitPaperQuestion(
+      `${groundingInstruction}\n请解释下面这段选中文本，并说明它与当前论文的关系：\n\n${selected.text}`,
+      '解释选中文本',
+      null,
+    );
+  };
+
+  const handleSelectionSaveAnnotation = async () => {
+    const selected = selectionMenu;
+    const pageNumber = selected?.pageNumber;
+    if (!selected || pageNumber === undefined) return;
+    closeSelectionMenu();
+    await handleSaveAnnotation({ text: selected.text, pageNumber });
+  };
+
+  const handleSelectionCopy = async () => {
+    if (!selectionMenu) return;
+    const text = selectionMenu.text;
+    closeSelectionMenu();
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success('已复制选中文本');
+    } catch {
+      message.error('复制失败，请手动复制');
+    }
+  };
+
+  const handleSelectionAppendToNotes = () => {
+    if (!selectionMenu) return;
+    if (!isAuthenticated) { message.warning('请先登录'); return; }
+    const selected = selectionMenu;
+    closeSelectionMenu();
+    const source = selected.pageNumber ? `PDF 第 ${selected.pageNumber} 页` : '选中文本';
+    const block = `${source}\n${selected.text}`;
+    setNotes(current => current ? `${current.trimEnd()}\n\n${block}` : block);
+    setSaved(true);
+    message.success('已加入笔记草稿');
+    if (isMobile) setMobilePanel('content');
   };
 
   const handleSave = async () => {
@@ -867,7 +963,7 @@ const PaperDetailPage: React.FC = () => {
                   <div className="paper-chat-quote-header">
                     <Text strong>PDF 第 {pdfQuote.pageNumber} 页</Text>
                     <Space size={4}>
-                      <Button type="link" size="small" loading={annotationSaving} onClick={handleSaveAnnotation}>保存摘录</Button>
+                      <Button type="link" size="small" loading={annotationSaving} onClick={() => handleSaveAnnotation()}>保存摘录</Button>
                       <Button type="text" size="small" icon={<CloseOutlined />} onClick={() => setPdfQuote(null)} aria-label="移除引用" />
                     </Space>
                   </div>
@@ -885,31 +981,41 @@ const PaperDetailPage: React.FC = () => {
           </Card>
         </div>}
       </div>
-      {/* 划词弹出按钮（参考 AlphaXiv） */}
-      {selectionPopup && (
-        <div style={{
-          position: 'fixed', left: selectionPopup.x, top: selectionPopup.y, zIndex: 1000,
-          transform: 'translateX(-50%)', display: 'flex', gap: 6,
-        }}>
-          <Button size="small" type="primary"
-            icon={<SendOutlined />}
-            onClick={handleSelectionAsk}
-            style={{ borderRadius: 20, boxShadow: '0 4px 16px rgba(102,126,234,0.4)', background: 'linear-gradient(135deg, #667eea, #764ba2)' }}>
-            问问 AI
-          </Button>
-          <Button size="small"
-            onClick={async () => {
-              const t = selectionPopup.text;
-              setSelectionPopup(null);
-              try {
-                const res = await api.post('/papers/explain-text', { text: t, paper_id: paperId });
-                setChatMsgs(prev => [...prev, { role: 'user', content: `解释: ${t.slice(0,80)}...` }, { role: 'assistant', content: res.data.explanation }]);
-                if (isMobile) setMobilePanel('chat');
-              } catch { message.error('解释失败'); }
-            }}
-            style={{ borderRadius: 20, boxShadow: '0 2px 8px rgba(0,0,0,0.1)', background: '#fff', border: '1px solid #e0e0e0' }}>
-            💡 解释
-          </Button>
+      {selectionMenu && (
+        <div
+          className={`paper-selection-menu ${selectionMenu.source === 'pdf' ? 'is-pdf-selection' : 'is-content-selection'}`}
+          style={{ left: selectionMenu.x, top: selectionMenu.y }}
+          role="toolbar"
+          aria-label="选中文本操作"
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          <span className="paper-selection-menu-source">
+            {selectionMenu.pageNumber ? `PDF ${selectionMenu.pageNumber}` : '正文'}
+          </span>
+          <Tooltip title="加入提问">
+            <Button size="small" type="primary" icon={<SendOutlined />} disabled={asking} onClick={handleSelectionAddToQuestion}>
+              提问
+            </Button>
+          </Tooltip>
+          <Tooltip title="直接解释">
+            <Button size="small" icon={<BulbOutlined />} disabled={asking} onClick={handleSelectionExplain}>
+              解释
+            </Button>
+          </Tooltip>
+          {selectionMenu.pageNumber && (
+            <Tooltip title="保存为摘录">
+              <Button size="small" loading={annotationSaving} onClick={handleSelectionSaveAnnotation}>
+                保存
+              </Button>
+            </Tooltip>
+          )}
+          <Tooltip title="复制">
+            <Button size="small" icon={<CopyOutlined />} onClick={handleSelectionCopy} />
+          </Tooltip>
+          <Tooltip title="加入笔记">
+            <Button size="small" icon={<BookOutlined />} onClick={handleSelectionAppendToNotes} />
+          </Tooltip>
+          <Button size="small" type="text" icon={<CloseOutlined />} onClick={closeSelectionMenu} aria-label="关闭划词操作" />
         </div>
       )}
       <style>{'@keyframes bounce{0%,80%,100%{transform:scale(.6);opacity:.4}40%{transform:scale(1);opacity:1}}'}</style>

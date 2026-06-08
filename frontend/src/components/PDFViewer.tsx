@@ -14,7 +14,7 @@ const { Text } = Typography;
 
 interface PDFViewerProps {
   url: string;
-  onTextSelect?: (text: string, pageNumber: number) => void;
+  onTextSelect?: (text: string, pageNumber: number, position: { x: number; y: number }) => void;
   targetPage?: number | null;
 }
 
@@ -59,7 +59,12 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
       const sel = window.getSelection();
       const text = sel?.toString().trim();
       if (text && text.length > 5 && text.length < 800) {
-        onTextSelect(text, pageNumber);
+        const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
+        const rect = range?.getBoundingClientRect();
+        onTextSelect(text, pageNumber, {
+          x: rect ? rect.left + rect.width / 2 : window.innerWidth / 2,
+          y: rect ? rect.top - 12 : 96,
+        });
       }
     }, 100);
   }, [onTextSelect, pageNumber]);
