@@ -271,6 +271,36 @@ Architecture details.
         assert r"\section{Abstract}" in tex
         assert r"\section{Introduction}" in tex
 
+    def test_render_to_tex_supports_double_column_layout(self):
+        """渲染双栏版式。"""
+        from app.services.latex_processor import latex_processor
+
+        tex = latex_processor.render_to_tex(
+            "Test Paper",
+            [{"title": "Introduction", "content": "Hello world.", "level": 1}],
+            render_options={"layout": "double_column"},
+        )
+
+        assert r"\documentclass[twocolumn]{article}" in tex
+
+    def test_render_to_tex_supports_template_metadata(self):
+        """渲染模板 metadata。"""
+        from app.services.latex_processor import latex_processor
+
+        tex = latex_processor.render_to_tex(
+            "Test Paper",
+            [{"title": "Introduction", "content": "Hello world.", "level": 1}],
+            render_options={
+                "layout": "template",
+                "document_class": "IEEEtran",
+                "document_options": ["conference"],
+                "packages": ["booktabs"],
+            },
+        )
+
+        assert r"\documentclass[conference]{IEEEtran}" in tex
+        assert r"\usepackage{booktabs}" in tex
+
     def test_extract_bibliography(self):
         """提取 \\bibliography 引用。"""
         from app.services.latex_processor import latex_processor

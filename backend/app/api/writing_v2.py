@@ -107,6 +107,13 @@ class LatexSectionPreviewRequest(BaseModel):
     source: str = Field(default="", description="章节 LaTeX 源码")
 
 
+class LatexCompileSettingsRequest(BaseModel):
+    layout: str = Field(default="single_column", description="single_column, double_column, template")
+    document_class: str = Field(default="", description="LaTeX documentclass")
+    document_options: List[str] = Field(default_factory=list, description="documentclass options")
+    packages: List[str] = Field(default_factory=list, description="extra packages")
+
+
 # ============== Pipeline 流式端点 ==============
 
 @router.post("/pipeline/stream")
@@ -459,6 +466,28 @@ async def update_project(
     """更新项目。"""
     service = WritingProjectService(db)
     project = await service.update_project(project_id, str(user.id), **req)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    return project
+
+
+@router.put("/projects/{project_id}/latex/compile-settings")
+async def update_latex_compile_settings(
+    project_id: str,
+    req: LatexCompileSettingsRequest,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update manuscript LaTeX compile layout and template rendering settings."""
+    allowed_layouts = {"single_column", "double_column", "template"}
+    if req.layout not in allowed_layouts:
+        raise HTTPException(status_code=400, detail="未知 LaTeX 编译版式")
+    service = WritingProjectService(db)
+    project = await service.update_latex_compile_settings(
+        project_id=project_id,
+        user_id=str(user.id),
+        settings=req.model_dump(),
+    )
     if not project:
         raise HTTPException(status_code=404, detail="项目未找到")
     return project

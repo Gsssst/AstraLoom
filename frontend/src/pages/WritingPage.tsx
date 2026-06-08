@@ -306,6 +306,8 @@ const WritingPage: React.FC = () => {
   const [submissionTemplateFile, setSubmissionTemplateFile] = useState<any>(null);
   const [submissionInspection, setSubmissionInspection] = useState<any>(null);
   const [submissionUploading, setSubmissionUploading] = useState(false);
+  const [latexCompileLayout, setLatexCompileLayout] = useState('single_column');
+  const [latexCompileSaving, setLatexCompileSaving] = useState(false);
   const [pageActionError, setPageActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
 
   const showPageError = useCallback((title: string, error: unknown, fallback = title) => {
@@ -425,9 +427,11 @@ const WritingPage: React.FC = () => {
 
   useEffect(() => {
     const profile = selectedProject?.metadata_json?.submission_profile || null;
+    const compileSettings = selectedProject?.metadata_json?.latex_compile || {};
     setSubmissionVenue(profile?.venue || '');
     setSubmissionYear(profile?.year || '');
     setSubmissionInspection(profile?.template_source ? profile : null);
+    setLatexCompileLayout(compileSettings?.layout || 'single_column');
   }, [selectedProject?.id]);
 
   // ── 处理器 ── (保持简洁)
@@ -843,6 +847,32 @@ const WritingPage: React.FC = () => {
       showPageError('模板绑定失败', error, '模板绑定失败');
     } finally {
       setSubmissionUploading(false);
+    }
+  };
+  const handleSaveLatexCompileLayout = async () => {
+    if (!selectedProject?.id) return;
+    const profile = selectedProject.metadata_json?.submission_profile || {};
+    setLatexCompileSaving(true);
+    try {
+      const response = await api.put(`/writing/projects/${selectedProject.id}/latex/compile-settings`, {
+        layout: latexCompileLayout,
+        document_class: profile.document_class || 'article',
+        document_options: profile.document_options || [],
+        packages: profile.packages || [],
+      });
+      setSelectedProject(response.data);
+      setProjectSections(response.data.sections || []);
+      setExportPackage(null);
+      setManuscriptPreview(null);
+      setLatexPreviewChecks({});
+      const readiness = await api.get(`/writing/projects/${selectedProject.id}/export/readiness`);
+      setExportReadiness(readiness.data);
+      setPageActionError(null);
+      message.success('LaTeX 编译版式已保存');
+    } catch (error) {
+      showPageError('版式保存失败', error, '版式保存失败');
+    } finally {
+      setLatexCompileSaving(false);
     }
   };
   // ── 申请书处理器 ──
@@ -1642,9 +1672,41 @@ const WritingPage: React.FC = () => {
             </Button>
           </Col>
         </Row>
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #edf2f7' }}>
+          <Row gutter={[10, 10]} align="middle">
+            <Col xs={24} md={14}>
+              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                <Text strong style={{ fontSize: 13 }}>当前编译版式</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  影响整篇 PDF 预览和 LaTeX 导出。官方模板模式会优先使用已绑定模板识别出的 documentclass 与 packages。
+                </Text>
+              </Space>
+            </Col>
+            <Col xs={24} md={7}>
+              <Segmented
+                block
+                value={latexCompileLayout}
+                onChange={value => setLatexCompileLayout(String(value))}
+                options={[
+                  { label: '单栏', value: 'single_column' },
+                  { label: '双栏', value: 'double_column' },
+                  { label: '模板', value: 'template', disabled: !(selectedProject?.metadata_json?.submission_profile?.document_class) },
+                ]}
+              />
+            </Col>
+            <Col xs={24} md={3}>
+              <Button block loading={latexCompileSaving} onClick={handleSaveLatexCompileLayout} style={{ borderRadius: 8 }}>
+                保存
+              </Button>
+            </Col>
+          </Row>
+        </div>
         {(submissionInspection || exportReadiness?.submission_profile) && (
           <div style={{ marginTop: 12 }}>
             <Space wrap>
+              <Tag color={latexCompileLayout === 'double_column' ? 'geekblue' : latexCompileLayout === 'template' ? 'purple' : 'default'}>
+                {latexCompileLayout === 'double_column' ? '双栏编译' : latexCompileLayout === 'template' ? '模板编译' : '单栏编译'}
+              </Tag>
               <Tag color={(submissionInspection?.template_status || submissionInspection?.status) === 'ready' ? 'green' : 'gold'}>
                 {submissionInspection?.status_label || exportReadiness?.submission_profile?.status_label || '模板状态'}
               </Tag>

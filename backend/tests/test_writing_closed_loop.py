@@ -229,8 +229,10 @@ async def test_bind_submission_profile_updates_project_metadata(monkeypatch):
             "status": "ready",
             "status_label": "已识别模板",
             "document_class": "article",
+            "document_options": ["twocolumn"],
             "class_files": [],
             "style_files": ["cvpr.sty"],
+            "packages": ["cvpr"],
             "venue_hints": ["CVPR"],
             "warnings": [],
         },
@@ -242,6 +244,11 @@ async def test_bind_submission_profile_updates_project_metadata(monkeypatch):
     assert profile["year"] == "2026"
     assert profile["template_source"] == "cvpr2026.zip"
     assert profile["style_files"] == ["cvpr.sty"]
+    assert profile["document_options"] == ["twocolumn"]
+    assert updated["metadata_json"]["latex_compile"]["layout"] == "template"
+    assert updated["metadata_json"]["latex_compile"]["document_class"] == "article"
+    assert updated["metadata_json"]["latex_compile"]["document_options"] == ["twocolumn"]
+    assert updated["metadata_json"]["latex_compile"]["packages"] == ["cvpr"]
 
 
 @pytest.mark.asyncio

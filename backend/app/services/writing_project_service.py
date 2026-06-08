@@ -925,6 +925,7 @@ class WritingProjectService:
             "template_status": inspection.get("status") or "needs_review",
             "status_label": inspection.get("status_label") or "需要人工确认",
             "document_class": inspection.get("document_class") or "",
+            "document_options": inspection.get("document_options") or [],
             "main_tex": inspection.get("main_tex") or "",
             "class_files": inspection.get("class_files") or [],
             "style_files": inspection.get("style_files") or [],
@@ -937,6 +938,42 @@ class WritingProjectService:
         if not profile["venue"]:
             profile["warnings"] = [*profile["warnings"], "尚未填写目标会议/期刊。"]
         metadata["submission_profile"] = profile
+        metadata["latex_compile"] = {
+            **dict(metadata.get("latex_compile") or {}),
+            "layout": "template" if profile.get("document_class") else "single_column",
+            "document_class": profile.get("document_class") or "article",
+            "document_options": profile.get("document_options") or [],
+            "packages": profile.get("packages") or [],
+        }
+        return await self.update_project(project_id, user_id, metadata_json=metadata)
+
+    async def update_latex_compile_settings(
+        self,
+        project_id: str,
+        user_id: str,
+        settings: dict,
+    ) -> dict | None:
+        """Update LaTeX compile layout metadata for a writing project."""
+        project = await self.get_project(project_id, user_id)
+        if not project:
+            return None
+        metadata = dict(project.get("metadata_json") or {})
+        existing = dict(metadata.get("latex_compile") or {})
+        cleaned = {
+            "layout": settings.get("layout") or existing.get("layout") or "single_column",
+            "document_class": settings.get("document_class") or existing.get("document_class") or "article",
+            "document_options": [
+                str(item).strip()
+                for item in (settings.get("document_options") or existing.get("document_options") or [])
+                if str(item).strip()
+            ][:12],
+            "packages": [
+                str(item).strip()
+                for item in (settings.get("packages") or existing.get("packages") or [])
+                if str(item).strip()
+            ][:24],
+        }
+        metadata["latex_compile"] = cleaned
         return await self.update_project(project_id, user_id, metadata_json=metadata)
 
     async def delete_project(self, project_id: str, user_id: str) -> bool:
@@ -1673,7 +1710,31 @@ class WritingProjectService:
             project["title"],
             project.get("sections", []),
             template="article",
+            render_options=self._latex_compile_options(project),
         )
+
+    def _latex_compile_options(self, project: dict) -> dict:
+        metadata = dict(project.get("metadata_json") or {})
+        compile_settings = dict(metadata.get("latex_compile") or {})
+        submission_profile = dict(metadata.get("submission_profile") or {})
+        layout = compile_settings.get("layout") or "single_column"
+        document_class = (
+            compile_settings.get("document_class")
+            or submission_profile.get("document_class")
+            or "article"
+        )
+        document_options = (
+            compile_settings.get("document_options")
+            or submission_profile.get("document_options")
+            or []
+        )
+        packages = compile_settings.get("packages") or submission_profile.get("packages") or []
+        return {
+            "layout": layout,
+            "document_class": document_class,
+            "document_options": document_options,
+            "packages": packages,
+        }
 
     async def preview_latex_section(
         self,
@@ -1727,6 +1788,7 @@ class WritingProjectService:
             project.get("title") or "Manuscript",
             sections,
             template="article",
+            render_options=self._latex_compile_options(project),
         )
         result = await latex_processor.compile_check(tex)
         return {
@@ -1751,6 +1813,7 @@ class WritingProjectService:
             project.get("title") or "Manuscript",
             project.get("sections", []),
             template="article",
+            render_options=self._latex_compile_options(project),
         )
         result = await latex_processor.compile_check(tex)
         return {

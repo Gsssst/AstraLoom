@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Collapse, Input, List, Select, Space, Tag, Typography, message } from 'antd';
 import {
   AuditOutlined, BulbOutlined, CheckCircleOutlined, CodeOutlined,
@@ -76,6 +76,60 @@ const sectionAiActions: { key: SectionAiAction; label: string; icon: React.React
   { key: 'repair_latex', label: '修复 LaTeX', icon: <CodeOutlined /> },
 ];
 
+const LATEX_SNIPPETS = [
+  { trigger: 'cite', label: '\\cite{}', detail: '引用文献', insert: '\\cite{}', cursorOffset: -1 },
+  { trigger: 'citep', label: '\\citep{}', detail: '括号引用', insert: '\\citep{}', cursorOffset: -1 },
+  { trigger: 'citet', label: '\\citet{}', detail: '叙述式引用', insert: '\\citet{}', cursorOffset: -1 },
+  { trigger: 'label', label: '\\label{}', detail: '插入标签', insert: '\\label{}', cursorOffset: -1 },
+  { trigger: 'ref', label: '\\ref{}', detail: '交叉引用', insert: '\\ref{}', cursorOffset: -1 },
+  { trigger: 'eqref', label: '\\eqref{}', detail: '公式引用', insert: '\\eqref{}', cursorOffset: -1 },
+  { trigger: 'section', label: '\\section{}', detail: '一级章节', insert: '\\section{}', cursorOffset: -1 },
+  { trigger: 'subsection', label: '\\subsection{}', detail: '二级章节', insert: '\\subsection{}', cursorOffset: -1 },
+  { trigger: 'paragraph', label: '\\paragraph{}', detail: '段落标题', insert: '\\paragraph{}', cursorOffset: -1 },
+  {
+    trigger: 'equation',
+    label: '\\begin{equation}',
+    detail: '公式环境',
+    insert: '\\begin{equation}\n  \n\\end{equation}',
+    cursorOffset: -16,
+  },
+  {
+    trigger: 'align',
+    label: '\\begin{align}',
+    detail: '多行公式',
+    insert: '\\begin{align}\n  \n\\end{align}',
+    cursorOffset: -13,
+  },
+  {
+    trigger: 'figure',
+    label: '\\begin{figure}',
+    detail: '图环境',
+    insert: '\\begin{figure}[t]\n  \\centering\n  \\caption{}\n  \\label{fig:}\n\\end{figure}',
+    cursorOffset: -42,
+  },
+  {
+    trigger: 'table',
+    label: '\\begin{table}',
+    detail: '表环境',
+    insert: '\\begin{table}[t]\n  \\centering\n  \\caption{}\n  \\label{tab:}\n\\end{table}',
+    cursorOffset: -39,
+  },
+  {
+    trigger: 'itemize',
+    label: '\\begin{itemize}',
+    detail: '无序列表',
+    insert: '\\begin{itemize}\n  \\item \n\\end{itemize}',
+    cursorOffset: -15,
+  },
+  {
+    trigger: 'enumerate',
+    label: '\\begin{enumerate}',
+    detail: '有序列表',
+    insert: '\\begin{enumerate}\n  \\item \n\\end{enumerate}',
+    cursorOffset: -17,
+  },
+];
+
 const SectionEditor: React.FC<SectionEditorProps> = ({
   section,
   onUpdate,
@@ -98,7 +152,11 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
   const [draftTitle, setDraftTitle] = useState(section.title || '');
   const [draftContent, setDraftContent] = useState(section.content || '');
   const [draftStatus, setDraftStatus] = useState(section.status || 'draft');
+  const [latexPrefix, setLatexPrefix] = useState('');
+  const [latexPrefixRange, setLatexPrefixRange] = useState<{ start: number; end: number } | null>(null);
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const latestDraftRef = useRef({ title: draftTitle, content: draftContent, status: draftStatus });
 
   useEffect(() => {
@@ -161,6 +219,70 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
     setDraftContent(content);
     latestDraftRef.current = { ...latestDraftRef.current, content };
     scheduleSave();
+    updateLatexSuggestions(content, e.target.selectionStart ?? content.length);
+  };
+
+  const latexSuggestions = useMemo(() => {
+    if (!latexPrefixRange) return [];
+    const normalized = latexPrefix.toLowerCase();
+    return LATEX_SNIPPETS
+      .filter(item => !normalized || item.trigger.startsWith(normalized))
+      .slice(0, 8);
+  }, [latexPrefix, latexPrefixRange]);
+
+  const updateLatexSuggestions = (content: string, cursor: number | null) => {
+    if (cursor === null || cursor < 0) {
+      setLatexPrefixRange(null);
+      setLatexPrefix('');
+      return;
+    }
+    const beforeCursor = content.slice(0, cursor);
+    const match = beforeCursor.match(/\\([A-Za-z]*)$/);
+    if (!match) {
+      setLatexPrefixRange(null);
+      setLatexPrefix('');
+      return;
+    }
+    setLatexPrefix(match[1] || '');
+    setLatexPrefixRange({ start: cursor - match[0].length, end: cursor });
+    setActiveSuggestionIndex(0);
+  };
+
+  const applyLatexSuggestion = useCallback((suggestion = latexSuggestions[activeSuggestionIndex]) => {
+    if (!suggestion || !latexPrefixRange) return;
+    const nextContent = `${draftContent.slice(0, latexPrefixRange.start)}${suggestion.insert}${draftContent.slice(latexPrefixRange.end)}`;
+    const cursorPosition = latexPrefixRange.start + suggestion.insert.length + suggestion.cursorOffset;
+    setDraftContent(nextContent);
+    latestDraftRef.current = { ...latestDraftRef.current, content: nextContent };
+    setLatexPrefixRange(null);
+    setLatexPrefix('');
+    scheduleSave();
+    window.requestAnimationFrame(() => {
+      textAreaRef.current?.focus();
+      textAreaRef.current?.setSelectionRange(cursorPosition, cursorPosition);
+    });
+  }, [activeSuggestionIndex, draftContent, latexPrefixRange, latexSuggestions, scheduleSave]);
+
+  const handleContentKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!latexSuggestions.length) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActiveSuggestionIndex(index => (index + 1) % latexSuggestions.length);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActiveSuggestionIndex(index => (index - 1 + latexSuggestions.length) % latexSuggestions.length);
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      applyLatexSuggestion();
+    } else if (e.key === 'Escape') {
+      setLatexPrefixRange(null);
+      setLatexPrefix('');
+    }
+  };
+
+  const handleContentSelect = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    const target = e.currentTarget;
+    updateLatexSuggestions(target.value, target.selectionStart);
   };
 
   const handleStatusChange = (status: string) => {
@@ -250,20 +372,81 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
           </Text>
         </Space>
       </div>
-      <TextArea
-        value={draftContent}
-        onChange={handleContentChange}
-        onFocus={() => onFocus?.(section)}
-        onBlur={() => flushDraft()}
-        rows={18}
-        placeholder={'输入本章节 LaTeX 源码，例如：\\paragraph{Motivation} ... \\cite{smith2024}\\n\\begin{equation}\\n  \\mathcal{L}=...\\n\\end{equation}'}
-        style={{
-          borderRadius: 8,
-          fontSize: 13,
-          lineHeight: 1.65,
-          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-        }}
-      />
+      <div style={{ position: 'relative' }}>
+        <TextArea
+          ref={(node) => {
+            textAreaRef.current = node?.resizableTextArea?.textArea || null;
+          }}
+          value={draftContent}
+          onChange={handleContentChange}
+          onKeyDown={handleContentKeyDown}
+          onSelect={handleContentSelect}
+          onClick={handleContentSelect}
+          onFocus={(event) => {
+            onFocus?.(section);
+            updateLatexSuggestions(event.currentTarget.value, event.currentTarget.selectionStart);
+          }}
+          onBlur={() => {
+            window.setTimeout(() => setLatexPrefixRange(null), 120);
+            flushDraft();
+          }}
+          rows={18}
+          placeholder={'输入本章节 LaTeX 源码，例如：\\paragraph{Motivation} ... \\cite{smith2024}\\n\\begin{equation}\\n  \\mathcal{L}=...\\n\\end{equation}'}
+          style={{
+            borderRadius: 8,
+            fontSize: 13,
+            lineHeight: 1.65,
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+          }}
+        />
+        {latexSuggestions.length > 0 && (
+          <div
+            className="latex-command-suggestions"
+            style={{
+              position: 'absolute',
+              left: 12,
+              top: 38,
+              zIndex: 20,
+              width: 300,
+              border: '1px solid #d9e2ec',
+              borderRadius: 8,
+              background: '#fff',
+              boxShadow: '0 12px 32px rgba(15, 23, 42, 0.16)',
+              overflow: 'hidden',
+            }}
+          >
+            <div style={{ padding: '6px 10px', borderBottom: '1px solid #eef2f7', background: '#f8fafc' }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>LaTeX 命令补全</Text>
+            </div>
+            {latexSuggestions.map((suggestion, index) => (
+              <button
+                key={suggestion.trigger}
+                type="button"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  applyLatexSuggestion(suggestion);
+                }}
+                style={{
+                  width: '100%',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  padding: '8px 10px',
+                  border: 0,
+                  borderBottom: index === latexSuggestions.length - 1 ? 0 : '1px solid #f1f5f9',
+                  background: index === activeSuggestionIndex ? '#e6f4ff' : '#fff',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontFamily: 'inherit',
+                }}
+              >
+                <Text code style={{ fontSize: 12 }}>{suggestion.label}</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>{suggestion.detail}</Text>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       {latexPreview && (
         <div style={{ marginTop: 8 }}>
           <Alert

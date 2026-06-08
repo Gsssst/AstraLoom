@@ -99,6 +99,25 @@ test('manuscript workbench exposes latex preview diagnostics', () => {
   assert.match(writingPageSource, /pdf_scope === 'manuscript'/);
 });
 
+test('section editor exposes latex command suggestions', () => {
+  assert.match(sectionEditorSource, /LATEX_SNIPPETS/);
+  assert.match(sectionEditorSource, /\\\\cite\{\}/);
+  assert.match(sectionEditorSource, /LaTeX 命令补全/);
+  assert.match(sectionEditorSource, /applyLatexSuggestion/);
+  assert.match(sectionEditorSource, /ArrowDown/);
+  assert.match(sectionEditorSource, /Enter/);
+  assert.match(sectionEditorSource, /Tab/);
+});
+
+test('writing workbench exposes latex compile layout controls', () => {
+  assert.match(writingPageSource, /latexCompileLayout/);
+  assert.match(writingPageSource, /compile-settings/);
+  assert.match(writingPageSource, /当前编译版式/);
+  assert.match(writingPageSource, /单栏/);
+  assert.match(writingPageSource, /双栏/);
+  assert.match(writingPageSource, /模板/);
+});
+
 test('section editor keeps local drafts and debounces persistence', () => {
   assert.match(sectionEditorSource, /draftContent/);
   assert.match(sectionEditorSource, /saveTimerRef/);
