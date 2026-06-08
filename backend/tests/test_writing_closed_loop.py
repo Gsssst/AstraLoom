@@ -5,7 +5,11 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import func, select
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 
+from app.db.models.writing import PolishVersion, WritingSection
 from app.services.latex_processor import latex_processor
 from app.services.writing_service import WritingAssistantService
 from app.services.writing_project_service import WritingProjectService
@@ -65,6 +69,34 @@ def test_writing_section_creation_endpoint_and_permission_contract():
     assert "project_id=str(project.id)" not in create_block
     assert "WritingSection.project_id == pid" in reorder_block
     assert "word_count=len(content or \"\")" in service_source
+
+
+def test_writing_foreign_key_models_use_uuid_columns():
+    assert isinstance(WritingSection.__table__.c.project_id.type, PostgreSQLUUID)
+    assert WritingSection.__table__.c.project_id.type.as_uuid is True
+    assert isinstance(PolishVersion.__table__.c.section_id.type, PostgreSQLUUID)
+    assert PolishVersion.__table__.c.section_id.type.as_uuid is True
+
+
+def test_writing_section_queries_compile_uuid_binds_for_postgresql():
+    project_id = uuid4()
+    section_id = uuid4()
+
+    section_order_sql = str(
+        select(func.max(WritingSection.order))
+        .where(WritingSection.project_id == project_id)
+        .compile(dialect=postgresql.dialect())
+    )
+    polish_history_sql = str(
+        select(PolishVersion)
+        .where(PolishVersion.section_id == section_id)
+        .compile(dialect=postgresql.dialect())
+    )
+
+    assert "writing_sections.project_id = %(project_id_1)s::UUID" in section_order_sql
+    assert "::VARCHAR" not in section_order_sql
+    assert "polish_versions.section_id = %(section_id_1)s::UUID" in polish_history_sql
+    assert "::VARCHAR" not in polish_history_sql
 
 
 @pytest.mark.asyncio

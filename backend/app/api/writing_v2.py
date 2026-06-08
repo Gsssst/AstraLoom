@@ -3,6 +3,7 @@
 import json
 import logging
 from typing import List, Optional
+from uuid import UUID
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -331,7 +332,7 @@ async def import_latex_project(
             # 创建额外章节
             from app.db.models.writing import WritingSection
             section = WritingSection(
-                project_id=project["id"],
+                project_id=UUID(project["id"]),
                 title=sec["title"],
                 content=sec.get("content", ""),
                 order=i,

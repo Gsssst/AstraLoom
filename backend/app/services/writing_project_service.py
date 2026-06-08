@@ -143,7 +143,7 @@ class WritingProjectService:
         template_sections = self.get_template_sections(template_type)
         for i, sec in enumerate(template_sections):
             section = WritingSection(
-                project_id=str(project.id),
+                project_id=project.id,
                 title=sec["title"],
                 order=i,
             )

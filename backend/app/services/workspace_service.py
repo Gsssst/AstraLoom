@@ -876,7 +876,7 @@ class WorkspaceService:
             project = result.scalar_one_or_none()
             return self._research_brief(project) if project else None
         if rtype == "writing_projects":
-            result = await self.session.execute(select(WritingProject).where(WritingProject.id == str(uid)))
+            result = await self.session.execute(select(WritingProject).where(WritingProject.id == uid))
             project = result.scalar_one_or_none()
             return self._writing_brief(project) if project else None
         return None

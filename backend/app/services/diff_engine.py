@@ -11,6 +11,7 @@ import difflib
 import logging
 import re
 from typing import List, Dict, Optional
+from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +186,10 @@ class PolishVersionManager:
         """创建新版本记录。"""
         if not self.db_factory:
             return {"version_number": -1, "stored": False}
+        try:
+            sid = UUID(str(section_id))
+        except (TypeError, ValueError):
+            return {"version_number": -1, "stored": False, "error": "invalid_section_id"}
 
         from app.db.session import AsyncSessionLocal
         from app.db.models.writing import PolishVersion
@@ -194,7 +199,7 @@ class PolishVersionManager:
             # 获取当前最大版本号
             result = await session.execute(
                 select(func.max(PolishVersion.version_number))
-                .where(PolishVersion.section_id == section_id)
+                .where(PolishVersion.section_id == sid)
             )
             max_version = result.scalar() or 0
 
@@ -202,7 +207,7 @@ class PolishVersionManager:
             if max_version >= self.MAX_VERSIONS:
                 oldest = await session.execute(
                     select(PolishVersion)
-                    .where(PolishVersion.section_id == section_id)
+                    .where(PolishVersion.section_id == sid)
                     .order_by(PolishVersion.version_number)
                     .limit(max_version - self.MAX_VERSIONS + 1)
                 )
@@ -210,7 +215,7 @@ class PolishVersionManager:
                     await session.delete(old)
 
             version = PolishVersion(
-                section_id=section_id,
+                section_id=sid,
                 original_text=original,
                 polished_text=polished,
                 diff_json=diff_data,
@@ -229,6 +234,10 @@ class PolishVersionManager:
         """获取某章节的所有版本。"""
         if not self.db_factory:
             return []
+        try:
+            sid = UUID(str(section_id))
+        except (TypeError, ValueError):
+            return []
 
         from app.db.session import AsyncSessionLocal
         from app.db.models.writing import PolishVersion
@@ -237,7 +246,7 @@ class PolishVersionManager:
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(PolishVersion)
-                .where(PolishVersion.section_id == section_id)
+                .where(PolishVersion.section_id == sid)
                 .order_by(PolishVersion.version_number.desc())
             )
             return [

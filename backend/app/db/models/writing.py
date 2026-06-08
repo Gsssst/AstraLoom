@@ -1,7 +1,9 @@
 """写作项目管理 ORM 模型。"""
 
+import uuid
 from typing import Optional, List
 from sqlalchemy import String, Integer, Text, ForeignKey, JSON, Index
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import BaseModel
 
@@ -42,8 +44,8 @@ class WritingSection(BaseModel):
 
     __tablename__ = "writing_sections"
 
-    project_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("writing_projects.id", ondelete="CASCADE"),
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("writing_projects.id", ondelete="CASCADE"),
         nullable=False, index=True,
     )
     title: Mapped[str] = mapped_column(String(300), nullable=False)
@@ -75,8 +77,8 @@ class PolishVersion(BaseModel):
 
     __tablename__ = "polish_versions"
 
-    section_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("writing_sections.id", ondelete="CASCADE"),
+    section_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("writing_sections.id", ondelete="CASCADE"),
         nullable=False, index=True,
     )
     original_text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -94,4 +96,4 @@ class PolishVersion(BaseModel):
     )
 
     def __repr__(self) -> str:
-        return f"<PolishVersion v{self.version_number} for section={self.section_id[:8]}>"
+        return f"<PolishVersion v{self.version_number} for section={str(self.section_id)[:8]}>"
