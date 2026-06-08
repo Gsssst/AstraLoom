@@ -14,6 +14,10 @@ const sectionEditorSource = readFileSync(
   new URL('../src/components/writing/SectionEditor.tsx', import.meta.url),
   'utf8',
 );
+const authenticatedPdfPreviewSource = readFileSync(
+  new URL('../src/components/writing/AuthenticatedPdfPreview.tsx', import.meta.url),
+  'utf8',
+);
 
 test('writing assistant exposes paper and grant workbench modes', () => {
   assert.match(writingPageSource, /写论文助手/);
@@ -84,8 +88,11 @@ test('manuscript workbench exposes latex preview diagnostics', () => {
   assert.match(sectionEditorSource, /未安装 pdflatex/);
   assert.match(sectionEditorSource, /查看编译日志/);
   assert.match(sectionEditorSource, /pdf_preview_url/);
-  assert.match(sectionEditorSource, /PDF 预览/);
-  assert.match(sectionEditorSource, /<iframe/);
+  assert.match(sectionEditorSource, /AuthenticatedPdfPreview/);
+  assert.match(authenticatedPdfPreviewSource, /responseType: 'blob'/);
+  assert.match(authenticatedPdfPreviewSource, /URL\.createObjectURL/);
+  assert.match(authenticatedPdfPreviewSource, /URL\.revokeObjectURL/);
+  assert.match(authenticatedPdfPreviewSource, /<iframe/);
   assert.match(writingPageSource, /pdf_preview_url/);
 });
 

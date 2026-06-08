@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Collapse, Input, List, Select, Space, Tag, Typography, message } from 'antd';
 import {
   AuditOutlined, BulbOutlined, CheckCircleOutlined, CodeOutlined,
-  CopyOutlined, EditOutlined, EyeOutlined, RobotOutlined, RocketOutlined,
+  CopyOutlined, EditOutlined, RobotOutlined, RocketOutlined,
 } from '@ant-design/icons';
+import AuthenticatedPdfPreview from './AuthenticatedPdfPreview';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -320,22 +321,7 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
                   />
                 )}
                 {latexPreview.pdf_preview_url && (
-                  <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 10px', borderBottom: '1px solid #eef0f3' }}>
-                      <Space size={6}>
-                        <EyeOutlined />
-                        <Text strong>PDF 预览</Text>
-                      </Space>
-                      <Button size="small" href={latexPreview.pdf_preview_url} target="_blank" rel="noreferrer">
-                        打开
-                      </Button>
-                    </div>
-                    <iframe
-                      title="LaTeX PDF preview"
-                      src={latexPreview.pdf_preview_url}
-                      style={{ width: '100%', height: 420, border: 0, display: 'block' }}
-                    />
-                  </div>
+                  <AuthenticatedPdfPreview previewUrl={latexPreview.pdf_preview_url} title="PDF 预览" height={420} />
                 )}
               </Space>
             }
