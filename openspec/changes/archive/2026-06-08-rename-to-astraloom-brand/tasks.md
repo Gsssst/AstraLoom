@@ -22,4 +22,4 @@
 
 ## 5. Archive
 
-- [ ] 5.1 Commit implementation, archive the OpenSpec change, and commit the archive.
+- [x] 5.1 Commit implementation, archive the OpenSpec change, and commit the archive.
