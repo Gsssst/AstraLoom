@@ -386,6 +386,8 @@ class LatexProcessor:
                     if not errors or attempt == 2:
                         return {
                             "success": len(errors) == 0,
+                            "compiler_available": True,
+                            "diagnostic_mode": "compile",
                             "errors": errors,
                             "warnings": warnings,
                             "log": log[-2000:],  # 只返回最后 2000 字符
@@ -395,21 +397,67 @@ class LatexProcessor:
                     logger.info(f"LaTeX 编译第 {attempt + 1} 次失败，{len(errors)} 个错误，重试中...")
 
                 except FileNotFoundError:
-                    return {
-                        "success": False,
-                        "errors": ["pdflatex 未安装，无法进行编译检查"],
-                        "warnings": [],
-                        "log": "",
-                    }
+                    return self._fallback_source_check(tex_content)
                 except subprocess.TimeoutExpired:
                     return {
                         "success": False,
+                        "compiler_available": True,
+                        "diagnostic_mode": "compile_timeout",
                         "errors": ["编译超时 (>30s)"],
                         "warnings": warnings,
                         "log": "",
                     }
 
-        return {"success": False, "errors": errors, "warnings": warnings, "log": ""}
+        return {"success": False, "compiler_available": True, "diagnostic_mode": "compile", "errors": errors, "warnings": warnings, "log": ""}
+
+    def _fallback_source_check(self, tex_content: str) -> dict:
+        """Return useful source diagnostics when a TeX compiler is unavailable."""
+        errors: list[str] = []
+        warnings = ["pdflatex 未安装，已改用源码级检查；安装 TeX Live/MacTeX 后可进行完整编译。"]
+
+        brace_balance = 0
+        escaped = False
+        for char in tex_content or "":
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == "{":
+                brace_balance += 1
+            elif char == "}":
+                brace_balance -= 1
+                if brace_balance < 0:
+                    errors.append("检测到多余的右花括号 `}`。")
+                    brace_balance = 0
+        if brace_balance > 0:
+            errors.append(f"检测到 {brace_balance} 个未闭合的左花括号 `{{`。")
+
+        begin_envs = re.findall(r"\\begin\{([^}]+)\}", tex_content or "")
+        end_envs = re.findall(r"\\end\{([^}]+)\}", tex_content or "")
+        env_stack: list[str] = []
+        for env in begin_envs:
+            env_stack.append(env)
+        for env in end_envs:
+            if env in env_stack:
+                env_stack.remove(env)
+            else:
+                errors.append(f"检测到没有对应 begin 的环境结束：\\end{{{env}}}。")
+        for env in env_stack:
+            errors.append(f"检测到未闭合的 LaTeX 环境：\\begin{{{env}}}。")
+
+        if r"\begin{document}" not in (tex_content or "") or r"\end{document}" not in (tex_content or ""):
+            warnings.append("源码级检查未发现完整 document 环境；章节预览会自动包裹最小文档。")
+
+        return {
+            "success": len(errors) == 0,
+            "compiler_available": False,
+            "diagnostic_mode": "source_fallback",
+            "errors": errors,
+            "warnings": warnings,
+            "log": "pdflatex unavailable; source-level fallback checks were used.",
+        }
 
 
 # 全局单例

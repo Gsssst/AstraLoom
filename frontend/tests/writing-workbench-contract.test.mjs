@@ -77,9 +77,25 @@ test('manuscript workbench exposes latex preview diagnostics', () => {
   assert.match(writingPageSource, /preview-manuscript/);
   assert.match(writingPageSource, /latexPreviewChecks/);
   assert.match(writingPageSource, /manuscriptPreview/);
+  assert.match(writingPageSource, /compiler_available === false/);
   assert.match(sectionEditorSource, /LaTeX 源码/);
   assert.match(sectionEditorSource, /LaTeX 预览检查/);
+  assert.match(sectionEditorSource, /源码级检查/);
+  assert.match(sectionEditorSource, /未安装 pdflatex/);
   assert.match(sectionEditorSource, /查看编译日志/);
+});
+
+test('section editor keeps local drafts and debounces persistence', () => {
+  assert.match(sectionEditorSource, /draftContent/);
+  assert.match(sectionEditorSource, /saveTimerRef/);
+  assert.match(sectionEditorSource, /setTimeout\(\(\) => \{/);
+  assert.match(sectionEditorSource, /}, 800\)/);
+  assert.match(sectionEditorSource, /flushDraft/);
+  assert.match(sectionEditorSource, /onBlur=\{\(\) => flushDraft\(\)\}/);
+  assert.match(sectionEditorSource, /onPreviewLatex\(flushDraft\(\)\)/);
+  assert.match(sectionEditorSource, /onSectionAiAction\(flushDraft\(\), action\.key\)/);
+  assert.match(writingPageSource, /\[selectedProject\?\.id, projectRefreshSignal\]/);
+  assert.doesNotMatch(writingPageSource, /\[selectedProject\?\.id, projectSections\]/);
 });
 
 test('section editor exposes section-scoped AI assistant actions', () => {

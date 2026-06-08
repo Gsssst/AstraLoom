@@ -412,7 +412,7 @@ const WritingPage: React.FC = () => {
       .then(response => setWorkbenchSummary(response.data))
       .catch(() => setWorkbenchSummary(null))
       .finally(() => setWorkbenchLoading(false));
-  }, [selectedProject?.id, projectSections]);
+  }, [selectedProject?.id, projectRefreshSignal]);
 
   useEffect(() => {
     if (!selectedProject?.id) return;
@@ -420,7 +420,7 @@ const WritingPage: React.FC = () => {
     api.get(`/writing/projects/${selectedProject.id}/export/readiness`)
       .then(response => setExportReadiness(response.data))
       .catch(() => setExportReadiness(null));
-  }, [selectedProject?.id, projectSections]);
+  }, [selectedProject?.id, projectRefreshSignal]);
 
   useEffect(() => {
     const profile = selectedProject?.metadata_json?.submission_profile || null;
@@ -1728,10 +1728,15 @@ const WritingPage: React.FC = () => {
     <Alert
       type={diagnostic.success ? ((diagnostic.warnings || []).length ? 'warning' : 'success') : 'error'}
       showIcon
-      message={diagnostic.success ? `${scopeLabel} LaTeX 检查通过` : `${scopeLabel} LaTeX 检查未通过`}
+      message={
+        diagnostic.compiler_available === false
+          ? `${scopeLabel}源码级检查${diagnostic.success ? '通过' : '发现问题'}`
+          : diagnostic.success ? `${scopeLabel} LaTeX 检查通过` : `${scopeLabel} LaTeX 检查未通过`
+      }
       description={(
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
           <Space size={6} wrap>
+            {diagnostic.compiler_available === false && <Tag color="gold">未安装 pdflatex</Tag>}
             <Tag color={(diagnostic.errors || []).length ? 'red' : 'green'}>错误 {(diagnostic.errors || []).length}</Tag>
             <Tag color={(diagnostic.warnings || []).length ? 'gold' : 'green'}>警告 {(diagnostic.warnings || []).length}</Tag>
             <Tag>{diagnostic.scope || scopeLabel}</Tag>

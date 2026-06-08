@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Collapse, Input, List, Select, Space, Tag, Typography, message } from 'antd';
 import {
   AuditOutlined, BulbOutlined, CheckCircleOutlined, CodeOutlined,
@@ -86,16 +86,78 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
   aiStatus,
   aiOutput,
 }) => {
+  const [draftTitle, setDraftTitle] = useState(section.title || '');
+  const [draftContent, setDraftContent] = useState(section.content || '');
+  const [draftStatus, setDraftStatus] = useState(section.status || 'draft');
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestDraftRef = useRef({ title: draftTitle, content: draftContent, status: draftStatus });
+
+  useEffect(() => {
+    setDraftTitle(section.title || '');
+    setDraftContent(section.content || '');
+    setDraftStatus(section.status || 'draft');
+  }, [section.id]);
+
+  useEffect(() => {
+    latestDraftRef.current = { title: draftTitle, content: draftContent, status: draftStatus };
+  }, [draftTitle, draftContent, draftStatus]);
+
+  useEffect(() => () => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+  }, []);
+
+  const buildDraftSection = useCallback((patch?: Partial<Section>): Section => ({
+    ...section,
+    title: patch?.title ?? latestDraftRef.current.title,
+    content: patch?.content ?? latestDraftRef.current.content,
+    status: patch?.status ?? latestDraftRef.current.status,
+    word_count: (patch?.content ?? latestDraftRef.current.content).length,
+  }), [section]);
+
+  const scheduleSave = useCallback(() => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      onUpdate(section.id, {
+        title: latestDraftRef.current.title,
+        content: latestDraftRef.current.content,
+        status: latestDraftRef.current.status,
+      });
+      saveTimerRef.current = null;
+    }, 800);
+  }, [onUpdate, section.id]);
+
+  const flushDraft = useCallback((patch?: Partial<Section>) => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    const payload = patch || {
+      title: latestDraftRef.current.title,
+      content: latestDraftRef.current.content,
+      status: latestDraftRef.current.status,
+    };
+    onUpdate(section.id, payload);
+    return buildDraftSection(payload);
+  }, [buildDraftSection, onUpdate, section.id]);
+
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    onUpdate(section.id, { title: e.target.value });
+    const title = e.target.value;
+    setDraftTitle(title);
+    latestDraftRef.current = { ...latestDraftRef.current, title };
+    scheduleSave();
   };
 
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    onUpdate(section.id, { content: e.target.value });
+    const content = e.target.value;
+    setDraftContent(content);
+    latestDraftRef.current = { ...latestDraftRef.current, content };
+    scheduleSave();
   };
 
   const handleStatusChange = (status: string) => {
-    onUpdate(section.id, { status });
+    setDraftStatus(status);
+    latestDraftRef.current = { ...latestDraftRef.current, status };
+    flushDraft({ title: latestDraftRef.current.title, content: latestDraftRef.current.content, status });
   };
 
   const handleCopyAiOutput = async () => {
@@ -111,8 +173,9 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
         marginBottom: 8,
       }}>
         <Input
-          value={section.title}
+          value={draftTitle}
           onChange={handleTitleChange}
+          onBlur={() => flushDraft()}
           variant="borderless"
           size="large"
           style={{ fontWeight: 600, fontSize: 16, paddingLeft: 0 }}
@@ -124,7 +187,7 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
               size="small"
               icon={<CodeOutlined />}
               loading={previewing}
-              onClick={() => onPreviewLatex(section)}
+              onClick={() => onPreviewLatex(flushDraft())}
               style={{ borderRadius: 8 }}
             >
               LaTeX 预览检查
@@ -135,7 +198,7 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
               size="small"
               icon={<CheckCircleOutlined />}
               loading={qualityChecking}
-              onClick={() => onCheckQuality(section)}
+              onClick={() => onCheckQuality(flushDraft())}
               style={{ borderRadius: 8 }}
             >
               质量评估
@@ -146,7 +209,7 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
               size="small"
               icon={<AuditOutlined />}
               loading={checking}
-              onClick={() => onCheckCitations(section)}
+              onClick={() => onCheckCitations(flushDraft())}
               style={{ borderRadius: 8 }}
             >
               校验引用
@@ -154,7 +217,7 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
           )}
           <Select
             size="small"
-            value={section.status}
+            value={draftStatus}
             onChange={handleStatusChange}
             variant="borderless"
             style={{ width: 100 }}
@@ -166,7 +229,7 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
             ]}
           />
           <Text type="secondary" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
-            {section.word_count} 字
+            {draftContent.length} 字
           </Text>
         </Space>
       </div>
@@ -179,9 +242,10 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
         </Space>
       </div>
       <TextArea
-        value={section.content || ''}
+        value={draftContent}
         onChange={handleContentChange}
         onFocus={() => onFocus?.(section)}
+        onBlur={() => flushDraft()}
         rows={18}
         placeholder={'输入本章节 LaTeX 源码，例如：\\paragraph{Motivation} ... \\cite{smith2024}\\n\\begin{equation}\\n  \\mathcal{L}=...\\n\\end{equation}'}
         style={{
@@ -198,8 +262,13 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
             showIcon
             message={
               <Space wrap>
-                <Text strong>{latexPreview.success ? 'LaTeX 检查通过' : 'LaTeX 检查未通过'}</Text>
+                <Text strong>
+                  {latexPreview.compiler_available === false
+                    ? (latexPreview.success ? '源码级检查通过' : '源码级检查发现问题')
+                    : (latexPreview.success ? 'LaTeX 检查通过' : 'LaTeX 检查未通过')}
+                </Text>
                 <Tag color={latexPreview.success ? 'green' : 'red'}>{latexPreview.scope === 'manuscript' ? '整篇' : '当前章节'}</Tag>
+                {latexPreview.compiler_available === false && <Tag color="gold">未安装 pdflatex</Tag>}
                 <Tag color={(latexPreview.errors || []).length ? 'red' : 'green'}>错误 {(latexPreview.errors || []).length}</Tag>
                 <Tag color={(latexPreview.warnings || []).length ? 'gold' : 'green'}>警告 {(latexPreview.warnings || []).length}</Tag>
               </Space>
@@ -273,7 +342,7 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
                 icon={action.icon}
                 loading={aiRunning && aiRunningAction === action.key}
                 disabled={aiRunning && aiRunningAction !== action.key}
-                onClick={() => onSectionAiAction(section, action.key)}
+                onClick={() => onSectionAiAction(flushDraft(), action.key)}
                 style={{ borderRadius: 8 }}
               >
                 {action.label}

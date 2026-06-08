@@ -297,6 +297,42 @@ async def test_preview_latex_manuscript_uses_project_sections(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_latex_compile_check_falls_back_when_pdflatex_missing(monkeypatch):
+    import subprocess
+
+    def fake_run(*_args, **_kwargs):
+        raise FileNotFoundError("pdflatex")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = await latex_processor.compile_check(
+        latex_processor.render_section_preview_tex("Method", r"We optimize $\mathcal{L}$.")
+    )
+
+    assert result["success"] is True
+    assert result["compiler_available"] is False
+    assert result["diagnostic_mode"] == "source_fallback"
+    assert "pdflatex 未安装" in result["warnings"][0]
+    assert result["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_latex_fallback_reports_source_level_errors(monkeypatch):
+    import subprocess
+
+    def fake_run(*_args, **_kwargs):
+        raise FileNotFoundError("pdflatex")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = await latex_processor.compile_check(r"\begin{document}\begin{equation} x=1 \end{document}")
+
+    assert result["success"] is False
+    assert result["compiler_available"] is False
+    assert any("未闭合的 LaTeX 环境" in item for item in result["errors"])
+
+
+@pytest.mark.asyncio
 async def test_export_reference_list_uses_real_project_papers(monkeypatch):
     paper = _paper()
 
