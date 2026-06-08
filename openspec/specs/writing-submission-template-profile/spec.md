@@ -2,7 +2,6 @@
 
 ## Purpose
 Allow writing projects to attach venue/year targets and inspected official LaTeX template metadata so export readiness can distinguish structure guidance from verified submission formatting.
-
 ## Requirements
 ### Requirement: Writing projects can inspect submission templates
 
@@ -43,3 +42,12 @@ The frontend SHALL let users inspect/bind a submission profile from the writing 
 - **GIVEN** a selected writing project
 - **WHEN** the user enters venue/year and uploads a template file
 - **THEN** they see inspection results and can bind the profile to the project
+
+### Requirement: Template profile binding returns updated project safely
+The system SHALL return the updated writing project after binding a submission template profile without triggering asynchronous lazy-load failures.
+
+#### Scenario: User binds template to project with sections
+- **WHEN** a user binds venue/year and inspected template metadata to a writing project that has sections
+- **THEN** the backend response includes the updated project and sections
+- **AND** serialization does not attempt unsupported async lazy loading.
+
