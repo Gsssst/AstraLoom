@@ -962,6 +962,50 @@ class WritingProjectService:
 
     # --- 章节管理 ---
 
+    async def create_section(
+        self,
+        project_id: str,
+        user_id: str,
+        title: str = "New Section",
+        content: str = "",
+        status: str = "draft",
+    ) -> dict | None:
+        """在可编辑写作项目中新增章节。"""
+        from app.db.models.writing import WritingProject, WritingSection
+        from app.services.workspace_service import WorkspaceService
+
+        try:
+            pid = UUID(project_id)
+        except ValueError:
+            return None
+
+        result = await self.session.execute(select(WritingProject).where(WritingProject.id == pid))
+        project = result.scalar_one_or_none()
+        if not project:
+            return None
+        if str(project.user_id) != str(user_id):
+            workspace = WorkspaceService(self.session)
+            role = await workspace.resource_role_for_user(user_id, "writing_projects", str(project.id))
+            if not workspace.role_can_edit_resource(role):
+                return None
+
+        max_order_result = await self.session.execute(
+            select(func.max(WritingSection.order)).where(WritingSection.project_id == str(project.id))
+        )
+        max_order = max_order_result.scalar_one_or_none()
+        section = WritingSection(
+            project_id=str(project.id),
+            title=(title or "New Section").strip() or "New Section",
+            content=content or "",
+            status=status or "draft",
+            order=0 if max_order is None else int(max_order) + 1,
+            word_count=len(content or ""),
+        )
+        self.session.add(section)
+        await self.session.commit()
+        await self.session.refresh(section)
+        return self._section_to_dict(section)
+
     async def update_section(self, section_id: str, user_id: str,
                               **kwargs) -> dict | None:
         """更新章节内容/状态/标题。"""

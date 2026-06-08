@@ -71,6 +71,12 @@ class SectionUpdateRequest(BaseModel):
     order: Optional[int] = None
 
 
+class SectionCreateRequest(BaseModel):
+    title: str = Field(default="New Section", max_length=300, description="章节标题")
+    content: str = Field(default="", description="章节 LaTeX 源码")
+    status: str = Field(default="draft", description="章节状态")
+
+
 class SmartCitationRequest(BaseModel):
     text: str = Field(..., description="写作段落文本")
 
@@ -484,6 +490,27 @@ async def update_section(
     section = await service.update_section(section_id, str(user.id), **kwargs)
     if not section:
         raise HTTPException(status_code=404, detail="章节未找到")
+    return section
+
+
+@router.post("/projects/{project_id}/sections")
+async def create_section(
+    project_id: str,
+    req: SectionCreateRequest,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """在写作项目中新增章节。"""
+    service = WritingProjectService(db)
+    section = await service.create_section(
+        project_id=project_id,
+        user_id=str(user.id),
+        title=req.title,
+        content=req.content,
+        status=req.status,
+    )
+    if not section:
+        raise HTTPException(status_code=404, detail="项目未找到或无编辑权限")
     return section
 
 

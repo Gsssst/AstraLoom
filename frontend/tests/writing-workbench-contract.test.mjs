@@ -44,6 +44,14 @@ test('manuscript workbench is active-section focused', () => {
   assert.doesNotMatch(writingPageSource, /projectSections\.map\(s => \(\s*<SectionEditor/s);
 });
 
+test('manuscript workbench exposes create-section entry in navigation and empty state', () => {
+  assert.match(writingPageSource, /handleCreateSection/);
+  assert.match(writingPageSource, /projects\/\$\{selectedProject\.id\}\/sections/);
+  assert.match(writingPageSource, /新增章节/);
+  assert.match(writingPageSource, /创建第一个章节/);
+  assert.match(writingPageSource, /setActiveSectionId\(section\.id\)/);
+});
+
 test('manuscript workbench exposes latex preview diagnostics', () => {
   assert.match(writingPageSource, /preview-section/);
   assert.match(writingPageSource, /preview-manuscript/);

@@ -10,7 +10,7 @@ import {
   CopyOutlined, BulbOutlined,
   BookOutlined, FormOutlined, ReadOutlined, SwapOutlined,
   AuditOutlined, FolderOutlined, RocketOutlined, DownloadOutlined,
-  FileZipOutlined, UploadOutlined, CodeOutlined, RobotOutlined,
+  FileZipOutlined, UploadOutlined, CodeOutlined, RobotOutlined, PlusOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import Markdown from '../components/Markdown';
@@ -289,6 +289,7 @@ const WritingPage: React.FC = () => {
   const [manuscriptPreview, setManuscriptPreview] = useState<any>(null);
   const [manuscriptPreviewing, setManuscriptPreviewing] = useState(false);
   const [sectionAiState, setSectionAiState] = useState<Record<string, { loading?: boolean; action?: string; status?: string; output?: string }>>({});
+  const [creatingSection, setCreatingSection] = useState(false);
   const [draftTopic, setDraftTopic] = useState('');
   const [draftLoading, setDraftLoading] = useState(false);
   const [projectRefreshSignal, setProjectRefreshSignal] = useState(0);
@@ -514,6 +515,24 @@ const WritingPage: React.FC = () => {
   const handleUpdateSection = async (sid: string, d: any) => {
     try { await api.put(`/writing/projects/${selectedProject.id}/sections/${sid}`, d); setProjectSections(prev => prev.map(s => s.id === sid ? { ...s, ...d } : s)); }
     catch { /* ignore */ }
+  };
+  const handleCreateSection = async () => {
+    if (!selectedProject?.id) return;
+    setCreatingSection(true);
+    try {
+      const title = projectSections.length ? `New Section ${projectSections.length + 1}` : 'Introduction';
+      const response = await api.post(`/writing/projects/${selectedProject.id}/sections`, { title, content: '', status: 'draft' });
+      const section = response.data;
+      setProjectSections(prev => [...prev, section]);
+      setActiveSectionId(section.id);
+      setProjectRefreshSignal(v => v + 1);
+      setPageActionError(null);
+      message.success(`已创建章节「${section.title}」`);
+    } catch (error) {
+      showPageError('创建章节失败', error, '创建章节失败');
+    } finally {
+      setCreatingSection(false);
+    }
   };
   const persistSectionContent = async (section: any, content: string, successText?: string) => {
     if (!selectedProject?.id) return;
@@ -1793,6 +1812,17 @@ const WritingPage: React.FC = () => {
                   styles={{ body: { padding: 10, maxHeight: 640, overflowY: 'auto' } }}
                   extra={<Tag>{projectSections.length}</Tag>}
                 >
+                  <Button
+                    block
+                    type="primary"
+                    ghost
+                    icon={<PlusOutlined />}
+                    loading={creatingSection}
+                    onClick={handleCreateSection}
+                    style={{ borderRadius: 10, marginBottom: 10 }}
+                  >
+                    新增章节
+                  </Button>
                   {projectSections.length ? (
                     <Space direction="vertical" size={8} style={{ width: '100%' }}>
                       {projectSections.map((section, index) => {
@@ -1828,7 +1858,17 @@ const WritingPage: React.FC = () => {
                       })}
                     </Space>
                   ) : (
-                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无章节" />
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无章节">
+                      <Button
+                        type="primary"
+                        icon={<PlusOutlined />}
+                        loading={creatingSection}
+                        onClick={handleCreateSection}
+                        style={{ borderRadius: 10 }}
+                      >
+                        创建第一个章节
+                      </Button>
+                    </Empty>
                   )}
                 </Card>
                 <Card
@@ -1860,8 +1900,9 @@ const WritingPage: React.FC = () => {
                   ) : (
                     <WorkflowEmptyState
                       title="当前项目还没有章节"
-                      description="请先在左侧项目面板创建章节结构，再按章节写作 LaTeX 源码。"
+                      description="先创建第一个章节，然后就可以按章节写作 LaTeX 源码。"
                       icon={<FileTextOutlined />}
+                      action={<Button type="primary" icon={<PlusOutlined />} loading={creatingSection} onClick={handleCreateSection} style={{ borderRadius: 10 }}>创建第一个章节</Button>}
                     />
                   )}
                 </Card>

@@ -48,6 +48,20 @@ def test_latex_section_preview_wraps_body_in_document():
     assert r"\end{document}" in tex
 
 
+def test_writing_section_creation_endpoint_and_permission_contract():
+    api_source = Path("app/api/writing_v2.py").read_text()
+    service_source = Path("app/services/writing_project_service.py").read_text()
+
+    assert 'class SectionCreateRequest' in api_source
+    assert '@router.post("/projects/{project_id}/sections")' in api_source
+    assert 'await service.create_section(' in api_source
+    assert "async def create_section" in service_source
+    assert "resource_role_for_user" in service_source
+    assert "role_can_edit_resource" in service_source
+    assert "func.max(WritingSection.order)" in service_source
+    assert "word_count=len(content or \"\")" in service_source
+
+
 @pytest.mark.asyncio
 async def test_recommend_citations_returns_role_and_match(monkeypatch):
     service = WritingAssistantService(SimpleNamespace())
