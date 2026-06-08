@@ -13,7 +13,7 @@ import {
   DatabaseOutlined, GlobalOutlined,
   DeleteOutlined, CloseOutlined,
   PlayCircleOutlined, CheckCircleOutlined, RollbackOutlined,
-  BookOutlined,
+  BookOutlined, NodeIndexOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import Markdown from '../components/Markdown';
@@ -21,6 +21,7 @@ import PDFViewer from '../components/PDFViewer';
 import ThinkingPanel from '../components/ThinkingPanel';
 import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
 import WorkspaceIssueReporter from '../components/WorkspaceIssueReporter';
+import ResearchKnowledgeGraph, { type ResearchGraphEdge, type ResearchGraphNode } from '../components/ResearchKnowledgeGraph';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useThemeStore } from '../stores/useThemeStore';
 
@@ -120,6 +121,8 @@ interface PaperReadingTemplate {
   question: string;
 }
 
+type PaperEvidenceConfidenceStatus = 'strong' | 'partial' | 'weak';
+
 const readingStatusMeta = {
   unread: { label: '待读', icon: <RollbackOutlined /> },
   reading: { label: '阅读中', icon: <PlayCircleOutlined /> },
@@ -172,6 +175,46 @@ const paperReadingTemplates: PaperReadingTemplate[] = [
     question: `${groundingInstruction}\n请把这篇论文整理成中文组会汇报提纲：开场一句话、背景动机、方法主线、关键实验、优点、局限、可讨论问题。要求适合 5-8 分钟口头讲解。`,
   },
 ];
+
+const paperEvidenceConfidence = (msg: PaperChatMessage) => {
+  const references = msg.references || [];
+  const currentPaperRefs = references.filter(ref => ref.type === 'paper_evidence' || ref.source === 'current_paper');
+  const evidenceCount = msg.evidence?.evidence_count ?? currentPaperRefs.length;
+  const coverage = msg.evidence?.evidence_coverage ?? Math.min(1, evidenceCount / 3);
+  const status: PaperEvidenceConfidenceStatus = msg.evidence?.evidence_insufficient || evidenceCount === 0
+    ? 'weak'
+    : coverage >= 0.66
+      ? 'strong'
+      : 'partial';
+  return { references, currentPaperRefs, evidenceCount, coverage, status };
+};
+
+const paperEvidenceConfidenceMeta = {
+  strong: { label: '证据较充分', color: 'green' },
+  partial: { label: '部分支撑', color: 'gold' },
+  weak: { label: '证据不足', color: 'orange' },
+};
+
+const buildPaperCitationKey = (paper: PaperData) => {
+  const firstAuthor = Array.isArray(paper.authors) && paper.authors[0]
+    ? paper.authors[0].split(/\s+/).slice(-1)[0]
+    : 'paper';
+  return `${firstAuthor}${paper.year || 'nd'}`.replace(/[^a-zA-Z0-9_:-]/g, '');
+};
+
+const paperMetadataReadiness = (paper: PaperData) => {
+  const checks = [
+    { key: 'title', label: '标题', ready: !!paper.title },
+    { key: 'authors', label: '作者', ready: Array.isArray(paper.authors) && paper.authors.length > 0 },
+    { key: 'year', label: '年份', ready: !!paper.year },
+    { key: 'abstract', label: '摘要', ready: !!paper.abstract },
+    { key: 'identifier', label: 'DOI/arXiv', ready: !!paper.doi || !!paper.arxiv_id },
+    { key: 'pdf', label: 'PDF', ready: !!paper.pdf_url || !!paper.arxiv_id },
+    { key: 'full_text', label: '全文', ready: !!paper.full_text_preview },
+  ];
+  const readyCount = checks.filter(item => item.ready).length;
+  return { checks, readyCount, percent: Math.round((readyCount / checks.length) * 100) };
+};
 
 const PaperDetailPage: React.FC = () => {
   const { paperId } = useParams<{ paperId: string }>();
@@ -661,6 +704,38 @@ const PaperDetailPage: React.FC = () => {
     }
   };
 
+  const paperCitationReadiness = paper ? paperMetadataReadiness(paper) : null;
+  const paperGraphNodes: ResearchGraphNode[] = paper ? [
+    { id: `paper:${paper.id}`, label: paper.title, type: 'paper', status: paper.year ? String(paper.year) : paper.source, href: `/papers/${paper.id}` },
+    ...((paper.similar_papers || []).slice(0, 4).map(item => ({
+      id: `paper:${item.id}`,
+      label: item.title,
+      type: 'paper',
+      status: item.year ? String(item.year) : 'related',
+      href: `/papers/${item.id}`,
+    }))),
+    ...annotations.slice(0, 3).map(item => ({
+      id: `note:${item.id}`,
+      label: item.text.slice(0, 48),
+      type: 'note',
+      status: `PDF ${item.page}`,
+    })),
+  ] : [];
+  const paperGraphEdges: ResearchGraphEdge[] = paper ? [
+    ...((paper.similar_papers || []).slice(0, 4).map(item => ({
+      from: `paper:${paper.id}`,
+      to: `paper:${item.id}`,
+      label: 'related',
+      strength: 'medium' as const,
+    }))),
+    ...annotations.slice(0, 3).map(item => ({
+      from: `paper:${paper.id}`,
+      to: `note:${item.id}`,
+      label: '摘录',
+      strength: 'strong' as const,
+    })),
+  ] : [];
+
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
   if (!paper) return <Empty description="论文未找到" />;
 
@@ -809,6 +884,40 @@ const PaperDetailPage: React.FC = () => {
               )}
             </Card>
           )}
+          <Card
+            size="small"
+            className="paper-citation-network-panel"
+            style={{ marginTop: 16, borderRadius: 12 }}
+            title={<span><NodeIndexOutlined /> 引用网络准备度</span>}
+            extra={paperCitationReadiness && <Tag color={paperCitationReadiness.percent >= 75 ? 'green' : 'gold'}>{paperCitationReadiness.percent}%</Tag>}
+          >
+            {paperCitationReadiness && (
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                <Space size={6} wrap>
+                  <Tag color="geekblue">cite key: {buildPaperCitationKey(paper)}</Tag>
+                  <Tag color={paper.similar_papers?.length ? 'green' : 'default'}>邻近论文 {paper.similar_papers?.length || 0}</Tag>
+                  <Tag color={paper.full_text_preview ? 'green' : 'orange'}>{paper.full_text_preview ? '全文可检索' : '等待全文抽取'}</Tag>
+                </Space>
+                <Space size={6} wrap>
+                  {paperCitationReadiness.checks.map(check => (
+                    <Tag key={check.key} color={check.ready ? 'green' : 'default'}>{check.label}</Tag>
+                  ))}
+                </Space>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  参考文献抽取：等待结构化解析；当前基于元数据、全文状态和相邻论文展示网络入口。
+                </Text>
+              </Space>
+            )}
+          </Card>
+          <div style={{ marginTop: 16 }}>
+            <ResearchKnowledgeGraph
+              title="论文知识图谱"
+              nodes={paperGraphNodes}
+              edges={paperGraphEdges}
+              compact
+              maxNodes={8}
+            />
+          </div>
           {isAuthenticated && (
             <div style={{ marginTop: 16 }}>
               <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -932,6 +1041,22 @@ const PaperDetailPage: React.FC = () => {
                       )}
                       {((msg.references && msg.references.length > 0) || msg.evidence) && (
                         <div className="paper-chat-references">
+                          {(() => {
+                            const confidence = paperEvidenceConfidence(msg);
+                            const meta = paperEvidenceConfidenceMeta[confidence.status];
+                            return (
+                              <div className="paper-answer-evidence-panel">
+                                <Space size={6} wrap>
+                                  <Tag color={meta.color}>{meta.label}</Tag>
+                                  <Tag color="blue">覆盖率 {Math.round(confidence.coverage * 100)}%</Tag>
+                                  <Tag>证据 {confidence.evidenceCount}</Tag>
+                                </Space>
+                                <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 11 }}>
+                                  PaperQA 风格证据检查：优先依据当前论文片段和显式引用判断回答可信度。
+                                </Text>
+                              </div>
+                            );
+                          })()}
                           {msg.evidence && (
                             <div style={{ marginBottom: 6 }}>
                               <Tag color={msg.evidence.evidence_insufficient ? 'orange' : 'green'} style={{ borderRadius: 8 }}>

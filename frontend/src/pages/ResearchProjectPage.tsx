@@ -16,6 +16,7 @@ import WorkspaceIssueReporter from '../components/WorkspaceIssueReporter';
 import PageShell from '../components/PageShell';
 import ApiErrorAlert from '../components/ApiErrorAlert';
 import Markdown from '../components/Markdown';
+import ResearchKnowledgeGraph, { type ResearchGraphEdge, type ResearchGraphNode } from '../components/ResearchKnowledgeGraph';
 import {
   WorkflowEmptyState,
   WorkflowLoadingState,
@@ -511,6 +512,14 @@ const proposalDecisionCounts = (items: Idea[]) => ({
   rejected: items.filter(idea => idea.status === 'rejected').length,
   implemented: items.filter(idea => idea.status === 'implemented').length,
 });
+
+const stormFlowSteps = [
+  { key: 'curate', label: '知识收集', description: '收集本地论文、外部文献和种子证据。' },
+  { key: 'perspective', label: '视角提问', description: '把证据转换为多视角问题和 Gap Map。' },
+  { key: 'outline', label: '研究大纲', description: '围绕选定 gap 形成假设、技术路线和实验草图。' },
+  { key: 'critique', label: '批判评审', description: '用新颖性、可行性、证据和审稿包筛选。' },
+  { key: 'draft', label: '写作交接', description: '生成写作准备包或论文项目。' },
+];
 const normalizeCodeProjectFiles = (projectPackage: CodeProjectManifest) =>
   [...(projectPackage.files || [])].sort((first, second) => first.path.localeCompare(second.path));
 const codeProjectDefaultFilePath = (projectPackage: CodeProjectManifest) => {
@@ -1421,6 +1430,55 @@ const ResearchProjectPage: React.FC = () => {
     .filter(idea => proposalFilter === 'all' || idea.status === proposalFilter)
     .sort((a, b) => proposalSortValue(b, proposalSort) - proposalSortValue(a, proposalSort));
   const recommendedProposal = visibleProposals.find(idea => idea.status !== 'rejected') || null;
+  const stormStageScore = {
+    curate: evidenceItems.length > 0,
+    perspective: gaps.length > 0,
+    outline: candidates.length > 0 || ideas.length > 0,
+    critique: ideas.some(idea => !!idea.review_json),
+    draft: Object.values(writingBriefMap).some(item => !!item?.data) || ideas.some(idea => idea.status === 'implemented'),
+  };
+  const researchGraphNodes: ResearchGraphNode[] = [
+    { id: `project:${project.id}`, label: project.name, type: 'idea', status: project.status },
+    ...evidenceItems.slice(0, 5).map(item => ({
+      id: `paper:${item.paper_id}`,
+      label: item.title,
+      type: 'paper',
+      status: item.category,
+      href: item.imported_paper_id ? `/papers/${item.imported_paper_id}` : undefined,
+    })),
+    ...gaps.slice(0, 4).map((gap, index) => ({
+      id: `gap:${index}`,
+      label: gap.title,
+      type: 'evidence',
+      status: gap.selection_status || gap.user_feedback?.rating || 'gap',
+    })),
+    ...ideas.slice(0, 5).map(idea => ({
+      id: `idea:${idea.id}`,
+      label: idea.title,
+      type: 'idea',
+      status: idea.status,
+    })),
+  ];
+  const researchGraphEdges: ResearchGraphEdge[] = [
+    ...evidenceItems.slice(0, 5).map(item => ({
+      from: `paper:${item.paper_id}`,
+      to: `project:${project.id}`,
+      label: 'evidence',
+      strength: 'medium' as const,
+    })),
+    ...gaps.slice(0, 4).flatMap((gap, index) => (gap.evidence_ids || []).slice(0, 2).map(evidenceId => ({
+      from: `paper:${evidenceId}`,
+      to: `gap:${index}`,
+      label: 'supports gap',
+      strength: 'strong' as const,
+    }))),
+    ...ideas.slice(0, 5).map(idea => ({
+      from: `project:${project.id}`,
+      to: `idea:${idea.id}`,
+      label: 'proposal',
+      strength: 'strong' as const,
+    })),
+  ];
   const stageIndex = Math.max(0, stageItems.findIndex(([key]) => key === run?.stage));
   const currentStageTitle = stageItems.find(([key]) => key === run?.stage)?.[1] || '尚未启动';
   const runStatus = generating ? 'running' : run?.status || 'idle';
@@ -3170,6 +3228,37 @@ const ResearchProjectPage: React.FC = () => {
             <Text type="secondary">工作台运行</Text><Title level={4} style={{ margin: '4px 0' }}>{run ? run.status : '尚未启动'}</Title>
             <Text type="secondary">已保存 Proposal：{ideas.length}</Text>
           </Card>
+          <Card
+            title={<Space><NodeIndexOutlined /> STORM 研究流程</Space>}
+            className="storm-research-flow-panel"
+            style={{ borderRadius: 14, marginBottom: 14 }}
+          >
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              {stormFlowSteps.map(step => {
+                const done = Boolean(stormStageScore[step.key as keyof typeof stormStageScore]);
+                return (
+                  <div className={`storm-flow-step ${done ? 'is-done' : 'is-pending'}`} key={step.key}>
+                    <Space size={8} align="start">
+                      <Tag color={done ? 'green' : 'default'}>{done ? '完成' : '待推进'}</Tag>
+                      <span>
+                        <Text strong>{step.label}</Text>
+                        <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>{step.description}</Text>
+                      </span>
+                    </Space>
+                  </div>
+                );
+              })}
+            </Space>
+          </Card>
+          <div style={{ marginBottom: 14 }}>
+            <ResearchKnowledgeGraph
+              title="方向知识图谱"
+              nodes={researchGraphNodes}
+              edges={researchGraphEdges}
+              compact
+              maxNodes={9}
+            />
+          </div>
           <div style={{ marginBottom: 14 }}>
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
               <Space>

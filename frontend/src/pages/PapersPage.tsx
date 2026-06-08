@@ -179,6 +179,29 @@ const buildBibtexKey = (paper: PaperItem, index: number) => {
   return `${firstAuthor}${year}_${index + 1}`.replace(/[^a-zA-Z0-9_:-]/g, '');
 };
 
+const buildPaperCitationKey = (paper: PaperItem, index = 0) => {
+  const firstAuthor = Array.isArray(paper.authors) && paper.authors[0]
+    ? paper.authors[0].split(/\s+/).slice(-1)[0]
+    : 'paper';
+  const year = paper.year || 'nd';
+  const titleToken = (paper.title || 'untitled').split(/\s+/).find(token => token.length > 4) || String(index + 1);
+  return `${firstAuthor}${year}${titleToken}`.replace(/[^a-zA-Z0-9_:-]/g, '').slice(0, 42);
+};
+
+const paperMetadataQuality = (paper: PaperItem) => {
+  const checks = [
+    { key: 'authors', label: '作者', ready: Array.isArray(paper.authors) && paper.authors.length > 0 },
+    { key: 'year', label: '年份', ready: !!paper.year },
+    { key: 'abstract', label: '摘要', ready: !!(paper.abstract_full || paper.abstract) },
+    { key: 'identifier', label: 'DOI/arXiv', ready: !!paper.doi || !!paper.arxiv_id },
+    { key: 'full_text', label: '全文', ready: !!paper.has_full_text },
+    { key: 'embedding', label: '向量', ready: !!paper.has_embedding },
+    { key: 'tags', label: '标签', ready: !!paper.has_tags },
+  ];
+  const ready = checks.filter(item => item.ready).length;
+  return { checks, ready, total: checks.length, percent: Math.round((ready / checks.length) * 100) };
+};
+
 const buildSelectedBibtex = (items: PaperItem[]) => items.map((paper, index) => {
   const entryType = paper.arxiv_id ? 'misc' : 'article';
   const fields = [
@@ -956,6 +979,11 @@ const PapersPage: React.FC = () => {
     .map(value => ({ value, label: value }));
   const localSourceOptions = ['arxiv', 'openalex', 'semantic_scholar', 'google_scholar', 'manual', 'bibtex_import', 'zotero_import']
     .map(value => ({ value, label: sl(value) }));
+  const duplicateTitleCounts = papers.reduce<Record<string, number>>((acc, paper) => {
+    const key = (paper.title || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    if (key) acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
   const reportPresetOptions = [
     { value: 'default', label: '默认逐篇' },
     { value: 'compare', label: '横向对比' },
@@ -1578,6 +1606,9 @@ const PapersPage: React.FC = () => {
           <List dataSource={filteredPapers} renderItem={(paper, idx) => {
             const remoteKey = paperRemoteKey(paper);
             const resultState = paperResultState(paper, ingestedRemoteIds);
+            const citationKey = buildPaperCitationKey(paper, idx);
+            const metadataQuality = paperMetadataQuality(paper);
+            const duplicateRisk = duplicateTitleCounts[(paper.title || '').toLowerCase().replace(/\s+/g, ' ').trim()] > 1;
             return (
             <Card hoverable size="small" style={{ marginBottom: 10, borderRadius: 12, border: '1px solid #f0f0f0', overflow: 'hidden' }}
               onClick={() => handleViewDetail(paper)}
@@ -1598,6 +1629,9 @@ const PapersPage: React.FC = () => {
                       {paper.arxiv_id && <Tag color="#b31b1b" style={{ borderRadius: 6 }}>arXiv:{paper.arxiv_id}</Tag>}
                       <Tag color={sc(paper.source)} style={{ borderRadius: 6 }}>{sl(paper.source)}</Tag>
                       {paper.imported_by_username && <Tag icon={<UserOutlined />} color="purple" style={{ borderRadius: 6 }}>导入：{paper.imported_by_username}</Tag>}
+                      {paper.id && <Tag color="cyan" style={{ borderRadius: 6 }}>key:{citationKey}</Tag>}
+                      {paper.id && <Tag color={metadataQuality.percent >= 75 ? 'green' : 'gold'} style={{ borderRadius: 6 }}>元数据 {metadataQuality.percent}%</Tag>}
+                      {duplicateRisk && <Tag color="orange" style={{ borderRadius: 6 }}>疑似重复</Tag>}
                       <Tag color={resultState.color} style={{ borderRadius: 6 }}>{resultState.label}</Tag>
                       {paper.id && <Tag color={paper.has_full_text ? 'green' : 'default'} style={{ borderRadius: 6 }}>全文{paper.has_full_text ? '就绪' : '缺失'}</Tag>}
                       {paper.id && <Tag color={paper.has_embedding ? 'green' : 'default'} style={{ borderRadius: 6 }}>向量{paper.has_embedding ? '就绪' : '缺失'}</Tag>}
@@ -1624,6 +1658,16 @@ const PapersPage: React.FC = () => {
                     </Text>
                   )}
                   {paper.abstract && <Paragraph type="secondary" ellipsis={{ rows: 2 }} style={{ marginTop: 8, marginBottom: 0, fontSize: 13 }}>{paper.abstract}</Paragraph>}
+                  {paper.id && (
+                    <div className="paper-citation-quality-row">
+                      <Text type="secondary" style={{ fontSize: 12 }}>JabRef 质量：</Text>
+                      <Space size={4} wrap>
+                        {metadataQuality.checks.map(check => (
+                          <Tag key={check.key} color={check.ready ? 'green' : 'default'} style={{ borderRadius: 6 }}>{check.label}</Tag>
+                        ))}
+                      </Space>
+                    </div>
+                  )}
                   {renderReadingActions(paper)}
                 </Col>
                 {isAuthenticated && paper.id && (

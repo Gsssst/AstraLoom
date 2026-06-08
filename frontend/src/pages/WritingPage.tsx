@@ -20,6 +20,7 @@ import WorkspaceIssueReporter from '../components/WorkspaceIssueReporter';
 import WorkflowStepGuide from '../components/WorkflowStepGuide';
 import PageShell from '../components/PageShell';
 import ApiErrorAlert from '../components/ApiErrorAlert';
+import ResearchKnowledgeGraph, { type ResearchGraphEdge, type ResearchGraphNode } from '../components/ResearchKnowledgeGraph';
 import { WorkflowEmptyState } from '../components/WorkflowState';
 import { DiffViewer, WritingProjectPanel, SectionEditor } from '../components/writing';
 import AuthenticatedPdfPreview from '../components/writing/AuthenticatedPdfPreview';
@@ -169,6 +170,27 @@ const getBriefClaimStatusCounts = (brief?: ProposalWritingBrief | null) => {
 const hasWritingBriefRisk = (brief?: ProposalWritingBrief | null) => {
   const counts = getBriefClaimStatusCounts(brief);
   return Boolean((brief?.unsafe_claims || []).length || (brief?.evidence_gaps || []).length || counts.unsupported);
+};
+
+const buildWritingFileTree = (
+  project: any,
+  sections: any[],
+  evidenceCards: any[],
+  manuscriptPreview: any,
+  exportReadiness: any,
+) => {
+  const hasBib = evidenceCards.some((card: any) => card?.citation_marker || card?.bibtex);
+  return [
+    { path: 'main.tex', type: 'root', status: manuscriptPreview?.success === false ? 'compile issue' : 'ready' },
+    ...sections.map((section: any, index: number) => ({
+      path: `sections/${String(index + 1).padStart(2, '0')}-${(section.title || 'section').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'section'}.tex`,
+      type: 'section',
+      status: section.content ? `${section.word_count || section.content.length || 0} 字` : 'empty',
+    })),
+    { path: 'references.bib', type: 'bib', status: hasBib ? `${evidenceCards.length} evidence` : 'missing' },
+    { path: 'figures/', type: 'asset', status: project?.metadata_json?.assets?.length ? `${project.metadata_json.assets.length} files` : 'empty' },
+    { path: 'compile.log', type: 'log', status: manuscriptPreview?.success === false ? 'needs attention' : exportReadiness?.status || 'not checked' },
+  ];
 };
 
 const claimStatusLabel = (status?: string) => {
@@ -324,6 +346,38 @@ const WritingPage: React.FC = () => {
   const priorityColor = (priority?: string) => priority === 'high' ? 'red' : priority === 'medium' ? 'gold' : 'blue';
   const selectedWritingBrief = getProjectWritingBrief(selectedProject);
   const selectedBriefClaimCounts = getBriefClaimStatusCounts(selectedWritingBrief);
+  const writingFileTree = selectedProject
+    ? buildWritingFileTree(selectedProject, projectSections, evidenceCards, manuscriptPreview, exportReadiness)
+    : [];
+  const writingGraphNodes: ResearchGraphNode[] = selectedProject ? [
+    { id: `writing:${selectedProject.id}`, label: selectedProject.title, type: 'writing', status: `${projectSections.length} sections` },
+    ...projectSections.slice(0, 5).map(section => ({
+      id: `section:${section.id}`,
+      label: section.title || 'Untitled',
+      type: 'section',
+      status: section.status || 'draft',
+    })),
+    ...evidenceCards.slice(0, 5).map((card: any) => ({
+      id: `evidence:${card.id || card.paper_id || card.citation_marker}`,
+      label: card.title || card.citation_marker || 'Evidence',
+      type: 'evidence',
+      status: card.citation_marker || card.local_status_label || 'evidence',
+    })),
+  ] : [];
+  const writingGraphEdges: ResearchGraphEdge[] = selectedProject ? [
+    ...projectSections.slice(0, 5).map(section => ({
+      from: `writing:${selectedProject.id}`,
+      to: `section:${section.id}`,
+      label: 'contains',
+      strength: 'strong' as const,
+    })),
+    ...evidenceCards.slice(0, 5).map((card: any) => ({
+      from: `evidence:${card.id || card.paper_id || card.citation_marker}`,
+      to: `writing:${selectedProject.id}`,
+      label: 'supports',
+      strength: 'medium' as const,
+    })),
+  ] : [];
   const projectCitationSuggestions = evidenceCards
     .filter((card: any) => card?.citation_marker)
     .map((card: any) => ({
@@ -1957,7 +2011,34 @@ const WritingPage: React.FC = () => {
             </Tooltip>
           </div>
           <WritingProjectPanel onSelectProject={handleSelectProject} selectedProjectId={selectedProject?.id} refreshSignal={projectRefreshSignal} />
+          {selectedProject && (
+            <Card
+              size="small"
+              className="overleaf-project-structure-panel"
+              title={<Space><FolderOutlined /> 项目文件结构</Space>}
+              extra={<Tag color="cyan">Overleaf</Tag>}
+              style={{ borderRadius: 12 }}
+            >
+              <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                {writingFileTree.map(file => (
+                  <div className="writing-file-tree-row" key={file.path}>
+                    <Text strong ellipsis>{file.path}</Text>
+                    <Tag color={file.status === 'missing' || file.status === 'empty' || file.status === 'compile issue' || file.status === 'needs attention' ? 'gold' : 'green'}>{file.status}</Tag>
+                  </div>
+                ))}
+              </Space>
+            </Card>
+          )}
           {evidencePanel}
+          {selectedProject && (
+            <ResearchKnowledgeGraph
+              title="写作知识图谱"
+              nodes={writingGraphNodes}
+              edges={writingGraphEdges}
+              compact
+              maxNodes={9}
+            />
+          )}
         </div>
       )}
       <div className="manuscript-editor-main" style={{ minWidth: 0, minHeight: 400 }}>
