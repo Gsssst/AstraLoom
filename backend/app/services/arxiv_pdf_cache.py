@@ -113,7 +113,7 @@ async def ensure_cached_arxiv_pdf(
         try:
             for url in arxiv_pdf_candidate_urls(clean_id):
                 try:
-                    response = await active_client.get(url, headers={"User-Agent": "Auto-Research-DS/1.0"})
+                    response = await active_client.get(url, headers={"User-Agent": "AstraLoom/1.0"})
                     response.raise_for_status()
                     _atomic_write_pdf(path, response.content)
                     logger.info("arXiv PDF cached: %s <- %s", clean_id, url)
@@ -139,7 +139,7 @@ def ensure_cached_arxiv_pdf_sync(arxiv_id: str, *, cache_dir: Optional[str] = No
     errors: list[str] = []
     for url in arxiv_pdf_candidate_urls(clean_id):
         try:
-            request = Request(url, headers={"User-Agent": "Auto-Research-DS/1.0"})
+            request = Request(url, headers={"User-Agent": "AstraLoom/1.0"})
             with urlopen(request, timeout=settings.ARXIV_PDF_TIMEOUT_SECONDS) as response:
                 _atomic_write_pdf(path, response.read())
             logger.info("arXiv PDF cached: %s <- %s", clean_id, url)

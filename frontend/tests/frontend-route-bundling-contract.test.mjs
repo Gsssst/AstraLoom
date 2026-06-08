@@ -130,8 +130,7 @@ test('high intent navigation surfaces trigger route chunk prefetch', () => {
   assert.match(workflowGuideSource, /onTouchStart=\{\(\) => prefetchRouteIntent\(step\.path\)\}/);
 
   assert.match(homeSource, /\{\.\.\.routeIntentProps\(action\.path\)\}/);
-  assert.match(homeSource, /\{\.\.\.routeIntentProps\(quickActions\[i\]\.path\)\}/);
-  assert.match(homeSource, /\{\.\.\.routeIntentProps\(a\.path\)\}/);
+  assert.match(homeSource, /\{\.\.\.routeIntentProps\(card\.path\)\}/);
 });
 
 test('existing route paths remain registered after lazy split', () => {

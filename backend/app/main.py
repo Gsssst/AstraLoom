@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.APP_NAME,
-    description="自动化科研工作流系统 API",
+    description="AstraLoom 智能科研工作台 API",
     version="0.1.0",
     docs_url="/docs" if settings.DEBUG else None,
     redoc_url="/redoc" if settings.DEBUG else None,

@@ -39,7 +39,7 @@ interface GlobalCommandPaletteProps {
 }
 
 const staticCommands: CommandItem[] = [
-  { id: 'route-home', group: '导航', title: '首页', subtitle: '回到 Auto-Research-DS 起始页', path: '/', icon: <HomeOutlined />, kind: 'route', keywords: ['home', 'start'] },
+  { id: 'route-home', group: '导航', title: '首页', subtitle: '回到 AstraLoom 起始页', path: '/', icon: <HomeOutlined />, kind: 'route', keywords: ['home', 'start'] },
   { id: 'route-chat', group: '导航', title: 'AI 对话', subtitle: '打开通用研究对话工作区', path: '/chat', icon: <CommentOutlined />, kind: 'route', shortcut: 'Ctrl N', keywords: ['chat', 'llm', 'conversation'] },
   { id: 'route-actions', group: '导航', title: '行动中心', subtitle: '查看跨模块下一步任务', path: '/actions', icon: <ThunderboltOutlined />, kind: 'route', keywords: ['action', 'todo', 'next'] },
   { id: 'route-workspaces', group: '导航', title: '项目空间', subtitle: '管理论文、研究和写作资源集合', path: '/workspaces', icon: <AppstoreOutlined />, kind: 'route', keywords: ['workspace', 'space'] },

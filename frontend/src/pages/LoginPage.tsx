@@ -42,8 +42,8 @@ const LoginPage: React.FC = () => {
       >
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
           <RocketOutlined style={{ fontSize: 40, color: '#667eea', marginBottom: 12 }} />
-          <Title level={3} style={{ marginBottom: 4 }}>Auto-Research-DS</Title>
-          <Text type="secondary">自动化科研工作流系统</Text>
+          <Title level={3} style={{ marginBottom: 4 }}>AstraLoom</Title>
+          <Text type="secondary">AstraLoom 智能科研工作台</Text>
         </div>
 
         <Form layout="vertical" onFinish={handleSubmit} size="large">

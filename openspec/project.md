@@ -1,8 +1,8 @@
-# Auto-Research-DS
+# AstraLoom
 
 ## 项目概述
 
-自动化科研工作流系统（Auto-Research-DS），部署在 Linux 服务器上，为课题组提供：
+AstraLoom 智能科研工作台（AstraLoom），部署在 Linux 服务器上，为课题组提供：
 - 论文检索与持久化分类知识库
 - 基于大模型的科研 Idea 生成与讨论
 - 论文写作辅助（引用推荐、Related Work 生成等）

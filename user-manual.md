@@ -1,6 +1,6 @@
-# Auto-Research-DS 用户使用手册
+# AstraLoom 用户使用手册
 
-欢迎使用 Auto-Research-DS！本手册将引导你快速上手，从零开始掌握系统的全部功能。
+欢迎使用 AstraLoom！本手册将引导你快速上手，从零开始掌握系统的全部功能。
 
 ---
 

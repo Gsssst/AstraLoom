@@ -1,6 +1,6 @@
-# Auto-Research-DS
+# AstraLoom
 
-自动化科研工作流系统 — 面向课题组的论文知识库管理与 AI 辅助研究平台。
+AstraLoom 智能科研工作台 — 面向课题组的论文知识库管理与 AI 辅助研究平台。
 
 ## 功能概览
 
@@ -26,7 +26,7 @@
 
 ```bash
 git clone <repo-url>
-cd auto-Research-DS
+cd AstraLoom
 ```
 
 ### 2. 配置环境变量
@@ -70,7 +70,7 @@ curl http://127.0.0.1:8000/api/health/db
 ## 项目结构
 
 ```
-auto-Research-DS/
+AstraLoom/
 ├── backend/              # FastAPI 后端
 │   ├── app/
 │   │   ├── api/          # API 路由

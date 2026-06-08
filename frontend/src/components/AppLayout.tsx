@@ -140,9 +140,9 @@ const AppLayout: React.FC = () => {
         {!compact && (
           <div style={{ overflow: 'hidden' }}>
             <div style={{ fontSize: 16, fontWeight: 800, background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', lineHeight: 1.2 }}>
-              AR · Research
+              AstraLoom
             </div>
-            <div style={{ fontSize: 10, color: '#999', marginTop: 1 }}>AI 科研搭子</div>
+            <div style={{ fontSize: 10, color: '#999', marginTop: 1 }}>AI Research Workspace</div>
           </div>
         )}
       </div>

@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     """应用全局配置，所有值从环境变量或 .env 文件加载。"""
 
     # --- 应用 ---
-    APP_NAME: str = "Auto-Research-DS"
+    APP_NAME: str = "AstraLoom"
     APP_ENV: str = "development"
     DEBUG: bool = True
     SECRET_KEY: str = "change_me_to_random_secret_key"

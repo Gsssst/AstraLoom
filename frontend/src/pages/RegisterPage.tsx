@@ -47,7 +47,7 @@ const RegisterPage: React.FC = () => {
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
           <RocketOutlined style={{ fontSize: 40, color: '#667eea', marginBottom: 12 }} />
           <Title level={3} style={{ marginBottom: 4 }}>注册账号</Title>
-          <Text type="secondary">加入 Auto-Research-DS</Text>
+          <Text type="secondary">加入 AstraLoom</Text>
         </div>
 
         <Form layout="vertical" onFinish={handleSubmit} size="large">
