@@ -976,6 +976,21 @@ class WritingProjectService:
         metadata["latex_compile"] = cleaned
         return await self.update_project(project_id, user_id, metadata_json=metadata)
 
+    async def remove_submission_profile(self, project_id: str, user_id: str) -> dict | None:
+        """Remove bound submission template metadata and return to safe article compilation."""
+        project = await self.get_project(project_id, user_id)
+        if not project:
+            return None
+        metadata = dict(project.get("metadata_json") or {})
+        metadata.pop("submission_profile", None)
+        metadata["latex_compile"] = {
+            "layout": "single_column",
+            "document_class": "article",
+            "document_options": [],
+            "packages": [],
+        }
+        return await self.update_project(project_id, user_id, metadata_json=metadata)
+
     async def delete_project(self, project_id: str, user_id: str) -> bool:
         """删除项目。"""
         from app.db.models.writing import WritingProject

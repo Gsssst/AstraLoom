@@ -802,6 +802,24 @@ async def bind_project_submission_template(
     }
 
 
+@router.delete("/projects/{project_id}/submission-template")
+async def remove_project_submission_template(
+    project_id: str,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove the bound submission template and reset LaTeX compilation to safe defaults."""
+    service = WritingProjectService(db)
+    project = await service.remove_submission_profile(project_id, str(user.id))
+    if not project:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    return {
+        "project": project,
+        "submission_profile": {},
+        "latex_compile": (project.get("metadata_json") or {}).get("latex_compile") or {},
+    }
+
+
 # ============== 升级现有的流行 API ==============
 
 @router.post("/related-work-v2")

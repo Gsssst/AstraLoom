@@ -116,6 +116,10 @@ test('writing workbench exposes latex compile layout controls', () => {
   assert.match(writingPageSource, /单栏/);
   assert.match(writingPageSource, /双栏/);
   assert.match(writingPageSource, /模板/);
+  assert.match(writingPageSource, /handleRemoveSubmissionTemplate/);
+  assert.match(writingPageSource, /submission-template`\)/);
+  assert.match(writingPageSource, /移除模板/);
+  assert.match(writingPageSource, /onClick=\{handlePreviewManuscriptLatex\}/);
 });
 
 test('section editor keeps local drafts and debounces persistence', () => {

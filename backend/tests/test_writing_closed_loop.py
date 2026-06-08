@@ -252,6 +252,47 @@ async def test_bind_submission_profile_updates_project_metadata(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_remove_submission_profile_resets_latex_compile(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+    project_id = str(uuid4())
+
+    async def fake_get_project(_project_id, _user_id):
+        return {
+            "id": project_id,
+            "title": "Video Grounding",
+            "metadata_json": {
+                "submission_profile": {"template_source": "neurips.zip", "document_class": "article"},
+                "latex_compile": {
+                    "layout": "template",
+                    "document_class": "article",
+                    "packages": ["neurips"],
+                },
+            },
+            "sections": [],
+        }
+
+    async def fake_update_project(_project_id, _user_id, **kwargs):
+        return {
+            "id": project_id,
+            "metadata_json": kwargs["metadata_json"],
+            "sections": [],
+        }
+
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+    monkeypatch.setattr(service, "update_project", fake_update_project)
+
+    updated = await service.remove_submission_profile(project_id, "user-1")
+
+    assert "submission_profile" not in updated["metadata_json"]
+    assert updated["metadata_json"]["latex_compile"] == {
+        "layout": "single_column",
+        "document_class": "article",
+        "document_options": [],
+        "packages": [],
+    }
+
+
+@pytest.mark.asyncio
 async def test_preview_latex_section_returns_compile_diagnostics(monkeypatch):
     service = WritingProjectService(SimpleNamespace())
 

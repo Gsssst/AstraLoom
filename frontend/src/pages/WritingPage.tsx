@@ -666,6 +666,13 @@ const WritingPage: React.FC = () => {
     if (!selectedProject?.id) return;
     setManuscriptPreviewing(true);
     try {
+      const profile = selectedProject.metadata_json?.submission_profile || {};
+      await api.put(`/writing/projects/${selectedProject.id}/latex/compile-settings`, {
+        layout: latexCompileLayout,
+        document_class: profile.document_class || 'article',
+        document_options: profile.document_options || [],
+        packages: profile.packages || [],
+      });
       const response = await api.post(`/writing/projects/${selectedProject.id}/latex/preview-manuscript`);
       setManuscriptPreview(response.data);
       setPageActionError(null);
@@ -873,6 +880,29 @@ const WritingPage: React.FC = () => {
       showPageError('版式保存失败', error, '版式保存失败');
     } finally {
       setLatexCompileSaving(false);
+    }
+  };
+  const handleRemoveSubmissionTemplate = async () => {
+    if (!selectedProject?.id) return;
+    setSubmissionUploading(true);
+    try {
+      const response = await api.delete(`/writing/projects/${selectedProject.id}/submission-template`);
+      setSelectedProject(response.data.project);
+      setProjectSections(response.data.project.sections || []);
+      setSubmissionInspection(null);
+      setSubmissionTemplateFile(null);
+      setLatexCompileLayout('single_column');
+      setExportPackage(null);
+      setManuscriptPreview(null);
+      setLatexPreviewChecks({});
+      const readiness = await api.get(`/writing/projects/${selectedProject.id}/export/readiness`);
+      setExportReadiness(readiness.data);
+      setPageActionError(null);
+      message.success('已移除投稿模板，编译恢复为单栏 article');
+    } catch (error) {
+      showPageError('模板移除失败', error, '模板移除失败');
+    } finally {
+      setSubmissionUploading(false);
     }
   };
   // ── 申请书处理器 ──
@@ -1719,6 +1749,17 @@ const WritingPage: React.FC = () => {
               {(submissionInspection?.venue || exportReadiness?.submission_profile?.venue) && (
                 <Tag color="purple">{submissionInspection.venue || exportReadiness?.submission_profile?.venue} {submissionInspection.year || exportReadiness?.submission_profile?.year}</Tag>
               )}
+              {(submissionInspection || selectedProject?.metadata_json?.submission_profile?.template_source) && (
+                <Button
+                  danger
+                  size="small"
+                  loading={submissionUploading}
+                  onClick={handleRemoveSubmissionTemplate}
+                  style={{ borderRadius: 8 }}
+                >
+                  移除模板
+                </Button>
+              )}
             </Space>
             {(submissionInspection?.warnings?.length || exportReadiness?.submission_profile?.warnings?.length) ? (
               <Alert
@@ -1921,6 +1962,16 @@ const WritingPage: React.FC = () => {
                   </Col>
                   <Col>
                     <Space wrap>
+                      <Segmented
+                        size="small"
+                        value={latexCompileLayout}
+                        onChange={value => setLatexCompileLayout(String(value))}
+                        options={[
+                          { label: '单栏', value: 'single_column' },
+                          { label: '双栏', value: 'double_column' },
+                          { label: '模板', value: 'template', disabled: !(selectedProject?.metadata_json?.submission_profile?.document_class) },
+                        ]}
+                      />
                       <Button icon={<CodeOutlined />} loading={manuscriptPreviewing} onClick={handlePreviewManuscriptLatex} style={{ borderRadius: 8 }}>
                         整篇 LaTeX 检查
                       </Button>
