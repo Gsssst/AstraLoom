@@ -21,31 +21,33 @@ test('current product surfaces use AstraLoom branding', () => {
 });
 
 test('home page exposes AstraLoom workflow and navigation entries', () => {
-  assert.match(homeSource, /className="astraloom-title">AstraLoom/);
-  assert.match(homeSource, /把论文、证据、灵感和实验线索编织成一张清晰的科研星图/);
-  assert.match(homeSource, /workflowNodes/);
-  assert.match(homeSource, /Papers/);
-  assert.match(homeSource, /Ideas/);
-  assert.match(homeSource, /Experiments/);
-  assert.match(homeSource, /Writing/);
+  assert.match(homeSource, /className="hero-title">AstraLoom/);
+  assert.match(homeSource, /新一代 AI 驱动的自动化科研工作流系统/);
+  assert.match(homeSource, /AI 对话/);
+  assert.match(homeSource, /论文库/);
+  assert.match(homeSource, /研究方向/);
+  assert.match(homeSource, /写作助手/);
   assert.match(homeSource, /navigate\(`\/papers\?q=\$\{encodeURIComponent\(searchValue\.trim\(\)\)\}`\)/);
   for (const path of ['/chat', '/papers', '/research', '/writing']) {
     assert.match(homeSource, new RegExp(`path: '${path}'`));
   }
 });
 
-test('home styles define AstraLoom constellation and loom visual hooks', () => {
+test('home styles define the restored AstraLoom home visual hooks', () => {
   for (const className of [
-    'astraloom-home',
-    'astraloom-hero',
-    'astraloom-star',
-    'loom-stage',
-    'loom-node',
-    'astraloom-action',
-    'astraloom-feature-card',
+    'hero-section',
+    'particles-bg',
+    'hero-title',
+    'quick-action-btn',
+    'stats-section',
+    'features-section',
+    'feature-card-v2',
+    'footer-section',
   ]) {
     assert.match(homeStyles, new RegExp(`\\.${className}`));
   }
+  assert.doesNotMatch(homeStyles, /loom-stage/);
+  assert.doesNotMatch(homeStyles, /astraloom-feature-card/);
 });
 
 test('backend runtime identifiers use AstraLoom', () => {
