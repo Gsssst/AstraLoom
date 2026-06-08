@@ -5,4 +5,4 @@
 ## 2. Verification
 
 - [x] 2.1 Validate OpenSpec and inspect the Dockerfile change.
-- [ ] 2.2 Commit implementation, archive the OpenSpec change, validate specs, and commit the archive.
+- [x] 2.2 Commit implementation, archive the OpenSpec change, validate specs, and commit the archive.
