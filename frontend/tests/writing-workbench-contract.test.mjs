@@ -52,6 +52,15 @@ test('manuscript workbench exposes create-section entry in navigation and empty 
   assert.match(writingPageSource, /setActiveSectionId\(section\.id\)/);
 });
 
+test('manuscript workbench groups project and evidence in compact support rail', () => {
+  assert.match(writingPageSource, /manuscript-workbench-grid/);
+  assert.match(writingPageSource, /manuscript-support-rail/);
+  assert.match(writingPageSource, /manuscript-editor-main/);
+  assert.match(writingPageSource, /gridTemplateColumns: '320px minmax\(0, 1fr\)'/);
+  assert.match(writingPageSource, /<WritingProjectPanel[\s\S]*\{evidencePanel\}/);
+  assert.match(writingPageSource, /gridTemplateColumns: '240px minmax\(0, 1fr\)'/);
+});
+
 test('manuscript workbench exposes latex preview diagnostics', () => {
   assert.match(writingPageSource, /preview-section/);
   assert.match(writingPageSource, /preview-manuscript/);

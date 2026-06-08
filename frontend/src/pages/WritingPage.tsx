@@ -1512,8 +1512,8 @@ const WritingPage: React.FC = () => {
       id="writing-evidence-panel"
       title="证据卡片"
       loading={evidenceLoading}
-      style={{ ...cardStyle, position: 'sticky', top: 12 }}
-      styles={{ body: { padding: 14, maxHeight: 720, overflowY: 'auto' } }}
+      style={cardStyle}
+      styles={{ body: { padding: 14, maxHeight: 520, overflowY: 'auto' } }}
       extra={evidenceCoverage && <Tag color={evidenceCoverage.external ? 'gold' : 'green'}>{evidenceCoverage.local}/{evidenceCoverage.total} 已入库</Tag>}
     >
       <Space direction="vertical" style={{ width: '100%', marginBottom: 12 }}>
@@ -1747,14 +1747,17 @@ const WritingPage: React.FC = () => {
   ) : null;
 
   const manuscriptWorkbench = (
-    <div style={{ display: 'flex', gap: 20 }}>
-      <div style={{ width: 280, flexShrink: 0 }}>
+    <div
+      className="manuscript-workbench-grid"
+      style={{ display: 'grid', gridTemplateColumns: '320px minmax(0, 1fr)', gap: 16, alignItems: 'start' }}
+    >
+      <div className="manuscript-support-rail" style={{ display: 'flex', flexDirection: 'column', gap: 14, position: 'sticky', top: 12 }}>
         <WritingProjectPanel onSelectProject={handleSelectProject} selectedProjectId={selectedProject?.id} refreshSignal={projectRefreshSignal} />
+        {evidencePanel}
       </div>
-      <div style={{ flex: 1, minHeight: 400 }}>
+      <div className="manuscript-editor-main" style={{ minWidth: 0, minHeight: 400 }}>
         {selectedProject ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 16, alignItems: 'start' }}>
-            <div>
+          <>
               {workbenchOverviewPanel}
               {renderWritingBriefWorkbenchPanel(selectedWritingBrief)}
               <Card style={{ ...cardStyle, marginBottom: 16 }} styles={{ body: { padding: '14px 18px' } }}>
@@ -1805,7 +1808,7 @@ const WritingPage: React.FC = () => {
                 <WorkspaceResourceLinks resourceType="writing_projects" resourceId={selectedProject.id} title="所属项目空间" />
               </div>
               {manuscriptPreview && <div style={{ marginBottom: 16 }}>{latexDiagnosticPanel(manuscriptPreview, '整篇')}</div>}
-              <div id="writing-sections-panel" style={{ display: 'grid', gridTemplateColumns: '220px minmax(0, 1fr)', gap: 16, alignItems: 'start', marginBottom: 16 }}>
+              <div id="writing-sections-panel" style={{ display: 'grid', gridTemplateColumns: '240px minmax(0, 1fr)', gap: 16, alignItems: 'start', marginBottom: 16 }}>
                 <Card
                   title={<Space><FileTextOutlined /> 章节导航</Space>}
                   style={{ ...cardStyle, position: 'sticky', top: 12 }}
@@ -1908,9 +1911,7 @@ const WritingPage: React.FC = () => {
                 </Card>
               </div>
               {publicationExportPanel}
-            </div>
-            <div>{evidencePanel}</div>
-          </div>
+          </>
         ) : (
           <WorkflowEmptyState
             title="选择或创建一个论文项目开始"
@@ -2069,6 +2070,17 @@ const WritingPage: React.FC = () => {
         @keyframes bounce {
           0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
           40% { transform: scale(1); opacity: 1; }
+        }
+        @media (max-width: 1100px) {
+          .manuscript-workbench-grid {
+            grid-template-columns: 1fr !important;
+          }
+          .manuscript-support-rail {
+            position: static !important;
+          }
+          #writing-sections-panel {
+            grid-template-columns: 1fr !important;
+          }
         }
       `}</style>
     </PageShell>

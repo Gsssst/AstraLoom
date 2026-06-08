@@ -990,11 +990,11 @@ class WritingProjectService:
                 return None
 
         max_order_result = await self.session.execute(
-            select(func.max(WritingSection.order)).where(WritingSection.project_id == str(project.id))
+            select(func.max(WritingSection.order)).where(WritingSection.project_id == project.id)
         )
         max_order = max_order_result.scalar_one_or_none()
         section = WritingSection(
-            project_id=str(project.id),
+            project_id=project.id,
             title=(title or "New Section").strip() or "New Section",
             content=content or "",
             status=status or "draft",
@@ -1072,7 +1072,7 @@ class WritingProjectService:
             try:
                 await self.session.execute(
                     update(WritingSection)
-                    .where(WritingSection.id == UUID(sid), WritingSection.project_id == str(pid))
+                    .where(WritingSection.id == UUID(sid), WritingSection.project_id == pid)
                     .values(order=i)
                 )
             except (ValueError, Exception):

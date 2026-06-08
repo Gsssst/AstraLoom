@@ -59,6 +59,11 @@ def test_writing_section_creation_endpoint_and_permission_contract():
     assert "resource_role_for_user" in service_source
     assert "role_can_edit_resource" in service_source
     assert "func.max(WritingSection.order)" in service_source
+    create_block = service_source.split("async def create_section", 1)[1].split("async def update_section", 1)[0]
+    reorder_block = service_source.split("async def reorder_sections", 1)[1].split("# --- 证据卡片", 1)[0]
+    assert "WritingSection.project_id == project.id" in create_block
+    assert "project_id=str(project.id)" not in create_block
+    assert "WritingSection.project_id == pid" in reorder_block
     assert "word_count=len(content or \"\")" in service_source
 
 
