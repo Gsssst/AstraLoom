@@ -11,6 +11,7 @@ services:
     # 生产环境不挂载源码（使用镜像中的代码）
     volumes:
       - uploads_data:/app/uploads
+      - model_cache:/app/model-cache
     # 不暴露后端端口到宿主机（仅通过 Nginx 访问）
     ports: []
 
@@ -21,6 +22,7 @@ services:
     command: celery -A app.tasks.celery_app worker --loglevel=warning --concurrency=4
     volumes:
       - uploads_data:/app/uploads
+      - model_cache:/app/model-cache
 
   celery-beat:
     environment:

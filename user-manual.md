@@ -37,6 +37,7 @@ docker compose logs -f backend
 生产环境部署前应完成：
 
 - 修改 `.env` 中的 `SECRET_KEY`、数据库密码和模型 API Key。
+- 如果服务器不能直连 HuggingFace，设置 `HF_ENDPOINT=https://hf-mirror.com` 后再补论文向量。
 - 配置 HTTPS 和访问控制。
 - 确认数据库、上传文件、日志和备份不进入 Git 仓库。
 - 为至少两位可信成员设置管理员账号，避免唯一管理员不可用。
@@ -415,6 +416,15 @@ AI 对话适合做快速问答、搜索增强和文件分析。
 - 用户和空间治理。
 
 建议定期检查迁移状态和后台任务日志。
+
+如果补向量失败并且后端日志出现 `huggingface.co`、`all-MiniLM-L6-v2` 或 `Network is unreachable`，说明本地向量模型还没有下载成功。管理员可以在服务器 `.env` 中加入：
+
+```bash
+HF_ENDPOINT=https://hf-mirror.com
+EMBEDDING_MODEL_NAME=all-MiniLM-L6-v2
+```
+
+然后重建或重启 backend / celery-worker，再重新执行补向量。模型会缓存到 Docker volume `model_cache`，后续不会每次重新下载。
 
 ## 10. 推荐使用流程
 

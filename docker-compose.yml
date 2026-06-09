@@ -86,6 +86,11 @@ services:
       SEMANTIC_SCHOLAR_API_KEY: ${SEMANTIC_SCHOLAR_API_KEY:-}
       OPENALEX_MAILTO: ${OPENALEX_MAILTO:-}
       SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
+      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-all-MiniLM-L6-v2}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      HF_HOME: ${HF_HOME:-/app/model-cache/huggingface}
+      TRANSFORMERS_CACHE: ${TRANSFORMERS_CACHE:-/app/model-cache/transformers}
+      SENTENCE_TRANSFORMERS_HOME: ${SENTENCE_TRANSFORMERS_HOME:-/app/model-cache/sentence-transformers}
       SECRET_KEY: ${SECRET_KEY:-dev-secret-key}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
       DEBUG: ${DEBUG:-true}
@@ -96,6 +101,7 @@ services:
     volumes:
       - ./backend:/app
       - uploads_data:/app/uploads
+      - model_cache:/app/model-cache
     command: ./scripts/docker-start-backend.sh uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --reload --timeout-keep-alive 30
     networks:
       - ars-network
@@ -149,11 +155,17 @@ services:
       SEMANTIC_SCHOLAR_API_KEY: ${SEMANTIC_SCHOLAR_API_KEY:-}
       OPENALEX_MAILTO: ${OPENALEX_MAILTO:-}
       SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
+      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-all-MiniLM-L6-v2}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      HF_HOME: ${HF_HOME:-/app/model-cache/huggingface}
+      TRANSFORMERS_CACHE: ${TRANSFORMERS_CACHE:-/app/model-cache/transformers}
+      SENTENCE_TRANSFORMERS_HOME: ${SENTENCE_TRANSFORMERS_HOME:-/app/model-cache/sentence-transformers}
       DEBUG: ${DEBUG:-false}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - ./backend:/app
       - uploads_data:/app/uploads
+      - model_cache:/app/model-cache
     command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
     networks:
       - ars-network
@@ -218,6 +230,8 @@ volumes:
   redis_data:
     driver: local
   uploads_data:
+    driver: local
+  model_cache:
     driver: local
 
 networks:

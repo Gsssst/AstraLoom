@@ -79,6 +79,13 @@ class Settings(BaseSettings):
     OPENALEX_MAILTO: str = ""
     SERPAPI_API_KEY: str = ""
 
+    # --- 本地向量模型 ---
+    EMBEDDING_MODEL_NAME: str = "all-MiniLM-L6-v2"
+    HF_ENDPOINT: str = ""
+    HF_HOME: str = "./model-cache/huggingface"
+    TRANSFORMERS_CACHE: str = "./model-cache/transformers"
+    SENTENCE_TRANSFORMERS_HOME: str = "./model-cache/sentence-transformers"
+
     # --- 飞书 ---
     FEISHU_APP_ID: str = ""
     FEISHU_APP_SECRET: str = ""
@@ -111,6 +118,7 @@ class Settings(BaseSettings):
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "case_sensitive": True,
+        "extra": "ignore",
     }
 
 

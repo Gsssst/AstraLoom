@@ -2,24 +2,63 @@
 
 import asyncio
 import logging
+import os
 import threading
-from sentence_transformers import SentenceTransformer
+from typing import Any
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 # 加载轻量模型（首次运行自动下载，约 80MB）
-_model: SentenceTransformer | None = None
+SentenceTransformer: Any | None = None
+_model: Any | None = None
 _model_lock = threading.Lock()
+_runtime_env_configured = False
 
 
-def _get_model() -> SentenceTransformer:
+def _configure_runtime_environment() -> None:
+    """Apply model download/cache environment before sentence-transformers loads."""
+
+    global _runtime_env_configured
+    if _runtime_env_configured:
+        return
+
+    env_values = {
+        "HF_HOME": settings.HF_HOME,
+        "TRANSFORMERS_CACHE": settings.TRANSFORMERS_CACHE,
+        "SENTENCE_TRANSFORMERS_HOME": settings.SENTENCE_TRANSFORMERS_HOME,
+    }
+    if settings.HF_ENDPOINT.strip():
+        env_values["HF_ENDPOINT"] = settings.HF_ENDPOINT.strip()
+
+    for key, value in env_values.items():
+        if value:
+            os.environ.setdefault(key, value)
+
+    _runtime_env_configured = True
+
+
+def _get_sentence_transformer_class() -> Any:
+    global SentenceTransformer
+    if SentenceTransformer is None:
+        from sentence_transformers import SentenceTransformer as _SentenceTransformer
+
+        SentenceTransformer = _SentenceTransformer
+    return SentenceTransformer
+
+
+def _get_model() -> Any:
     """懒加载 sentence-transformers 模型。"""
     global _model
     if _model is None:
         with _model_lock:
             if _model is None:
-                logger.info("正在加载 sentence-transformers 模型 (all-MiniLM-L6-v2)...")
-                _model = SentenceTransformer("all-MiniLM-L6-v2")
+                _configure_runtime_environment()
+                model_name = settings.EMBEDDING_MODEL_NAME
+                model_cls = _get_sentence_transformer_class()
+                logger.info("正在加载 sentence-transformers 模型 (%s)...", model_name)
+                _model = model_cls(model_name)
                 logger.info(f"模型加载完成，向量维度: {_model.get_sentence_embedding_dimension()}")
     return _model
 

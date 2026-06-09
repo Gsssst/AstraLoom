@@ -30,6 +30,7 @@ async def test_generate_embedding_keeps_event_loop_responsive(monkeypatch):
             return _FakeEmbedding([0.1, 0.2])
 
     monkeypatch.setattr(embedding_service, "_model", None)
+    monkeypatch.setattr(embedding_service, "_runtime_env_configured", False)
     monkeypatch.setattr(embedding_service, "SentenceTransformer", SlowModel)
 
     started = time.perf_counter()
@@ -59,6 +60,7 @@ async def test_concurrent_embedding_calls_share_one_model_initialization(monkeyp
             return _FakeEmbedding([float(len(text))])
 
     monkeypatch.setattr(embedding_service, "_model", None)
+    monkeypatch.setattr(embedding_service, "_runtime_env_configured", False)
     monkeypatch.setattr(embedding_service, "SentenceTransformer", SlowModel)
 
     results = await asyncio.gather(
@@ -67,3 +69,63 @@ async def test_concurrent_embedding_calls_share_one_model_initialization(monkeyp
 
     assert init_count == 1
     assert results == [[7.0], [7.0], [7.0], [7.0], [7.0]]
+
+
+@pytest.mark.asyncio
+async def test_generate_embedding_uses_configured_model_name(monkeypatch):
+    loaded_names: list[str] = []
+
+    class Model:
+        def __init__(self, name: str):
+            loaded_names.append(name)
+
+        def get_sentence_embedding_dimension(self) -> int:
+            return 1
+
+        def encode(self, _text: str, normalize_embeddings: bool = True) -> _FakeEmbedding:
+            return _FakeEmbedding([0.5])
+
+    monkeypatch.setattr(embedding_service, "_model", None)
+    monkeypatch.setattr(embedding_service, "_runtime_env_configured", False)
+    monkeypatch.setattr(embedding_service, "SentenceTransformer", Model)
+    monkeypatch.setattr(embedding_service.settings, "EMBEDDING_MODEL_NAME", "/app/model-cache/local-minilm")
+
+    assert await embedding_service.generate_embedding("query") == [0.5]
+    assert loaded_names == ["/app/model-cache/local-minilm"]
+
+
+@pytest.mark.asyncio
+async def test_generate_embedding_applies_huggingface_runtime_env(monkeypatch):
+    seen_env: dict[str, str | None] = {}
+
+    class Model:
+        def __init__(self, _name: str):
+            seen_env["HF_ENDPOINT"] = embedding_service.os.environ.get("HF_ENDPOINT")
+            seen_env["HF_HOME"] = embedding_service.os.environ.get("HF_HOME")
+            seen_env["TRANSFORMERS_CACHE"] = embedding_service.os.environ.get("TRANSFORMERS_CACHE")
+            seen_env["SENTENCE_TRANSFORMERS_HOME"] = embedding_service.os.environ.get("SENTENCE_TRANSFORMERS_HOME")
+
+        def get_sentence_embedding_dimension(self) -> int:
+            return 1
+
+        def encode(self, _text: str, normalize_embeddings: bool = True) -> _FakeEmbedding:
+            return _FakeEmbedding([0.7])
+
+    for key in ("HF_ENDPOINT", "HF_HOME", "TRANSFORMERS_CACHE", "SENTENCE_TRANSFORMERS_HOME"):
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setattr(embedding_service, "_model", None)
+    monkeypatch.setattr(embedding_service, "_runtime_env_configured", False)
+    monkeypatch.setattr(embedding_service, "SentenceTransformer", Model)
+    monkeypatch.setattr(embedding_service.settings, "HF_ENDPOINT", "https://hf-mirror.com")
+    monkeypatch.setattr(embedding_service.settings, "HF_HOME", "/cache/hf")
+    monkeypatch.setattr(embedding_service.settings, "TRANSFORMERS_CACHE", "/cache/transformers")
+    monkeypatch.setattr(embedding_service.settings, "SENTENCE_TRANSFORMERS_HOME", "/cache/st")
+
+    assert await embedding_service.generate_embedding("query") == [0.7]
+    assert seen_env == {
+        "HF_ENDPOINT": "https://hf-mirror.com",
+        "HF_HOME": "/cache/hf",
+        "TRANSFORMERS_CACHE": "/cache/transformers",
+        "SENTENCE_TRANSFORMERS_HOME": "/cache/st",
+    }
