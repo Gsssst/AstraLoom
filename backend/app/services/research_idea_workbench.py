@@ -426,6 +426,7 @@ class ResearchIdeaWorkbenchService:
             similar_work_pool=similar_work_context["items"],
             source_coverage=similar_work_context["source_coverage"],
         )
+        novelty_checked = self.add_anti_collision_revisions(novelty_checked)
         adversarial_reviewed = self.adversarial_review_candidates(novelty_checked)
         reviewed = self.apply_quality_adjustments(adversarial_reviewed, evidence_map=evidence_map, gap_map=gap_map)
         tool_context = self._compact_tool_context(generation_context.get("tool_context"))
@@ -1664,6 +1665,8 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         title_similarity = ranked[0]["title_similarity"] if ranked else 0.0
 
         novelty_score = round(max(0.0, 1.0 - best_similarity), 3)
+        novelty_matrix = self._novelty_matrix(candidate, ranked[:5])
+        matrix_risk = novelty_matrix.get("collision_risk")
         if best_similarity >= 0.58 or title_similarity >= 0.72:
             status = "too_similar"
             collision_risk = "high"
@@ -1676,12 +1679,21 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             status = "likely_novel"
             collision_risk = "low"
             rationale = "候选与当前证据集重叠较低，具备进一步做新颖性检查的价值。"
+        if matrix_risk == "high":
+            status = "too_similar"
+            collision_risk = "high"
+            rationale = "候选在研究问题、机制或实验设置上与已有工作高度重合，需要明确差异化。"
+        elif matrix_risk == "medium" and collision_risk == "low":
+            status = "incremental"
+            collision_risk = "medium"
+            rationale = "候选存在 facet-level 重叠，适合作为增量改进但需要补强差异化。"
 
         return {
             "status": status,
             "score": novelty_score,
             "max_similarity": round(best_similarity, 3),
             "collision_risk": collision_risk,
+            "novelty_matrix": novelty_matrix,
             "nearest_evidence": {
                 "paper_id": nearest.get("paper_id"),
                 "title": nearest.get("title"),
@@ -1700,6 +1712,87 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                 "source_errors": {},
             },
             "rationale": rationale,
+        }
+
+    @classmethod
+    def _novelty_matrix(cls, candidate: dict[str, Any], ranked: list[dict[str, Any]]) -> dict[str, Any]:
+        if not ranked:
+            return {
+                "facet_scores": {},
+                "nearest_collision": None,
+                "similar_points": [],
+                "real_differences": [],
+                "missing_differences": ["缺少可比较的相似工作，仍需人工查新。"],
+                "collision_risk": "unknown",
+            }
+        rows = []
+        for value in ranked[:5]:
+            item = value.get("item") or {}
+            facets = cls._novelty_facet_scores(candidate, item)
+            max_facet = max(facets.values()) if facets else 0.0
+            overlap_count = sum(1 for score in facets.values() if score >= 0.42)
+            rows.append({
+                "paper_id": str(item.get("paper_id") or ""),
+                "title": item.get("title") or "未命名论文",
+                "source": item.get("source") or item.get("category"),
+                "score": value.get("score", 0),
+                "facet_scores": facets,
+                "max_facet": round(max_facet, 3),
+                "overlap_count": overlap_count,
+            })
+        nearest = max(rows, key=lambda row: (row["overlap_count"], row["max_facet"], row["score"]))
+        facet_scores = nearest["facet_scores"]
+        high_facets = [name for name, score in facet_scores.items() if score >= 0.55]
+        medium_facets = [name for name, score in facet_scores.items() if 0.34 <= score < 0.55]
+        low_facets = [name for name, score in facet_scores.items() if score < 0.22]
+        if len(high_facets) >= 2 or (nearest["score"] >= 0.62 and high_facets):
+            risk = "high"
+        elif high_facets or len(medium_facets) >= 2 or nearest["score"] >= 0.38:
+            risk = "medium"
+        else:
+            risk = "low"
+        labels = {
+            "question": "研究问题",
+            "mechanism": "方法机制",
+            "experiment": "实验设置",
+            "contribution": "贡献表述",
+            "evidence": "证据引用",
+        }
+        similar_points = [f"{labels.get(name, name)}相似度较高" for name in high_facets]
+        real_differences = [f"{labels.get(name, name)}差异较明显" for name in low_facets[:3]]
+        missing = [f"需要进一步说明{labels.get(name, name)}与最近工作的区别" for name in (high_facets or medium_facets)[:3]]
+        return {
+            "facet_scores": facet_scores,
+            "nearest_collision": {
+                "paper_id": nearest.get("paper_id"),
+                "title": nearest.get("title"),
+                "source": nearest.get("source"),
+                "score": nearest.get("score"),
+                "max_facet": nearest.get("max_facet"),
+            },
+            "similar_points": similar_points,
+            "real_differences": real_differences or ["当前候选与最近工作仍需人工确认差异点。"],
+            "missing_differences": missing,
+            "collision_risk": risk,
+            "rows": rows[:3],
+        }
+
+    @classmethod
+    def _novelty_facet_scores(cls, candidate: dict[str, Any], item: dict[str, Any]) -> dict[str, float]:
+        experiment = candidate.get("minimum_experiment") or {}
+        item_text = f"{item.get('title', '')} {item.get('abstract_excerpt', '')} {item.get('relevance', '')}"
+        item_evidence_ids = [item.get("paper_id"), item.get("imported_paper_id")]
+        return {
+            "question": round(cls._text_similarity(candidate.get("gap", ""), item_text), 3),
+            "mechanism": round(cls._text_similarity(candidate.get("approach", ""), item_text), 3),
+            "experiment": round(cls._text_similarity(" ".join([
+                str(experiment.get("dataset") or ""),
+                " ".join(str(value) for value in experiment.get("baselines", []) or []),
+                " ".join(str(value) for value in experiment.get("metrics", []) or []),
+                " ".join(str(value) for value in experiment.get("steps", []) or []),
+            ]), item_text), 3),
+            "contribution": round(cls._text_similarity(f"{candidate.get('title', '')} {candidate.get('hypothesis', '')}", item_text), 3),
+            "evidence": round(cls._list_similarity(candidate.get("evidence_ids") or [], item_evidence_ids), 3),
         }
 
     def _similar_work_score(
@@ -1785,6 +1878,58 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             for candidate in candidates
         ]
 
+    def add_anti_collision_revisions(self, candidates: list[dict[str, Any]], *, limit: int = 3) -> list[dict[str, Any]]:
+        revised: list[dict[str, Any]] = []
+        created = 0
+        for candidate in candidates:
+            revised.append(candidate)
+            novelty = candidate.get("novelty_check") or {}
+            matrix = novelty.get("novelty_matrix") or {}
+            if created >= limit or novelty.get("collision_risk") != "high":
+                continue
+            repaired = self._anti_collision_revision(candidate, matrix)
+            if repaired:
+                revised.append(repaired)
+                created += 1
+        return revised
+
+    @staticmethod
+    def _anti_collision_revision(candidate: dict[str, Any], matrix: dict[str, Any]) -> dict[str, Any] | None:
+        nearest = matrix.get("nearest_collision") if isinstance(matrix, dict) else None
+        if not isinstance(nearest, dict) or not nearest.get("title"):
+            return None
+        missing = [str(item) for item in (matrix.get("missing_differences") or []) if str(item).strip()]
+        differences = [str(item) for item in (matrix.get("real_differences") or []) if str(item).strip()]
+        experiment = dict(candidate.get("minimum_experiment") or {})
+        baselines = list(dict.fromkeys([*(experiment.get("baselines") or []), str(nearest.get("title")), "无改动消融"]))
+        steps = list(dict.fromkeys([
+            *(experiment.get("steps") or []),
+            "复现或引用最近相似工作作为强基线",
+            "围绕差异化 facet 设计消融验证",
+        ]))
+        risks = list(dict.fromkeys([*(candidate.get("risks") or []), "修订后仍可能只是已有工作的窄化变体"]))
+        avoid_clause = "；".join(missing[:2]) if missing else "明确区别于最近相似工作"
+        return {
+            **candidate,
+            "title": f"{candidate.get('title', '候选假设')} · 差异化修订",
+            "approach": f"{candidate.get('approach', '')} 该修订显式避开最近相似工作「{nearest.get('title')}」的重叠点：{avoid_clause}。",
+            "hypothesis": f"{candidate.get('hypothesis', '')} 修订重点是验证与最近相似工作不同的机制或实验边界。",
+            "risks": risks,
+            "minimum_experiment": {**experiment, "baselines": baselines, "steps": steps},
+            "anti_collision_revision": {
+                "source_title": nearest.get("title"),
+                "source_paper_id": nearest.get("paper_id"),
+                "avoided_facets": missing,
+                "preserved_differences": differences,
+            },
+            "novelty_check": {
+                **candidate.get("novelty_check", {}),
+                "status": "incremental",
+                "collision_risk": "medium",
+                "rationale": "该候选由高碰撞风险候选修订而来，已显式加入差异化约束，仍需人工复核。",
+            },
+        }
+
     def _adversarial_review(self, candidate: dict[str, Any]) -> dict[str, Any]:
         objections = []
         required_fixes = []
@@ -1812,11 +1957,16 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             required_fixes.append("写清楚否定假设的量化判据。")
 
         novelty_status = (candidate.get("novelty_check") or {}).get("status")
+        novelty_matrix = (candidate.get("novelty_check") or {}).get("novelty_matrix") or {}
+        missing_differences = novelty_matrix.get("missing_differences") or []
         if novelty_status == "too_similar":
             objections.append("新颖性检查显示与已有工作过于相似。")
             required_fixes.append("明确和最近相似论文的机制差异。")
         elif novelty_status == "incremental":
             objections.append("该想法可能是增量改进，需要更强对比论证。")
+        if novelty_matrix.get("collision_risk") == "high" and missing_differences:
+            objections.append("facet-level 查新显示关键差异点不足。")
+            required_fixes.extend([str(item) for item in missing_differences[:2]])
 
         penalty = min(2.5, round(len(objections) * 0.35, 2))
         verdict = "advance" if penalty <= 0.7 else "revise" if penalty <= 1.8 else "reject"
@@ -1869,6 +2019,13 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             experiment_bonus = (experiment_profile["completeness"] - 0.55) * 0.6
             gap_bonus = (gap_alignment["alignment_score"] - 0.45) * 0.35
             novelty_penalty = 0.8 if novelty.get("collision_risk") == "high" else 0.35 if novelty.get("collision_risk") == "medium" else 0.0
+            matrix = novelty.get("novelty_matrix") or {}
+            matrix_risk = matrix.get("collision_risk")
+            missing_count = len(matrix.get("missing_differences") or [])
+            matrix_penalty = 0.55 if matrix_risk == "high" else 0.22 if matrix_risk == "medium" else 0.0
+            if candidate.get("anti_collision_revision"):
+                matrix_penalty *= 0.45
+            matrix_penalty += min(0.25, missing_count * 0.06)
             weak_evidence_penalty = 0.45 if evidence_profile["coverage_score"] < 0.35 else 0.0
             weak_experiment_penalty = 0.55 if experiment_profile["completeness"] < 0.5 else 0.0
             adjusted_score = round(max(
@@ -1879,6 +2036,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                 + gap_bonus
                 - float(adversarial.get("penalty", 0))
                 - novelty_penalty
+                - matrix_penalty
                 - weak_evidence_penalty
                 - weak_experiment_penalty,
             ), 2)
@@ -2006,6 +2164,11 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         novelty_status = str((candidate.get("novelty_check") or {}).get("status") or "").strip()
         if novelty_status:
             facets.append(f"novelty:{novelty_status}")
+        matrix_risk = str(((candidate.get("novelty_check") or {}).get("novelty_matrix") or {}).get("collision_risk") or "").strip()
+        if matrix_risk:
+            facets.append(f"novelty-matrix:{matrix_risk}")
+        if candidate.get("anti_collision_revision"):
+            facets.append("novelty:anti-collision-revision")
         return list(dict.fromkeys(facets))[:12]
 
     @staticmethod
@@ -2074,6 +2237,12 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         tool_names = candidate.get("used_tool_names") or []
         if tool_names:
             parts.append(f"工具适配：{', '.join(str(name) for name in tool_names[:2])}")
+        novelty_matrix = ((candidate.get("novelty_check") or {}).get("novelty_matrix") or {})
+        if novelty_matrix.get("collision_risk"):
+            parts.append(f"查新矩阵风险：{novelty_matrix.get('collision_risk')}")
+        revision = candidate.get("anti_collision_revision") or {}
+        if revision.get("source_title"):
+            parts.append(f"已避开相似工作：{revision.get('source_title')}")
         return "；".join(parts)
 
     @staticmethod
@@ -2205,6 +2374,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                     "aggregate_score": candidate["score"],
                     "base_score": candidate.get("base_score", candidate["score"]),
                     "novelty_check": candidate.get("novelty_check"),
+                    "anti_collision_revision": candidate.get("anti_collision_revision"),
                     "adversarial_review": candidate.get("adversarial_review"),
                     "search_tree": candidate.get("tree"),
                     "selection_rationale": candidate.get("selection_rationale"),

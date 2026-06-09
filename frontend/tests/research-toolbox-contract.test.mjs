@@ -62,3 +62,14 @@ test('research proposals can display toolbox fit rationale', () => {
   assert.match(page, /used_tool_names/);
   assert.match(page, /fit_score/);
 });
+
+test('research proposals can display novelty matrix rationale', () => {
+  const page = read('src/pages/ResearchProjectPage.tsx');
+
+  assert.match(page, /查新矩阵/);
+  assert.match(page, /novelty_matrix/);
+  assert.match(page, /nearest_collision/);
+  assert.match(page, /real_differences/);
+  assert.match(page, /missing_differences/);
+  assert.match(page, /anti_collision_revision/);
+});

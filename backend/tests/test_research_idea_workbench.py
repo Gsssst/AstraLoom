@@ -386,6 +386,8 @@ def test_novelty_check_flags_similar_candidate():
     assert checked[0]["novelty_check"]["nearest_evidence"]["paper_id"] == "p1"
     assert checked[0]["novelty_check"]["similar_work"][0]["paper_id"] == "p1"
     assert checked[0]["novelty_check"]["collision_risk"] in {"high", "medium"}
+    assert "novelty_matrix" in checked[0]["novelty_check"]
+    assert checked[0]["novelty_check"]["novelty_matrix"]["nearest_collision"]["paper_id"] == "p1"
 
 
 def test_novelty_collision_risk_tracks_high_medium_and_low_similarity():
@@ -435,6 +437,87 @@ def test_novelty_collision_risk_tracks_high_medium_and_low_similarity():
     assert risks[2] == "low"
     assert checked[0]["novelty_check"]["similar_work"][0]["relation"] == "nearest_collision_candidate"
     assert checked[0]["novelty_check"]["source_coverage"]["local_count"] == 2
+
+
+def test_novelty_matrix_records_facet_differentiation():
+    service = ResearchIdeaWorkbenchService(_Session())
+    candidate = {
+        "title": "Graph retrieval for multi-hop QA",
+        "gap": "Graph retrieval lacks robust multi-hop grounding.",
+        "hypothesis": "Graph retrieval improves multi-hop QA reliability.",
+        "approach": "Use graph retrieval and reranking for multi-hop evidence.",
+        "evidence_ids": ["p1"],
+        "minimum_experiment": {
+            "dataset": "multi-hop QA",
+            "baselines": ["GraphRAG"],
+            "metrics": ["accuracy"],
+            "steps": ["compare graph retrieval"],
+        },
+    }
+    evidence = [{
+        "paper_id": "p1",
+        "title": "Graph retrieval for multi-hop QA",
+        "abstract_excerpt": "Graph retrieval improves multi-hop QA reliability with reranking.",
+        "source": "local_library",
+    }]
+
+    novelty = service.novelty_check_candidates([candidate], {"seed": evidence, "background": [], "inspiration": []})[0]["novelty_check"]
+
+    matrix = novelty["novelty_matrix"]
+    assert matrix["collision_risk"] in {"high", "medium"}
+    assert matrix["facet_scores"]["mechanism"] > 0
+    assert matrix["nearest_collision"]["title"] == "Graph retrieval for multi-hop QA"
+    assert matrix["missing_differences"]
+
+
+def test_anti_collision_revision_adds_revised_candidate():
+    service = ResearchIdeaWorkbenchService(_Session())
+    candidate = {
+        "title": "Graph retrieval for QA",
+        "hypothesis": "Graph retrieval improves QA.",
+        "approach": "Use graph retrieval.",
+        "risks": [],
+        "minimum_experiment": {"baselines": [], "steps": [], "metrics": [], "dataset": "QA"},
+        "novelty_check": {
+            "collision_risk": "high",
+            "novelty_matrix": {
+                "nearest_collision": {"paper_id": "p1", "title": "Graph Retrieval Baseline"},
+                "missing_differences": ["需要进一步说明方法机制与最近工作的区别"],
+                "real_differences": ["实验设置差异较明显"],
+            },
+        },
+    }
+
+    revised = service.add_anti_collision_revisions([candidate])
+
+    assert len(revised) == 2
+    assert revised[1]["anti_collision_revision"]["source_title"] == "Graph Retrieval Baseline"
+    assert "Graph Retrieval Baseline" in revised[1]["minimum_experiment"]["baselines"]
+    assert revised[1]["novelty_check"]["collision_risk"] == "medium"
+
+
+def test_quality_adjustment_penalizes_high_novelty_matrix_risk():
+    service = ResearchIdeaWorkbenchService(_Session())
+    base_candidate = {
+        "title": "Candidate",
+        "hypothesis": "A testable hypothesis with enough words.",
+        "approach": "A concrete approach.",
+        "evidence_ids": ["p1", "p2"],
+        "minimum_experiment": {
+            "dataset": "Benchmark",
+            "baselines": ["Strong baseline"],
+            "metrics": ["accuracy"],
+            "steps": ["reproduce", "ablation", "analysis"],
+        },
+        "review": {"scores": {"novelty": 8, "evidence_grounding": 8, "feasibility": 8, "testability": 8, "impact": 8, "clarity": 8}},
+    }
+    low = {**base_candidate, "novelty_check": {"score": 0.9, "collision_risk": "low", "novelty_matrix": {"collision_risk": "low", "missing_differences": []}}}
+    high = {**base_candidate, "novelty_check": {"score": 0.9, "collision_risk": "low", "novelty_matrix": {"collision_risk": "high", "missing_differences": ["机制差异不足"]}}}
+
+    adjusted = service.apply_quality_adjustments([low, high], evidence_map={"seed": [], "background": [], "inspiration": []})
+    scores = {item["novelty_check"]["novelty_matrix"]["collision_risk"]: item["score"] for item in adjusted}
+
+    assert scores["low"] > scores["high"]
 
 
 @pytest.mark.asyncio

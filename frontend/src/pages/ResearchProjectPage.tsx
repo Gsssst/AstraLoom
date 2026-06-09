@@ -91,6 +91,14 @@ interface Review {
     score: number; max_similarity: number; rationale: string;
     nearest_evidence?: { paper_id?: string; title?: string; source?: string } | null;
     collision_risk?: 'high' | 'medium' | 'low' | 'unknown';
+    novelty_matrix?: {
+      collision_risk?: 'high' | 'medium' | 'low' | 'unknown';
+      facet_scores?: Record<string, number>;
+      nearest_collision?: { paper_id?: string; title?: string; source?: string; score?: number; max_facet?: number } | null;
+      similar_points?: string[];
+      real_differences?: string[];
+      missing_differences?: string[];
+    };
     similar_work?: Array<{
       paper_id?: string; title?: string; year?: number; source?: string; source_url?: string;
       score?: number; relation?: string; reason?: string; title_similarity?: number; lexical_similarity?: number;
@@ -106,6 +114,12 @@ interface Review {
   };
   proposal_review?: ProposalReviewPackage | null;
   search_tree?: { round?: number; operator?: string; parent_title?: string | null; lineage?: string[]; source?: string };
+  anti_collision_revision?: {
+    source_title?: string;
+    source_paper_id?: string;
+    avoided_facets?: string[];
+    preserved_differences?: string[];
+  };
   used_tool_ids?: string[];
   used_tool_names?: string[];
   tool_fit_rationale?: string | null;
@@ -2455,6 +2469,7 @@ const ResearchProjectPage: React.FC = () => {
     const executionPack = executionPackMap[idea.id];
     const executionData = executionPack?.data;
     const novelty = review?.novelty_check;
+    const noveltyMatrix = novelty?.novelty_matrix;
     const collisionRisk = novelty?.collision_risk || (novelty?.status === 'too_similar' ? 'high' : novelty?.status === 'incremental' ? 'medium' : novelty?.status === 'likely_novel' ? 'low' : undefined);
     const similarWork = novelty?.similar_work || [];
     const diversityFacets = review?.diversity_facets || [];
@@ -2550,6 +2565,28 @@ const ResearchProjectPage: React.FC = () => {
                   description={
                     <Space direction="vertical" size={6} style={{ width: '100%' }}>
                       <span>{novelty.rationale}{novelty.nearest_evidence?.title ? ` 最近相似证据：${novelty.nearest_evidence.title}` : ''}</span>
+                      {noveltyMatrix && (
+                        <div className="proposal-similar-work-list">
+                          <Space wrap size={6}>
+                            <Tag color={riskColors[noveltyMatrix.collision_risk || 'unknown'] || 'default'}>查新矩阵 {noveltyMatrix.collision_risk || 'unknown'}</Tag>
+                            {noveltyMatrix.nearest_collision?.title && <Tag color="volcano">最近碰撞：{noveltyMatrix.nearest_collision.title}</Tag>}
+                            {Object.entries(noveltyMatrix.facet_scores || {}).map(([facet, score]) => (
+                              <Tag key={facet} color={score >= 0.55 ? 'red' : score >= 0.34 ? 'orange' : 'green'}>
+                                {facet} {Math.round(score * 100)}%
+                              </Tag>
+                            ))}
+                          </Space>
+                          {(noveltyMatrix.real_differences || []).length > 0 && (
+                            <Text type="secondary">差异点：{noveltyMatrix.real_differences?.slice(0, 3).join('；')}</Text>
+                          )}
+                          {(noveltyMatrix.missing_differences || []).length > 0 && (
+                            <Text type="secondary">需补强：{noveltyMatrix.missing_differences?.slice(0, 3).join('；')}</Text>
+                          )}
+                          {review.anti_collision_revision?.source_title && (
+                            <Text type="secondary">差异化修订来源：{review.anti_collision_revision.source_title}</Text>
+                          )}
+                        </div>
+                      )}
                       {similarWork.length > 0 && (
                         <div className="proposal-similar-work-list">
                           {similarWork.slice(0, 3).map((item, index) => (
