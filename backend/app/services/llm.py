@@ -15,10 +15,13 @@ logger = logging.getLogger(__name__)
 # 配置 LiteLLM — 使用 DeepSeek 兼容 OpenAI 格式
 litellm.drop_params = True  # 自动丢弃不支持的参数
 
-# DeepSeek V4 Pro 支持最大 384K max_tokens
+# Generic chat keeps conservative defaults. Long-form paper Q&A can request
+# provider-specific ceilings through paper_chat_max_tokens().
 DEFAULT_MAX_TOKENS = 16384
 LARGE_MAX_TOKENS = 32768
 MAX_MAX_TOKENS = 65536
+DEEPSEEK_MAX_OUTPUT_TOKENS = 384000
+OPENAI_COMPATIBLE_MAX_OUTPUT_TOKENS = 128000
 
 DEFAULT_PROVIDER = "deepseek"
 OPENAI_COMPATIBLE_PROVIDER = "openai-compatible"
@@ -202,6 +205,25 @@ class LLMService:
     def _responses_api_url(self) -> str:
         return f"{self.api_base.rstrip('/')}/responses"
 
+    def max_output_tokens(self) -> int:
+        """Return the active provider's hard output-token ceiling."""
+        if self.active_provider == OPENAI_COMPATIBLE_PROVIDER:
+            return OPENAI_COMPATIBLE_MAX_OUTPUT_TOKENS
+        if self.active_provider == DEFAULT_PROVIDER:
+            return DEEPSEEK_MAX_OUTPUT_TOKENS
+        return MAX_MAX_TOKENS
+
+    def paper_chat_max_tokens(self) -> int:
+        """Long-output budget for paper-detail Q&A."""
+        return self.max_output_tokens()
+
+    def _clamp_output_tokens(self, max_tokens: int) -> int:
+        try:
+            requested = int(max_tokens)
+        except (TypeError, ValueError):
+            requested = DEFAULT_MAX_TOKENS
+        return max(1, min(requested, self.max_output_tokens()))
+
     async def chat(
         self,
         messages,
@@ -215,11 +237,12 @@ class LLMService:
         默认 max_tokens=16384，确保有足够空间用于思考+输出。
         """
         last_error = None
+        token_limit = self._clamp_output_tokens(max_tokens)
         for attempt in range(3):
             try:
                 response = await litellm.acompletion(
                     messages=messages, temperature=temperature,
-                    max_tokens=max_tokens, stream=False, **self._get_kwargs(),
+                    max_tokens=token_limit, stream=False, **self._get_kwargs(),
                 )
                 message = response.choices[0].message
                 content = message.content or ""
@@ -228,9 +251,9 @@ class LLMService:
                     logger.info(f"LLM 重试成功 (attempt {attempt+1})")
 
                 # V4 Pro 思考模式: content 为空但 reasoning_content 有内容 → token 不足
-                # 渐进式升级: 16384 → 32768 → 65536
-                if not content and reasoning and max_tokens < MAX_MAX_TOKENS:
-                    next_limit = min(max_tokens * 2, MAX_MAX_TOKENS)
+                # 普通聊天渐进式升级到通用重试上限；显式长输出请求会按 provider ceiling 截断。
+                if not content and reasoning and token_limit < MAX_MAX_TOKENS:
+                    next_limit = self._clamp_output_tokens(min(token_limit * 2, MAX_MAX_TOKENS))
                     logger.info(
                         f"模型思考消耗了所有 token (reasoning={len(reasoning)}chars)，"
                         f"以 {next_limit} max_tokens 重试"
@@ -288,7 +311,7 @@ class LLMService:
 
         如需获取思考过程，请使用 chat_stream_with_thinking()。
         """
-        token_limit = max_tokens
+        token_limit = self._clamp_output_tokens(max_tokens)
         for attempt in range(3):
             emitted_content = False
             reasoning_seen = False
@@ -323,10 +346,10 @@ class LLMService:
             # 思考模式：推理消耗了所有 token → 渐进式增大
             # 16384 → 32768 → 65536 (DeepSeek 上限 384K)
             if reasoning_seen and token_limit < MAX_MAX_TOKENS:
-                token_limit = min(token_limit * 2, MAX_MAX_TOKENS)
+                token_limit = self._clamp_output_tokens(min(token_limit * 2, MAX_MAX_TOKENS))
                 logger.info(f"模型流式思考耗尽 tokens，以 {token_limit} 重试")
             elif not reasoning_seen and token_limit < MAX_MAX_TOKENS:
-                token_limit = min(token_limit * 2, MAX_MAX_TOKENS)
+                token_limit = self._clamp_output_tokens(min(token_limit * 2, MAX_MAX_TOKENS))
                 logger.info(f"V4 Pro 流式未返回内容，以 {token_limit} max_tokens 重试")
             elif attempt == 0:
                 logger.warning("LLM 流式调用未返回可展示内容，重试一次")
@@ -355,7 +378,7 @@ class LLMService:
                 yield event
             return
 
-        token_limit = max_tokens
+        token_limit = self._clamp_output_tokens(max_tokens)
         reasoning_total = ""
         content_total = ""
 
@@ -400,7 +423,7 @@ class LLMService:
                 return
             # 有思考但无内容 → 渐进式增大 token，多级重试
             if token_limit < MAX_MAX_TOKENS:
-                token_limit = min(token_limit * 2, MAX_MAX_TOKENS)
+                token_limit = self._clamp_output_tokens(min(token_limit * 2, MAX_MAX_TOKENS))
                 reason = f"reasoning={len(reasoning_total)}chars" if emitted_reasoning else "无推理输出"
                 logger.info(f"模型思考消耗了所有 token（{reason}），以 {token_limit} 重试")
             elif attempt == 0:
@@ -420,7 +443,7 @@ class LLMService:
             "model": _responses_model(self.model),
             "input": _responses_input(messages),
             "reasoning": {"effort": reasoning_effort, "summary": reasoning_summary},
-            "max_output_tokens": max_tokens,
+            "max_output_tokens": self._clamp_output_tokens(max_tokens),
             "stream": True,
         }
         headers = {

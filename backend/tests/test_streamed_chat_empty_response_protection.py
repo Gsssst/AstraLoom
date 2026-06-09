@@ -94,6 +94,25 @@ def test_llm_service_builds_openai_compatible_kwargs(monkeypatch, tmp_path):
     }
 
 
+def test_llm_service_uses_provider_specific_paper_chat_limits(monkeypatch, tmp_path):
+    monkeypatch.setattr(llm_module.settings, "DEEPSEEK_API_KEY", "sk-deepseek")
+    monkeypatch.setattr(llm_module.settings, "DEEPSEEK_API_BASE", "https://api.deepseek.com")
+    monkeypatch.setattr(llm_module.settings, "DEEPSEEK_MODEL", "deepseek-v4-pro")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_KEY", "sk-compatible")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_BASE", "https://llm.example.com/v1")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_MODEL", "gpt-5.5")
+    monkeypatch.setattr(llm_module.settings, "LLM_RUNTIME_CONFIG_PATH", str(tmp_path / "llm.json"))
+
+    service = llm_module.LLMService()
+
+    assert service.paper_chat_max_tokens() == llm_module.DEEPSEEK_MAX_OUTPUT_TOKENS
+
+    service.select_model("openai-compatible", "gpt-5.5")
+
+    assert service.paper_chat_max_tokens() == llm_module.OPENAI_COMPATIBLE_MAX_OUTPUT_TOKENS
+    assert service._clamp_output_tokens(999_999) == llm_module.OPENAI_COMPATIBLE_MAX_OUTPUT_TOKENS
+
+
 def test_llm_service_rejects_unconfigured_provider_without_changing_selection(monkeypatch, tmp_path):
     monkeypatch.setattr(llm_module.settings, "DEEPSEEK_API_KEY", "sk-deepseek")
     monkeypatch.setattr(llm_module.settings, "DEEPSEEK_API_BASE", "https://api.deepseek.com")

@@ -127,7 +127,7 @@ async def test_paper_chat_recovers_visible_answer_after_reasoning_only_primary_s
     calls = []
 
     async def _reasoning_only_stream(**kwargs):
-        calls.append(("primary", kwargs["temperature"]))
+        calls.append(("primary", kwargs["temperature"], kwargs["max_tokens"]))
         yield {"type": "reasoning", "content": "分析中"}
         raise RuntimeError("模型未返回可展示内容")
 
@@ -142,6 +142,7 @@ async def test_paper_chat_recovers_visible_answer_after_reasoning_only_primary_s
         event async for event in papers._stream_paper_answer_events(
             [{"role": "user", "content": "question"}],
             show_thinking=True,
+            max_tokens=128000,
         )
     ]
 
@@ -150,6 +151,8 @@ async def test_paper_chat_recovers_visible_answer_after_reasoning_only_primary_s
         {"type": "status", "content": papers.PAPER_CHAT_RECOVERY_STATUS},
         {"type": "content", "content": "稳定回答"},
     ]
+    assert calls[0][2] == 128000
+    assert calls[1][2] == 128000
     assert calls[1][3] == {"role": "system", "content": papers.PAPER_CHAT_RECOVERY_PROMPT}
 
 
@@ -158,7 +161,7 @@ async def test_paper_chat_skips_recovery_when_primary_stream_returns_content(mon
     calls = []
 
     async def _content_stream(**kwargs):
-        calls.append("primary")
+        calls.append(("primary", kwargs["max_tokens"]))
         yield "直接回答"
 
     monkeypatch.setattr(papers.llm_service, "chat_stream", _content_stream)
@@ -167,11 +170,12 @@ async def test_paper_chat_skips_recovery_when_primary_stream_returns_content(mon
         event async for event in papers._stream_paper_answer_events(
             [{"role": "user", "content": "question"}],
             show_thinking=False,
+            max_tokens=384000,
         )
     ]
 
     assert events == [{"type": "content", "content": "直接回答"}]
-    assert calls == ["primary"]
+    assert calls == [("primary", 384000)]
 
 
 @pytest.mark.asyncio
@@ -192,6 +196,7 @@ async def test_paper_chat_recovers_visible_answer_after_thinking_timeout(monkeyp
         event async for event in papers._stream_paper_answer_events(
             [{"role": "user", "content": "question"}],
             show_thinking=True,
+            max_tokens=128000,
         )
     ]
 

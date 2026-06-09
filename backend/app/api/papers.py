@@ -22,7 +22,7 @@ from app.services.paper_search import (
 from app.services.paper_ingestion import PaperIngestionService
 from app.services.rag_service import RAGService
 from app.services.paper_enhance import PaperEnhanceService
-from app.services.llm import LARGE_MAX_TOKENS, llm_service
+from app.services.llm import llm_service
 from app.core.config import settings
 from app.core.security import get_current_user, get_optional_user, require_admin
 from app.core.exceptions import NotFoundException
@@ -1298,6 +1298,7 @@ async def _stream_paper_answer_events(
     context: list[dict[str, str]],
     *,
     show_thinking: bool,
+    max_tokens: int,
 ) -> AsyncIterator[dict[str, str]]:
     """生成论文问答事件；首轮无正文时切换到稳定回答模式。"""
     emitted_content = False
@@ -1306,12 +1307,20 @@ async def _stream_paper_answer_events(
             import asyncio
 
             async with asyncio.timeout(PAPER_CHAT_PRIMARY_TIMEOUT_SECONDS):
-                async for event in llm_service.chat_stream_with_thinking(messages=context, temperature=0.5):
+                async for event in llm_service.chat_stream_with_thinking(
+                    messages=context,
+                    temperature=0.5,
+                    max_tokens=max_tokens,
+                ):
                     if event["type"] == "content" and event["content"]:
                         emitted_content = True
                     yield event
         else:
-            async for token in llm_service.chat_stream(messages=context, temperature=0.5):
+            async for token in llm_service.chat_stream(
+                messages=context,
+                temperature=0.5,
+                max_tokens=max_tokens,
+            ):
                 if not token:
                     continue
                 emitted_content = True
@@ -1332,7 +1341,7 @@ async def _stream_paper_answer_events(
     async for token in llm_service.chat_stream(
         messages=recovery_context,
         temperature=0.3,
-        max_tokens=LARGE_MAX_TOKENS,
+        max_tokens=max_tokens,
     ):
         if token:
             yield {"type": "content", "content": token}
@@ -1353,7 +1362,11 @@ async def ask_about_paper(paper_id: str, req: AskPaperRequest, db: AsyncSession 
         raise HTTPException(status_code=404, detail="论文未找到")
 
     context, references = await _build_paper_chat_context(paper, req)
-    answer = await llm_service.chat(messages=context, temperature=0.5, max_tokens=3072)
+    answer = await llm_service.chat(
+        messages=context,
+        temperature=0.5,
+        max_tokens=llm_service.paper_chat_max_tokens(),
+    )
     return {"answer": answer, "references": references, "evidence": _paper_evidence_meta(references)}
 
 
@@ -1369,6 +1382,7 @@ async def ask_about_paper_stream(paper_id: str, req: AskPaperRequest, db: AsyncS
     if not paper: raise HTTPException(status_code=404, detail="论文未找到")
 
     context, references = await _build_paper_chat_context(paper, req)
+    max_tokens = llm_service.paper_chat_max_tokens()
     from app.api.chat_sessions import _retrieval_quality_snapshot
     retrieval_quality = await _retrieval_quality_snapshot(rag_enabled=req.rag_enabled)
 
@@ -1392,7 +1406,11 @@ async def ask_about_paper_stream(paper_id: str, req: AskPaperRequest, db: AsyncS
         )
         yield _stream_event("meta", {"references": references, "evidence": _paper_evidence_meta(references)})
         try:
-            async for event in _stream_paper_answer_events(context, show_thinking=req.show_thinking):
+            async for event in _stream_paper_answer_events(
+                context,
+                show_thinking=req.show_thinking,
+                max_tokens=max_tokens,
+            ):
                 if event["type"] == "status":
                     yield _stream_event("status", event["content"])
                 elif event["type"] == "reasoning":
