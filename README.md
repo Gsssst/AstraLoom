@@ -1,212 +1,85 @@
 # AstraLoom
 
-> 中文 | [English](#english)
+<p align="center">
+  <strong>Self-hosted AI research workspace for labs and research groups.</strong>
+</p>
 
-AstraLoom 是面向课题组和实验室的自部署 AI 科研工作台。它不是一个面向全网用户的公共 SaaS 网站，而是希望每个实验室都可以部署一套属于自己的系统，用来管理本组论文库、沉淀研究方向、辅助 idea 生成、评估 proposal、推进 LaTeX 写作和实验规划。
+<p align="center">
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#workflow">Workflow</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#中文说明">中文说明</a>
+</p>
 
-## 项目定位
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white">
+  <img alt="React" src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black">
+  <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL%20%2B%20pgvector-16-4169E1?logo=postgresql&logoColor=white">
+  <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white">
+</p>
 
-- **实验室自部署**：每个课题组独立部署，论文、笔记、API Key、研究方向和讨论记录都保存在自己的服务器或工作站中。
-- **组内论文管理**：统一导入、检索、标记、分类和阅读论文，支持“我的论文”、重点/感兴趣标记、组会报告等工作流。
-- **Auto Research 工作流**：从论文证据和 Gap Map 出发生成 proposal，并用新颖性、证据支撑、工具适配、实验质量等维度排序。
-- **写作与实验衔接**：把 proposal、证据卡、BibTeX、figures 清单和 LaTeX 章节写作连接起来，减少从 idea 到论文草稿的断层。
-- **可配置模型接口**：支持 DeepSeek 和 OpenAI Chat Completions / Responses 兼容端点，便于不同实验室接入自己的模型服务。
+AstraLoom helps a lab run its own private research platform: paper library, AI-assisted reading, idea generation, proposal review, toolbox reuse, LaTeX writing, and experiment planning in one self-hosted workspace.
 
-## 主要功能
+It is designed for **each lab to deploy its own instance**, not as a centralized public SaaS product. Papers, notes, API keys, project discussions, and research directions stay under the lab's control.
 
-- **论文库**：论文导入、语义检索、分类、标签、重要性标记、PDF 阅读和划词问答。
-- **研究方向工作台**：Evidence Map、Gap Map、候选池、proposal 排序、idea 讨论和迭代。
-- **算法评审信号**：新颖性矩阵、证据支撑矩阵、实验质量评估、工具箱适配和多样性选择。
-- **工具箱**：沉淀论文中出现的方法、数据集、指标、协议和工具，并在 idea 生成时选择使用。
-- **写作助手**：按章节写 LaTeX，支持编译预览、BibTeX 面板、引用建议和 AI 辅助写作。
-- **项目空间**：把论文、研究方向、写作项目、反馈 issue 和 AI 助手放在同一个组内工作区。
+## Why AstraLoom
 
-## 技术栈
+Research groups often spread their work across Zotero folders, chat logs, paper PDFs, Overleaf projects, spreadsheets, and local scripts. AstraLoom turns those scattered research artifacts into a shared lab workspace:
 
-| 层次 | 技术 |
+- build a lab-owned paper knowledge base;
+- generate and iterate research ideas from paper evidence;
+- rank proposals with novelty, evidence grounding, toolbox fit, and experiment quality signals;
+- move promising ideas into LaTeX writing and experiment planning;
+- keep deployment, data, and model credentials inside the lab.
+
+## Features
+
+| Area | What AstraLoom provides |
 | --- | --- |
-| 后端 | Python 3.12, FastAPI, SQLAlchemy, Alembic, Celery |
-| 数据库 | PostgreSQL 16, pgvector |
-| 缓存/任务 | Redis 7, Celery Beat |
-| 前端 | React 18, TypeScript, Vite, Ant Design |
-| LLM | DeepSeek / OpenAI-compatible endpoints via LiteLLM |
-| 部署 | Docker Compose, Nginx |
-| 研发流程 | OpenSpec |
+| Paper Library | Import, search, classify, tag, mark important papers, read PDFs, and ask AI questions over selected text. |
+| Research Workbench | Evidence Map, Gap Map, candidate pool, proposal ranking, idea discussion, and iterative refinement. |
+| Review Signals | Novelty matrix, evidence grounding matrix, experiment quality evaluation, toolbox fit, and diversity-aware selection. |
+| Toolbox | Store reusable methods, datasets, metrics, protocols, and tools discovered from papers. |
+| Writing | Section-based LaTeX drafting, compile preview, BibTeX panel, citation suggestions, and AI writing assistance. |
+| Lab Workspace | Shared project spaces with papers, research directions, writing projects, feedback issues, and an AI assistant. |
 
-## 快速开始
+## Workflow
 
-### 1. 克隆仓库
+```mermaid
+flowchart LR
+    A[Lab Paper Library] --> B[Evidence Map]
+    B --> C[Gap Map]
+    C --> D[Candidate Ideas]
+    D --> E[Proposal Review]
+    E --> F[Idea Discussion]
+    F --> G[LaTeX Writing]
+    F --> H[Experiment Planning]
+    I[Research Toolbox] --> D
+    I --> E
 
-```bash
-git clone <repo-url>
-cd AstraLoom
+    E -. novelty .-> E1[Novelty Matrix]
+    E -. grounding .-> E2[Evidence Grounding]
+    E -. feasibility .-> E3[Experiment Quality]
 ```
 
-### 2. 配置环境变量
+## Architecture
 
-```bash
-cp .env.example .env
+```mermaid
+flowchart TB
+    U[Lab Members] --> N[Nginx]
+    N --> F[React + Vite Frontend]
+    N --> API[FastAPI Backend]
+    API --> DB[(PostgreSQL + pgvector)]
+    API --> R[(Redis)]
+    API --> C[Celery Workers]
+    C --> DB
+    C --> R
+    API --> LLM[DeepSeek or OpenAI-compatible LLM]
+    API --> P[Paper Search / Metadata Sources]
+    API --> FS[Local Uploads and Generated Files]
 ```
-
-编辑 `.env`，至少配置数据库、密钥和 LLM API。不要把 `.env` 上传到 GitHub。
-
-### 3. 启动服务
-
-```bash
-docker compose up -d
-```
-
-默认访问：
-
-- 前端界面：http://localhost
-- API 文档：http://localhost/api/docs
-- 健康检查：http://localhost/api/health
-- 数据库迁移检查：http://localhost/api/health/db
-
-### 4. 数据库迁移
-
-容器启动时默认会执行 Alembic 迁移。开发或排障时可以手动执行：
-
-```bash
-docker compose exec backend alembic upgrade head
-docker compose exec backend alembic current
-curl http://127.0.0.1:8000/api/health/db
-```
-
-## 模型配置
-
-DeepSeek 示例：
-
-```bash
-LLM_PROVIDER=deepseek
-DEEPSEEK_API_KEY=sk-your-deepseek-api-key
-DEEPSEEK_API_BASE=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-v4-pro
-```
-
-OpenAI 兼容端点示例：
-
-```bash
-LLM_PROVIDER=openai-compatible
-OPENAI_COMPATIBLE_API_KEY=sk-your-compatible-api-key
-OPENAI_COMPATIBLE_API_BASE=https://your-compatible-endpoint/v1
-OPENAI_COMPATIBLE_MODEL=gpt-5.5
-```
-
-如果端点支持 OpenAI Responses API，也可以在设置页中启用对应模型能力。不同实验室可以根据自己的预算、合规要求和模型服务选择配置。
-
-## 项目结构
-
-```text
-AstraLoom/
-├── backend/              # FastAPI 后端、数据库模型、服务和 Celery 任务
-├── frontend/             # React 前端
-├── nginx/                # Nginx 配置
-├── openspec/             # OpenSpec 需求与变更记录
-├── docker-compose.yml    # 本地/实验室部署编排
-├── docker-compose.prod.yml
-├── introduction.md       # 项目介绍
-├── user-manual.md        # 用户手册
-└── README.md
-```
-
-## GitHub 上传建议
-
-应该上传：
-
-- `backend/`
-- `frontend/`
-- `nginx/`
-- `openspec/`
-- `README.md`
-- `introduction.md`
-- `user-manual.md`
-- `.gitignore`
-- `.env.example`
-- `docker-compose.yml`
-- `docker-compose.prod.yml`
-
-不要上传：
-
-- `.env`、`.env.local`、`.env.production`
-- API Key、数据库密码、JWT 密钥等任何真实密钥
-- `node_modules/`、`dist/`、`.vite/`
-- `.venv/`、`venv/`、`__pycache__/`
-- `.pytest_cache/`
-- `.DS_Store`
-- `.idea/`、`.vscode/`
-- `uploads/`、`logs/`
-- `backend/celerybeat-schedule`
-- 任何真实论文 PDF、未公开数据集、组内私有笔记或用户上传文件
-
-当前仓库已经包含 `.gitignore` 和 `.env.example`。在 GitHub 创建空仓库时，不要勾选自动创建 README、`.gitignore` 或 license，避免和本地历史冲突。
-
-## 开发
-
-后端：
-
-```bash
-cd backend
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-```
-
-前端：
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-构建：
-
-```bash
-cd frontend
-npm run build
-```
-
-测试示例：
-
-```bash
-docker compose exec -T backend env PYTHONPATH=/app pytest tests/test_research_idea_workbench.py -q
-node --test frontend/tests/research-toolbox-contract.test.mjs
-openspec validate --specs --strict
-```
-
-## 部署建议
-
-- 建议先在课题组内网或实验室服务器部署。
-- 对外暴露服务前，应配置 HTTPS、强密码、备份策略和访问控制。
-- 论文 PDF、用户上传文件和数据库备份不要提交到 GitHub。
-- 多人使用时建议为每个成员创建独立账号，避免共享管理员账号。
-
-## 许可证
-
-当前仓库尚未添加 license 文件。若后续决定开源，建议先确认课题组/单位对代码、模型调用和论文数据的合规要求，再选择 MIT、Apache-2.0 或其他协议。
-
----
-
-## English
-
-AstraLoom is a self-hosted AI research workspace for research groups and academic labs. It is not designed as a centralized public SaaS product. Instead, each lab can deploy its own instance, keep its papers, notes, API keys, research directions, and discussions under local control, and use the system as an internal research infrastructure.
-
-## Positioning
-
-- **Self-hosted for labs**: Each lab owns its deployment, data, model keys, and research records.
-- **Lab paper management**: Import, search, classify, tag, read, and discuss papers in one shared workspace.
-- **Auto Research workflow**: Generate and rank proposals from paper evidence and Gap Maps using novelty, evidence grounding, toolbox fit, and experiment quality signals.
-- **Writing and experiment bridge**: Connect proposals, evidence cards, BibTeX, figure lists, LaTeX sections, and experiment plans.
-- **Configurable model endpoints**: Supports DeepSeek and OpenAI Chat Completions / Responses-compatible endpoints through LiteLLM.
-
-## Key Features
-
-- **Paper library**: Paper ingestion, semantic search, collections, tags, importance markers, PDF reading, and selection-based AI Q&A.
-- **Research idea workbench**: Evidence Map, Gap Map, candidate pool, proposal ranking, idea discussion, and iterative refinement.
-- **Algorithmic review signals**: Novelty matrix, evidence grounding matrix, experiment quality evaluation, toolbox fit, and diversity-aware selection.
-- **Toolbox**: Store methods, datasets, metrics, protocols, and tools found in papers, then reuse them during idea generation.
-- **Writing assistant**: Section-based LaTeX writing, compile preview, BibTeX panel, citation suggestions, and AI writing assistance.
-- **Project spaces**: Combine papers, research projects, writing drafts, feedback issues, and an AI assistant in one lab workspace.
 
 ## Quick Start
 
@@ -217,25 +90,161 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Then open:
+Open:
 
 - Web app: http://localhost
 - API docs: http://localhost/api/docs
 - Health check: http://localhost/api/health
+- Migration health: http://localhost/api/health/db
 
-Do not commit `.env` or any real API keys to GitHub.
+Apply or inspect migrations manually:
 
-## What To Upload To GitHub
+```bash
+docker compose exec backend alembic upgrade head
+docker compose exec backend alembic current
+curl http://127.0.0.1:8000/api/health/db
+```
 
-Upload source code, configuration templates, OpenSpec documents, and public documentation:
+## Model Configuration
+
+DeepSeek:
+
+```bash
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=sk-your-deepseek-api-key
+DEEPSEEK_API_BASE=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-pro
+```
+
+OpenAI-compatible endpoint:
+
+```bash
+LLM_PROVIDER=openai-compatible
+OPENAI_COMPATIBLE_API_KEY=sk-your-compatible-api-key
+OPENAI_COMPATIBLE_API_BASE=https://your-compatible-endpoint/v1
+OPENAI_COMPATIBLE_MODEL=gpt-5.5
+```
+
+If your endpoint supports the OpenAI Responses API, enable the matching model capability in settings.
+
+## Repository Layout
+
+```text
+AstraLoom/
+├── backend/              # FastAPI backend, DB models, services, Celery tasks
+├── frontend/             # React frontend
+├── nginx/                # Nginx configs
+├── openspec/             # OpenSpec requirements and archived changes
+├── docker-compose.yml    # Local/lab deployment
+├── docker-compose.prod.yml
+├── introduction.md       # Product introduction
+├── user-manual.md        # User manual
+└── README.md
+```
+
+## Development
+
+Backend:
+
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Build:
+
+```bash
+cd frontend
+npm run build
+```
+
+Focused checks:
+
+```bash
+docker compose exec -T backend env PYTHONPATH=/app pytest tests/test_research_idea_workbench.py -q
+node --test frontend/tests/research-toolbox-contract.test.mjs
+openspec validate --specs --strict
+```
+
+## GitHub Safety Checklist
+
+Commit these:
 
 - `backend/`, `frontend/`, `nginx/`, `openspec/`
 - `README.md`, `introduction.md`, `user-manual.md`
 - `.gitignore`, `.env.example`
 - `docker-compose.yml`, `docker-compose.prod.yml`
 
-Do not upload secrets, runtime files, generated folders, private papers, uploaded PDFs, local IDE files, logs, caches, or database backups.
+Never commit these:
+
+- `.env`, `.env.local`, `.env.production`
+- real API keys, database passwords, JWT secrets, or model credentials
+- private papers, uploaded PDFs, unpublished datasets, lab-only notes, or database backups
+- `node_modules/`, `dist/`, `.vite/`, `.venv/`, `__pycache__/`, `.pytest_cache/`
+- `.DS_Store`, `.idea/`, `.vscode/`, `uploads/`, `logs/`, `backend/celerybeat-schedule`
+
+## Deployment Notes
+
+- Prefer deploying inside a lab network or a controlled server first.
+- Configure HTTPS, backups, strong secrets, and access control before exposing the service externally.
+- Use separate user accounts for lab members instead of sharing an admin account.
+- Keep model API keys and paper data in environment variables, volumes, or private infrastructure.
 
 ## License
 
-No license file has been added yet. Before making the repository public or open source, confirm your lab or institution's policy and choose an appropriate license.
+No license file has been added yet. Before publishing as open source, confirm your lab or institution's policy and choose an appropriate license.
+
+---
+
+## 中文说明
+
+AstraLoom 是面向课题组和实验室的自部署 AI 科研工作台。它不是一个给全网用户共用的公共 SaaS，而是希望每个实验室都能部署一套自己的系统，用来管理组内论文库、沉淀研究方向、辅助 idea 生成、评估 proposal、推进 LaTeX 写作和实验规划。
+
+### 适合什么场景
+
+- 课题组希望有一个统一的组内论文库，而不是每个人各自维护文献。
+- 老师或学生希望从论文证据出发，系统化发现 Gap、生成 idea、比较 proposal。
+- 组会需要更稳定地产出论文总结、重点论文标记和讨论材料。
+- 实验室希望把工具、方法、数据集、指标和协议沉淀成可复用的工具箱。
+- 写论文时希望把 proposal、证据卡、BibTeX、figures 和 LaTeX 章节连接起来。
+
+### 核心能力
+
+| 模块 | 能力 |
+| --- | --- |
+| 论文库 | 导入、检索、分类、标签、重点标记、PDF 阅读、划词问答 |
+| 研究方向 | Evidence Map、Gap Map、候选 idea、proposal 排序、AI 讨论迭代 |
+| 评审算法 | 新颖性矩阵、证据支撑矩阵、实验质量评估、工具适配、多样性选择 |
+| 工具箱 | 沉淀论文里的方法、数据集、指标、协议和工具，并用于 idea 生成 |
+| 写作助手 | 按章节写 LaTeX、编译预览、BibTeX 面板、引用建议、AI 辅助写作 |
+| 项目空间 | 汇总论文、研究方向、写作项目、反馈 issue 和项目 AI 助手 |
+
+### 中文快速开始
+
+```bash
+git clone <repo-url>
+cd AstraLoom
+cp .env.example .env
+docker compose up -d
+```
+
+访问：
+
+- 前端界面：http://localhost
+- API 文档：http://localhost/api/docs
+- 健康检查：http://localhost/api/health
+
+### 上传到 GitHub 时要注意
+
+应该上传源码、配置模板和公开文档；不要上传 `.env`、真实 API Key、数据库密码、论文 PDF、用户上传文件、数据库备份、缓存、IDE 配置和运行时状态文件。
+
+当前仓库已经包含 `.gitignore` 和 `.env.example`。在 GitHub 创建仓库时，不要勾选自动创建 README、`.gitignore` 或 license，避免和本地历史冲突。
