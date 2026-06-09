@@ -24,6 +24,16 @@ The system SHALL allow an authenticated project owner to start a persisted Resea
 - **THEN** generated candidates are prompted to use at least one selected toolbox entry
 - **AND** selected proposals record which toolbox entries influenced the candidate when available
 
+#### Scenario: Workbench builds a toolbox fit plan
+- **WHEN** a workbench run has selected toolbox entries and a Gap Map
+- **THEN** the generation context includes a ranked `tool_fit_plan`
+- **AND** each plan item records role, fit score, matched gaps, recommended use, risk note, and rationale
+
+#### Scenario: Toolbox fit plan guides candidate generation
+- **WHEN** candidate generation runs with a `tool_fit_plan`
+- **THEN** candidate and evolution prompts receive the fit plan
+- **AND** fallback candidates use the top-ranked fit item when the model response is unavailable or invalid
+
 ### Requirement: Visible run progress
 The system SHALL provide a stream of workbench progress events and SHALL allow a browser refresh to recover the latest persisted run state.
 
@@ -109,6 +119,11 @@ The system SHALL select and persist top proposals as enriched research ideas com
 #### Scenario: Validate related work from collision metadata
 - **WHEN** the user requests validation for a selected proposal with similar-work collision metadata
 - **THEN** the validation summary includes those similar works as related-work candidates before falling back to generic evidence ranking.
+
+#### Scenario: Persist proposal toolbox fit rationale
+- **WHEN** a selected proposal is influenced by toolbox entries
+- **THEN** the proposal review metadata records the relevant tool IDs, tool names, tool-fit plan, and concise tool-fit rationale
+- **AND** the research project UI can display that rationale without requiring another generation run
 
 ### Requirement: Research Idea Workbench interface
 The system SHALL present the research project page as a workbench that exposes pipeline progress, Evidence Map, Gap Map, candidate pool, selected proposals, proposal-level collision evidence, selection rationale, Gap Map selection controls, and Gap Map feedback controls.

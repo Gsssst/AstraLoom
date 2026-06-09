@@ -16,4 +16,4 @@
 - [x] 3.1 Add backend tests for deterministic tool-fit planning and fallback usage.
 - [x] 3.2 Add frontend contract tests for proposal tool-fit display.
 - [x] 3.3 Run backend tests, frontend tests/build, and OpenSpec validation.
-- [ ] 3.4 Commit implementation and archive the OpenSpec change.
+- [x] 3.4 Commit implementation and archive the OpenSpec change.
