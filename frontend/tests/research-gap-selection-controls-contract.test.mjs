@@ -26,7 +26,9 @@ test('research project page calls gap preview and continuation endpoints', () =>
   assert.match(researchProjectSource, /handleGapPreview/);
   assert.match(researchProjectSource, /\/research\/projects\/\$\{projectId\}\/idea-runs\/gap-preview/);
   assert.match(researchProjectSource, /handleContinueFromGaps/);
-  assert.match(researchProjectSource, /\/research\/projects\/\$\{projectId\}\/idea-runs\/\$\{run\.id\}\/continue-from-gaps/);
+  assert.match(researchProjectSource, /readIdeaRunStream/);
+  assert.match(researchProjectSource, /\/api\/research\/projects\/\$\{projectId\}\/idea-runs\/\$\{run\.id\}\/continue-from-gaps\/stream/);
+  assert.match(researchProjectSource, /mergeIdeas/);
   assert.match(researchProjectSource, /gap_selection: \{/);
   assert.match(researchProjectSource, /generation_constraints: \{/);
 });

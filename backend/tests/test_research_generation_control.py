@@ -1,5 +1,6 @@
 """Regression tests for controllable Research Idea Workbench generation."""
 
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -7,6 +8,9 @@ import pytest
 from fastapi import HTTPException
 
 from app.api import research
+
+
+RESEARCH_API_SOURCE = Path(__file__).resolve().parents[1] / "app" / "api" / "research.py"
 
 
 class _CancelSession:
@@ -40,6 +44,15 @@ def _run(status="running", **overrides):
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
+
+
+def test_gap_continuation_stream_endpoint_is_registered():
+    source = RESEARCH_API_SOURCE.read_text()
+
+    assert 'continue-from-gaps/stream' in source
+    assert 'continue_idea_run_from_gaps_stream' in source
+    assert '_stream_idea_run_execution' in source
+    assert 'service.continue_from_gap_review' in source
 
 
 @pytest.mark.asyncio

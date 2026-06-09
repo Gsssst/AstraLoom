@@ -789,9 +789,55 @@ const ResearchProjectPage: React.FC = () => {
     if (event.type === 'error') showPageError('Idea 工作台运行失败', event, event.message || 'Idea 工作台运行失败');
     if (event.type === 'done' && event.run) {
       setRun(event.run);
-      setIdeas(event.ideas || event.run.ideas || []);
+      setIdeas(previous => mergeIdeas(previous, event.ideas || event.run.ideas || []));
     }
     if (event.type === 'cancelled' && event.run) setRun(event.run);
+  };
+
+  const mergeIdeas = (previous: Idea[], incoming: Idea[]) => {
+    const map = new Map<string, Idea>();
+    previous.forEach(item => map.set(item.id, item));
+    incoming.forEach(item => map.set(item.id, item));
+    return Array.from(map.values());
+  };
+
+  const readIdeaRunStream = async (
+    url: string,
+    body: Record<string, unknown>,
+    controller: AbortController,
+  ) => {
+    const token = localStorage.getItem('access_token');
+    let finalRunStatus: string | null = null;
+    let finalRunError: string | null = null;
+    const response = await fetch(url, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok || !response.body) throw new Error('无法启动 Idea 工作台');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const packets = buffer.split('\n\n');
+      buffer = packets.pop() || '';
+      packets.forEach(packet => {
+        const line = packet.split('\n').find(item => item.startsWith('data: '));
+        if (line) {
+          const event = JSON.parse(line.slice(6));
+          applyStreamEvent(event);
+          if ((event.type === 'done' || event.type === 'cancelled') && event.run) {
+            finalRunStatus = event.run.status || null;
+            finalRunError = event.run.error || null;
+          }
+        }
+      });
+    }
+    return { finalRunStatus, finalRunError };
   };
 
   const handleGenerate = async () => {
@@ -801,37 +847,11 @@ const ResearchProjectPage: React.FC = () => {
     generationAbortRef.current = controller;
     setGenerating(true);
     try {
-      const token = localStorage.getItem('access_token');
-      let finalRunStatus: string | null = null;
-      let finalRunError: string | null = null;
-      const response = await fetch(`/api/research/projects/${projectId}/idea-runs/stream`, {
-        method: 'POST',
-        signal: controller.signal,
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ num_ideas: 3, external_search: externalSearch }),
-      });
-      if (!response.ok || !response.body) throw new Error('无法启动 Idea 工作台');
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const packets = buffer.split('\n\n');
-        buffer = packets.pop() || '';
-        packets.forEach(packet => {
-          const line = packet.split('\n').find(item => item.startsWith('data: '));
-          if (line) {
-            const event = JSON.parse(line.slice(6));
-            applyStreamEvent(event);
-            if ((event.type === 'done' || event.type === 'cancelled') && event.run) {
-              finalRunStatus = event.run.status || null;
-              finalRunError = event.run.error || null;
-            }
-          }
-        });
-      }
+      const { finalRunStatus, finalRunError } = await readIdeaRunStream(
+        `/api/research/projects/${projectId}/idea-runs/stream`,
+        { num_ideas: 3, external_search: externalSearch },
+        controller,
+      );
       await loadProject();
       await loadProposalBoard();
       if (!generationCancelRequestedRef.current && finalRunStatus === 'complete') {
@@ -873,32 +893,47 @@ const ResearchProjectPage: React.FC = () => {
 
   const handleContinueFromGaps = async () => {
     if (!projectId || !run?.id || gapContinuing) return;
+    generationCancelRequestedRef.current = false;
+    const controller = new AbortController();
+    generationAbortRef.current = controller;
     setGapContinuing(true);
+    setGenerating(true);
     try {
-      const response = await api.post(`/research/projects/${projectId}/idea-runs/${run.id}/continue-from-gaps`, {
-        num_ideas: 3,
-        gap_selection: {
-          selected_gap_titles: selectedGapTitles,
-          blocked_gap_titles: blockedGapTitles,
-          focus_note: gapFocusNote,
+      const { finalRunStatus, finalRunError } = await readIdeaRunStream(
+        `/api/research/projects/${projectId}/idea-runs/${run.id}/continue-from-gaps/stream`,
+        {
+          num_ideas: 3,
+          gap_selection: {
+            selected_gap_titles: selectedGapTitles,
+            blocked_gap_titles: blockedGapTitles,
+            focus_note: gapFocusNote,
+          },
+          generation_constraints: {
+            research_mode: researchMode,
+            risk_appetite: riskAppetite,
+            resource_budget: resourceBudget,
+          },
         },
-        generation_constraints: {
-          research_mode: researchMode,
-          risk_appetite: riskAppetite,
-          resource_budget: resourceBudget,
-        },
-      });
-      setRun(response.data);
-      setIdeas(response.data.ideas || []);
+        controller,
+      );
       await loadProject();
       await loadProposalBoard();
-      setActiveWorkbenchTab('proposal-board');
-      setPageActionError(null);
-      message.success('已按选择的 Gap Map 生成 Proposal');
-    } catch (error) {
-      showPageError('按 Gap Map 继续生成失败', error, '按 Gap Map 继续生成失败');
+      if (!generationCancelRequestedRef.current && finalRunStatus === 'complete') {
+        setActiveWorkbenchTab('proposal-board');
+        setPageActionError(null);
+        message.success('已按选择的 Gap Map 生成 Proposal');
+      } else if (!generationCancelRequestedRef.current && finalRunStatus === 'failed') {
+        showPageError('按 Gap Map 继续生成失败', { message: finalRunError || '按 Gap Map 继续生成失败' }, finalRunError || '按 Gap Map 继续生成失败');
+      }
+    } catch (error: any) {
+      if (!generationCancelRequestedRef.current && error?.name !== 'AbortError') {
+        showPageError('按 Gap Map 继续生成失败', error, error?.message || '按 Gap Map 继续生成失败');
+      }
     } finally {
       setGapContinuing(false);
+      setGenerating(false);
+      generationAbortRef.current = null;
+      generationCancelRequestedRef.current = false;
     }
   };
 

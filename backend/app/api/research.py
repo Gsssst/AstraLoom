@@ -508,6 +508,61 @@ def _stream_event(event_type: str, data: Any = None) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _stream_idea_run_execution(
+    *,
+    db: AsyncSession,
+    request: Request,
+    run: ResearchIdeaRun,
+    execute_factory,
+):
+    async def generate():
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        async def push(event: dict[str, Any]) -> None:
+            await queue.put(event)
+
+        async def execute() -> None:
+            try:
+                ideas = await execute_factory(push)
+                await queue.put({
+                    "type": "done",
+                    "run": _run_response(run, ideas).model_dump(),
+                    "ideas": [_idea_response(idea).model_dump() for idea in ideas],
+                })
+            except asyncio.CancelledError:
+                await _cancel_idea_run(db, run)
+                await queue.put({"type": "cancelled", "run": _run_response(run).model_dump(), "ideas": []})
+                raise
+            except Exception:
+                await queue.put({"type": "done", "run": _run_response(run).model_dump(), "ideas": []})
+
+        task = asyncio.create_task(execute())
+        try:
+            yield _stream_event("run", {"run": _run_response(run).model_dump()})
+            while True:
+                if request and await request.is_disconnected():
+                    task.cancel()
+                    break
+                event = await queue.get()
+                yield _stream_event(event.get("type", "message"), event)
+                if event.get("type") in {"done", "cancelled"}:
+                    break
+        finally:
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            await _cancel_idea_run(db, run)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 async def _cancel_idea_run(
     db: AsyncSession,
     run: ResearchIdeaRun,
@@ -800,6 +855,42 @@ async def continue_idea_run_from_gaps(
     return _run_response(run, ideas)
 
 
+@router.post("/projects/{project_id}/idea-runs/{run_id}/continue-from-gaps/stream")
+async def continue_idea_run_from_gaps_stream(
+    project_id: str,
+    run_id: str,
+    request: Request,
+    req: ContinueGapReviewRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """从 Gap Map 继续生成 Proposal，并以 SSE 返回阶段和中间产物。"""
+    project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
+    run = await _get_owned_run(db, run_id, current_user)
+    if run.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Idea 工作台运行未找到")
+    if not run.gap_map:
+        raise HTTPException(status_code=400, detail="当前运行还没有可继续的 Gap Map")
+    service = ResearchIdeaWorkbenchService(db)
+
+    async def execute_with_progress(push):
+        return await service.continue_from_gap_review(
+            project,
+            run,
+            gap_selection=req.gap_selection.model_dump(),
+            generation_constraints=req.generation_constraints.model_dump(),
+            num_ideas=req.num_ideas,
+            on_progress=push,
+        )
+
+    return _stream_idea_run_execution(
+        db=db,
+        request=request,
+        run=run,
+        execute_factory=execute_with_progress,
+    )
+
+
 @router.patch("/projects/{project_id}/idea-runs/{run_id}/gaps/{gap_index}/feedback", response_model=IdeaRunResponse)
 async def update_idea_run_gap_feedback(
     project_id: str,
@@ -861,47 +952,14 @@ async def create_idea_run_stream(
     service = ResearchIdeaWorkbenchService(db)
     run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search)
 
-    async def generate():
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    async def execute_with_progress(push):
+        return await service.execute(project, run, num_ideas=req.num_ideas, on_progress=push)
 
-        async def push(event: dict[str, Any]) -> None:
-            await queue.put(event)
-
-        async def execute() -> None:
-            try:
-                ideas = await service.execute(project, run, num_ideas=req.num_ideas, on_progress=push)
-                await queue.put({"type": "done", "run": _run_response(run, ideas).model_dump(), "ideas": [_idea_response(idea).model_dump() for idea in ideas]})
-            except asyncio.CancelledError:
-                await _cancel_idea_run(db, run)
-                await queue.put({"type": "cancelled", "run": _run_response(run).model_dump(), "ideas": []})
-                raise
-            except Exception:
-                await queue.put({"type": "done", "run": _run_response(run).model_dump(), "ideas": []})
-
-        task = asyncio.create_task(execute())
-        try:
-            yield _stream_event("run", {"run": _run_response(run).model_dump()})
-            while True:
-                if request and await request.is_disconnected():
-                    task.cancel()
-                    break
-                event = await queue.get()
-                yield _stream_event(event.get("type", "message"), event)
-                if event.get("type") in {"done", "cancelled"}:
-                    break
-        finally:
-            if not task.done():
-                task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            await _cancel_idea_run(db, run)
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    return _stream_idea_run_execution(
+        db=db,
+        request=request,
+        run=run,
+        execute_factory=execute_with_progress,
     )
 
 
