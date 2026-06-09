@@ -105,7 +105,7 @@ const SettingsPage: React.FC = () => {
   const runKbAction = async (action: string, url: string) => {
     setKbAction(action);
     try {
-      const res = await api.post(url);
+      const res = await api.post(url, undefined, { timeout: 300000 });
       message.success(`维护完成：成功 ${res.data.success || 0}，失败 ${res.data.failed || 0}，跳过 ${res.data.skipped || 0}`);
       await fetchKbHealth();
     } catch (e: any) {

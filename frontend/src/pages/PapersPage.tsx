@@ -838,7 +838,7 @@ const PapersPage: React.FC = () => {
   const runKbAction = useCallback(async (action: string, endpoint: string) => {
     setKbAction(action);
     try {
-      const response = await api.post(endpoint);
+      const response = await api.post(endpoint, undefined, { timeout: 300000 });
       setPageActionError(null);
       message.success(`维护完成：成功 ${response.data.success || 0}，失败 ${response.data.failed || 0}，跳过 ${response.data.skipped || 0}`);
       await fetchMaintenanceCenter();
