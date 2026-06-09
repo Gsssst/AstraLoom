@@ -576,6 +576,7 @@ async def search_papers(
     has_full_text: Optional[str] = Query(default=None, description="全文可用筛选: true/false/all"),
     has_embedding: Optional[str] = Query(default=None, description="向量可用筛选: true/false/all"),
     read_status: Optional[Literal["unread", "reading", "completed"]] = Query(default=None, description="当前用户阅读状态筛选"),
+    importance_label: Optional[Literal["important", "interesting"]] = Query(default=None, description="共享标记筛选"),
     db: AsyncSession = Depends(get_db),
     user=Depends(get_optional_user),
 ):
@@ -605,6 +606,8 @@ async def search_papers(
             query = query.where(Paper.imported_by_username == importer)
         if local_source:
             query = query.where(Paper.source == local_source)
+        if importance_label:
+            query = query.where(Paper.importance_label == importance_label)
         if full_text_filter is True:
             query = query.where(Paper.full_text.is_not(None), func.length(Paper.full_text) > 500)
         elif full_text_filter is False:
@@ -660,6 +663,11 @@ async def search_papers(
                 paper_scores = [(paper, score) for paper, score in paper_scores if paper.imported_by_username == importer]
             if local_source:
                 paper_scores = [(paper, score) for paper, score in paper_scores if paper.source == local_source]
+            if importance_label:
+                paper_scores = [
+                    (paper, score) for paper, score in paper_scores
+                    if getattr(paper, "importance_label", None) == importance_label
+                ]
             if full_text_filter is not None:
                 paper_scores = [
                     (paper, score) for paper, score in paper_scores

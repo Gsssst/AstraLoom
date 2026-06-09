@@ -233,6 +233,7 @@ async def test_ranked_api_requests_later_page_window_and_forwards_filters(monkey
         has_full_text=None,
         has_embedding=None,
         read_status=None,
+        importance_label=None,
         db=SimpleNamespace(),
         user=None,
     )
@@ -268,6 +269,13 @@ async def test_semantic_scholar_preview_uses_selected_remote_provider(monkeypatc
         page_size=5,
         sort="created_desc",
         search_mode="hybrid",
+        owner=None,
+        importer=None,
+        local_source=None,
+        has_full_text=None,
+        has_embedding=None,
+        read_status=None,
+        importance_label=None,
         db=SimpleNamespace(),
     )
 

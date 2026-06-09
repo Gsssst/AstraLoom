@@ -210,6 +210,13 @@ async def test_google_scholar_api_explains_missing_serpapi_configuration(monkeyp
             page_size=5,
             sort="created_desc",
             search_mode="hybrid",
+            owner=None,
+            importer=None,
+            local_source=None,
+            has_full_text=None,
+            has_embedding=None,
+            read_status=None,
+            importance_label=None,
             db=SimpleNamespace(),
         )
 

@@ -241,6 +241,7 @@ async def test_local_search_applies_readiness_importer_source_and_read_status_fi
         has_full_text="true",
         has_embedding="false",
         read_status="completed",
+        importance_label="important",
         db=db,
         user=SimpleNamespace(id=uuid4(), username="gst"),
     )
@@ -249,9 +250,66 @@ async def test_local_search_applies_readiness_importer_source_and_read_status_fi
     assert response.total == 0
     assert "papers.imported_by_username" in combined_sql
     assert "papers.source" in combined_sql
+    assert "papers.importance_label" in combined_sql
     assert "length(papers.full_text)" in combined_sql
     assert "papers.embedding IS NULL" in combined_sql
     assert "user_papers.read_status" in combined_sql
+
+
+@pytest.mark.asyncio
+async def test_keyword_local_search_filters_by_importance_label(monkeypatch):
+    from app.services.hybrid_search import HybridSearchService
+
+    important = SimpleNamespace(
+        id=uuid4(), title="important", authors=[], year=2025, abstract="",
+        arxiv_id=None, doi=None, source="manual", citation_count=0,
+        created_at=SimpleNamespace(isoformat=lambda: "2026-06-08T00:00:00"),
+        importance_label="important", importance_note=None,
+        imported_by_user_id=None, imported_by_username="gst",
+        metadata_json={}, source_url=None, pdf_path=None, full_text=None,
+        embedding=None, tags=[],
+    )
+    interesting = SimpleNamespace(
+        id=uuid4(), title="interesting", authors=[], year=2025, abstract="",
+        arxiv_id=None, doi=None, source="manual", citation_count=0,
+        created_at=SimpleNamespace(isoformat=lambda: "2026-06-08T00:00:00"),
+        importance_label="interesting", importance_note=None,
+        imported_by_user_id=None, imported_by_username="gst",
+        metadata_json={}, source_url=None, pdf_path=None, full_text=None,
+        embedding=None, tags=[],
+    )
+
+    async def fake_search(_self, query, top_k, mode):
+        return [(str(important.id), 1.0), (str(interesting.id), 0.9)]
+
+    async def fake_fetch(_self, scored, category=None, year_from=None, year_to=None):
+        return [(important, 1.0), (interesting, 0.9)]
+
+    monkeypatch.setattr(HybridSearchService, "search", fake_search)
+    monkeypatch.setattr(HybridSearchService, "fetch_papers", fake_fetch)
+
+    response = await papers_api.search_papers(
+        q="retrieval",
+        source="local",
+        category=None,
+        year_from=None,
+        year_to=None,
+        page=1,
+        page_size=10,
+        sort="created_desc",
+        search_mode="hybrid",
+        owner=None,
+        importer=None,
+        local_source=None,
+        has_full_text=None,
+        has_embedding=None,
+        read_status=None,
+        importance_label="interesting",
+        db=SimpleNamespace(),
+        user=None,
+    )
+
+    assert [item.title for item in response.items] == ["interesting"]
 
 
 @pytest.mark.asyncio
@@ -274,6 +332,13 @@ async def test_remote_paper_api_forwards_page_offset_and_year_filters(monkeypatc
         page_size=5,
         sort="created_desc",
         search_mode="hybrid",
+        owner=None,
+        importer=None,
+        local_source=None,
+        has_full_text=None,
+        has_embedding=None,
+        read_status=None,
+        importance_label=None,
         db=SimpleNamespace(),
     )
 

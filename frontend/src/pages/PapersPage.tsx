@@ -331,6 +331,7 @@ const PapersPage: React.FC = () => {
   const [filterFullText, setFilterFullText] = useState<'all' | 'true' | 'false'>('all');
   const [filterEmbedding, setFilterEmbedding] = useState<'all' | 'true' | 'false'>('all');
   const [filterReadStatus, setFilterReadStatus] = useState<'all' | ReadingStatus>('all');
+  const [filterImportance, setFilterImportance] = useState<'all' | PaperImportanceLabel>('all');
   const isAuthenticated = !!localStorage.getItem('access_token');
   const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
   const isRemoteSource = remoteSearchSources.includes(source);
@@ -444,6 +445,7 @@ const PapersPage: React.FC = () => {
             has_full_text: filterFullText === 'all' ? undefined : filterFullText,
             has_embedding: filterEmbedding === 'all' ? undefined : filterEmbedding,
             read_status: filterReadStatus === 'all' ? undefined : filterReadStatus,
+            importance_label: filterImportance === 'all' ? undefined : filterImportance,
           },
         });
         setPapers(r.data.items);
@@ -451,9 +453,9 @@ const PapersPage: React.FC = () => {
       }
       setPageActionError(null);
     } catch (e: any) { setPapers([]); showPageError('搜索失败', e, '搜索失败'); } finally { setLoading(false); }
-  }, [filterEmbedding, filterFullText, filterImporter, filterLocalSource, filterReadStatus, isRemoteSource, readingStatus, searchQuery, selectedCollectionId, showPageError, source, sort, yearFrom, yearTo]);
+  }, [filterEmbedding, filterFullText, filterImportance, filterImporter, filterLocalSource, filterReadStatus, isRemoteSource, readingStatus, searchQuery, selectedCollectionId, showPageError, source, sort, yearFrom, yearTo]);
 
-  useEffect(() => { handleSearch(1); }, [source, sort, readingStatus, selectedCollectionId, urlSearchRevision, filterImporter, filterLocalSource, filterFullText, filterEmbedding, filterReadStatus]);
+  useEffect(() => { handleSearch(1); }, [source, sort, readingStatus, selectedCollectionId, urlSearchRevision, filterImporter, filterLocalSource, filterFullText, filterEmbedding, filterReadStatus, filterImportance]);
 
   useEffect(() => { fetchReadingCounts(); }, [fetchReadingCounts, source]);
 
@@ -1580,6 +1582,11 @@ const PapersPage: React.FC = () => {
                   { value: 'reading', label: '阅读中' },
                   { value: 'completed', label: '已完成' },
                 ]} style={{ width: 120 }} />
+                <Select value={filterImportance} onChange={setFilterImportance} options={[
+                  { value: 'all', label: '标记不限' },
+                  { value: 'important', label: paperImportanceMeta.important.label },
+                  { value: 'interesting', label: paperImportanceMeta.interesting.label },
+                ]} style={{ width: 128 }} />
               </Space>
             </Col>
           </Row>
