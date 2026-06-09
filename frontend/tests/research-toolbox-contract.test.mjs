@@ -52,3 +52,13 @@ test('research idea generation can include toolbox context', () => {
   assert.match(page, /tool_mode/);
   assert.match(page, /toolModeOptions/);
 });
+
+test('research proposals can display toolbox fit rationale', () => {
+  const page = read('src/pages/ResearchProjectPage.tsx');
+
+  assert.match(page, /工具适配/);
+  assert.match(page, /tool_fit_plan/);
+  assert.match(page, /tool_fit_rationale/);
+  assert.match(page, /used_tool_names/);
+  assert.match(page, /fit_score/);
+});

@@ -385,7 +385,7 @@ class ResearchIdeaWorkbenchService:
         *,
         on_progress: ProgressCallback | None = None,
     ) -> list[ResearchIdea]:
-        generation_context = self.generation_context_from_run(run, gap_map)
+        generation_context = self.generation_context_from_run(run, gap_map, brief)
         if run.stage != "generating":
             await self._transition(run, "generating", callback=on_progress)
         candidates = await self.generate_candidates(brief, evidence_map, gap_map, num_ideas, generation_context=generation_context)
@@ -428,10 +428,15 @@ class ResearchIdeaWorkbenchService:
         )
         adversarial_reviewed = self.adversarial_review_candidates(novelty_checked)
         reviewed = self.apply_quality_adjustments(adversarial_reviewed, evidence_map=evidence_map, gap_map=gap_map)
-        selected, diversity_summary = self.select_diverse_proposals(reviewed, num_ideas)
         tool_context = self._compact_tool_context(generation_context.get("tool_context"))
+        tool_fit_plan = generation_context.get("tool_fit_plan") if isinstance(generation_context.get("tool_fit_plan"), dict) else {"mode": tool_context.get("mode"), "items": [], "summary": ""}
+        reviewed = [
+            {**candidate, "tool_context": tool_context, "tool_fit_plan": tool_fit_plan}
+            for candidate in reviewed
+        ]
+        selected, diversity_summary = self.select_diverse_proposals(reviewed, num_ideas)
         selected = [
-            {**candidate, "gap_selection": generation_context.get("gap_selection"), "tool_context": tool_context}
+            {**candidate, "gap_selection": generation_context.get("gap_selection"), "tool_context": tool_context, "tool_fit_plan": tool_fit_plan}
             for candidate in selected
         ]
         run.candidate_pool = reviewed
@@ -448,6 +453,7 @@ class ResearchIdeaWorkbenchService:
             "generation_constraints": generation_context.get("generation_constraints"),
             "gap_feedback": generation_context.get("gap_feedback") or [],
             "tool_context": tool_context,
+            "tool_fit_plan": tool_fit_plan,
         }
         await self.session.commit()
         await self._emit(
@@ -954,11 +960,120 @@ class ResearchIdeaWorkbenchService:
         return "可把选中的工具作为灵感、组件、实验协议或评测线索，但不要强行使用。"
 
     @staticmethod
+    def _tool_fit_role(mode: str, kind: str) -> str:
+        kind = str(kind or "other")
+        if mode == "required":
+            return "required_evaluation_asset" if kind in {"dataset", "metric", "protocol"} else "core_component"
+        if mode == "baseline":
+            return "baseline_or_comparator"
+        if mode == "avoid":
+            return "avoid_or_contrast"
+        if kind in {"dataset", "metric", "protocol"}:
+            return "evaluation_asset"
+        return "inspiration"
+
+    @staticmethod
+    def _tool_text(tool: dict[str, Any]) -> str:
+        evidence_text = " ".join(
+            f"{item.get('title', '')} {item.get('evidence_note', '')}"
+            for item in (tool.get("evidence") or [])
+            if isinstance(item, dict)
+        )
+        return " ".join([
+            str(tool.get("name") or ""),
+            str(tool.get("kind") or ""),
+            str(tool.get("summary") or ""),
+            str(tool.get("use_cases") or ""),
+            str(tool.get("limitations") or ""),
+            " ".join(str(tag) for tag in (tool.get("tags") or [])),
+            evidence_text,
+        ])
+
+    @staticmethod
+    def _gap_text(gap: dict[str, Any]) -> str:
+        return " ".join([
+            str(gap.get("title") or ""),
+            str(gap.get("limitation") or ""),
+            str(gap.get("opportunity") or ""),
+            str(gap.get("research_question") or ""),
+            str(gap.get("evidence_rationale") or ""),
+        ])
+
+    @classmethod
+    def build_tool_fit_plan(
+        cls,
+        brief: dict[str, Any],
+        gap_map: dict[str, Any],
+        generation_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        context = generation_context if isinstance(generation_context, dict) else {}
+        tool_context = cls._compact_tool_context(context.get("tool_context"))
+        tools = [tool for tool in (tool_context.get("tools") or []) if tool.get("id") and tool.get("name")]
+        if not tools:
+            return {"mode": tool_context.get("mode") or "inspiration", "items": [], "summary": ""}
+
+        gaps = [gap for gap in (gap_map.get("gaps") or []) if isinstance(gap, dict)]
+        brief_text = " ".join([
+            str(brief.get("name") or ""),
+            str(brief.get("description") or ""),
+            " ".join(str(keyword) for keyword in (brief.get("keywords") or [])),
+        ])
+        mode = tool_context.get("mode") or "inspiration"
+        ranked = []
+        for tool in tools:
+            tool_text = cls._tool_text(tool)
+            gap_scores = []
+            for gap in gaps:
+                score = cls._text_similarity(tool_text, cls._gap_text(gap))
+                if score > 0:
+                    gap_scores.append({"title": str(gap.get("title") or "未命名 Gap"), "score": round(score, 3)})
+            gap_scores.sort(key=lambda item: item["score"], reverse=True)
+            best_gap_score = gap_scores[0]["score"] if gap_scores else 0.0
+            project_score = cls._text_similarity(tool_text, brief_text)
+            tag_score = cls._list_similarity(tool.get("tags") or [], brief.get("keywords") or [])
+            evidence_bonus = min(len(tool.get("evidence") or []), 4) * 0.025
+            maturity_bonus = 0.04 if tool.get("maturity") == "mature" else 0.02 if tool.get("maturity") == "experimental" else 0.0
+            fit_score = round(min(1.0, best_gap_score * 0.52 + project_score * 0.28 + tag_score * 0.12 + evidence_bonus + maturity_bonus), 3)
+            role = cls._tool_fit_role(mode, str(tool.get("kind") or "other"))
+            matched_gap_titles = [item["title"] for item in gap_scores[:3]]
+            recommended_use = {
+                "core_component": f"把「{tool['name']}」作为候选机制的一部分，并针对其局限设计消融。",
+                "required_evaluation_asset": f"把「{tool['name']}」作为必须纳入的数据、指标或实验协议。",
+                "baseline_or_comparator": f"把「{tool['name']}」作为强基线或对照组，贡献集中在替代方案。",
+                "avoid_or_contrast": f"避免直接复用「{tool['name']}」，只把它作为需要区分或超越的参照。",
+                "evaluation_asset": f"把「{tool['name']}」作为评估资产来约束实验设计。",
+                "inspiration": f"借鉴「{tool['name']}」的适用场景或机制，但不强制使用。",
+            }.get(role, f"把「{tool['name']}」作为可选研究线索。")
+            risk_note = str(tool.get("limitations") or "需要人工确认该工具与当前 Gap 的真实适配度。")
+            ranked.append({
+                "tool_id": tool["id"],
+                "tool_name": tool["name"],
+                "kind": tool.get("kind") or "other",
+                "role": role,
+                "fit_score": fit_score,
+                "matched_gap_titles": matched_gap_titles,
+                "recommended_use": recommended_use,
+                "risk_note": risk_note[:400],
+                "rationale": f"与项目匹配 {round(project_score, 3)}，与最佳 Gap 匹配 {best_gap_score}，标签匹配 {round(tag_score, 3)}。",
+            })
+        ranked.sort(key=lambda item: item["fit_score"], reverse=True)
+        top = ranked[0] if ranked else None
+        summary = ""
+        if top:
+            summary = f"优先考虑 {top['tool_name']}，角色 {top['role']}，适配分 {top['fit_score']}。{top['recommended_use']}"
+        return {
+            "mode": mode,
+            "items": ranked[:12],
+            "summary": summary,
+        }
+
+    @staticmethod
     def _format_generation_constraints(context: dict[str, Any] | None) -> str:
         data = context if isinstance(context, dict) else {}
         selection = data.get("gap_selection") or {}
         constraints = data.get("generation_constraints") or {}
         tool_context = ResearchIdeaWorkbenchService._compact_tool_context(data.get("tool_context"))
+        tool_fit_plan = data.get("tool_fit_plan") if isinstance(data.get("tool_fit_plan"), dict) else {"mode": tool_context["mode"], "items": [], "summary": ""}
         return json.dumps({
             "selected_gap_titles": selection.get("selected_gap_titles") or [],
             "blocked_gap_titles": selection.get("blocked_gap_titles") or [],
@@ -968,6 +1083,7 @@ class ResearchIdeaWorkbenchService:
             "resource_budget": constraints.get("resource_budget") or "reproducible",
             "gap_feedback": data.get("gap_feedback") or [],
             "tool_context": tool_context,
+            "tool_fit_plan": tool_fit_plan,
             "tool_instruction": ResearchIdeaWorkbenchService._tool_mode_instruction(tool_context["mode"]),
         }, ensure_ascii=False)
 
@@ -1002,19 +1118,23 @@ class ResearchIdeaWorkbenchService:
             "summary": f"{gap_map.get('summary') or 'Gap Map'}（已按用户选择约束生成）",
         }
 
-    def generation_context_from_run(self, run: ResearchIdeaRun, gap_map: dict[str, Any]) -> dict[str, Any]:
+    def generation_context_from_run(self, run: ResearchIdeaRun, gap_map: dict[str, Any], brief: dict[str, Any] | None = None) -> dict[str, Any]:
         config = dict(run.config_json or {})
         feedback_summary = self.summarize_gap_feedback(gap_map)
+        brief_data = brief or {}
         if config.get("gap_selection") or config.get("generation_constraints"):
-            return {
+            context = {
                 "gap_selection": config.get("gap_selection") or self.normalize_gap_selection(gap_map, None, None)["gap_selection"],
                 "generation_constraints": config.get("generation_constraints") or self._normalize_generation_constraints(None),
                 "gap_feedback": feedback_summary,
                 "tool_context": config.get("tool_context") or {},
             }
+            context["tool_fit_plan"] = self.build_tool_fit_plan(brief_data, gap_map, context)
+            return context
         normalized = self.normalize_gap_selection(gap_map, None, None)
         normalized["gap_feedback"] = feedback_summary
         normalized["tool_context"] = config.get("tool_context") or {}
+        normalized["tool_fit_plan"] = self.build_tool_fit_plan(brief_data, gap_map, normalized)
         return normalized
 
     async def generate_candidates(
@@ -1033,10 +1153,11 @@ class ResearchIdeaWorkbenchService:
 输出严格 JSON：
 {{"candidates":[{{"title":"...", "path":"grounded|inspiration|seed_refinement",
 "gap":"...", "hypothesis":"可证伪假设", "approach":"技术草图", "evidence_ids":["paper uuid"],
-"used_tool_ids":["tool uuid"], "used_tool_names":["工具名"], "risks":["..."], "falsification_test":"...", "minimum_experiment":{{"dataset":"...",
+"used_tool_ids":["tool uuid"], "used_tool_names":["工具名"], "tool_fit_rationale":"为什么使用或规避这些工具",
+"risks":["..."], "falsification_test":"...", "minimum_experiment":{{"dataset":"...",
 "baselines":["..."], "metrics":["..."], "steps":["..."]}}}}]}}
 禁止只输出宽泛方向，每条必须可以设计最小实验验证。
-如果用户选择了工具箱条目，必须遵守 tool_instruction；如果未实际使用工具，则 used_tool_ids 为空数组。
+如果用户选择了工具箱条目，必须遵守 tool_instruction 和 tool_fit_plan；如果未实际使用工具，则 used_tool_ids 为空数组。
 
 研究简报：{json.dumps(brief, ensure_ascii=False)}
 Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
@@ -1387,10 +1508,10 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
 {{"evolved":[{{"parent_title":"...", "operator":"mechanism_shift|strong_baseline|failure_mode|cost_aware|cross_domain_transfer",
 "critique":"指出父候选最关键弱点", "improvement":"本轮如何改进", "selection_angle":"为什么这个方向值得保留",
 "title":"...", "path":"grounded|inspiration|seed_refinement", "gap":"...", "hypothesis":"可证伪假设",
-"approach":"技术草图", "evidence_ids":["paper uuid"], "used_tool_ids":["tool uuid"], "used_tool_names":["工具名"], "risks":["..."], "falsification_test":"...",
+"approach":"技术草图", "evidence_ids":["paper uuid"], "used_tool_ids":["tool uuid"], "used_tool_names":["工具名"], "tool_fit_rationale":"为什么使用或规避这些工具", "risks":["..."], "falsification_test":"...",
 "minimum_experiment":{{"dataset":"...", "baselines":["..."], "metrics":["..."], "steps":["..."]}}}}]}}
 候选之间必须覆盖不同机制、数据场景或风险类型，禁止只改标题。
-如果用户选择了工具箱条目，必须遵守 tool_instruction；如果未实际使用工具，则 used_tool_ids 为空数组。
+如果用户选择了工具箱条目，必须遵守 tool_instruction 和 tool_fit_plan；如果未实际使用工具，则 used_tool_ids 为空数组。
 
 研究简报：{json.dumps(brief, ensure_ascii=False)}
 Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
@@ -1792,13 +1913,15 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                 coverage_bonus = float((candidate.get("evidence_coverage") or {}).get("coverage_score") or 0) * 0.18
                 gap_bonus = float((candidate.get("gap_alignment") or {}).get("alignment_score") or 0) * 0.16
                 experiment_bonus = float((candidate.get("experiment_completeness") or {}).get("completeness") or 0) * 0.12
+                tool_bonus = self._candidate_tool_fit_bonus(candidate)
                 selection_score = round(
                     float(candidate.get("score") or 0)
                     - penalty
                     + facet_bonus
                     + coverage_bonus
                     + gap_bonus
-                    + experiment_bonus,
+                    + experiment_bonus
+                    + tool_bonus,
                     2,
                 )
                 ranked.append((selection_score, penalty, facet_bonus, overlaps, candidate))
@@ -1948,7 +2071,25 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         gap_alignment = candidate.get("gap_alignment") or {}
         if gap_alignment.get("matched_gap_title"):
             parts.append(f"匹配 Gap：{gap_alignment.get('matched_gap_title')}")
+        tool_names = candidate.get("used_tool_names") or []
+        if tool_names:
+            parts.append(f"工具适配：{', '.join(str(name) for name in tool_names[:2])}")
         return "；".join(parts)
+
+    @staticmethod
+    def _candidate_tool_fit_bonus(candidate: dict[str, Any]) -> float:
+        used_ids = {str(item) for item in (candidate.get("used_tool_ids") or []) if item}
+        if not used_ids:
+            return 0.0
+        plan = candidate.get("tool_fit_plan") if isinstance(candidate.get("tool_fit_plan"), dict) else {}
+        scores = [
+            float(item.get("fit_score") or 0)
+            for item in (plan.get("items") or [])
+            if isinstance(item, dict) and str(item.get("tool_id") or "") in used_ids
+        ]
+        if not scores:
+            return 0.05
+        return round(min(0.2, max(scores) * 0.2), 3)
 
     @staticmethod
     def _candidate_gap_alignment(candidate: dict[str, Any], gap_map: dict[str, Any]) -> dict[str, Any]:
@@ -2075,6 +2216,8 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                     "gap_alignment": candidate.get("gap_alignment"),
                     "gap_selection": candidate.get("gap_selection"),
                     "tool_context": candidate.get("tool_context"),
+                    "tool_fit_plan": candidate.get("tool_fit_plan"),
+                    "tool_fit_rationale": candidate.get("tool_fit_rationale"),
                     "used_tool_ids": candidate.get("used_tool_ids", []),
                     "used_tool_names": candidate.get("used_tool_names", []),
                 },
@@ -2882,6 +3025,7 @@ Proposal：{json.dumps({
             "evidence_ids": evidence_ids or list(available)[:2],
             "used_tool_ids": used_tool_ids[:12],
             "used_tool_names": used_tool_names[:12],
+            "tool_fit_rationale": str(data.get("tool_fit_rationale") or data.get("tool_rationale") or ""),
             "risks": [str(value) for value in data.get("risks", [])] or ["改进可能只在单一数据集上成立"],
             "falsification_test": str(data.get("falsification_test") or "若主要指标未稳定超过强基线，则否定该假设。"),
             "minimum_experiment": {
@@ -3042,6 +3186,9 @@ Proposal：{json.dumps({
         tool_context = ResearchIdeaWorkbenchService._compact_tool_context(context.get("tool_context"))
         tool_mode = tool_context.get("mode") or "inspiration"
         selected_tools = tool_context.get("tools") or []
+        tool_fit_plan = context.get("tool_fit_plan") if isinstance(context.get("tool_fit_plan"), dict) else {}
+        fit_items = [item for item in (tool_fit_plan.get("items") or []) if isinstance(item, dict)]
+        tools_by_id = {tool.get("id"): tool for tool in selected_tools}
         strategies = [
             ("边界条件审计", "构建边界条件切片与失败模式分析，定位收益出现和消失的区域。"),
             ("轻量校准模块", "加入单一可替换的校准模块，在统一预算下验证可靠性收益。"),
@@ -3062,21 +3209,31 @@ Proposal：{json.dumps({
             gap = gaps[index % len(gaps)]
             path = ("grounded", "inspiration", "grounded")[index % 3]
             strategy_title, strategy = strategies[index % len(strategies)]
-            tool = selected_tools[index % len(selected_tools)] if selected_tools else None
+            fit_item = fit_items[index % len(fit_items)] if fit_items else None
+            tool = tools_by_id.get(fit_item.get("tool_id")) if fit_item else (selected_tools[index % len(selected_tools)] if selected_tools else None)
+            role = str((fit_item or {}).get("role") or "")
             used_tool_ids = [tool["id"]] if tool and tool_mode != "avoid" else []
             used_tool_names = [tool["name"]] if tool and tool_mode != "avoid" else []
             tool_clause = ""
+            tool_fit_rationale = ""
             tool_baselines = ["可复现强基线", "无改动消融"]
             if tool:
-                if tool_mode == "required":
-                    tool_clause = f" 必须把工具箱条目「{tool['name']}」作为核心组件或实验协议，并说明其局限如何被控制。"
-                elif tool_mode == "baseline":
-                    tool_clause = f" 将工具箱条目「{tool['name']}」作为强基线或对照协议，贡献集中在替代机制和误差分析。"
+                recommended_use = str((fit_item or {}).get("recommended_use") or "")
+                tool_name = str(tool.get("name") or "选中工具")
+                if tool_mode == "required" or role in {"core_component", "required_evaluation_asset"}:
+                    default_use = f"必须把工具箱条目「{tool_name}」作为核心组件或实验协议，并说明其局限如何被控制。"
+                    tool_clause = f" {recommended_use or default_use}"
+                elif tool_mode == "baseline" or role == "baseline_or_comparator":
+                    default_use = f"将工具箱条目「{tool_name}」作为强基线或对照协议，贡献集中在替代机制和误差分析。"
+                    tool_clause = f" {recommended_use or default_use}"
                     tool_baselines = [tool["name"], *tool_baselines]
-                elif tool_mode == "avoid":
-                    tool_clause = f" 避免直接复用工具箱条目「{tool['name']}」，重点提出可验证的替代路线。"
+                elif tool_mode == "avoid" or role == "avoid_or_contrast":
+                    default_use = f"避免直接复用工具箱条目「{tool_name}」，重点提出可验证的替代路线。"
+                    tool_clause = f" {recommended_use or default_use}"
                 else:
-                    tool_clause = f" 可借鉴工具箱条目「{tool['name']}」的适用场景或实验协议。"
+                    default_use = f"可借鉴工具箱条目「{tool_name}」的适用场景或实验协议。"
+                    tool_clause = f" {recommended_use or default_use}"
+                tool_fit_rationale = str((fit_item or {}).get("rationale") or f"根据工具箱选择将「{tool_name}」纳入本候选。")
             feedback = gap.get("user_feedback") or {}
             feedback_note = feedback.get("note") or ""
             feedback_labels = ", ".join(feedback.get("labels") or [])
@@ -3093,6 +3250,7 @@ Proposal：{json.dumps({
                     "evidence_ids": gap.get("evidence_ids") or evidence_ids[:2],
                     "used_tool_ids": used_tool_ids,
                     "used_tool_names": used_tool_names,
+                    "tool_fit_rationale": tool_fit_rationale,
                     "risks": ["收益可能来自训练预算差异", "本地论文覆盖不足"],
                     "falsification_test": "统一训练和推理预算后，若主要指标和效率指标均未稳定改善，则否定假设。",
                     "minimum_experiment": {

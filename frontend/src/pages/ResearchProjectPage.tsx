@@ -106,6 +106,24 @@ interface Review {
   };
   proposal_review?: ProposalReviewPackage | null;
   search_tree?: { round?: number; operator?: string; parent_title?: string | null; lineage?: string[]; source?: string };
+  used_tool_ids?: string[];
+  used_tool_names?: string[];
+  tool_fit_rationale?: string | null;
+  tool_fit_plan?: {
+    mode?: string;
+    summary?: string;
+    items?: Array<{
+      tool_id?: string;
+      tool_name?: string;
+      kind?: string;
+      role?: string;
+      fit_score?: number;
+      matched_gap_titles?: string[];
+      recommended_use?: string;
+      risk_note?: string;
+      rationale?: string;
+    }>;
+  } | null;
 }
 interface Candidate {
   title: string; path: string; gap: string; hypothesis: string; approach: string;
@@ -2441,6 +2459,9 @@ const ResearchProjectPage: React.FC = () => {
     const similarWork = novelty?.similar_work || [];
     const diversityFacets = review?.diversity_facets || [];
     const appliedGapSelection = review?.gap_selection;
+    const toolFitPlan = review?.tool_fit_plan || null;
+    const toolFitItems = toolFitPlan?.items || [];
+    const usedToolNames = review?.used_tool_names || [];
     return (
       <div>
         {idea.hypothesis && <Alert type="success" showIcon message="可证伪假设" description={idea.hypothesis} style={{ marginBottom: 14 }} />}
@@ -2467,6 +2488,31 @@ const ResearchProjectPage: React.FC = () => {
                       {(appliedGapSelection.selected_gap_titles || []).slice(0, 3).map(title => <Tag color="geekblue" key={title}>{title}</Tag>)}
                     </Space>
                     {appliedGapSelection.focus_note && <Text type="secondary">关注点：{appliedGapSelection.focus_note}</Text>}
+                  </Space>
+                </Card>
+              )}
+              {(usedToolNames.length > 0 || toolFitItems.length > 0) && (
+                <Card size="small" className="proposal-selection-signal">
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <Space wrap>
+                      <Tag color="cyan">工具适配</Tag>
+                      {usedToolNames.slice(0, 4).map(name => <Tag color="blue" key={name}>{name}</Tag>)}
+                      {toolFitPlan?.mode && <Tag>{toolFitPlan.mode}</Tag>}
+                    </Space>
+                    {review.tool_fit_rationale && <Text>{review.tool_fit_rationale}</Text>}
+                    {!review.tool_fit_rationale && toolFitPlan?.summary && <Text>{toolFitPlan.summary}</Text>}
+                    {toolFitItems.length > 0 && (
+                      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                        {toolFitItems.slice(0, 3).map(item => (
+                          <div key={item.tool_id || item.tool_name} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                            <Text strong>{item.tool_name}</Text>
+                            {item.role && <Tag>{item.role}</Tag>}
+                            {item.fit_score != null && <Tag color="geekblue">适配 {Math.round(item.fit_score * 100)}%</Tag>}
+                            {item.matched_gap_titles?.[0] && <Text type="secondary">匹配：{item.matched_gap_titles[0]}</Text>}
+                          </div>
+                        ))}
+                      </Space>
+                    )}
                   </Space>
                 </Card>
               )}
