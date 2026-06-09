@@ -47,6 +47,11 @@ Current project documentation SHALL refer to the active product as `AstraLoom`.
 - **AND** it includes GitHub-renderable diagrams for the research workflow and deployment architecture
 - **AND** it preserves bilingual lab self-hosting positioning and upload safety guidance
 
+#### Scenario: README keeps security guidance concise
+- **WHEN** a reader scans the README project homepage
+- **THEN** the README includes concise warnings not to commit secrets, private papers, uploads, or backups
+- **AND** it does not include a long one-time GitHub upload checklist in the main presentation flow
+
 ### Requirement: AstraLoom home page can retain the restored visual composition
 The AstraLoom home page SHALL use the restored pre-star-map visual composition while presenting the current product name as `AstraLoom`.
 
