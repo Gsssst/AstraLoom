@@ -35,6 +35,12 @@ Current project documentation SHALL refer to the active product as `AstraLoom`.
 - **WHEN** the user opens README, introduction, user manual, or OpenSpec project overview
 - **THEN** those current docs use `AstraLoom` as the product name
 
+#### Scenario: README presents bilingual lab self-hosting positioning
+- **WHEN** a prospective lab maintainer opens the README from GitHub
+- **THEN** the README describes AstraLoom in Chinese and English as a self-hosted research workspace for individual labs and research groups
+- **AND** it avoids implying that the project is intended as a centrally hosted public SaaS product
+- **AND** it includes guidance about files that should and should not be uploaded to GitHub
+
 ### Requirement: AstraLoom home page can retain the restored visual composition
 The AstraLoom home page SHALL use the restored pre-star-map visual composition while presenting the current product name as `AstraLoom`.
 
@@ -43,4 +49,3 @@ The AstraLoom home page SHALL use the restored pre-star-map visual composition w
 - **THEN** the page presents the product name as `AstraLoom`
 - **AND** it uses the restored particle hero, quick actions, stats, feature cards, and footer composition
 - **AND** it does not present `Auto-Research-DS` as the current product name
-
