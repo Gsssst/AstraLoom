@@ -83,3 +83,15 @@ test('research proposals can display evidence grounding matrix', () => {
   assert.match(page, /weak_claims/);
   assert.match(page, /support_refs/);
 });
+
+test('research proposals can display experiment quality profile', () => {
+  const page = read('src/pages/ResearchProjectPage.tsx');
+
+  assert.match(page, /实验质量/);
+  assert.match(page, /experiment_completeness/);
+  assert.match(page, /quality_score/);
+  assert.match(page, /blocking_issues/);
+  assert.match(page, /recommended_fixes/);
+  assert.match(page, /quality_profile/);
+  assert.match(page, /compute_mismatch/);
+});

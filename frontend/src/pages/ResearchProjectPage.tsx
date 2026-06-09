@@ -128,6 +128,20 @@ interface Review {
       sources?: Record<string, number>; source_errors?: Record<string, string>;
     };
   };
+  experiment_completeness?: {
+    completeness?: number;
+    quality_score?: number;
+    readiness?: 'ready' | 'needs_revision' | 'blocked' | string;
+    missing?: string[];
+    blocking_issues?: string[];
+    recommended_fixes?: string[];
+    quality_profile?: Record<string, number>;
+    strong_baseline?: boolean;
+    has_ablation?: boolean;
+    has_statistical_validity?: boolean;
+    compute_mismatch?: boolean;
+    resource_budget?: string;
+  } | null;
   adversarial_review?: {
     verdict: 'advance' | 'revise' | 'reject'; penalty: number;
     objections: string[]; required_fixes: string[]; summary: string;
@@ -2503,6 +2517,11 @@ const ResearchProjectPage: React.FC = () => {
       : (evidenceGrounding.missing_claim_count || 0) > 0 || (evidenceGrounding.grounding_score || 0) < 0.45 ? 'high'
         : (evidenceGrounding.weak_claim_count || 0) > 0 || (evidenceGrounding.grounding_score || 0) < 0.65 ? 'medium'
           : 'low';
+    const experimentQuality = review?.experiment_completeness || null;
+    const experimentQualityRisk = !experimentQuality ? undefined
+      : experimentQuality.readiness === 'blocked' || experimentQuality.compute_mismatch || (experimentQuality.quality_score || 0) < 0.45 ? 'high'
+        : experimentQuality.readiness === 'needs_revision' || (experimentQuality.quality_score || 0) < 0.68 ? 'medium'
+          : 'low';
     return (
       <div>
         {idea.hypothesis && <Alert type="success" showIcon message="可证伪假设" description={idea.hypothesis} style={{ marginBottom: 14 }} />}
@@ -2620,6 +2639,45 @@ const ResearchProjectPage: React.FC = () => {
                           </div>
                         ))}
                       </div>
+                    )}
+                  </Space>
+                </Card>
+              )}
+              {experimentQuality && (
+                <Card size="small" className="proposal-selection-signal">
+                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                    <Space wrap>
+                      <Tag color="geekblue">实验质量</Tag>
+                      {experimentQuality.quality_score != null && (
+                        <Tag color={riskColors[experimentQualityRisk || 'low'] || 'default'}>
+                          质量 {Math.round(experimentQuality.quality_score * 100)}%
+                        </Tag>
+                      )}
+                      {experimentQuality.completeness != null && <Tag>完整度 {Math.round(experimentQuality.completeness * 100)}%</Tag>}
+                      {experimentQuality.readiness && <Tag color={riskColors[experimentQualityRisk || 'low'] || 'default'}>{experimentQuality.readiness}</Tag>}
+                      {experimentQuality.resource_budget && experimentQuality.resource_budget !== 'unspecified' && <Tag>预算 {experimentQuality.resource_budget}</Tag>}
+                      {experimentQuality.compute_mismatch && <Tag color="red">算力不匹配</Tag>}
+                    </Space>
+                    {(experimentQuality.blocking_issues || []).length > 0 && (
+                      <Space direction="vertical" size={3}>
+                        {(experimentQuality.blocking_issues || []).slice(0, 3).map((issue, index) => (
+                          <Text type="secondary" key={`${issue}-${index}`}>问题：{issue}</Text>
+                        ))}
+                      </Space>
+                    )}
+                    {(experimentQuality.recommended_fixes || []).length > 0 && (
+                      <Space wrap size={4}>
+                        {(experimentQuality.recommended_fixes || []).slice(0, 4).map(fix => <Tag color="purple" key={fix}>{fix}</Tag>)}
+                      </Space>
+                    )}
+                    {experimentQuality.quality_profile && (
+                      <Space wrap size={4}>
+                        {Object.entries(experimentQuality.quality_profile).map(([key, value]) => (
+                          <Tag key={key} color={value >= 0.7 ? 'green' : value >= 0.45 ? 'orange' : 'red'}>
+                            {key.replace('_score', '')} {Math.round(value * 100)}%
+                          </Tag>
+                        ))}
+                      </Space>
                     )}
                   </Space>
                 </Card>

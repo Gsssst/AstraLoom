@@ -427,17 +427,29 @@ class ResearchIdeaWorkbenchService:
             source_coverage=similar_work_context["source_coverage"],
         )
         novelty_checked = self.add_anti_collision_revisions(novelty_checked)
-        adversarial_reviewed = self.adversarial_review_candidates(novelty_checked)
-        reviewed = self.apply_quality_adjustments(adversarial_reviewed, evidence_map=evidence_map, gap_map=gap_map)
         tool_context = self._compact_tool_context(generation_context.get("tool_context"))
         tool_fit_plan = generation_context.get("tool_fit_plan") if isinstance(generation_context.get("tool_fit_plan"), dict) else {"mode": tool_context.get("mode"), "items": [], "summary": ""}
-        reviewed = [
-            {**candidate, "tool_context": tool_context, "tool_fit_plan": tool_fit_plan}
-            for candidate in reviewed
+        contextual_candidates = [
+            {
+                **candidate,
+                "generation_context": generation_context,
+                "generation_constraints": generation_context.get("generation_constraints"),
+                "tool_context": tool_context,
+                "tool_fit_plan": tool_fit_plan,
+            }
+            for candidate in novelty_checked
         ]
+        adversarial_reviewed = self.adversarial_review_candidates(contextual_candidates)
+        reviewed = self.apply_quality_adjustments(adversarial_reviewed, evidence_map=evidence_map, gap_map=gap_map)
         selected, diversity_summary = self.select_diverse_proposals(reviewed, num_ideas)
         selected = [
-            {**candidate, "gap_selection": generation_context.get("gap_selection"), "tool_context": tool_context, "tool_fit_plan": tool_fit_plan}
+            {
+                **candidate,
+                "gap_selection": generation_context.get("gap_selection"),
+                "generation_constraints": generation_context.get("generation_constraints"),
+                "tool_context": tool_context,
+                "tool_fit_plan": tool_fit_plan,
+            }
             for candidate in selected
         ]
         run.candidate_pool = reviewed
@@ -1586,8 +1598,12 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             penalty += 0.16
         return round(min(1.15, penalty), 3)
 
-    @staticmethod
-    def _candidate_experiment_profile(candidate: dict[str, Any]) -> dict[str, Any]:
+    @classmethod
+    def _candidate_experiment_profile(
+        cls,
+        candidate: dict[str, Any],
+        generation_constraints: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         experiment = candidate.get("minimum_experiment") or {}
 
         def normalize_list(value: Any) -> list[str]:
@@ -1602,16 +1618,76 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         metrics = normalize_list(experiment.get("metrics"))
         steps = normalize_list(experiment.get("steps"))
         ablations = normalize_list(experiment.get("ablations") or experiment.get("ablation_plan"))
+        statistics = normalize_list(
+            experiment.get("statistics")
+            or experiment.get("statistical_tests")
+            or experiment.get("significance_tests")
+        )
+        compute_notes = normalize_list(
+            experiment.get("compute")
+            or experiment.get("compute_budget")
+            or experiment.get("resources")
+        )
+        reproducibility = normalize_list(experiment.get("reproducibility"))
         joined_baselines = " ".join(baselines).lower()
+        joined_metrics = " ".join(metrics).lower()
         joined_steps = " ".join(steps).lower()
+        joined_experiment = " ".join([
+            dataset,
+            " ".join(baselines),
+            " ".join(metrics),
+            " ".join(steps),
+            " ".join(ablations),
+            " ".join(statistics),
+            " ".join(compute_notes),
+            " ".join(reproducibility),
+            str(candidate.get("falsification_test") or ""),
+        ]).lower()
         strong_baseline = bool(baselines) and (
             "strong" in joined_baselines
             or "baseline" in joined_baselines
             or "强" in joined_baselines
             or "sota" in joined_baselines
+            or "state-of-the-art" in joined_baselines
+        )
+        simple_baseline = any(
+            keyword in joined_baselines
+            for keyword in ("simple", "rule", "heuristic", "无改动", "no-change", "base", "vanilla")
         )
         has_ablation = bool(ablations) or "ablation" in joined_steps or "消融" in joined_steps
-        falsification_tokens = ResearchIdeaWorkbenchService._dedup_tokens(str(candidate.get("falsification_test") or ""))
+        has_control = any(
+            keyword in joined_experiment
+            for keyword in ("control", "no-change", "without", "无改动", "对照", "remove", "drop", "替换")
+        )
+        has_error_analysis = any(
+            keyword in joined_experiment
+            for keyword in ("error analysis", "failure", "失败", "鲁棒", "robust", "slice", "case study")
+        )
+        has_statistical_validity = bool(statistics) or any(
+            keyword in joined_experiment
+            for keyword in ("significance", "confidence", "p-value", "t-test", "bootstrap", "variance", "std", "随机种子", "显著", "置信", "方差", "多次", "重复")
+        )
+        has_efficiency_metric = any(
+            keyword in joined_metrics
+            for keyword in ("latency", "cost", "memory", "throughput", "flops", "compute", "efficiency", "延迟", "成本", "显存", "吞吐", "效率")
+        )
+        has_quality_metric = bool(metrics) and any(
+            keyword in joined_metrics
+            for keyword in ("accuracy", "f1", "score", "precision", "recall", "bleu", "rouge", "auc", "质量", "准确", "召回", "得分")
+        )
+        falsification_tokens = cls._dedup_tokens(str(candidate.get("falsification_test") or ""))
+        resource_budget = str((generation_constraints or {}).get("resource_budget") or "").strip()
+        if not resource_budget:
+            resource_budget = str(((candidate.get("gap_selection") or {}).get("resource_budget")) or "").strip()
+        large_compute = any(
+            keyword in joined_experiment
+            for keyword in ("large model", "large-scale", "multi-gpu", "gpu cluster", "full training", "pretrain", "大模型", "大规模", "多卡", "集群", "预训练")
+        )
+        low_compute_signals = any(
+            keyword in joined_experiment
+            for keyword in ("low compute", "single gpu", "cpu", "sample", "subset", "小样本", "低算力", "单卡", "子集")
+        )
+        compute_mismatch = resource_budget == "low_compute" and large_compute and not low_compute_signals
 
         completeness = 0.0
         completeness += 0.16 if dataset else 0.0
@@ -1622,31 +1698,164 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         completeness += 0.08 if has_ablation else 0.0
         completeness += 0.06 if len(baselines) >= 2 else 0.0
 
+        generic_dataset_terms = {"benchmark", "bench", "dataset", "data", "基准", "数据集", "公开基准", "可复现实验基准"}
+        dataset_key = cls._title_key(dataset)
+        dataset_score = 0.0
+        if dataset:
+            dataset_score = 0.55
+            if len(cls._dedup_tokens(dataset)) >= 2 and dataset_key not in generic_dataset_terms:
+                dataset_score += 0.25
+            if any(keyword in dataset.lower() for keyword in ("public", "open", "benchmark", "bench", "公开", "基准")):
+                dataset_score += 0.10
+            if any(keyword in joined_experiment for keyword in ("split", "seed", "划分", "随机种子", "reproduce")):
+                dataset_score += 0.10
+        baseline_score = 0.0
+        if baselines:
+            baseline_score += 0.25
+            baseline_score += 0.35 if strong_baseline else 0.0
+            baseline_score += 0.18 if simple_baseline else 0.0
+            baseline_score += 0.12 if len(baselines) >= 2 else 0.0
+            baseline_score += 0.10 if has_control else 0.0
+        metric_score = 0.0
+        if metrics:
+            metric_score += 0.28
+            metric_score += 0.22 if has_quality_metric else 0.0
+            metric_score += 0.18 if has_efficiency_metric else 0.0
+            metric_score += 0.14 if len(metrics) >= 2 else 0.0
+            metric_score += 0.18 if any(keyword in joined_metrics for keyword in ("robust", "stability", "失败", "鲁棒", "稳定")) else 0.0
+        ablation_score = 0.0
+        if has_ablation:
+            ablation_score += 0.45
+            ablation_score += 0.20 if has_control else 0.0
+            ablation_score += 0.20 if len(ablations) >= 2 or "sensitivity" in joined_experiment or "敏感" in joined_experiment else 0.0
+            ablation_score += 0.15 if has_error_analysis else 0.0
+        statistical_score = 0.0
+        if has_statistical_validity:
+            statistical_score += 0.55
+            statistical_score += 0.20 if any(keyword in joined_experiment for keyword in ("seed", "随机种子", "重复", "repeated", "multi-run")) else 0.0
+            statistical_score += 0.15 if any(keyword in joined_experiment for keyword in ("confidence", "置信", "variance", "方差", "std")) else 0.0
+            statistical_score += 0.10 if statistics else 0.0
+        falsification_score = 0.0
+        if len(falsification_tokens) >= 6:
+            falsification_score += 0.52
+            falsification_score += 0.18 if re.search(r"\d|>|<|不超过|低于|高于|至少|显著", str(candidate.get("falsification_test") or "")) else 0.0
+            falsification_score += 0.15 if any(keyword in str(candidate.get("falsification_test") or "").lower() for keyword in ("fail", "reject", "否定", "推翻", "失败")) else 0.0
+            falsification_score += 0.15 if metrics else 0.0
+        feasibility_score = 0.68
+        if resource_budget == "low_compute":
+            feasibility_score = 0.85 if low_compute_signals else 0.62
+            if compute_mismatch:
+                feasibility_score = 0.18
+        elif resource_budget == "large_model":
+            feasibility_score = 0.80 if large_compute or compute_notes else 0.66
+        elif resource_budget == "reproducible":
+            feasibility_score = 0.78 if compute_notes or reproducibility or not large_compute else 0.48
+        if len(steps) >= 4:
+            feasibility_score += 0.08
+        if not steps:
+            feasibility_score -= 0.22
+
+        quality_profile = {
+            "dataset_score": round(min(1.0, dataset_score), 3),
+            "baseline_score": round(min(1.0, baseline_score), 3),
+            "metric_score": round(min(1.0, metric_score), 3),
+            "ablation_score": round(min(1.0, ablation_score), 3),
+            "statistical_score": round(min(1.0, statistical_score), 3),
+            "falsification_score": round(min(1.0, falsification_score), 3),
+            "feasibility_score": round(max(0.0, min(1.0, feasibility_score)), 3),
+        }
+        quality_score = round(
+            quality_profile["dataset_score"] * 0.14
+            + quality_profile["baseline_score"] * 0.18
+            + quality_profile["metric_score"] * 0.15
+            + quality_profile["ablation_score"] * 0.16
+            + quality_profile["statistical_score"] * 0.13
+            + quality_profile["falsification_score"] * 0.13
+            + quality_profile["feasibility_score"] * 0.11,
+            3,
+        )
+
         missing = []
+        blocking_issues = []
+        recommended_fixes = []
         if not dataset:
             missing.append("dataset")
+            blocking_issues.append("缺少明确数据集或任务基准。")
+            recommended_fixes.append("指定至少一个可复现主数据集，并说明数据切分。")
         if not strong_baseline:
             missing.append("strong_baseline")
+            blocking_issues.append("强基线不足，难以证明贡献。")
+            recommended_fixes.append("加入最新强基线、简单基线和无改动对照。")
         if not metrics:
             missing.append("metrics")
+            blocking_issues.append("缺少评价指标。")
+            recommended_fixes.append("补充主任务指标，并按需要加入效率或鲁棒性指标。")
         if len(steps) < 3:
             missing.append("steps")
+            blocking_issues.append("实验步骤过少，复现路径不完整。")
+            recommended_fixes.append("补充复现、运行改进、消融和误差分析步骤。")
         if len(falsification_tokens) < 6:
             missing.append("falsification")
+            blocking_issues.append("可证伪条件不够明确。")
+            recommended_fixes.append("写清楚什么结果会推翻假设，并绑定具体指标。")
         if not has_ablation:
             missing.append("ablation")
+            blocking_issues.append("缺少消融或对照设计。")
+            recommended_fixes.append("加入核心模块消融、无增强版本和失败案例切片。")
+        if not has_statistical_validity:
+            missing.append("statistical_validity")
+            blocking_issues.append("缺少统计有效性或稳定性检查。")
+            recommended_fixes.append("加入多随机种子、置信区间、显著性检验或方差报告。")
+        if compute_mismatch:
+            missing.append("compute_feasibility")
+            blocking_issues.append("实验算力假设与低算力约束不匹配。")
+            recommended_fixes.append("改为子集、单卡/CPU 可跑设置，或调整资源预算。")
+        readiness = "ready" if quality_score >= 0.72 and not blocking_issues[:2] else "needs_revision" if quality_score >= 0.48 else "blocked"
 
         return {
             "dataset_present": bool(dataset),
             "baseline_count": len(baselines),
             "strong_baseline": strong_baseline,
+            "simple_baseline": simple_baseline,
             "metric_count": len(metrics),
             "step_count": len(steps),
             "has_ablation": has_ablation,
+            "has_control": has_control,
+            "has_error_analysis": has_error_analysis,
+            "has_statistical_validity": has_statistical_validity,
             "has_falsification": len(falsification_tokens) >= 6,
+            "compute_mismatch": compute_mismatch,
+            "resource_budget": resource_budget or "unspecified",
             "missing": missing,
+            "blocking_issues": list(dict.fromkeys(blocking_issues))[:6],
+            "recommended_fixes": list(dict.fromkeys(recommended_fixes))[:6],
+            "quality_profile": quality_profile,
+            "quality_score": quality_score,
+            "readiness": readiness,
             "completeness": round(max(0.0, min(1.0, completeness)), 3),
         }
+
+    @staticmethod
+    def _experiment_quality_penalty(experiment_profile: dict[str, Any]) -> float:
+        quality_score = float(experiment_profile.get("quality_score") or experiment_profile.get("completeness") or 0)
+        blocking_count = len(experiment_profile.get("blocking_issues") or [])
+        penalty = 0.0
+        if quality_score < 0.35:
+            penalty += 0.75
+        elif quality_score < 0.5:
+            penalty += 0.42
+        elif quality_score < 0.62:
+            penalty += 0.18
+        if not experiment_profile.get("strong_baseline"):
+            penalty += 0.22
+        if not experiment_profile.get("has_ablation"):
+            penalty += 0.18
+        if not experiment_profile.get("has_statistical_validity"):
+            penalty += 0.16
+        if experiment_profile.get("compute_mismatch"):
+            penalty += 0.35
+        penalty += min(0.28, max(0, blocking_count - 2) * 0.07)
+        return round(min(1.35, penalty), 3)
 
     @staticmethod
     def _dedup_tokens(text: str) -> set[str]:
@@ -1690,10 +1899,14 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             llm_evolved_count += sum(1 for item in next_frontier if item.get("tree", {}).get("source") == "llm")
             fallback_needed = max(0, beam_width - len(next_frontier))
             fallback_frontier = []
+            if frontier and not any(item.get("tree", {}).get("operator") == "strong_baseline" for item in next_frontier):
+                fallback_frontier.append(self._mutate_candidate(frontier[0], "strong_baseline", round_number))
             for parent in frontier[:beam_width]:
                 for operator in operators:
                     if fallback_needed <= 0 and next_frontier:
                         break
+                    if operator == "strong_baseline" and any(item.get("tree", {}).get("operator") == "strong_baseline" for item in fallback_frontier):
+                        continue
                     child = self._mutate_candidate(parent, operator, round_number)
                     fallback_frontier.append(child)
                     fallback_needed -= 1
@@ -2221,7 +2434,8 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             evidence_profile = self._candidate_evidence_profile(candidate, evidence_map or {})
             grounding = self._candidate_evidence_grounding(candidate, evidence_map or {})
             evidence_profile = {**evidence_profile, "grounding_score": grounding["grounding_score"]}
-            experiment_profile = self._candidate_experiment_profile(candidate)
+            generation_constraints = (candidate.get("generation_context") or {}).get("generation_constraints") or candidate.get("generation_constraints") or {}
+            experiment_profile = self._candidate_experiment_profile(candidate, generation_constraints)
             gap_alignment = self._candidate_gap_alignment(candidate, gap_map or {})
             if "novelty" in scores:
                 scores["novelty"] = round(max(1.0, min(10.0, scores["novelty"] * (0.72 + novelty.get("score", 0.5) * 0.28))), 1)
@@ -2233,15 +2447,19 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                     evidence_delta -= min(0.7, grounding["missing_claim_count"] * 0.22)
                 scores["evidence_grounding"] = round(max(1.0, min(10.0, scores["evidence_grounding"] + evidence_delta)), 1)
             if "feasibility" in scores:
-                feasibility_delta = (experiment_profile["completeness"] - 0.6) * 1.1
+                feasibility_delta = (experiment_profile["quality_score"] - 0.6) * 1.25
+                if experiment_profile.get("compute_mismatch"):
+                    feasibility_delta -= 0.45
                 scores["feasibility"] = round(max(1.0, min(10.0, scores["feasibility"] + feasibility_delta)), 1)
             if "testability" in scores:
-                testability_delta = (experiment_profile["completeness"] - 0.55) * 1.4
+                testability_delta = (experiment_profile["quality_score"] - 0.55) * 1.55
+                if not experiment_profile.get("has_statistical_validity"):
+                    testability_delta -= 0.25
                 scores["testability"] = round(max(1.0, min(10.0, scores["testability"] + testability_delta)), 1)
             base_score = self._weighted_score(scores)
             coverage_bonus = (evidence_profile["coverage_score"] - 0.5) * 0.7
             grounding_bonus = (grounding["grounding_score"] - 0.55) * 0.8
-            experiment_bonus = (experiment_profile["completeness"] - 0.55) * 0.6
+            experiment_bonus = (experiment_profile["quality_score"] - 0.55) * 0.85
             gap_bonus = (gap_alignment["alignment_score"] - 0.45) * 0.35
             novelty_penalty = 0.8 if novelty.get("collision_risk") == "high" else 0.35 if novelty.get("collision_risk") == "medium" else 0.0
             matrix = novelty.get("novelty_matrix") or {}
@@ -2253,7 +2471,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             matrix_penalty += min(0.25, missing_count * 0.06)
             weak_evidence_penalty = 0.45 if evidence_profile["coverage_score"] < 0.35 else 0.0
             grounding_penalty = self._evidence_grounding_penalty(grounding)
-            weak_experiment_penalty = 0.55 if experiment_profile["completeness"] < 0.5 else 0.0
+            weak_experiment_penalty = self._experiment_quality_penalty(experiment_profile)
             quality_adjustments = {
                 "coverage_bonus": round(coverage_bonus, 3),
                 "grounding_bonus": round(grounding_bonus, 3),
@@ -2264,7 +2482,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                 "novelty_matrix_penalty": round(matrix_penalty, 3),
                 "weak_evidence_penalty": round(weak_evidence_penalty, 3),
                 "evidence_grounding_penalty": round(grounding_penalty, 3),
-                "weak_experiment_penalty": round(weak_experiment_penalty, 3),
+                "experiment_quality_penalty": round(weak_experiment_penalty, 3),
             }
             adjusted_review = {
                 **review,
@@ -2321,7 +2539,8 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                 facet_bonus = self._selection_facet_bonus(candidate, selected)
                 coverage_bonus = float((candidate.get("evidence_coverage") or {}).get("coverage_score") or 0) * 0.18
                 gap_bonus = float((candidate.get("gap_alignment") or {}).get("alignment_score") or 0) * 0.16
-                experiment_bonus = float((candidate.get("experiment_completeness") or {}).get("completeness") or 0) * 0.12
+                experiment_profile = candidate.get("experiment_completeness") or {}
+                experiment_bonus = float(experiment_profile.get("quality_score") or experiment_profile.get("completeness") or 0) * 0.16
                 tool_bonus = self._candidate_tool_fit_bonus(candidate)
                 selection_score = round(
                     float(candidate.get("score") or 0)
@@ -2485,6 +2704,11 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         grounding = candidate.get("evidence_grounding_matrix") or {}
         if grounding.get("grounding_score") is not None:
             parts.append(f"证据支撑 {grounding.get('grounding_score')}")
+        experiment_profile = candidate.get("experiment_completeness") or {}
+        if experiment_profile.get("quality_score") is not None:
+            parts.append(f"实验质量 {experiment_profile.get('quality_score')}")
+        if experiment_profile.get("readiness"):
+            parts.append(f"实验状态：{experiment_profile.get('readiness')}")
         gap_alignment = candidate.get("gap_alignment") or {}
         if gap_alignment.get("matched_gap_title"):
             parts.append(f"匹配 Gap：{gap_alignment.get('matched_gap_title')}")

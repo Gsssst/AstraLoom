@@ -611,6 +611,7 @@ def test_quality_adjustment_records_evidence_and_experiment_profiles():
     assert adjusted["evidence_grounding_matrix"]["supported_claim_count"] >= 2
     assert adjusted["evidence_coverage"]["source_diversity"] == 2
     assert adjusted["experiment_completeness"]["completeness"] > 0.8
+    assert adjusted["experiment_completeness"]["quality_score"] > 0.55
     assert adjusted["gap_alignment"]["matched_gap_title"] == "Evidence gap"
     assert adjusted["review"]["evidence_coverage"] == adjusted["evidence_coverage"]
     assert adjusted["review"]["evidence_grounding_matrix"] == adjusted["evidence_grounding_matrix"]
@@ -639,7 +640,52 @@ def test_quality_adjustment_penalizes_weak_evidence_and_experiment():
     assert adjusted["evidence_grounding_matrix"]["grounding_score"] < 0.4
     assert adjusted["quality_adjustments"]["evidence_grounding_penalty"] > 0
     assert adjusted["experiment_completeness"]["completeness"] < 0.5
+    assert adjusted["experiment_completeness"]["quality_score"] < 0.5
+    assert adjusted["quality_adjustments"]["experiment_quality_penalty"] > 0
     assert adjusted["score"] < adjusted["base_score"] - 1.5
+
+
+def test_experiment_quality_profile_rewards_paper_grade_plan():
+    service = ResearchIdeaWorkbenchService(_Session())
+    profile = service._candidate_experiment_profile({
+        "hypothesis": "Calibration improves robustness by at least 3 points.",
+        "falsification_test": "Reject if the method fails to improve F1 by 3 points with p-value < 0.05 over five random seeds.",
+        "minimum_experiment": {
+            "dataset": "Open RobustQA benchmark with fixed train/dev/test split",
+            "baselines": ["Latest strong RAG baseline", "Vanilla retriever", "No-change control"],
+            "metrics": ["F1", "latency", "robust stability"],
+            "steps": ["Reproduce baseline", "Run proposed method", "Component ablation", "Failure slice analysis"],
+            "ablations": ["remove calibration module", "sensitivity to threshold"],
+            "statistics": ["five random seeds", "bootstrap confidence interval", "paired t-test"],
+            "compute": ["single GPU low compute subset"],
+        },
+    }, {"resource_budget": "low_compute"})
+
+    assert profile["readiness"] == "ready"
+    assert profile["quality_score"] > 0.72
+    assert profile["has_statistical_validity"] is True
+    assert profile["compute_mismatch"] is False
+    assert profile["quality_profile"]["ablation_score"] > 0.7
+
+
+def test_experiment_quality_profile_flags_compute_mismatch():
+    service = ResearchIdeaWorkbenchService(_Session())
+    profile = service._candidate_experiment_profile({
+        "hypothesis": "Large model training improves everything.",
+        "falsification_test": "Reject if it does not improve the score.",
+        "minimum_experiment": {
+            "dataset": "Benchmark",
+            "baselines": ["Base"],
+            "metrics": ["Score"],
+            "steps": ["Pretrain large model", "Full training on multi-GPU cluster"],
+            "compute": ["large-scale multi-GPU cluster full training"],
+        },
+    }, {"resource_budget": "low_compute"})
+
+    assert profile["compute_mismatch"] is True
+    assert profile["readiness"] in {"blocked", "needs_revision"}
+    assert "compute_feasibility" in profile["missing"]
+    assert any("算力" in issue for issue in profile["blocking_issues"])
 
 
 def test_evidence_grounding_matrix_maps_claims_to_supporting_papers():
