@@ -1,4 +1,4 @@
-# AstraLoom
+<h1 align="center">AstraLoom</h1>
 
 <p align="center">
   <strong>Self-hosted AI research workspace for labs and research groups.</strong>
