@@ -90,6 +90,8 @@ cp .env.example .env
 docker compose up -d
 ```
 
+Do not commit `.env`, API keys, uploaded papers, private notes, or database backups.
+
 Open:
 
 - Web app: http://localhost
@@ -175,29 +177,13 @@ node --test frontend/tests/research-toolbox-contract.test.mjs
 openspec validate --specs --strict
 ```
 
-## GitHub Safety Checklist
-
-Commit these:
-
-- `backend/`, `frontend/`, `nginx/`, `openspec/`
-- `README.md`, `introduction.md`, `user-manual.md`
-- `.gitignore`, `.env.example`
-- `docker-compose.yml`, `docker-compose.prod.yml`
-
-Never commit these:
-
-- `.env`, `.env.local`, `.env.production`
-- real API keys, database passwords, JWT secrets, or model credentials
-- private papers, uploaded PDFs, unpublished datasets, lab-only notes, or database backups
-- `node_modules/`, `dist/`, `.vite/`, `.venv/`, `__pycache__/`, `.pytest_cache/`
-- `.DS_Store`, `.idea/`, `.vscode/`, `uploads/`, `logs/`, `backend/celerybeat-schedule`
-
 ## Deployment Notes
 
 - Prefer deploying inside a lab network or a controlled server first.
 - Configure HTTPS, backups, strong secrets, and access control before exposing the service externally.
 - Use separate user accounts for lab members instead of sharing an admin account.
 - Keep model API keys and paper data in environment variables, volumes, or private infrastructure.
+- Keep private papers, uploads, logs, and database backups outside Git.
 
 ## License
 
@@ -237,14 +223,10 @@ cp .env.example .env
 docker compose up -d
 ```
 
+不要把 `.env`、真实 API Key、论文 PDF、用户上传文件、组内私有笔记或数据库备份提交到 Git。
+
 访问：
 
 - 前端界面：http://localhost
 - API 文档：http://localhost/api/docs
 - 健康检查：http://localhost/api/health
-
-### 上传到 GitHub 时要注意
-
-应该上传源码、配置模板和公开文档；不要上传 `.env`、真实 API Key、数据库密码、论文 PDF、用户上传文件、数据库备份、缓存、IDE 配置和运行时状态文件。
-
-当前仓库已经包含 `.gitignore` 和 `.env.example`。在 GitHub 创建仓库时，不要勾选自动创建 README、`.gitignore` 或 license，避免和本地历史冲突。
