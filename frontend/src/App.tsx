@@ -1,13 +1,14 @@
 import React, { Suspense, useEffect } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { ConfigProvider, App as AntApp } from 'antd';
-import zhCN from 'antd/locale/zh_CN';
 import AppLayout from './components/AppLayout';
 import GlobalCommandPalette from './components/GlobalCommandPalette';
 import { WorkflowLoadingState } from './components/WorkflowState';
 import { lazyPages } from './routes/lazyRoutes';
 import { useAuthStore } from './stores/useAuthStore';
 import { useThemeStore } from './stores/useThemeStore';
+import { antdLocales } from './i18n';
+import { useLocaleStore } from './stores/useLocaleStore';
 
 const {
   HomePage,
@@ -27,24 +28,26 @@ const {
   ActionCenterPage,
 } = lazyPages;
 
-const routeFallback = (
-  <div style={{ width: 'min(960px, calc(100vw - 32px))', margin: '40px auto' }}>
-    <WorkflowLoadingState
-      title="正在加载页面"
-      description="首次打开该模块时需要下载对应页面资源。"
-      rows={3}
-    />
-  </div>
-);
-
-const lazyRoute = (element: React.ReactNode) => (
-  <Suspense fallback={routeFallback}>{element}</Suspense>
-);
-
 const App: React.FC = () => {
   const fetchUser = useAuthStore((s) => s.fetchUser);
   const themeConfig = useThemeStore((s) => s.current);
+  const language = useLocaleStore((s) => s.language);
+  const t = useLocaleStore((s) => s.t);
   const [commandPaletteOpen, setCommandPaletteOpen] = React.useState(false);
+
+  const routeFallback = (
+    <div style={{ width: 'min(960px, calc(100vw - 32px))', margin: '40px auto' }}>
+      <WorkflowLoadingState
+        title={t('app.loading.title')}
+        description={t('app.loading.description')}
+        rows={3}
+      />
+    </div>
+  );
+
+  const lazyRoute = (element: React.ReactNode) => (
+    <Suspense fallback={routeFallback}>{element}</Suspense>
+  );
 
   useEffect(() => { fetchUser(); }, [fetchUser]);
 
@@ -65,7 +68,7 @@ const App: React.FC = () => {
 
   return (
     <ConfigProvider
-      locale={zhCN}
+      locale={antdLocales[language]}
       theme={{
         algorithm: themeConfig.algorithm,
         token: themeConfig.token,

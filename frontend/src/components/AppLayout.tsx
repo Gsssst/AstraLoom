@@ -6,31 +6,39 @@ import {
   SettingOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UserOutlined,
   LogoutOutlined, LoginOutlined, BellOutlined, BgColorsOutlined,
   RocketOutlined, AppstoreOutlined, SafetyCertificateOutlined, ThunderboltOutlined,
-  SearchOutlined,
+  SearchOutlined, GlobalOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useThemeStore, THEME_PRESETS } from '../stores/useThemeStore';
+import { useLocaleStore } from '../stores/useLocaleStore';
+import type { Language, MessageKey } from '../i18n';
 import api from '../services/api';
 import { prefetchRouteIntent } from '../routes/lazyRoutes';
 
 const { Text } = Typography;
 const { Header, Sider, Content } = Layout;
 
-const notificationCategoryConfig: Record<string, { label: string; color: string }> = {
-  digest: { label: '论文推送', color: 'blue' },
-  workspace_issue: { label: 'Issue', color: 'purple' },
-  system: { label: '系统', color: 'default' },
+const notificationCategoryConfig: Record<string, { labelKey: MessageKey; color: string }> = {
+  digest: { labelKey: 'notifications.category.digest', color: 'blue' },
+  workspace_issue: { labelKey: 'notifications.category.workspaceIssue', color: 'purple' },
+  system: { labelKey: 'notifications.category.system', color: 'default' },
 };
 
-const menuItems = [
-  { key: '/chat', icon: <CommentOutlined />, label: '对话', color: '#667eea' },
-  { key: '/actions', icon: <ThunderboltOutlined />, label: '行动中心', color: '#f59e0b' },
-  { key: '/workspaces', icon: <AppstoreOutlined />, label: '项目空间', color: '#764ba2' },
-  { key: '/papers', icon: <BookOutlined />, label: '论文库', color: '#00d2ff' },
-  { key: '/research', icon: <ExperimentOutlined />, label: '研究方向', color: '#f5576c' },
-  { key: '/writing', icon: <EditOutlined />, label: '写作助手', color: '#4facfe' },
-  { key: '/admin', icon: <SafetyCertificateOutlined />, label: '管理员', color: '#fa8c16', adminOnly: true },
-  { key: '/settings', icon: <SettingOutlined />, label: '设置', color: '#a18cd1' },
+const menuItems: Array<{
+  key: string;
+  icon: React.ReactNode;
+  labelKey: MessageKey;
+  color: string;
+  adminOnly?: boolean;
+}> = [
+  { key: '/chat', icon: <CommentOutlined />, labelKey: 'nav.chat', color: '#667eea' },
+  { key: '/actions', icon: <ThunderboltOutlined />, labelKey: 'nav.actions', color: '#f59e0b' },
+  { key: '/workspaces', icon: <AppstoreOutlined />, labelKey: 'nav.workspaces', color: '#764ba2' },
+  { key: '/papers', icon: <BookOutlined />, labelKey: 'nav.papers', color: '#00d2ff' },
+  { key: '/research', icon: <ExperimentOutlined />, labelKey: 'nav.research', color: '#f5576c' },
+  { key: '/writing', icon: <EditOutlined />, labelKey: 'nav.writing', color: '#4facfe' },
+  { key: '/admin', icon: <SafetyCertificateOutlined />, labelKey: 'nav.admin', color: '#fa8c16', adminOnly: true },
+  { key: '/settings', icon: <SettingOutlined />, labelKey: 'nav.settings', color: '#a18cd1' },
 ];
 
 const AppLayout: React.FC = () => {
@@ -44,6 +52,9 @@ const AppLayout: React.FC = () => {
   const isMobile = !screens.md;
   const { user, isAuthenticated, logout } = useAuthStore();
   const themeStore = useThemeStore();
+  const language = useLocaleStore((s) => s.language);
+  const setLanguage = useLocaleStore((s) => s.setLanguage);
+  const t = useLocaleStore((s) => s.t);
   const [unreadCount, setUnreadCount] = useState(0);
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifications, setNotifications] = useState<any[]>([]);
@@ -108,15 +119,24 @@ const AppLayout: React.FC = () => {
       setUnreadCount(0);
       window.dispatchEvent(new Event('notifications:refresh'));
     } catch {
-      message.warning('通知标记已读失败');
+      message.warning(t('user.logout.failedRead'));
     }
   };
-  const handleLogout = () => { logout(); message.success('已退出登录'); navigate('/'); };
+  const handleLogout = () => { logout(); message.success(t('user.logout.success')); navigate('/'); };
   const routeIntentProps = (path: string) => ({
     onMouseEnter: () => prefetchRouteIntent(path),
     onFocus: () => prefetchRouteIntent(path),
     onTouchStart: () => prefetchRouteIntent(path),
   });
+
+  const switchLanguage = (nextLanguage: Language) => {
+    setLanguage(nextLanguage);
+  };
+
+  const languageMenuItems = [
+    { key: 'zh', label: t('header.language.zh'), onClick: () => switchLanguage('zh') },
+    { key: 'en', label: t('header.language.en'), onClick: () => switchLanguage('en') },
+  ];
 
   // ═══════ 侧栏 Logo ═══════
   const renderLogo = (compact: boolean) => (
@@ -176,7 +196,7 @@ const AppLayout: React.FC = () => {
             fontSize: 13,
             transition: 'all 0.25s',
           }}>
-            {m.label}
+            {t(m.labelKey)}
           </span>
         ),
         onMouseEnter: () => prefetchRouteIntent(m.key),
@@ -232,7 +252,7 @@ const AppLayout: React.FC = () => {
                 {visibleMenuItems.map(m => {
                   const isActive = selectedMenuKey === m.key;
                   return (
-                    <Tooltip key={m.key} title={m.label} placement="right">
+                    <Tooltip key={m.key} title={t(m.labelKey)} placement="right">
                       <div onClick={() => navigate(m.key)} {...routeIntentProps(m.key)} style={{
                         width: 40, height: 40, borderRadius: 12, cursor: 'pointer',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -271,7 +291,7 @@ const AppLayout: React.FC = () => {
                 <Avatar size={32} src={user.avatar} icon={<UserOutlined />} style={{ background: 'linear-gradient(135deg, #667eea, #764ba2)', flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <Text strong ellipsis style={{ fontSize: 13, display: 'block' }}>{user.display_name || user.username}</Text>
-                  <Text type="secondary" style={{ fontSize: 11 }}>{user.role === 'admin' ? '管理员' : '用户'}</Text>
+                  <Text type="secondary" style={{ fontSize: 11 }}>{user.role === 'admin' ? t('role.admin') : t('role.user')}</Text>
                 </div>
               </div>
             </div>
@@ -298,16 +318,23 @@ const AppLayout: React.FC = () => {
               icon={<SearchOutlined />}
               onClick={() => window.dispatchEvent(new Event('command-palette:open'))}
             >
-              <Text type="secondary">搜索 / 命令</Text>
+              <Text type="secondary">{t('header.command')}</Text>
               {!isMobile && <Tag style={{ marginInlineEnd: 0 }}>⌘K</Tag>}
             </Button>
             {/* 主题切换 */}
-            <Dropdown menu={{ items: THEME_PRESETS.map(t => ({ key: t.id, icon: <span>{t.icon}</span>, label: t.name, onClick: () => themeStore.setTheme(t.id) })) }} placement="bottomRight">
-              <Button type="text" icon={<BgColorsOutlined />} />
+            <Dropdown menu={{ items: THEME_PRESETS.map(preset => ({ key: preset.id, icon: <span>{preset.icon}</span>, label: preset.name, onClick: () => themeStore.setTheme(preset.id) })) }} placement="bottomRight">
+              <Tooltip title={t('header.theme')}>
+                <Button type="text" icon={<BgColorsOutlined />} />
+              </Tooltip>
+            </Dropdown>
+            <Dropdown menu={{ selectedKeys: [language], items: languageMenuItems }} placement="bottomRight">
+              <Tooltip title={t('header.language')}>
+                <Button type="text" icon={<GlobalOutlined />}>{!isMobile ? language.toUpperCase() : null}</Button>
+              </Tooltip>
             </Dropdown>
             {/* 通知 */}
             {isAuthenticated && (
-              <Popover trigger="click" open={notifOpen} onOpenChange={setNotifOpen} title="通知" content={
+              <Popover trigger="click" open={notifOpen} onOpenChange={setNotifOpen} title={t('notifications.title')} content={
                 <div style={{ width: 320 }}>
                   <Button
                     block
@@ -316,9 +343,9 @@ const AppLayout: React.FC = () => {
                     onClick={handleMarkAllNotificationsRead}
                     style={{ marginBottom: 8, borderRadius: 8 }}
                   >
-                    全部标记已读
+                    {t('notifications.markAllRead')}
                   </Button>
-                  {notifications.length === 0 ? <Empty description="暂无通知" image={Empty.PRESENTED_IMAGE_SIMPLE} /> : (
+                  {notifications.length === 0 ? <Empty description={t('notifications.empty')} image={Empty.PRESENTED_IMAGE_SIMPLE} /> : (
                     <List style={{ maxHeight: 360, overflow: 'auto' }} dataSource={notifications} renderItem={(item: any) => (
                       <List.Item
                         style={{ opacity: item.is_read ? 0.58 : 1, cursor: 'pointer' }}
@@ -328,14 +355,18 @@ const AppLayout: React.FC = () => {
                         <List.Item.Meta title={item.title} description={
                           <div>
                             <Text style={{ fontSize: 12 }} ellipsis>{item.content?.slice(0, 150)}</Text>
-                            <div><Tag color={notificationCategoryConfig[item.category]?.color || 'default'} style={{ fontSize: 10 }}>{notificationCategoryConfig[item.category]?.label || item.category}</Tag>
-                              <Text type="secondary" style={{ fontSize: 10 }}>{new Date(item.created_at).toLocaleDateString()}</Text></div>
+                            <div>
+                              <Tag color={notificationCategoryConfig[item.category]?.color || 'default'} style={{ fontSize: 10 }}>
+                                {notificationCategoryConfig[item.category]?.labelKey ? t(notificationCategoryConfig[item.category].labelKey) : item.category}
+                              </Tag>
+                              <Text type="secondary" style={{ fontSize: 10 }}>{new Date(item.created_at).toLocaleDateString()}</Text>
+                            </div>
                           </div>
                         } />
                       </List.Item>
                     )} />
                   )}
-                  <Button block type="link" icon={<BookOutlined />} onClick={() => { setNotifOpen(false); navigate('/papers/digests'); }} style={{ marginTop: 6 }} {...routeIntentProps('/papers/digests')}>进入论文推送中心</Button>
+                  <Button block type="link" icon={<BookOutlined />} onClick={() => { setNotifOpen(false); navigate('/papers/digests'); }} style={{ marginTop: 6 }} {...routeIntentProps('/papers/digests')}>{t('notifications.digestCenter')}</Button>
                 </div>
               }>
                 <Badge count={unreadCount} size="small"><Button type="text" icon={<BellOutlined />} onClick={handleNotifClick} /></Badge>
@@ -344,10 +375,10 @@ const AppLayout: React.FC = () => {
             {/* 用户 */}
             {isAuthenticated && user ? (
               <Dropdown menu={{ items: [
-                { key: 'role', label: `角色: ${user.role === 'admin' ? '管理员' : '用户'}`, disabled: true },
+                { key: 'role', label: `${t('user.role')}: ${user.role === 'admin' ? t('role.admin') : t('role.user')}`, disabled: true },
                 { type: 'divider' },
-                { key: 'settings', icon: <SettingOutlined />, label: '个人设置', onMouseEnter: () => prefetchRouteIntent('/settings'), onClick: () => navigate('/settings') },
-                { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', onClick: handleLogout, danger: true },
+                { key: 'settings', icon: <SettingOutlined />, label: t('user.settings'), onMouseEnter: () => prefetchRouteIntent('/settings'), onClick: () => navigate('/settings') },
+                { key: 'logout', icon: <LogoutOutlined />, label: t('user.logout'), onClick: handleLogout, danger: true },
               ] }} placement="bottomRight">
                 <div className="app-header-account"
                   onMouseEnter={e => e.currentTarget.style.background = '#f5f5f5'}
@@ -357,7 +388,7 @@ const AppLayout: React.FC = () => {
                 </div>
               </Dropdown>
             ) : (
-              <Button type="link" icon={<LoginOutlined />} onClick={() => navigate('/login')} {...routeIntentProps('/login')}>登录</Button>
+              <Button type="link" icon={<LoginOutlined />} onClick={() => navigate('/login')} {...routeIntentProps('/login')}>{t('header.login')}</Button>
             )}
           </div>
         </Header>
@@ -367,11 +398,11 @@ const AppLayout: React.FC = () => {
       </Layout>
       <BackTop />
       {/* 快捷键弹窗 */}
-      <Modal title="⌨️ 快捷键" open={shortcutOpen} onCancel={() => setShortcutOpen(false)} footer={null} width={400}>
+      <Modal title={`⌨️ ${t('shortcut.title')}`} open={shortcutOpen} onCancel={() => setShortcutOpen(false)} footer={null} width={400}>
         {[
-          ['?', '显示快捷键'], ['Ctrl+K', '打开命令面板'], ['Ctrl+N', '新建对话'],
-          ['Ctrl+B', '返回上一页'], ['Ctrl+H', '回到主页'],
-          ['Enter', '发送消息'], ['Shift+Enter', '换行'],
+          ['?', t('shortcut.showHelp')], ['Ctrl+K', t('shortcut.commandPalette')], ['Ctrl+N', t('shortcut.newChat')],
+          ['Ctrl+B', t('shortcut.back')], ['Ctrl+H', t('shortcut.home')],
+          ['Enter', t('shortcut.send')], ['Shift+Enter', t('shortcut.newline')],
         ].map(([k, d], i) => (
           <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
             <Tag style={{ fontFamily: 'monospace', fontSize: 13 }}>{k}</Tag>

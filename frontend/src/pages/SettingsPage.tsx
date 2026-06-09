@@ -9,6 +9,7 @@ import {
   SaveOutlined, LockOutlined, ApiOutlined, ExportOutlined,
   BarChartOutlined, TeamOutlined, BgColorsOutlined, SendOutlined,
   ReloadOutlined, SearchOutlined, DatabaseOutlined,
+  GlobalOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
@@ -16,6 +17,7 @@ import { getApiErrorDetails, getApiErrorMessage, type ApiErrorDetails } from '..
 import PageShell from '../components/PageShell';
 import { useThemeStore, THEME_PRESETS } from '../stores/useThemeStore';
 import { useAuthStore, type User } from '../stores/useAuthStore';
+import { useLocaleStore } from '../stores/useLocaleStore';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -62,6 +64,9 @@ const SettingsPage: React.FC = () => {
   const [kbDiagLoading, setKbDiagLoading] = useState(false);
   const [kbRecommendations, setKbRecommendations] = useState<any[]>([]);
   const { current: currentTheme, setTheme, showThinking, setShowThinking } = useThemeStore();
+  const language = useLocaleStore((s) => s.language);
+  const setLanguage = useLocaleStore((s) => s.setLanguage);
+  const tr = useLocaleStore((s) => s.t);
 
   const syncProfileIdentity = (updates: Partial<User>) => {
     setProfile((c: any) => c ? { ...c, ...updates } : c);
@@ -204,7 +209,7 @@ const SettingsPage: React.FC = () => {
                   <div style={{ width: 20, height: 20, borderRadius: 6, background: t.token.colorPrimary }} />
                   {t.token.colorBgLayout && <div style={{ width: 20, height: 20, borderRadius: 6, background: t.token.colorBgLayout, border: '1px solid #e5e5e5' }} />}
                 </div>
-                {isActive && <div style={{ marginTop: 8, color: t.token.colorPrimary, fontWeight: 600, fontSize: 12 }}>✓ 当前</div>}
+                {isActive && <div style={{ marginTop: 8, color: t.token.colorPrimary, fontWeight: 600, fontSize: 12 }}>✓ {tr('settings.theme.current')}</div>}
               </div>
             </Radio.Button>
           );
@@ -212,15 +217,33 @@ const SettingsPage: React.FC = () => {
       </Radio.Group>
 
       <Divider style={{ margin: '20px 0' }} />
-      <Card style={{ ...cardStyle, maxWidth: 500 }} styles={{ body: { padding: '16px 20px' } }}>
+      <Space direction="vertical" style={{ width: '100%', maxWidth: 560 }} size={14}>
+      <Card style={cardStyle} styles={{ body: { padding: '16px 20px' } }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
-            <Text strong style={{ fontSize: 14 }}>💭 显示 AI 思考过程</Text>
-            <br /><Text type="secondary" style={{ fontSize: 12 }}>开启后展示支持模型的推理过程（可折叠）</Text>
+            <Text strong style={{ fontSize: 14 }}>💭 {tr('settings.theme.thinking.title')}</Text>
+            <br /><Text type="secondary" style={{ fontSize: 12 }}>{tr('settings.theme.thinking.description')}</Text>
           </div>
           <Switch checked={showThinking} onChange={setShowThinking} />
         </div>
       </Card>
+      <Card style={cardStyle} styles={{ body: { padding: '16px 20px' } }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 220 }}>
+            <Text strong style={{ fontSize: 14 }}><GlobalOutlined /> {tr('settings.language.title')}</Text>
+            <br /><Text type="secondary" style={{ fontSize: 12 }}>{tr('settings.language.description')}</Text>
+          </div>
+          <Segmented
+            value={language}
+            onChange={value => setLanguage(value as typeof language)}
+            options={[
+              { label: tr('settings.language.zh'), value: 'zh' },
+              { label: tr('settings.language.en'), value: 'en' },
+            ]}
+          />
+        </div>
+      </Card>
+      </Space>
     </div>
   );
 
@@ -735,18 +758,18 @@ const SettingsPage: React.FC = () => {
   );
 
   const tabs = [
-    { key: 'profile', label: <span><UserOutlined /> 个人资料</span>, children: profileTab },
-    { key: 'theme', label: <span><BgColorsOutlined /> 主题</span>, children: themeTab },
+    { key: 'profile', label: <span><UserOutlined /> {tr('settings.tabs.profile')}</span>, children: profileTab },
+    { key: 'theme', label: <span><BgColorsOutlined /> {tr('settings.tabs.theme')}</span>, children: themeTab },
     { key: 'api', label: <span><ApiOutlined /> API</span>, children: apiTab },
-    { key: 'data', label: <span><ExportOutlined /> 数据</span>, children: dataTab },
-    { key: 'subscription', label: <span><BellOutlined /> 推送</span>, children: subTab },
-    { key: 'usage', label: <span><BarChartOutlined /> 用量</span>, children: usageTabContent },
+    { key: 'data', label: <span><ExportOutlined /> {tr('settings.tabs.data')}</span>, children: dataTab },
+    { key: 'subscription', label: <span><BellOutlined /> {tr('settings.tabs.subscription')}</span>, children: subTab },
+    { key: 'usage', label: <span><BarChartOutlined /> {tr('settings.tabs.usage')}</span>, children: usageTabContent },
   ];
 
   return (
     <PageShell
-      title="系统设置"
-      subtitle="管理主题配色、个人资料、API 配置、数据导出、推送和 Token 用量。"
+      title={tr('settings.title')}
+      subtitle={tr('settings.subtitle')}
       icon={<SettingOutlined />}
       maxWidth={860}
     >
