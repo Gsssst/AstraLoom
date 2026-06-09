@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
-import { Spin, Button, Space, Typography, InputNumber } from 'antd';
+import { Alert, Spin, Button, Space, Typography, InputNumber } from 'antd';
 import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -22,13 +22,35 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
   const [numPages, setNumPages] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [pageWidth, setPageWidth] = useState(700);
   const contentRef = useRef<HTMLDivElement>(null);
+  const resolvedUrl = React.useMemo(() => {
+    if (!url) return '';
+    if (typeof window === 'undefined') return url;
+    return new URL(url, window.location.origin).toString();
+  }, [url]);
+  const documentFile = React.useMemo(() => ({ url: resolvedUrl }), [resolvedUrl]);
 
   const onDocLoad = useCallback(({ numPages }: any) => {
     setNumPages(numPages);
+    setPageNumber(current => Math.min(Math.max(current, 1), numPages || 1));
+    setLoadError(null);
     setLoading(false);
   }, []);
+
+  const onDocLoadError = useCallback((error: Error) => {
+    setLoading(false);
+    setNumPages(0);
+    setLoadError(error?.message || 'PDF 加载失败');
+  }, []);
+
+  useEffect(() => {
+    setLoading(true);
+    setLoadError(null);
+    setNumPages(0);
+    setPageNumber(1);
+  }, [resolvedUrl]);
 
   useEffect(() => {
     const container = contentRef.current;
@@ -91,7 +113,22 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
       {/* PDF 内容 */}
       <div ref={contentRef} className="paper-pdf-scroll">
         {loading && <Spin style={{ marginTop: 40 }} />}
-        <Document file={url} onLoadSuccess={onDocLoad} loading={<Spin style={{ marginTop: 40 }} />}>
+        {loadError && (
+          <Alert
+            type="error"
+            showIcon
+            style={{ margin: 16, textAlign: 'left' }}
+            message="PDF 加载失败"
+            description={`请确认 ${resolvedUrl} 返回 application/pdf。浏览器错误：${loadError}`}
+          />
+        )}
+        <Document
+          file={documentFile}
+          onLoadSuccess={onDocLoad}
+          onLoadError={onDocLoadError}
+          loading={<Spin style={{ marginTop: 40 }} />}
+          error={null}
+        >
           <div className="paper-pdf-page">
             <Page
               pageNumber={pageNumber}

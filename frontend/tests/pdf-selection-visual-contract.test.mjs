@@ -18,6 +18,15 @@ test('pdf viewer scopes page-level selection styles', () => {
   assert.match(pdfViewerSource, /getBoundingClientRect\(\)/);
 });
 
+test('pdf viewer uses production-safe url descriptor and diagnostics', () => {
+  assert.match(pdfViewerSource, /new URL\(url, window\.location\.origin\)\.toString\(\)/);
+  assert.match(pdfViewerSource, /const documentFile = React\.useMemo\(\(\) => \(\{ url: resolvedUrl \}\), \[resolvedUrl\]\)/);
+  assert.match(pdfViewerSource, /file=\{documentFile\}/);
+  assert.match(pdfViewerSource, /onLoadError=\{onDocLoadError\}/);
+  assert.match(pdfViewerSource, /message="PDF 加载失败"/);
+  assert.match(pdfViewerSource, /返回 application\/pdf/);
+});
+
 test('pdf text selection uses a lighter separated highlight treatment', () => {
   assert.match(responsiveCssSource, /\.paper-pdf-page \.react-pdf__Page__textContent ::selection/);
   assert.match(responsiveCssSource, /background: rgba\(72, 145, 255, 0\.22\)/);
