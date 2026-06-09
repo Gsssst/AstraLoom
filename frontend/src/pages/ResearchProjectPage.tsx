@@ -86,6 +86,26 @@ interface Review {
   diversity_facets?: string[];
   suppressed_duplicates?: Array<{ title?: string; kept?: string; reason?: string; similarity?: number }>;
   gap_selection?: GapSelection | null;
+  evidence_grounding_matrix?: {
+    grounding_score?: number;
+    claim_count?: number;
+    supported_claim_count?: number;
+    strong_claim_count?: number;
+    weak_claim_count?: number;
+    missing_claim_count?: number;
+    central_weak_claim_count?: number;
+    source_diversity?: number;
+    category_diversity?: number;
+    weak_claims?: string[];
+    summary?: string;
+    matrix?: Array<{
+      claim?: string;
+      claim_type?: string;
+      support_level?: 'strong' | 'partial' | 'weak' | 'missing';
+      risk_note?: string;
+      support_refs?: Array<{ paper_id?: string; title?: string; category?: string; source?: string; score?: number; explicit?: boolean }>;
+    }>;
+  } | null;
   novelty_check?: {
     status: 'likely_novel' | 'incremental' | 'too_similar';
     score: number; max_similarity: number; rationale: string;
@@ -2477,6 +2497,12 @@ const ResearchProjectPage: React.FC = () => {
     const toolFitPlan = review?.tool_fit_plan || null;
     const toolFitItems = toolFitPlan?.items || [];
     const usedToolNames = review?.used_tool_names || [];
+    const evidenceGrounding = review?.evidence_grounding_matrix || null;
+    const groundingRows = evidenceGrounding?.matrix || [];
+    const groundingRisk = !evidenceGrounding ? undefined
+      : (evidenceGrounding.missing_claim_count || 0) > 0 || (evidenceGrounding.grounding_score || 0) < 0.45 ? 'high'
+        : (evidenceGrounding.weak_claim_count || 0) > 0 || (evidenceGrounding.grounding_score || 0) < 0.65 ? 'medium'
+          : 'low';
     return (
       <div>
         {idea.hypothesis && <Alert type="success" showIcon message="可证伪假设" description={idea.hypothesis} style={{ marginBottom: 14 }} />}
@@ -2546,6 +2572,54 @@ const ResearchProjectPage: React.FC = () => {
                     )}
                     {(review.suppressed_duplicates || []).length > 0 && (
                       <Text type="secondary">已压制相近候选：{review.suppressed_duplicates?.slice(0, 2).map(item => item.title).filter(Boolean).join('、')}</Text>
+                    )}
+                  </Space>
+                </Card>
+              )}
+              {evidenceGrounding && (
+                <Card size="small" className="proposal-selection-signal">
+                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                    <Space wrap>
+                      <Tag color="blue">证据支撑矩阵</Tag>
+                      {evidenceGrounding.grounding_score != null && (
+                        <Tag color={riskColors[groundingRisk || 'low'] || 'default'}>支撑度 {Math.round(evidenceGrounding.grounding_score * 100)}%</Tag>
+                      )}
+                      <Tag>Claim {evidenceGrounding.claim_count || 0}</Tag>
+                      <Tag color="green">强支撑 {evidenceGrounding.strong_claim_count || 0}</Tag>
+                      {(evidenceGrounding.weak_claim_count || 0) > 0 && <Tag color="orange">弱支撑 {evidenceGrounding.weak_claim_count}</Tag>}
+                      {(evidenceGrounding.missing_claim_count || 0) > 0 && <Tag color="red">缺证 {evidenceGrounding.missing_claim_count}</Tag>}
+                    </Space>
+                    {evidenceGrounding.summary && <Text>{evidenceGrounding.summary}</Text>}
+                    {(evidenceGrounding.weak_claims || []).length > 0 && (
+                      <Space direction="vertical" size={3}>
+                        {(evidenceGrounding.weak_claims || []).slice(0, 3).map((claim, index) => (
+                          <Text type="secondary" key={`${claim}-${index}`}>待补证据：{claim}</Text>
+                        ))}
+                      </Space>
+                    )}
+                    {groundingRows.length > 0 && (
+                      <div className="proposal-similar-work-list">
+                        {groundingRows.slice(0, 3).map((row, index) => (
+                          <div className="proposal-similar-work-item" key={`${row.claim || index}`}>
+                            <Space size={6} wrap>
+                              <Tag color={row.support_level === 'strong' ? 'green' : row.support_level === 'partial' ? 'blue' : row.support_level === 'weak' ? 'orange' : 'red'}>
+                                {row.support_level || 'unknown'}
+                              </Tag>
+                              {row.claim_type && <Tag>{row.claim_type}</Tag>}
+                              <Text strong>{row.claim || '未命名 claim'}</Text>
+                            </Space>
+                            {(row.support_refs || []).length > 0 ? (
+                              <Space wrap size={4}>
+                                {(row.support_refs || []).slice(0, 3).map(ref => (
+                                  <Tag color={categoryColors[(ref.category || 'background') as keyof typeof categoryColors] || 'default'} key={`${row.claim}-${ref.paper_id || ref.title}`}>
+                                    {ref.title || ref.paper_id}
+                                  </Tag>
+                                ))}
+                              </Space>
+                            ) : row.risk_note ? <Text type="secondary">{row.risk_note}</Text> : null}
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </Space>
                 </Card>

@@ -73,3 +73,13 @@ test('research proposals can display novelty matrix rationale', () => {
   assert.match(page, /missing_differences/);
   assert.match(page, /anti_collision_revision/);
 });
+
+test('research proposals can display evidence grounding matrix', () => {
+  const page = read('src/pages/ResearchProjectPage.tsx');
+
+  assert.match(page, /证据支撑矩阵/);
+  assert.match(page, /evidence_grounding_matrix/);
+  assert.match(page, /grounding_score/);
+  assert.match(page, /weak_claims/);
+  assert.match(page, /support_refs/);
+});

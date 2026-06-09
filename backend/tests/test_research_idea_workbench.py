@@ -607,10 +607,13 @@ def test_quality_adjustment_records_evidence_and_experiment_profiles():
     adjusted = service.apply_quality_adjustments([candidate], evidence_map=evidence, gap_map=gap_map)[0]
 
     assert adjusted["evidence_coverage"]["coverage_score"] > 0.7
+    assert adjusted["evidence_grounding_matrix"]["grounding_score"] > 0.55
+    assert adjusted["evidence_grounding_matrix"]["supported_claim_count"] >= 2
     assert adjusted["evidence_coverage"]["source_diversity"] == 2
     assert adjusted["experiment_completeness"]["completeness"] > 0.8
     assert adjusted["gap_alignment"]["matched_gap_title"] == "Evidence gap"
     assert adjusted["review"]["evidence_coverage"] == adjusted["evidence_coverage"]
+    assert adjusted["review"]["evidence_grounding_matrix"] == adjusted["evidence_grounding_matrix"]
     assert adjusted["score"] > 6.5
 
 
@@ -633,8 +636,50 @@ def test_quality_adjustment_penalizes_weak_evidence_and_experiment():
     adjusted = service.apply_quality_adjustments([candidate], evidence_map={"seed": [], "background": [], "inspiration": []})[0]
 
     assert adjusted["evidence_coverage"]["coverage_score"] < 0.4
+    assert adjusted["evidence_grounding_matrix"]["grounding_score"] < 0.4
+    assert adjusted["quality_adjustments"]["evidence_grounding_penalty"] > 0
     assert adjusted["experiment_completeness"]["completeness"] < 0.5
     assert adjusted["score"] < adjusted["base_score"] - 1.5
+
+
+def test_evidence_grounding_matrix_maps_claims_to_supporting_papers():
+    service = ResearchIdeaWorkbenchService(_Session())
+    evidence = {
+        "seed": [{
+            "paper_id": "p1",
+            "title": "Adaptive Pruning for Efficient Inference",
+            "abstract_excerpt": "Adaptive pruning improves efficient inference while keeping accuracy under strong baselines.",
+            "source": "local_library",
+        }],
+        "background": [{
+            "paper_id": "p2",
+            "title": "Latency Benchmark for Robust Baseline Comparisons",
+            "abstract_excerpt": "LatencyBench evaluates pruning with accuracy, latency, ablation, and robust baseline comparisons.",
+            "source": "semantic_scholar",
+        }],
+        "inspiration": [],
+    }
+    candidate = {
+        "title": "Robust adaptive pruning",
+        "gap": "Efficient inference lacks robust evidence.",
+        "hypothesis": "Adaptive pruning improves efficient inference under strong baselines.",
+        "approach": "Use adaptive pruning with calibration and robust baseline comparisons.",
+        "evidence_ids": ["p1", "p2"],
+        "minimum_experiment": {
+            "dataset": "LatencyBench",
+            "baselines": ["Strong baseline"],
+            "metrics": ["accuracy", "latency"],
+            "steps": ["Run pruning", "Ablation"],
+        },
+    }
+
+    grounding = service._candidate_evidence_grounding(candidate, evidence)
+
+    assert grounding["claim_count"] >= 3
+    assert grounding["grounding_score"] > 0.6
+    assert grounding["source_diversity"] == 2
+    assert any(row["support_refs"] for row in grounding["matrix"])
+    assert all(row["support_level"] in {"strong", "partial"} for row in grounding["matrix"][:3])
 
 
 def test_diverse_selection_prefers_distinct_facets_over_near_duplicate():
@@ -1326,6 +1371,8 @@ async def test_top_proposal_persists_evidence_review_and_minimum_experiment():
         "diversity_facets": ["path:grounded", "dataset:benchmark"],
         "suppressed_duplicates": [{"title": "Duplicate", "reason": "diversity_near_duplicate"}],
         "gap_selection": {"selected_gap_titles": ["Gap A"], "focus_note": "prefer low compute"},
+        "evidence_grounding_matrix": {"grounding_score": 0.78, "claim_count": 3, "matrix": []},
+        "quality_adjustments": {"evidence_grounding_penalty": 0},
         "review": {
             "scores": {"novelty": 8, "evidence_grounding": 9, "feasibility": 9, "testability": 9, "impact": 8, "clarity": 8},
             "rationale": "The hypothesis is falsifiable.",
@@ -1354,6 +1401,8 @@ async def test_top_proposal_persists_evidence_review_and_minimum_experiment():
     assert ideas[0].review_json["diversity_facets"] == ["path:grounded", "dataset:benchmark"]
     assert ideas[0].review_json["suppressed_duplicates"][0]["title"] == "Duplicate"
     assert ideas[0].review_json["gap_selection"]["selected_gap_titles"] == ["Gap A"]
+    assert ideas[0].review_json["evidence_grounding_matrix"]["grounding_score"] == 0.78
+    assert ideas[0].review_json["quality_adjustments"]["evidence_grounding_penalty"] == 0
     assert ideas[0].experiment_plan == experiment
 
 

@@ -1359,6 +1359,233 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             "coverage_score": round(coverage_score, 3),
         }
 
+    @classmethod
+    def _candidate_evidence_grounding(
+        cls,
+        candidate: dict[str, Any],
+        evidence_map: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        claims = cls._candidate_claims(candidate)
+        evidence_lookup = cls._evidence_lookup(evidence_map or {})
+        explicit_ids = [str(item) for item in (candidate.get("evidence_ids") or []) if str(item).strip()]
+        rows: list[dict[str, Any]] = []
+        support_weights = {"strong": 1.0, "partial": 0.62, "weak": 0.25, "missing": 0.0}
+        for claim in claims:
+            matches = cls._match_evidence_for_claim(claim, evidence_lookup, explicit_ids)
+            top_matches = matches[:4]
+            support_level = cls._claim_support_level(claim, top_matches)
+            refs = [
+                {
+                    "paper_id": item["paper_id"],
+                    "title": item.get("title") or "未命名论文",
+                    "category": item.get("category") or "unknown",
+                    "source": item.get("source") or item.get("category") or "unknown",
+                    "score": round(float(item.get("_match_score") or 0), 3),
+                    "explicit": bool(item.get("_explicit")),
+                }
+                for item in top_matches
+            ]
+            rows.append({
+                "claim": claim["text"],
+                "claim_type": claim["type"],
+                "central": claim["central"],
+                "support_level": support_level,
+                "support_refs": refs,
+                "risk_note": cls._claim_risk_note(claim, support_level, refs),
+            })
+
+        central_rows = [row for row in rows if row.get("central")] or rows
+        supported_rows = [row for row in rows if row["support_level"] in {"strong", "partial"}]
+        strong_rows = [row for row in rows if row["support_level"] == "strong"]
+        weak_rows = [row for row in rows if row["support_level"] in {"weak", "missing"}]
+        missing_rows = [row for row in rows if row["support_level"] == "missing"]
+        central_missing = [row for row in central_rows if row["support_level"] in {"weak", "missing"}]
+        used_refs = {
+            ref["paper_id"]: ref
+            for row in rows
+            for ref in row.get("support_refs", [])
+            if ref.get("paper_id")
+        }
+        categories = {str(ref.get("category") or "unknown") for ref in used_refs.values() if ref.get("category") != "unknown"}
+        sources = {str(ref.get("source") or "unknown") for ref in used_refs.values() if ref.get("source") != "unknown"}
+        explicit_resolved = {paper_id for paper_id in explicit_ids if paper_id in evidence_lookup}
+
+        claim_count = len(rows) or 1
+        central_count = len(central_rows) or 1
+        support_score = sum(support_weights.get(row["support_level"], 0.0) for row in rows) / claim_count
+        central_score = sum(support_weights.get(row["support_level"], 0.0) for row in central_rows) / central_count
+        diversity_score = min(len(categories), 3) / 3 * 0.55 + min(len(sources), 3) / 3 * 0.45
+        explicit_score = min(len(explicit_resolved), 3) / 3
+        missing_penalty = min(0.28, len(central_missing) * 0.12 + len(missing_rows) * 0.04)
+        grounding_score = max(
+            0.0,
+            min(
+                1.0,
+                support_score * 0.42
+                + central_score * 0.28
+                + diversity_score * 0.18
+                + explicit_score * 0.12
+                - missing_penalty,
+            ),
+        )
+
+        return {
+            "grounding_score": round(grounding_score, 3),
+            "claim_count": len(rows),
+            "supported_claim_count": len(supported_rows),
+            "strong_claim_count": len(strong_rows),
+            "weak_claim_count": len(weak_rows),
+            "missing_claim_count": len(missing_rows),
+            "central_weak_claim_count": len(central_missing),
+            "claim_coverage_ratio": round(len(supported_rows) / claim_count, 3),
+            "strong_support_ratio": round(len(strong_rows) / claim_count, 3),
+            "source_diversity": len(sources),
+            "category_diversity": len(categories),
+            "explicit_evidence_count": len(explicit_resolved),
+            "weak_claims": [row["claim"] for row in weak_rows[:5]],
+            "matrix": rows,
+            "summary": cls._evidence_grounding_summary(rows, grounding_score, categories, sources),
+        }
+
+    @staticmethod
+    def _evidence_lookup(evidence_map: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        lookup: dict[str, dict[str, Any]] = {}
+        for category in ("seed", "background", "inspiration"):
+            for item in evidence_map.get(category, []) or []:
+                if not isinstance(item, dict) or not item.get("paper_id"):
+                    continue
+                paper_id = str(item.get("paper_id"))
+                lookup[paper_id] = {
+                    **item,
+                    "paper_id": paper_id,
+                    "category": item.get("category") or category,
+                    "_tokens": ResearchIdeaWorkbenchService._dedup_tokens(
+                        " ".join([
+                            str(item.get("title") or ""),
+                            str(item.get("abstract_excerpt") or ""),
+                            str(item.get("abstract") or ""),
+                            str(item.get("relevance") or ""),
+                            str(item.get("summary") or ""),
+                        ])
+                    ),
+                }
+        return lookup
+
+    @classmethod
+    def _candidate_claims(cls, candidate: dict[str, Any]) -> list[dict[str, Any]]:
+        claims: list[dict[str, Any]] = []
+
+        def add_claim(text: Any, claim_type: str, *, central: bool) -> None:
+            cleaned = re.sub(r"\s+", " ", str(text or "")).strip(" ;,，。")
+            if not cleaned:
+                return
+            if len(cleaned) > 260:
+                cleaned = cleaned[:257].rstrip() + "..."
+            key = cls._title_key(cleaned)
+            if key and any(item.get("_key") == key for item in claims):
+                return
+            claims.append({"text": cleaned, "type": claim_type, "central": central, "_key": key})
+
+        add_claim(candidate.get("hypothesis"), "hypothesis", central=True)
+        add_claim(candidate.get("approach"), "mechanism", central=True)
+        title = str(candidate.get("title") or "").strip()
+        gap = str(candidate.get("gap") or "").strip()
+        if title:
+            add_claim(f"{title}: {gap}" if gap else title, "contribution", central=True)
+        experiment = candidate.get("minimum_experiment") or {}
+        experiment_bits = [
+            experiment.get("dataset"),
+            " / ".join(str(item) for item in (experiment.get("baselines") or [])[:3]),
+            " / ".join(str(item) for item in (experiment.get("metrics") or [])[:3]),
+            " / ".join(str(item) for item in (experiment.get("steps") or [])[:3]),
+        ]
+        experiment_text = "；".join(str(item).strip() for item in experiment_bits if str(item or "").strip())
+        add_claim(experiment_text, "experiment", central=False)
+        for risk in (candidate.get("risks") or [])[:2]:
+            add_claim(risk, "risk", central=False)
+        return [{key: value for key, value in claim.items() if key != "_key"} for claim in claims[:6]]
+
+    @classmethod
+    def _match_evidence_for_claim(
+        cls,
+        claim: dict[str, Any],
+        evidence_lookup: dict[str, dict[str, Any]],
+        explicit_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        claim_tokens = cls._dedup_tokens(str(claim.get("text") or ""))
+        explicit_set = set(explicit_ids)
+        ranked: list[dict[str, Any]] = []
+        for paper_id, item in evidence_lookup.items():
+            evidence_tokens = item.get("_tokens") or set()
+            lexical = cls._jaccard(claim_tokens, evidence_tokens)
+            explicit_bonus = 0.26 if paper_id in explicit_set else 0.0
+            category_bonus = {"seed": 0.06, "background": 0.035, "inspiration": 0.025}.get(str(item.get("category") or ""), 0.0)
+            source_bonus = 0.025 if item.get("source") and item.get("source") != "unknown" else 0.0
+            score = min(1.0, lexical * 0.72 + explicit_bonus + category_bonus + source_bonus)
+            if score <= 0 and paper_id not in explicit_set:
+                continue
+            ranked.append({
+                **{key: value for key, value in item.items() if key != "_tokens"},
+                "_match_score": round(score, 3),
+                "_lexical": round(lexical, 3),
+                "_explicit": paper_id in explicit_set,
+            })
+        ranked.sort(key=lambda item: (float(item.get("_match_score") or 0), bool(item.get("_explicit"))), reverse=True)
+        return ranked
+
+    @staticmethod
+    def _claim_support_level(claim: dict[str, Any], matches: list[dict[str, Any]]) -> str:
+        if not matches:
+            return "missing"
+        best = float(matches[0].get("_match_score") or 0)
+        explicit_count = sum(1 for item in matches if item.get("_explicit"))
+        if best >= 0.44 or (best >= 0.32 and explicit_count >= 2):
+            return "strong"
+        if best >= 0.23 or explicit_count >= 1:
+            return "partial"
+        if claim.get("central"):
+            return "weak"
+        return "partial" if best >= 0.16 else "weak"
+
+    @staticmethod
+    def _claim_risk_note(claim: dict[str, Any], support_level: str, refs: list[dict[str, Any]]) -> str:
+        if support_level == "strong":
+            return "核心证据与该 claim 有明确文本或显式引用匹配。"
+        if support_level == "partial":
+            return "有可用证据，但仍需要在写作或实验设计中补充更直接的支撑。"
+        if refs:
+            return "仅找到弱相关证据，建议补充更直接的论文或收窄 claim。"
+        return "未找到可映射证据，推进前应补充引用或降低该 claim 强度。"
+
+    @staticmethod
+    def _evidence_grounding_summary(rows: list[dict[str, Any]], score: float, categories: set[str], sources: set[str]) -> str:
+        missing = [row for row in rows if row.get("support_level") == "missing"]
+        weak = [row for row in rows if row.get("support_level") == "weak"]
+        if score >= 0.72 and not missing:
+            return f"证据支撑较稳，覆盖 {len(rows)} 个 claim，来源 {len(sources)} 类、证据类别 {len(categories)} 类。"
+        if missing or weak:
+            return f"存在 {len(missing) + len(weak)} 个弱支撑 claim，建议先补证据或收窄表述。"
+        return "证据支撑可用，但多样性或直接性仍可继续增强。"
+
+    @staticmethod
+    def _evidence_grounding_penalty(grounding: dict[str, Any]) -> float:
+        score = float(grounding.get("grounding_score") or 0)
+        central_weak = int(grounding.get("central_weak_claim_count") or 0)
+        missing = int(grounding.get("missing_claim_count") or 0)
+        diversity = min(
+            int(grounding.get("source_diversity") or 0),
+            int(grounding.get("category_diversity") or 0),
+        )
+        penalty = 0.0
+        if score < 0.35:
+            penalty += 0.55
+        elif score < 0.52:
+            penalty += 0.24
+        penalty += min(0.5, central_weak * 0.22 + missing * 0.08)
+        if diversity < 2 and score < 0.68:
+            penalty += 0.16
+        return round(min(1.15, penalty), 3)
+
     @staticmethod
     def _candidate_experiment_profile(candidate: dict[str, Any]) -> dict[str, Any]:
         experiment = candidate.get("minimum_experiment") or {}
@@ -1992,14 +2219,18 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             novelty = candidate.get("novelty_check") or {}
             adversarial = candidate.get("adversarial_review") or {}
             evidence_profile = self._candidate_evidence_profile(candidate, evidence_map or {})
+            grounding = self._candidate_evidence_grounding(candidate, evidence_map or {})
+            evidence_profile = {**evidence_profile, "grounding_score": grounding["grounding_score"]}
             experiment_profile = self._candidate_experiment_profile(candidate)
             gap_alignment = self._candidate_gap_alignment(candidate, gap_map or {})
             if "novelty" in scores:
                 scores["novelty"] = round(max(1.0, min(10.0, scores["novelty"] * (0.72 + novelty.get("score", 0.5) * 0.28))), 1)
             if "evidence_grounding" in scores:
-                evidence_delta = (evidence_profile["coverage_score"] - 0.55) * 1.6
+                evidence_delta = (evidence_profile["coverage_score"] - 0.55) * 1.0 + (grounding["grounding_score"] - 0.55) * 1.15
                 if evidence_profile["linked_count"] < 2 and evidence_profile["evidence_count"] < 2:
                     evidence_delta -= 0.6
+                if grounding["missing_claim_count"]:
+                    evidence_delta -= min(0.7, grounding["missing_claim_count"] * 0.22)
                 scores["evidence_grounding"] = round(max(1.0, min(10.0, scores["evidence_grounding"] + evidence_delta)), 1)
             if "feasibility" in scores:
                 feasibility_delta = (experiment_profile["completeness"] - 0.6) * 1.1
@@ -2007,15 +2238,9 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             if "testability" in scores:
                 testability_delta = (experiment_profile["completeness"] - 0.55) * 1.4
                 scores["testability"] = round(max(1.0, min(10.0, scores["testability"] + testability_delta)), 1)
-            adjusted_review = {
-                **review,
-                "scores": scores,
-                "evidence_coverage": evidence_profile,
-                "experiment_completeness": experiment_profile,
-                "gap_alignment": gap_alignment,
-            }
             base_score = self._weighted_score(scores)
             coverage_bonus = (evidence_profile["coverage_score"] - 0.5) * 0.7
+            grounding_bonus = (grounding["grounding_score"] - 0.55) * 0.8
             experiment_bonus = (experiment_profile["completeness"] - 0.55) * 0.6
             gap_bonus = (gap_alignment["alignment_score"] - 0.45) * 0.35
             novelty_penalty = 0.8 if novelty.get("collision_risk") == "high" else 0.35 if novelty.get("collision_risk") == "medium" else 0.0
@@ -2027,25 +2252,51 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                 matrix_penalty *= 0.45
             matrix_penalty += min(0.25, missing_count * 0.06)
             weak_evidence_penalty = 0.45 if evidence_profile["coverage_score"] < 0.35 else 0.0
+            grounding_penalty = self._evidence_grounding_penalty(grounding)
             weak_experiment_penalty = 0.55 if experiment_profile["completeness"] < 0.5 else 0.0
+            quality_adjustments = {
+                "coverage_bonus": round(coverage_bonus, 3),
+                "grounding_bonus": round(grounding_bonus, 3),
+                "experiment_bonus": round(experiment_bonus, 3),
+                "gap_bonus": round(gap_bonus, 3),
+                "adversarial_penalty": round(float(adversarial.get("penalty", 0)), 3),
+                "novelty_penalty": round(novelty_penalty, 3),
+                "novelty_matrix_penalty": round(matrix_penalty, 3),
+                "weak_evidence_penalty": round(weak_evidence_penalty, 3),
+                "evidence_grounding_penalty": round(grounding_penalty, 3),
+                "weak_experiment_penalty": round(weak_experiment_penalty, 3),
+            }
+            adjusted_review = {
+                **review,
+                "scores": scores,
+                "evidence_coverage": evidence_profile,
+                "evidence_grounding_matrix": grounding,
+                "experiment_completeness": experiment_profile,
+                "gap_alignment": gap_alignment,
+                "quality_adjustments": quality_adjustments,
+            }
             adjusted_score = round(max(
                 1.0,
                 base_score
                 + coverage_bonus
+                + grounding_bonus
                 + experiment_bonus
                 + gap_bonus
                 - float(adversarial.get("penalty", 0))
                 - novelty_penalty
                 - matrix_penalty
                 - weak_evidence_penalty
+                - grounding_penalty
                 - weak_experiment_penalty,
             ), 2)
             adjusted.append({
                 **candidate,
                 "review": adjusted_review,
                 "evidence_coverage": evidence_profile,
+                "evidence_grounding_matrix": grounding,
                 "experiment_completeness": experiment_profile,
                 "gap_alignment": gap_alignment,
+                "quality_adjustments": quality_adjustments,
                 "score": adjusted_score,
                 "base_score": base_score,
             })
@@ -2231,6 +2482,9 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         coverage = candidate.get("evidence_coverage") or {}
         if coverage.get("coverage_score") is not None:
             parts.append(f"证据覆盖 {coverage.get('coverage_score')}")
+        grounding = candidate.get("evidence_grounding_matrix") or {}
+        if grounding.get("grounding_score") is not None:
+            parts.append(f"证据支撑 {grounding.get('grounding_score')}")
         gap_alignment = candidate.get("gap_alignment") or {}
         if gap_alignment.get("matched_gap_title"):
             parts.append(f"匹配 Gap：{gap_alignment.get('matched_gap_title')}")
@@ -2382,6 +2636,8 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                     "diversity_facets": candidate.get("diversity_facets", []),
                     "suppressed_duplicates": candidate.get("suppressed_duplicates", []),
                     "evidence_coverage": candidate.get("evidence_coverage"),
+                    "evidence_grounding_matrix": candidate.get("evidence_grounding_matrix"),
+                    "quality_adjustments": candidate.get("quality_adjustments"),
                     "experiment_completeness": candidate.get("experiment_completeness"),
                     "gap_alignment": candidate.get("gap_alignment"),
                     "gap_selection": candidate.get("gap_selection"),
