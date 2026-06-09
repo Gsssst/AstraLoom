@@ -53,6 +53,11 @@ Current project documentation SHALL refer to the active product as `AstraLoom`.
 - **THEN** the top product title is centered with the README hero block
 - **AND** it presents the product name as `AstraLoom`
 
+#### Scenario: README identifies repository license
+- **WHEN** a prospective lab maintainer opens the README
+- **THEN** the License section identifies the repository as MIT licensed
+- **AND** it points readers to the root `LICENSE` file
+
 #### Scenario: README keeps security guidance concise
 - **WHEN** a reader scans the README project homepage
 - **THEN** the README includes concise warnings not to commit secrets, private papers, uploads, or backups
