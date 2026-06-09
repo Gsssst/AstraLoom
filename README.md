@@ -187,7 +187,7 @@ openspec validate --specs --strict
 
 ## License
 
-No license file has been added yet. Before publishing as open source, confirm your lab or institution's policy and choose an appropriate license.
+AstraLoom is released under the MIT License. See [LICENSE](LICENSE) for details.
 
 ---
 
