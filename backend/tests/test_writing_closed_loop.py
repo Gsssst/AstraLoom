@@ -1293,3 +1293,82 @@ async def test_context_project_creation_stores_binding_metadata(monkeypatch):
     assert metadata["evidence_status"] == "sufficient"
     assert captured["seeded"] is True
     assert project["metadata_json"] == metadata
+
+
+@pytest.mark.asyncio
+async def test_support_files_builds_bibtex_and_metadata_figures(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+
+    async def fake_get_project(_project_id, _user_id):
+        return {
+            "id": "project-1",
+            "title": "Video Grounding Paper",
+            "sections": [],
+            "metadata_json": {
+                "support_files": {
+                    "figures": [
+                        {
+                            "label": "overview",
+                            "path": "overview.pdf",
+                            "caption": "Overview of the pipeline.",
+                            "note": "Draft figure",
+                        }
+                    ]
+                }
+            },
+        }
+
+    async def fake_evidence(_project_id, _user_id):
+        return {
+            "coverage": {"total": 2, "local": 1, "external": 1, "bibtex_ready": 1},
+            "cards": [{"citation_marker": "[1]", "title": "Grounded Video"}],
+        }
+
+    async def fake_bibtex(_project_id, _user_id):
+        return "@article{grounded2026,\n  title={Grounded Video}\n}"
+
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+    monkeypatch.setattr(service, "get_evidence_cards", fake_evidence)
+    monkeypatch.setattr(service, "export_to_bibtex", fake_bibtex)
+
+    support_files = await service.build_support_files("project-1", "user-1")
+
+    assert support_files["references"]["source"] == "evidence_cards"
+    assert support_files["references"]["bibtex_ready"] == 1
+    assert support_files["references"]["missing"] == 1
+    assert "@article{grounded2026" in support_files["references"]["bibtex"]
+    assert support_files["figures"]["source"] == "project_metadata"
+    assert support_files["figures"]["items"][0]["label"] == "fig:overview"
+    assert "figures/overview.pdf" in support_files["figures"]["items"][0]["snippet"]
+
+
+@pytest.mark.asyncio
+async def test_support_files_update_persists_figure_manifest(monkeypatch):
+    service = WritingProjectService(SimpleNamespace())
+    captured = {}
+
+    async def fake_get_project(_project_id, _user_id):
+        return {"id": "project-1", "metadata_json": {"source": "manual"}, "sections": []}
+
+    async def fake_update_project(_project_id, _user_id, **kwargs):
+        captured["metadata_json"] = kwargs["metadata_json"]
+        return {"id": "project-1", "metadata_json": kwargs["metadata_json"], "sections": []}
+
+    async def fake_build_support_files(_project_id, _user_id):
+        return {"figures": {"items": captured["metadata_json"]["support_files"]["figures"]}}
+
+    monkeypatch.setattr(service, "get_project", fake_get_project)
+    monkeypatch.setattr(service, "update_project", fake_update_project)
+    monkeypatch.setattr(service, "build_support_files", fake_build_support_files)
+
+    result = await service.update_support_files(
+        "project-1",
+        "user-1",
+        [{"label": "qualitative", "path": "figures/qualitative.png", "caption": "Qualitative results."}],
+    )
+
+    figure = captured["metadata_json"]["support_files"]["figures"][0]
+    assert figure["label"] == "fig:qualitative"
+    assert figure["path"] == "figures/qualitative.png"
+    assert "\\includegraphics" in figure["snippet"]
+    assert result["support_files"]["figures"]["items"][0] == figure

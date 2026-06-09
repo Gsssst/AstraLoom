@@ -286,3 +286,29 @@ test('writing project creation supports context binding', () => {
   assert.match(writingPageSource, /研究方向：/);
   assert.match(writingPageSource, /论文分类/);
 });
+
+test('writing workbench exposes interactive support files panels', () => {
+  assert.match(writingPageSource, /type SupportFigure/);
+  assert.match(writingPageSource, /type SupportFiles/);
+  assert.match(writingPageSource, /supportFiles/);
+  assert.match(writingPageSource, /support-files/);
+  assert.match(writingPageSource, /writing-references-panel/);
+  assert.match(writingPageSource, /writing-figures-panel/);
+  assert.match(writingPageSource, /references\.bib/);
+  assert.match(writingPageSource, /BibTeX 来源仍然是已有证据卡/);
+  assert.match(writingPageSource, /复制 references\.bib/);
+  assert.match(writingPageSource, /metadata 里的 figure 清单/);
+  assert.match(writingPageSource, /handleAddFigure/);
+  assert.match(writingPageSource, /handleRemoveFigure/);
+  assert.match(writingPageSource, /handleInsertFigureSnippet/);
+});
+
+test('project file tree rows navigate to support file panels', () => {
+  assert.match(writingPageSource, /handleFileTreeOpen/);
+  assert.match(writingPageSource, /file\.type === 'bib'/);
+  assert.match(writingPageSource, /scrollToWorkbenchTarget\('references'\)/);
+  assert.match(writingPageSource, /file\.type === 'asset'/);
+  assert.match(writingPageSource, /scrollToWorkbenchTarget\('figures'\)/);
+  assert.match(writingPageSource, /role="button"/);
+  assert.match(writingPageSource, /onClick=\{\(\) => handleFileTreeOpen\(file\)\}/);
+});

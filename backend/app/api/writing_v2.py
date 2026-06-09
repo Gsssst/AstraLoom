@@ -114,6 +114,19 @@ class LatexCompileSettingsRequest(BaseModel):
     packages: List[str] = Field(default_factory=list, description="extra packages")
 
 
+class SupportFigureRequest(BaseModel):
+    id: Optional[str] = Field(default=None, description="figure manifest id")
+    label: str = Field(default="", description="LaTeX figure label")
+    path: str = Field(default="", description="virtual figures/ path")
+    caption: str = Field(default="", description="figure caption")
+    note: str = Field(default="", description="optional note")
+    width: str = Field(default="\\linewidth", description="LaTeX includegraphics width")
+
+
+class SupportFilesUpdateRequest(BaseModel):
+    figures: List[SupportFigureRequest] = Field(default_factory=list, description="metadata-backed figure manifest")
+
+
 # ============== Pipeline 流式端点 ==============
 
 @router.post("/pipeline/stream")
@@ -554,6 +567,39 @@ async def get_project_evidence_cards(
     """获取写作项目证据卡片。"""
     service = WritingProjectService(db)
     result = await service.get_evidence_cards(project_id, str(user.id))
+    if result is None:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    return result
+
+
+@router.get("/projects/{project_id}/support-files")
+async def get_project_support_files(
+    project_id: str,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return virtual support files: evidence-derived references.bib and metadata-backed figures."""
+    service = WritingProjectService(db)
+    result = await service.build_support_files(project_id, str(user.id))
+    if result is None:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    return result
+
+
+@router.put("/projects/{project_id}/support-files")
+async def update_project_support_files(
+    project_id: str,
+    req: SupportFilesUpdateRequest,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist metadata-backed support files for a writing project."""
+    service = WritingProjectService(db)
+    result = await service.update_support_files(
+        project_id=project_id,
+        user_id=str(user.id),
+        figures=[item.model_dump() for item in req.figures],
+    )
     if result is None:
         raise HTTPException(status_code=404, detail="项目未找到")
     return result

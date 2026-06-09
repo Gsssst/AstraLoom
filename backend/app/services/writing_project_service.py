@@ -976,6 +976,73 @@ class WritingProjectService:
         metadata["latex_compile"] = cleaned
         return await self.update_project(project_id, user_id, metadata_json=metadata)
 
+    async def build_support_files(self, project_id: str, user_id: str) -> dict | None:
+        """Build virtual manuscript support files from evidence cards and project metadata."""
+        project = await self.get_project(project_id, user_id)
+        if not project:
+            return None
+
+        evidence = await self.get_evidence_cards(project_id, user_id) or {}
+        coverage = evidence.get("coverage") or {}
+        bibtex = await self.export_to_bibtex(project_id, user_id) or ""
+        metadata = project.get("metadata_json") or {}
+        support_files = metadata.get("support_files") if isinstance(metadata.get("support_files"), dict) else {}
+        figures = [
+            self._normalize_support_figure(item, index)
+            for index, item in enumerate(support_files.get("figures") or [], start=1)
+            if isinstance(item, dict)
+        ]
+
+        return {
+            "project_id": project["id"],
+            "references": {
+                "filename": "references.bib",
+                "source": "evidence_cards",
+                "source_label": "来自证据卡",
+                "bibtex": bibtex,
+                "evidence_count": coverage.get("total", 0),
+                "bibtex_ready": coverage.get("bibtex_ready", 0),
+                "missing": max(0, int(coverage.get("total", 0) or 0) - int(coverage.get("bibtex_ready", 0) or 0)),
+                "coverage": coverage,
+                "cards": evidence.get("cards") or [],
+            },
+            "figures": {
+                "directory": "figures/",
+                "source": "project_metadata",
+                "source_label": "来自项目 metadata",
+                "items": figures,
+                "count": len(figures),
+            },
+        }
+
+    async def update_support_files(
+        self,
+        project_id: str,
+        user_id: str,
+        figures: list[dict],
+    ) -> dict | None:
+        """Persist virtual support-file metadata for the writing project."""
+        project = await self.get_project(project_id, user_id)
+        if not project:
+            return None
+
+        metadata = dict(project.get("metadata_json") or {})
+        support_files = dict(metadata.get("support_files") or {})
+        support_files["figures"] = [
+            self._normalize_support_figure(item, index)
+            for index, item in enumerate(figures or [], start=1)
+            if isinstance(item, dict)
+        ]
+        metadata["support_files"] = support_files
+
+        updated_project = await self.update_project(project_id, user_id, metadata_json=metadata)
+        if not updated_project:
+            return None
+        return {
+            "project": updated_project,
+            "support_files": await self.build_support_files(project_id, user_id),
+        }
+
     async def remove_submission_profile(self, project_id: str, user_id: str) -> dict | None:
         """Remove bound submission template metadata and return to safe article compilation."""
         project = await self.get_project(project_id, user_id)
@@ -2510,6 +2577,39 @@ class WritingProjectService:
             }
             for card in cards[:limit]
         ]
+
+    def _normalize_support_figure(self, item: dict, index: int) -> dict:
+        label = self._safe_latex_label(item.get("label") or item.get("id") or f"figure-{index}", prefix="fig")
+        raw_path = str(item.get("path") or f"figures/{label.replace('fig:', '')}.pdf").strip()
+        path = raw_path if raw_path.startswith("figures/") else f"figures/{raw_path.lstrip('/')}"
+        caption = str(item.get("caption") or f"Figure {index}").strip()[:500]
+        note = str(item.get("note") or "").strip()[:500]
+        width = str(item.get("width") or r"\linewidth").strip()[:80] or r"\linewidth"
+        snippet = (
+            "\\begin{figure}[t]\n"
+            "  \\centering\n"
+            f"  \\includegraphics[width={width}]{{{path}}}\n"
+            f"  \\caption{{{caption}}}\n"
+            f"  \\label{{{label}}}\n"
+            "\\end{figure}"
+        )
+        return {
+            "id": str(item.get("id") or label).strip()[:120],
+            "label": label,
+            "path": path[:240],
+            "caption": caption,
+            "note": note,
+            "width": width,
+            "snippet": snippet,
+        }
+
+    def _safe_latex_label(self, value: str, prefix: str = "fig") -> str:
+        text = re.sub(r"[^a-zA-Z0-9:_-]+", "-", str(value or "").strip()).strip("-").lower()
+        if not text:
+            text = f"{prefix}-1"
+        if ":" not in text:
+            text = f"{prefix}:{text}"
+        return text[:80]
 
     def _evidence_writing_use(self, card: dict) -> str:
         status = card.get("local_status")

@@ -153,6 +153,35 @@ type ProposalWritingBrief = {
   source_project_name?: string;
 };
 
+type SupportFigure = {
+  id?: string;
+  label: string;
+  path: string;
+  caption: string;
+  note?: string;
+  width?: string;
+  snippet?: string;
+};
+
+type SupportFiles = {
+  references?: {
+    filename?: string;
+    source_label?: string;
+    bibtex?: string;
+    evidence_count?: number;
+    bibtex_ready?: number;
+    missing?: number;
+    coverage?: any;
+    cards?: any[];
+  };
+  figures?: {
+    directory?: string;
+    source_label?: string;
+    items?: SupportFigure[];
+    count?: number;
+  };
+};
+
 const getProjectWritingBrief = (project: any): ProposalWritingBrief | null => {
   const brief = project?.metadata_json?.writing_brief;
   return brief && typeof brief === 'object' ? brief : null;
@@ -181,6 +210,11 @@ const buildWritingFileTree = (
   exportReadiness: any,
 ) => {
   const hasBib = evidenceCards.some((card: any) => card?.citation_marker || card?.bibtex);
+  const figureCount = (
+    project?.metadata_json?.support_files?.figures?.length
+    || project?.metadata_json?.assets?.length
+    || 0
+  );
   return [
     { path: 'main.tex', type: 'root', status: manuscriptPreview?.success === false ? 'compile issue' : 'ready' },
     ...sections.map((section: any, index: number) => ({
@@ -189,7 +223,7 @@ const buildWritingFileTree = (
       status: section.content ? `${section.word_count || section.content.length || 0} 字` : 'empty',
     })),
     { path: 'references.bib', type: 'bib', status: hasBib ? `${evidenceCards.length} evidence` : 'missing' },
-    { path: 'figures/', type: 'asset', status: project?.metadata_json?.assets?.length ? `${project.metadata_json.assets.length} files` : 'empty' },
+    { path: 'figures/', type: 'asset', status: figureCount ? `${figureCount} figures` : 'empty' },
     { path: 'compile.log', type: 'log', status: manuscriptPreview?.success === false ? 'needs attention' : exportReadiness?.status || 'not checked' },
   ];
 };
@@ -305,6 +339,16 @@ const WritingPage: React.FC = () => {
   const [evidenceLoading, setEvidenceLoading] = useState(false);
   const [evidenceTableLoading, setEvidenceTableLoading] = useState(false);
   const [evidenceTable, setEvidenceTable] = useState<any>(null);
+  const [supportFiles, setSupportFiles] = useState<SupportFiles | null>(null);
+  const [supportFilesLoading, setSupportFilesLoading] = useState(false);
+  const [supportFilesSaving, setSupportFilesSaving] = useState(false);
+  const [figureDraft, setFigureDraft] = useState<SupportFigure>({
+    label: '',
+    path: '',
+    caption: '',
+    note: '',
+    width: '\\linewidth',
+  });
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
   const [citationChecks, setCitationChecks] = useState<Record<string, any>>({});
   const [citationChecking, setCitationChecking] = useState<Record<string, boolean>>({});
@@ -395,6 +439,14 @@ const WritingPage: React.FC = () => {
       document.getElementById('writing-brief-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       return;
     }
+    if (target === 'references' || target === 'references.bib') {
+      document.getElementById('writing-references-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    if (target === 'figures' || target === 'figures/') {
+      document.getElementById('writing-figures-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
     if (target === 'submission-template' || target === 'export') {
       document.getElementById('writing-export-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       return;
@@ -445,6 +497,7 @@ const WritingPage: React.FC = () => {
       setEvidenceCards([]);
       setEvidenceCoverage(null);
       setEvidenceTable(null);
+      setSupportFiles(null);
       setCitationChecks({});
       setQualityChecks({});
       setLatexPreviewChecks({});
@@ -473,6 +526,28 @@ const WritingPage: React.FC = () => {
       })
       .finally(() => setEvidenceLoading(false));
   }, [selectedProject?.id]);
+
+  const loadSupportFiles = useCallback(async () => {
+    if (!selectedProject?.id) return null;
+    setSupportFilesLoading(true);
+    try {
+      const response = await api.get(`/writing/projects/${selectedProject.id}/support-files`);
+      setSupportFiles(response.data);
+      setPageActionError(null);
+      return response.data;
+    } catch (error) {
+      setSupportFiles(null);
+      showPageError('项目支持文件加载失败', error, '项目支持文件加载失败');
+      return null;
+    } finally {
+      setSupportFilesLoading(false);
+    }
+  }, [selectedProject?.id, showPageError]);
+
+  useEffect(() => {
+    if (!selectedProject?.id) return;
+    loadSupportFiles();
+  }, [selectedProject?.id, projectRefreshSignal, loadSupportFiles]);
 
   useEffect(() => {
     if (!selectedProject?.id) return;
@@ -561,6 +636,7 @@ const WritingPage: React.FC = () => {
     setSectionAiState({});
     setActiveSectionId((p.sections || [])[0]?.id || null);
     setEvidenceTable(null);
+    setSupportFiles(null);
     const profile = p.metadata_json?.submission_profile || {};
     setSubmissionVenue(profile.venue || '');
     setSubmissionYear(profile.year || '');
@@ -630,6 +706,77 @@ const WritingPage: React.FC = () => {
       nextContent,
       activeSectionId ? `已插入到「${target.title}」` : `未检测到当前编辑章节，已插入到「${target.title}」`,
     );
+  };
+  const handleFileTreeOpen = (file: any) => {
+    if (file.type === 'bib') {
+      scrollToWorkbenchTarget('references');
+      loadSupportFiles();
+      return;
+    }
+    if (file.type === 'asset') {
+      scrollToWorkbenchTarget('figures');
+      loadSupportFiles();
+      return;
+    }
+    if (file.type === 'log') {
+      scrollToWorkbenchTarget('export');
+      return;
+    }
+    scrollToWorkbenchTarget('sections');
+  };
+  const persistSupportFigures = async (figures: SupportFigure[]) => {
+    if (!selectedProject?.id) return;
+    setSupportFilesSaving(true);
+    try {
+      const response = await api.put(`/writing/projects/${selectedProject.id}/support-files`, { figures });
+      setSelectedProject(response.data.project);
+      setProjectSections(response.data.project.sections || []);
+      setSupportFiles(response.data.support_files);
+      setPageActionError(null);
+      message.success('figures/ 清单已保存');
+    } catch (error) {
+      showPageError('figures/ 清单保存失败', error, 'figures/ 清单保存失败');
+    } finally {
+      setSupportFilesSaving(false);
+    }
+  };
+  const handleAddFigure = async () => {
+    const label = figureDraft.label.trim();
+    const path = figureDraft.path.trim();
+    if (!label || !path) {
+      message.warning('请填写 figure label 和路径');
+      return;
+    }
+    const figures = supportFiles?.figures?.items || [];
+    await persistSupportFigures([
+      ...figures,
+      {
+        ...figureDraft,
+        id: figureDraft.id || label,
+        label,
+        path,
+        caption: figureDraft.caption.trim() || label,
+        note: figureDraft.note?.trim() || '',
+        width: figureDraft.width?.trim() || '\\linewidth',
+      },
+    ]);
+    setFigureDraft({ label: '', path: '', caption: '', note: '', width: '\\linewidth' });
+  };
+  const handleRemoveFigure = async (label: string) => {
+    const figures = (supportFiles?.figures?.items || []).filter(item => item.label !== label);
+    await persistSupportFigures(figures);
+  };
+  const handleInsertFigureSnippet = async (figure: SupportFigure) => {
+    const snippet = figure.snippet || '';
+    if (!snippet) return;
+    const target = projectSections.find(s => s.id === activeSectionId) || projectSections[0];
+    if (!target) {
+      handleCopy(snippet);
+      message.info('当前项目还没有章节，已复制 figure snippet');
+      return;
+    }
+    const nextContent = `${(target.content || '').trimEnd()}${target.content ? '\n\n' : ''}${snippet}`;
+    await persistSectionContent(target, nextContent, `已插入到「${target.title}」`);
   };
   const handleResolveBriefClaim = (claim: string) => {
     setCiteText(claim);
@@ -1723,6 +1870,149 @@ const WritingPage: React.FC = () => {
     </Card>
   ) : null;
 
+  const supportFilesPanel = selectedProject ? (
+    <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+      <Col xs={24} lg={12}>
+        <Card
+          id="writing-references-panel"
+          title={<Space><FileTextOutlined /> references.bib</Space>}
+          loading={supportFilesLoading && !supportFiles}
+          style={{ ...cardStyle, height: '100%' }}
+          extra={
+            <Space size={6}>
+              <Tag color={(supportFiles?.references?.missing || 0) > 0 ? 'gold' : 'green'}>
+                {supportFiles?.references?.bibtex_ready || 0}/{supportFiles?.references?.evidence_count || 0}
+              </Tag>
+              <Button size="small" icon={<RocketOutlined />} loading={supportFilesLoading} onClick={loadSupportFiles} style={{ borderRadius: 8 }}>
+                自动生成
+              </Button>
+            </Space>
+          }
+        >
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Alert
+              type={(supportFiles?.references?.missing || 0) > 0 ? 'warning' : 'success'}
+              showIcon
+              message="BibTeX 来源仍然是已有证据卡"
+              description={`当前 ${supportFiles?.references?.evidence_count || 0} 张证据卡，${supportFiles?.references?.bibtex_ready || 0} 条可生成 BibTeX。外部未入库证据不会被伪造成可引用条目。`}
+              style={{ borderRadius: 10 }}
+            />
+            <Input.TextArea
+              value={supportFiles?.references?.bibtex || ''}
+              readOnly
+              rows={10}
+              placeholder="暂无可生成 BibTeX 的证据卡。"
+              style={{ fontFamily: 'Menlo, Monaco, Consolas, monospace', fontSize: 12, borderRadius: 10 }}
+            />
+            <Space wrap>
+              <Button
+                icon={<CopyOutlined />}
+                disabled={!supportFiles?.references?.bibtex}
+                onClick={() => handleCopy(supportFiles?.references?.bibtex || '')}
+                style={{ borderRadius: 8 }}
+              >
+                复制 references.bib
+              </Button>
+              <Button
+                onClick={() => scrollToWorkbenchTarget('evidence')}
+                style={{ borderRadius: 8 }}
+              >
+                查看证据卡
+              </Button>
+            </Space>
+          </Space>
+        </Card>
+      </Col>
+      <Col xs={24} lg={12}>
+        <Card
+          id="writing-figures-panel"
+          title={<Space><FolderOutlined /> figures/</Space>}
+          loading={supportFilesLoading && !supportFiles}
+          style={{ ...cardStyle, height: '100%' }}
+          extra={<Tag color={(supportFiles?.figures?.items || []).length ? 'geekblue' : 'default'}>{supportFiles?.figures?.items?.length || 0} figures</Tag>}
+        >
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Alert
+              type="info"
+              showIcon
+              message="这里是项目 metadata 里的 figure 清单"
+              description="当前版本只管理 label、路径、caption 和 LaTeX 插入片段；图片文件本身仍由你在最终 LaTeX 项目中放入 figures/。"
+              style={{ borderRadius: 10 }}
+            />
+            <Row gutter={[8, 8]}>
+              <Col xs={24} md={8}>
+                <Input
+                  placeholder="fig:overview"
+                  value={figureDraft.label}
+                  onChange={e => setFigureDraft(prev => ({ ...prev, label: e.target.value }))}
+                  style={inputStyle}
+                />
+              </Col>
+              <Col xs={24} md={10}>
+                <Input
+                  placeholder="figures/overview.pdf"
+                  value={figureDraft.path}
+                  onChange={e => setFigureDraft(prev => ({ ...prev, path: e.target.value }))}
+                  style={inputStyle}
+                />
+              </Col>
+              <Col xs={24} md={6}>
+                <Input
+                  placeholder="\\linewidth"
+                  value={figureDraft.width}
+                  onChange={e => setFigureDraft(prev => ({ ...prev, width: e.target.value }))}
+                  style={inputStyle}
+                />
+              </Col>
+              <Col span={24}>
+                <Input
+                  placeholder="Figure caption"
+                  value={figureDraft.caption}
+                  onChange={e => setFigureDraft(prev => ({ ...prev, caption: e.target.value }))}
+                  style={inputStyle}
+                />
+              </Col>
+              <Col span={24}>
+                <Space.Compact style={{ width: '100%' }}>
+                  <Input
+                    placeholder="备注，可选"
+                    value={figureDraft.note}
+                    onChange={e => setFigureDraft(prev => ({ ...prev, note: e.target.value }))}
+                  />
+                  <Button type="primary" icon={<PlusOutlined />} loading={supportFilesSaving} onClick={handleAddFigure}>
+                    添加
+                  </Button>
+                </Space.Compact>
+              </Col>
+            </Row>
+            {(supportFiles?.figures?.items || []).length ? (
+              <List
+                size="small"
+                dataSource={supportFiles?.figures?.items || []}
+                renderItem={(figure: SupportFigure) => (
+                  <List.Item
+                    actions={[
+                      <Button key="copy" size="small" icon={<CopyOutlined />} onClick={() => handleCopy(figure.snippet || '')}>复制</Button>,
+                      <Button key="insert" size="small" type="primary" onClick={() => handleInsertFigureSnippet(figure)}>插入</Button>,
+                      <Button key="delete" size="small" danger onClick={() => handleRemoveFigure(figure.label)}>删除</Button>,
+                    ]}
+                  >
+                    <List.Item.Meta
+                      title={<Space wrap><Text strong>{figure.label}</Text><Tag>{figure.path}</Tag></Space>}
+                      description={<Space direction="vertical" size={2}><Text>{figure.caption}</Text>{figure.note && <Text type="secondary">{figure.note}</Text>}</Space>}
+                    />
+                  </List.Item>
+                )}
+              />
+            ) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有 figure 清单。添加后可复制或插入 LaTeX figure 环境。" />
+            )}
+          </Space>
+        </Card>
+      </Col>
+    </Row>
+  ) : null;
+
   const publicationExportPanel = selectedProject ? (
     <Card
       id="writing-export-panel"
@@ -2022,7 +2312,17 @@ const WritingPage: React.FC = () => {
             >
               <Space direction="vertical" size={6} style={{ width: '100%' }}>
                 {writingFileTree.map(file => (
-                  <div className="writing-file-tree-row" key={file.path}>
+                  <div
+                    className="writing-file-tree-row"
+                    key={file.path}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleFileTreeOpen(file)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter' || event.key === ' ') handleFileTreeOpen(file);
+                    }}
+                    style={{ cursor: 'pointer' }}
+                  >
                     <Text strong ellipsis>{file.path}</Text>
                     <Tag color={file.status === 'missing' || file.status === 'empty' || file.status === 'compile issue' || file.status === 'needs attention' ? 'gold' : 'green'}>{file.status}</Tag>
                   </div>
@@ -2104,6 +2404,7 @@ const WritingPage: React.FC = () => {
               <div style={{ marginBottom: 16 }}>
                 <WorkspaceResourceLinks resourceType="writing_projects" resourceId={selectedProject.id} title="所属项目空间" />
               </div>
+              {supportFilesPanel}
               {manuscriptPreview && <div style={{ marginBottom: 16 }}>{latexDiagnosticPanel(manuscriptPreview, '整篇')}</div>}
               <div id="writing-sections-panel" style={{ display: 'grid', gridTemplateColumns: '240px minmax(0, 1fr)', gap: 16, alignItems: 'start', marginBottom: 16 }}>
                 <Card
