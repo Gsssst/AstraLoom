@@ -11,6 +11,7 @@ import {
   SearchOutlined,
   SettingOutlined,
   ThunderboltOutlined,
+  ToolOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
@@ -44,6 +45,7 @@ const staticCommands: CommandItem[] = [
   { id: 'route-actions', group: '导航', title: '行动中心', subtitle: '查看跨模块下一步任务', path: '/actions', icon: <ThunderboltOutlined />, kind: 'route', keywords: ['action', 'todo', 'next'] },
   { id: 'route-workspaces', group: '导航', title: '项目空间', subtitle: '管理论文、研究和写作资源集合', path: '/workspaces', icon: <AppstoreOutlined />, kind: 'route', keywords: ['workspace', 'space'] },
   { id: 'route-papers', group: '导航', title: '论文库', subtitle: '搜索、导入和维护论文', path: '/papers', icon: <BookOutlined />, kind: 'route', keywords: ['paper', 'library', 'search'] },
+  { id: 'route-toolbox', group: '导航', title: '工具箱', subtitle: '沉淀论文中的算法、工具、数据集和评价协议', path: '/toolbox', icon: <ToolOutlined />, kind: 'route', keywords: ['toolbox', 'tool', 'method', 'algorithm'] },
   { id: 'route-digests', group: '行动', title: '论文推送中心', subtitle: '查看每日推送和论文消化任务', path: '/papers/digests', icon: <BookOutlined />, kind: 'action', keywords: ['digest', 'notification'] },
   { id: 'route-research', group: '导航', title: '研究方向', subtitle: '管理研究方向和 Proposal 工作台', path: '/research', icon: <ExperimentOutlined />, kind: 'route', keywords: ['research', 'idea', 'proposal'] },
   { id: 'route-writing', group: '导航', title: '写作助手', subtitle: '打开论文写作和基金申请工作台', path: '/writing', icon: <FileTextOutlined />, kind: 'route', keywords: ['writing', 'draft', 'paper'] },

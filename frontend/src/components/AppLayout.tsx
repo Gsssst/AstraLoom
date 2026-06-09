@@ -6,7 +6,7 @@ import {
   SettingOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UserOutlined,
   LogoutOutlined, LoginOutlined, BellOutlined, BgColorsOutlined,
   RocketOutlined, AppstoreOutlined, SafetyCertificateOutlined, ThunderboltOutlined,
-  SearchOutlined, GlobalOutlined,
+  SearchOutlined, GlobalOutlined, ToolOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useThemeStore, THEME_PRESETS } from '../stores/useThemeStore';
@@ -35,6 +35,7 @@ const menuItems: Array<{
   { key: '/actions', icon: <ThunderboltOutlined />, labelKey: 'nav.actions', color: '#f59e0b' },
   { key: '/workspaces', icon: <AppstoreOutlined />, labelKey: 'nav.workspaces', color: '#764ba2' },
   { key: '/papers', icon: <BookOutlined />, labelKey: 'nav.papers', color: '#00d2ff' },
+  { key: '/toolbox', icon: <ToolOutlined />, labelKey: 'nav.toolbox', color: '#10b981' },
   { key: '/research', icon: <ExperimentOutlined />, labelKey: 'nav.research', color: '#f5576c' },
   { key: '/writing', icon: <EditOutlined />, labelKey: 'nav.writing', color: '#4facfe' },
   { key: '/admin', icon: <SafetyCertificateOutlined />, labelKey: 'nav.admin', color: '#fa8c16', adminOnly: true },

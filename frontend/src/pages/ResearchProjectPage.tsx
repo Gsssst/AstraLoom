@@ -8,7 +8,7 @@ import {
   ArrowLeftOutlined, BulbOutlined, CodeOutlined, CopyOutlined, DeleteOutlined, DownloadOutlined,
   ExperimentOutlined, FileOutlined, FileSearchOutlined, FileTextOutlined, FolderOutlined, MessageOutlined, NodeIndexOutlined,
   HistoryOutlined, ImportOutlined, PlusOutlined, PushpinOutlined, ReloadOutlined, RiseOutlined, RobotOutlined, RocketOutlined, SendOutlined,
-  SaveOutlined, ShareAltOutlined, StarFilled, StopOutlined, ThunderboltOutlined, UserOutlined,
+  SaveOutlined, ShareAltOutlined, StarFilled, StopOutlined, ThunderboltOutlined, ToolOutlined, UserOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import WorkspaceResourceLinks from '../components/WorkspaceResourceLinks';
@@ -368,6 +368,18 @@ interface GenerationConstraints {
   risk_appetite?: 'conservative' | 'balanced' | 'high_risk';
   resource_budget?: 'low_compute' | 'reproducible' | 'large_model';
 }
+type ToolMode = 'inspiration' | 'required' | 'baseline' | 'avoid';
+interface ToolboxTool {
+  id: string;
+  name: string;
+  kind: string;
+  summary?: string | null;
+  use_cases?: string | null;
+  limitations?: string | null;
+  maturity?: string;
+  tags?: string[];
+  papers?: Array<{ id: string; title: string; relation?: string; evidence_note?: string | null }>;
+}
 
 const stageItems = [
   ['briefing', '研究简报'], ['retrieving', '证据收集'], ['mapping_gaps', 'Gap Map'],
@@ -402,6 +414,12 @@ const resourceBudgetOptions = [
   { value: 'reproducible', label: '可复现' },
   { value: 'large_model', label: '大模型实验' },
 ] as const;
+const toolModeOptions: { value: ToolMode; label: string }[] = [
+  { value: 'inspiration', label: '作为灵感' },
+  { value: 'required', label: '必须使用' },
+  { value: 'baseline', label: '作为基线' },
+  { value: 'avoid', label: '尽量规避' },
+];
 const gapRatingOptions = [
   { value: 'strong', label: '强价值' },
   { value: 'promising', label: '可推进' },
@@ -623,6 +641,9 @@ const ResearchProjectPage: React.FC = () => {
   const [researchMode, setResearchMode] = useState<GenerationConstraints['research_mode']>('balanced');
   const [riskAppetite, setRiskAppetite] = useState<GenerationConstraints['risk_appetite']>('balanced');
   const [resourceBudget, setResourceBudget] = useState<GenerationConstraints['resource_budget']>('reproducible');
+  const [toolboxTools, setToolboxTools] = useState<ToolboxTool[]>([]);
+  const [selectedToolIds, setSelectedToolIds] = useState<string[]>([]);
+  const [toolMode, setToolMode] = useState<ToolMode>('inspiration');
   const [pageActionError, setPageActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
 
   const showPageError = (title: string, error: unknown, fallback = title) => {
@@ -743,6 +764,18 @@ const ResearchProjectPage: React.FC = () => {
       setProposalBoardLoading(false);
     }
   };
+  const loadToolboxTools = async () => {
+    try {
+      const response = await api.get('/toolbox/tools', { params: { limit: 100 } });
+      setToolboxTools(response.data?.items || []);
+    } catch {
+      setToolboxTools([]);
+    }
+  };
+  const ideaToolPayload = () => ({
+    tool_ids: selectedToolIds,
+    tool_mode: toolMode,
+  });
 
   useEffect(() => {
     if (!projectId) return;
@@ -754,6 +787,7 @@ const ResearchProjectPage: React.FC = () => {
     Promise.all([
       loadProject(),
       loadProposalBoard(projectId),
+      loadToolboxTools(),
       api.get(`/research/projects/${projectId}/idea-runs/latest`).then(response => setRun(response.data)).catch(() => {}),
       api.get(`/research/projects/${projectId}/experiments`).then(response => setExperiments(response.data)).catch(() => {}),
     ]).then(() => setPageActionError(null)).catch(error => showPageError('加载研究工作台失败', error, '加载研究工作台失败')).finally(() => setLoading(false));
@@ -849,7 +883,7 @@ const ResearchProjectPage: React.FC = () => {
     try {
       const { finalRunStatus, finalRunError } = await readIdeaRunStream(
         `/api/research/projects/${projectId}/idea-runs/stream`,
-        { num_ideas: 3, external_search: externalSearch },
+        { num_ideas: 3, external_search: externalSearch, ...ideaToolPayload() },
         controller,
       );
       await loadProject();
@@ -879,6 +913,7 @@ const ResearchProjectPage: React.FC = () => {
       const response = await api.post(`/research/projects/${projectId}/idea-runs/gap-preview`, {
         num_ideas: 3,
         external_search: externalSearch,
+        ...ideaToolPayload(),
       });
       setRun(response.data);
       setActiveWorkbenchTab('gaps');
@@ -913,6 +948,7 @@ const ResearchProjectPage: React.FC = () => {
             risk_appetite: riskAppetite,
             resource_budget: resourceBudget,
           },
+          ...ideaToolPayload(),
         },
         controller,
       );
@@ -3232,6 +3268,59 @@ const ResearchProjectPage: React.FC = () => {
             <br />
             <Text type="secondary">{run?.message || '从证据开始，而不是让模型直接猜一个 Idea'}</Text>
           </div>
+        </div>
+        <div style={{ border: '1px solid #eef2f7', background: '#fbfdff', borderRadius: 12, padding: 12, marginBottom: 12 }}>
+          <Row gutter={[10, 10]} align="middle">
+            <Col xs={24} lg={4}>
+              <Space size={6}>
+                <ToolOutlined style={{ color: '#2563eb' }} />
+                <Text strong>工具箱引导</Text>
+              </Space>
+            </Col>
+            <Col xs={24} lg={13}>
+              <Select
+                mode="multiple"
+                allowClear
+                showSearch
+                value={selectedToolIds}
+                onChange={setSelectedToolIds}
+                placeholder="选择算法、模型、数据集、指标或实验协议"
+                optionFilterProp="searchText"
+                maxTagCount="responsive"
+                style={{ width: '100%' }}
+                options={toolboxTools.map(tool => ({
+                  value: tool.id,
+                  label: tool.name,
+                  searchText: `${tool.name} ${tool.summary || ''} ${tool.use_cases || ''} ${(tool.tags || []).join(' ')}`,
+                  tool,
+                }))}
+                optionRender={(option) => {
+                  const tool = (option.data as any).tool as ToolboxTool | undefined;
+                  return (
+                    <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                      <Space wrap size={6}>
+                        <Text strong>{tool?.name || option.label}</Text>
+                        {tool?.kind && <Tag>{tool.kind}</Tag>}
+                        {tool?.maturity && <Tag color={tool.maturity === 'mature' ? 'green' : 'blue'}>{tool.maturity}</Tag>}
+                      </Space>
+                      {tool?.summary && <Text type="secondary" style={{ fontSize: 12 }}>{tool.summary}</Text>}
+                    </Space>
+                  );
+                }}
+              />
+            </Col>
+            <Col xs={14} lg={4}>
+              <Select value={toolMode} onChange={setToolMode} options={toolModeOptions} style={{ width: '100%' }} />
+            </Col>
+            <Col xs={10} lg={3} style={{ textAlign: 'right' }}>
+              <Button type="link" onClick={() => navigate('/toolbox')}>管理工具箱</Button>
+            </Col>
+          </Row>
+          {selectedToolIds.length > 0 && (
+            <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
+              已选择 {selectedToolIds.length} 个工具，会写入本次 Idea Run 的生成上下文和 Proposal 元数据。
+            </Text>
+          )}
         </div>
         {(generating || run) && (
           <WorkflowProgressState

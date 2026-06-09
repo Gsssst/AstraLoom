@@ -1,6 +1,7 @@
 from app.db.models.paper import Paper, Category, PaperCategory, UserPaper, Folder, PaperFolderItem
 from app.db.models.user import User
 from app.db.models.research import ResearchProject, ResearchIdea, ResearchIdeaRun, ResearchCodeProjectVersion
+from app.db.models.toolbox import ResearchTool, ResearchToolPaper
 from app.db.models.writing import WritingProject, WritingSection, PolishVersion
 from app.db.models.workspace import (
     ProjectSpace,
@@ -15,6 +16,7 @@ __all__ = [
     "Paper", "Category", "PaperCategory", "UserPaper", "Folder", "PaperFolderItem",
     "User",
     "ResearchProject", "ResearchIdea", "ResearchIdeaRun", "ResearchCodeProjectVersion",
+    "ResearchTool", "ResearchToolPaper",
     "WritingProject", "WritingSection", "PolishVersion",
     "ProjectSpace", "ProjectSpaceMember", "ProjectSpaceResource", "ProjectSpaceActivity",
     "ProjectSpaceIssue", "ProjectSpaceIssueComment",

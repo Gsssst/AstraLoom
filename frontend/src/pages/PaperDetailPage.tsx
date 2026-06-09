@@ -14,6 +14,7 @@ import {
   DeleteOutlined, CloseOutlined,
   PlayCircleOutlined, CheckCircleOutlined, RollbackOutlined,
   BookOutlined, NodeIndexOutlined,
+  ToolOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import Markdown from '../components/Markdown';
@@ -101,6 +102,15 @@ interface PaperAnnotation {
   kind: string;
   note?: string | null;
   created_at: string;
+}
+
+interface ToolboxTool {
+  id: string;
+  name: string;
+  kind: string;
+  summary?: string | null;
+  tags?: string[];
+  papers?: Array<{ id: string; title: string; relation: string; evidence_note?: string | null }>;
 }
 
 interface PaperChatMessage {
@@ -281,6 +291,12 @@ const PaperDetailPage: React.FC = () => {
   const [webSearch, setWebSearch] = useState(false);
   const [searchDepth, setSearchDepth] = useState<'quick' | 'standard' | 'deep'>('standard');
   const [tagging, setTagging] = useState(false);
+  const [paperTools, setPaperTools] = useState<ToolboxTool[]>([]);
+  const [availableTools, setAvailableTools] = useState<ToolboxTool[]>([]);
+  const [toolLinking, setToolLinking] = useState(false);
+  const [selectedToolId, setSelectedToolId] = useState<string | undefined>();
+  const [toolRelation, setToolRelation] = useState('used');
+  const [toolEvidenceNote, setToolEvidenceNote] = useState('');
   const showThinking = useThemeStore((s) => s.showThinking ?? false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const retrievalStrategy = webSearch && paperRagEnabled
@@ -314,7 +330,22 @@ const PaperDetailPage: React.FC = () => {
     api.get(`/papers/${paperId}/annotations`).then(res => {
       setAnnotations(res.data || []);
     }).catch(() => {});
+    api.get(`/toolbox/papers/${paperId}/tools`).then(res => {
+      setPaperTools(res.data || []);
+    }).catch(() => {});
   }, [paperId, isAuthenticated]);
+
+  const fetchAvailableTools = async () => {
+    if (!isAuthenticated) return;
+    try {
+      const response = await api.get('/toolbox/tools', { params: { limit: 100 } });
+      setAvailableTools(response.data.items || []);
+    } catch {
+      // The paper detail page remains usable without toolbox suggestions.
+    }
+  };
+
+  useEffect(() => { fetchAvailableTools(); }, [isAuthenticated]);
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMsgs]);
 
@@ -698,6 +729,30 @@ const PaperDetailPage: React.FC = () => {
     }
   };
 
+  const handleLinkTool = async () => {
+    if (!paperId || !selectedToolId) {
+      message.warning('请选择要关联的工具');
+      return;
+    }
+    setToolLinking(true);
+    try {
+      await api.post(`/toolbox/tools/${selectedToolId}/papers`, {
+        paper_id: paperId,
+        relation: toolRelation,
+        evidence_note: toolEvidenceNote.trim() || undefined,
+      });
+      const response = await api.get(`/toolbox/papers/${paperId}/tools`);
+      setPaperTools(response.data || []);
+      setSelectedToolId(undefined);
+      setToolEvidenceNote('');
+      message.success('已关联到工具箱');
+    } catch {
+      message.error('工具关联失败');
+    } finally {
+      setToolLinking(false);
+    }
+  };
+
   const paperCitationReadiness = paper ? computeMetadataQuality(paper, { detail: true }) : null;
   const paperGraphNodes: ResearchGraphNode[] = paper ? [
     { id: `paper:${paper.id}`, label: paper.title, type: 'paper', status: paper.year ? String(paper.year) : paper.source, href: `/papers/${paper.id}` },
@@ -910,6 +965,63 @@ const PaperDetailPage: React.FC = () => {
               ) : (
                 <Text type="secondary">生成后会得到核心贡献、可借鉴方法、复现实验、局限、研究缺口和研究方向关联。</Text>
               )}
+            </Card>
+          )}
+          {isAuthenticated && (
+            <Card
+              size="small"
+              style={{ marginTop: 16, borderRadius: 12 }}
+              title={<span><ToolOutlined /> 工具箱关联</span>}
+              extra={<Button size="small" type="link" onClick={() => navigate('/toolbox')}>打开工具箱</Button>}
+            >
+              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                {paperTools.length ? (
+                  <Space size={8} wrap>
+                    {paperTools.map(tool => (
+                      <Tooltip key={tool.id} title={tool.summary || '工具箱条目'}>
+                        <Tag color="cyan" icon={<ToolOutlined />}>{tool.name}</Tag>
+                      </Tooltip>
+                    ))}
+                  </Space>
+                ) : (
+                  <Text type="secondary">这篇论文还没有关联工具。可以把它用到的算法、模型、数据集或评价协议沉淀到工具箱。</Text>
+                )}
+                <Space.Compact style={{ width: '100%' }}>
+                  <Select
+                    showSearch
+                    allowClear
+                    placeholder="选择已有工具"
+                    value={selectedToolId}
+                    onChange={setSelectedToolId}
+                    optionFilterProp="label"
+                    options={availableTools.map(tool => ({ value: tool.id, label: `${tool.name} · ${tool.kind}` }))}
+                    style={{ minWidth: 220, flex: 1 }}
+                  />
+                  <Select
+                    value={toolRelation}
+                    onChange={setToolRelation}
+                    options={[
+                      { value: 'introduced', label: '提出' },
+                      { value: 'used', label: '使用' },
+                      { value: 'compared', label: '对比' },
+                      { value: 'improved', label: '改进' },
+                      { value: 'baseline', label: 'Baseline' },
+                      { value: 'dataset', label: '数据集' },
+                      { value: 'metric', label: '指标' },
+                      { value: 'other', label: '其他' },
+                    ]}
+                    style={{ width: 116 }}
+                  />
+                  <Button type="primary" loading={toolLinking} onClick={handleLinkTool}>关联</Button>
+                </Space.Compact>
+                <Input
+                  placeholder="证据说明，例如：论文将 GraphRAG 用于跨文档证据组织"
+                  value={toolEvidenceNote}
+                  onChange={event => setToolEvidenceNote(event.target.value)}
+                  maxLength={500}
+                  showCount
+                />
+              </Space>
             </Card>
           )}
           <Card

@@ -14,6 +14,7 @@ const {
   HomePage,
   ChatPage,
   PapersPage,
+  ToolboxPage,
   ResearchPage,
   ResearchProjectPage,
   WritingPage,
@@ -88,6 +89,7 @@ const App: React.FC = () => {
               <Route path="/chat" element={lazyRoute(<ChatPage />)} />
               <Route path="/actions" element={lazyRoute(<ActionCenterPage />)} />
               <Route path="/papers" element={lazyRoute(<PapersPage />)} />
+              <Route path="/toolbox" element={lazyRoute(<ToolboxPage />)} />
               <Route path="/papers/digests" element={lazyRoute(<PaperDigestInboxPage />)} />
               <Route path="/papers/:paperId" element={lazyRoute(<PaperDetailPage />)} />
               <Route path="/research" element={lazyRoute(<ResearchPage />)} />

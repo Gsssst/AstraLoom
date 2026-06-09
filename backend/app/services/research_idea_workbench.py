@@ -18,9 +18,11 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.models.paper import Paper
 from app.db.models.research import ResearchIdea, ResearchIdeaRun, ResearchProject
+from app.db.models.toolbox import ResearchTool, ResearchToolPaper
 from app.services.hybrid_search import HybridSearchService
 from app.services.llm import llm_service
 
@@ -58,6 +60,7 @@ REVIEW_WEIGHTS = {
     "impact": 0.15,
     "clarity": 0.05,
 }
+TOOL_MODES = {"inspiration", "required", "baseline", "avoid"}
 
 
 class ResearchIdeaWorkbenchService:
@@ -72,20 +75,72 @@ class ResearchIdeaWorkbenchService:
         project: ResearchProject,
         num_ideas: int = 3,
         external_search: bool = True,
+        tool_context: dict[str, Any] | None = None,
     ) -> ResearchIdeaRun:
+        config = {
+            "num_ideas": num_ideas,
+            "external_search": external_search,
+            "evidence_scope": "local_and_external" if external_search else "local_library",
+        }
+        if tool_context:
+            config["tool_context"] = tool_context
         run = ResearchIdeaRun(
             project_id=project.id,
             status="pending",
             stage="briefing",
             progress=0,
             message="等待启动",
-            config_json={
-                "num_ideas": num_ideas,
-                "external_search": external_search,
-                "evidence_scope": "local_and_external" if external_search else "local_library",
-            },
+            config_json=config,
         )
         self.session.add(run)
+        await self.session.commit()
+        await self.session.refresh(run)
+        return run
+
+    async def load_tool_context(
+        self,
+        tool_ids: list[str] | None,
+        tool_mode: str = "inspiration",
+    ) -> dict[str, Any]:
+        """Load selected toolbox entries into a compact prompt-safe context."""
+        parsed_ids: list[UUID] = []
+        seen: set[UUID] = set()
+        for raw_id in tool_ids or []:
+            try:
+                tool_id = UUID(str(raw_id))
+            except (TypeError, ValueError):
+                continue
+            if tool_id in seen:
+                continue
+            seen.add(tool_id)
+            parsed_ids.append(tool_id)
+            if len(parsed_ids) >= 12:
+                break
+
+        mode = tool_mode if tool_mode in TOOL_MODES else "inspiration"
+        if not parsed_ids:
+            return {"mode": mode, "tool_ids": [], "tools": []}
+
+        result = await self.session.execute(
+            select(ResearchTool)
+            .options(selectinload(ResearchTool.paper_links).selectinload(ResearchToolPaper.paper))
+            .where(ResearchTool.id.in_(parsed_ids))
+        )
+        tools_by_id = {tool.id: tool for tool in result.scalars().unique().all()}
+        ordered_tools = [tools_by_id[tool_id] for tool_id in parsed_ids if tool_id in tools_by_id]
+        return {
+            "mode": mode,
+            "tool_ids": [str(tool.id) for tool in ordered_tools],
+            "tools": [self._tool_context_item(tool) for tool in ordered_tools],
+        }
+
+    async def attach_tool_context(self, run: ResearchIdeaRun, tool_context: dict[str, Any] | None) -> ResearchIdeaRun:
+        config = dict(run.config_json or {})
+        if tool_context and tool_context.get("tools"):
+            config["tool_context"] = tool_context
+        else:
+            config.pop("tool_context", None)
+        run.config_json = config
         await self.session.commit()
         await self.session.refresh(run)
         return run
@@ -374,7 +429,11 @@ class ResearchIdeaWorkbenchService:
         adversarial_reviewed = self.adversarial_review_candidates(novelty_checked)
         reviewed = self.apply_quality_adjustments(adversarial_reviewed, evidence_map=evidence_map, gap_map=gap_map)
         selected, diversity_summary = self.select_diverse_proposals(reviewed, num_ideas)
-        selected = [{**candidate, "gap_selection": generation_context.get("gap_selection")} for candidate in selected]
+        tool_context = self._compact_tool_context(generation_context.get("tool_context"))
+        selected = [
+            {**candidate, "gap_selection": generation_context.get("gap_selection"), "tool_context": tool_context}
+            for candidate in selected
+        ]
         run.candidate_pool = reviewed
         run.review_summary = {
             "rubric": REVIEW_WEIGHTS,
@@ -388,6 +447,7 @@ class ResearchIdeaWorkbenchService:
             "gap_selection": generation_context.get("gap_selection"),
             "generation_constraints": generation_context.get("generation_constraints"),
             "gap_feedback": generation_context.get("gap_feedback") or [],
+            "tool_context": tool_context,
         }
         await self.session.commit()
         await self._emit(
@@ -822,10 +882,83 @@ class ResearchIdeaWorkbenchService:
         return []
 
     @staticmethod
+    def _tool_context_item(tool: ResearchTool) -> dict[str, Any]:
+        evidence = []
+        for link in tool.paper_links or []:
+            paper = getattr(link, "paper", None)
+            if not paper:
+                continue
+            evidence.append({
+                "paper_id": str(paper.id),
+                "title": paper.title,
+                "year": paper.year,
+                "source": paper.source,
+                "relation": link.relation,
+                "evidence_note": link.evidence_note,
+            })
+        return {
+            "id": str(tool.id),
+            "name": tool.name,
+            "kind": tool.kind,
+            "summary": tool.summary,
+            "use_cases": tool.use_cases,
+            "limitations": tool.limitations,
+            "tags": tool.tags or [],
+            "maturity": tool.maturity,
+            "evidence": evidence[:8],
+        }
+
+    @staticmethod
+    def _compact_tool_context(context: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(context, dict):
+            return {"mode": "inspiration", "tool_ids": [], "tools": []}
+        tools = []
+        for tool in context.get("tools") or []:
+            if not isinstance(tool, dict):
+                continue
+            tools.append({
+                "id": str(tool.get("id") or ""),
+                "name": str(tool.get("name") or ""),
+                "kind": str(tool.get("kind") or "other"),
+                "summary": str(tool.get("summary") or "")[:800],
+                "use_cases": str(tool.get("use_cases") or "")[:800],
+                "limitations": str(tool.get("limitations") or "")[:800],
+                "tags": [str(tag) for tag in (tool.get("tags") or [])[:8]],
+                "maturity": str(tool.get("maturity") or "unknown"),
+                "evidence": [
+                    {
+                        "paper_id": str(item.get("paper_id") or ""),
+                        "title": str(item.get("title") or ""),
+                        "relation": str(item.get("relation") or ""),
+                        "evidence_note": str(item.get("evidence_note") or "")[:400],
+                    }
+                    for item in (tool.get("evidence") or [])[:5]
+                    if isinstance(item, dict)
+                ],
+            })
+        mode = str(context.get("mode") or "inspiration")
+        return {
+            "mode": mode if mode in TOOL_MODES else "inspiration",
+            "tool_ids": [tool["id"] for tool in tools if tool.get("id")],
+            "tools": tools[:12],
+        }
+
+    @staticmethod
+    def _tool_mode_instruction(mode: str) -> str:
+        if mode == "required":
+            return "必须至少使用一个选中的工具箱条目，并在 used_tool_ids/used_tool_names 中记录。"
+        if mode == "baseline":
+            return "把选中的工具优先作为 baseline、对照方法、数据集或指标，不要把 baseline 伪装成贡献。"
+        if mode == "avoid":
+            return "尽量规避直接复用选中工具，除非用于说明为什么需要替代路线。"
+        return "可把选中的工具作为灵感、组件、实验协议或评测线索，但不要强行使用。"
+
+    @staticmethod
     def _format_generation_constraints(context: dict[str, Any] | None) -> str:
         data = context if isinstance(context, dict) else {}
         selection = data.get("gap_selection") or {}
         constraints = data.get("generation_constraints") or {}
+        tool_context = ResearchIdeaWorkbenchService._compact_tool_context(data.get("tool_context"))
         return json.dumps({
             "selected_gap_titles": selection.get("selected_gap_titles") or [],
             "blocked_gap_titles": selection.get("blocked_gap_titles") or [],
@@ -834,6 +967,8 @@ class ResearchIdeaWorkbenchService:
             "risk_appetite": constraints.get("risk_appetite") or "balanced",
             "resource_budget": constraints.get("resource_budget") or "reproducible",
             "gap_feedback": data.get("gap_feedback") or [],
+            "tool_context": tool_context,
+            "tool_instruction": ResearchIdeaWorkbenchService._tool_mode_instruction(tool_context["mode"]),
         }, ensure_ascii=False)
 
     def apply_gap_selection(self, gap_map: dict[str, Any], selection: dict[str, Any]) -> dict[str, Any]:
@@ -875,9 +1010,11 @@ class ResearchIdeaWorkbenchService:
                 "gap_selection": config.get("gap_selection") or self.normalize_gap_selection(gap_map, None, None)["gap_selection"],
                 "generation_constraints": config.get("generation_constraints") or self._normalize_generation_constraints(None),
                 "gap_feedback": feedback_summary,
+                "tool_context": config.get("tool_context") or {},
             }
         normalized = self.normalize_gap_selection(gap_map, None, None)
         normalized["gap_feedback"] = feedback_summary
+        normalized["tool_context"] = config.get("tool_context") or {}
         return normalized
 
     async def generate_candidates(
@@ -896,9 +1033,10 @@ class ResearchIdeaWorkbenchService:
 输出严格 JSON：
 {{"candidates":[{{"title":"...", "path":"grounded|inspiration|seed_refinement",
 "gap":"...", "hypothesis":"可证伪假设", "approach":"技术草图", "evidence_ids":["paper uuid"],
-"risks":["..."], "falsification_test":"...", "minimum_experiment":{{"dataset":"...",
+"used_tool_ids":["tool uuid"], "used_tool_names":["工具名"], "risks":["..."], "falsification_test":"...", "minimum_experiment":{{"dataset":"...",
 "baselines":["..."], "metrics":["..."], "steps":["..."]}}}}]}}
 禁止只输出宽泛方向，每条必须可以设计最小实验验证。
+如果用户选择了工具箱条目，必须遵守 tool_instruction；如果未实际使用工具，则 used_tool_ids 为空数组。
 
 研究简报：{json.dumps(brief, ensure_ascii=False)}
 Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
@@ -1249,9 +1387,10 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
 {{"evolved":[{{"parent_title":"...", "operator":"mechanism_shift|strong_baseline|failure_mode|cost_aware|cross_domain_transfer",
 "critique":"指出父候选最关键弱点", "improvement":"本轮如何改进", "selection_angle":"为什么这个方向值得保留",
 "title":"...", "path":"grounded|inspiration|seed_refinement", "gap":"...", "hypothesis":"可证伪假设",
-"approach":"技术草图", "evidence_ids":["paper uuid"], "risks":["..."], "falsification_test":"...",
+"approach":"技术草图", "evidence_ids":["paper uuid"], "used_tool_ids":["tool uuid"], "used_tool_names":["工具名"], "risks":["..."], "falsification_test":"...",
 "minimum_experiment":{{"dataset":"...", "baselines":["..."], "metrics":["..."], "steps":["..."]}}}}]}}
 候选之间必须覆盖不同机制、数据场景或风险类型，禁止只改标题。
+如果用户选择了工具箱条目，必须遵守 tool_instruction；如果未实际使用工具，则 used_tool_ids 为空数组。
 
 研究简报：{json.dumps(brief, ensure_ascii=False)}
 Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
@@ -1935,6 +2074,9 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                     "experiment_completeness": candidate.get("experiment_completeness"),
                     "gap_alignment": candidate.get("gap_alignment"),
                     "gap_selection": candidate.get("gap_selection"),
+                    "tool_context": candidate.get("tool_context"),
+                    "used_tool_ids": candidate.get("used_tool_ids", []),
+                    "used_tool_names": candidate.get("used_tool_names", []),
                 },
                 experiment_plan=candidate["minimum_experiment"],
                 status="draft",
@@ -2729,6 +2871,8 @@ Proposal：{json.dumps({
         available = ResearchIdeaWorkbenchService._available_evidence_ids(evidence_map)
         evidence_ids = [str(value) for value in data.get("evidence_ids", []) if str(value) in available]
         experiment = data.get("minimum_experiment") if isinstance(data.get("minimum_experiment"), dict) else {}
+        used_tool_ids = [str(value) for value in data.get("used_tool_ids", []) if str(value).strip()]
+        used_tool_names = [str(value).strip() for value in data.get("used_tool_names", []) if str(value).strip()]
         return {
             "title": str(data.get("title") or f"{brief['name']} 候选假设 {index + 1}"),
             "path": str(data.get("path") or ("grounded" if index % 2 == 0 else "inspiration")),
@@ -2736,6 +2880,8 @@ Proposal：{json.dumps({
             "hypothesis": str(data.get("hypothesis") or f"通过针对性约束可以提升 {brief['name']} 的可验证性能。"),
             "approach": str(data.get("approach") or "构建一个可替换模块，并在统一设置下与强基线对比。"),
             "evidence_ids": evidence_ids or list(available)[:2],
+            "used_tool_ids": used_tool_ids[:12],
+            "used_tool_names": used_tool_names[:12],
             "risks": [str(value) for value in data.get("risks", [])] or ["改进可能只在单一数据集上成立"],
             "falsification_test": str(data.get("falsification_test") or "若主要指标未稳定超过强基线，则否定该假设。"),
             "minimum_experiment": {
@@ -2893,6 +3039,9 @@ Proposal：{json.dumps({
         focus_note = selection.get("focus_note") or ""
         budget = constraints.get("resource_budget") or "reproducible"
         mode = constraints.get("research_mode") or "balanced"
+        tool_context = ResearchIdeaWorkbenchService._compact_tool_context(context.get("tool_context"))
+        tool_mode = tool_context.get("mode") or "inspiration"
+        selected_tools = tool_context.get("tools") or []
         strategies = [
             ("边界条件审计", "构建边界条件切片与失败模式分析，定位收益出现和消失的区域。"),
             ("轻量校准模块", "加入单一可替换的校准模块，在统一预算下验证可靠性收益。"),
@@ -2913,6 +3062,21 @@ Proposal：{json.dumps({
             gap = gaps[index % len(gaps)]
             path = ("grounded", "inspiration", "grounded")[index % 3]
             strategy_title, strategy = strategies[index % len(strategies)]
+            tool = selected_tools[index % len(selected_tools)] if selected_tools else None
+            used_tool_ids = [tool["id"]] if tool and tool_mode != "avoid" else []
+            used_tool_names = [tool["name"]] if tool and tool_mode != "avoid" else []
+            tool_clause = ""
+            tool_baselines = ["可复现强基线", "无改动消融"]
+            if tool:
+                if tool_mode == "required":
+                    tool_clause = f" 必须把工具箱条目「{tool['name']}」作为核心组件或实验协议，并说明其局限如何被控制。"
+                elif tool_mode == "baseline":
+                    tool_clause = f" 将工具箱条目「{tool['name']}」作为强基线或对照协议，贡献集中在替代机制和误差分析。"
+                    tool_baselines = [tool["name"], *tool_baselines]
+                elif tool_mode == "avoid":
+                    tool_clause = f" 避免直接复用工具箱条目「{tool['name']}」，重点提出可验证的替代路线。"
+                else:
+                    tool_clause = f" 可借鉴工具箱条目「{tool['name']}」的适用场景或实验协议。"
             feedback = gap.get("user_feedback") or {}
             feedback_note = feedback.get("note") or ""
             feedback_labels = ", ".join(feedback.get("labels") or [])
@@ -2925,13 +3089,15 @@ Proposal：{json.dumps({
                     "path": path,
                     "gap": gap.get("limitation") or "现有方法缺少边界验证。",
                     "hypothesis": f"针对「{gap.get('title') or brief['name']}」采用{strategy_title}后，可在{dataset}上获得可复现的改进信号。",
-                    "approach": f"先复现强基线，再{strategy}" + (f" 用户关注：{focus_note}" if focus_note else "") + feedback_clause,
+                    "approach": f"先复现强基线，再{strategy}{tool_clause}" + (f" 用户关注：{focus_note}" if focus_note else "") + feedback_clause,
                     "evidence_ids": gap.get("evidence_ids") or evidence_ids[:2],
+                    "used_tool_ids": used_tool_ids,
+                    "used_tool_names": used_tool_names,
                     "risks": ["收益可能来自训练预算差异", "本地论文覆盖不足"],
                     "falsification_test": "统一训练和推理预算后，若主要指标和效率指标均未稳定改善，则否定假设。",
                     "minimum_experiment": {
                         "dataset": dataset,
-                        "baselines": ["可复现强基线", "无改动消融"],
+                        "baselines": list(dict.fromkeys(tool_baselines)),
                         "metrics": ["主要任务指标", "推理成本", "稳定性"],
                         "steps": ["复现基线", "实现最小模块", "统一预算对比", "误差分析"],
                     },

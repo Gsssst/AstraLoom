@@ -192,6 +192,8 @@ class IdeaResponse(BaseModel):
 class GenerateIdeasRequest(BaseModel):
     num_ideas: int = Field(default=3, ge=1, le=5)
     external_search: bool = True
+    tool_ids: list[str] = Field(default_factory=list, max_length=12)
+    tool_mode: Literal["inspiration", "required", "baseline", "avoid"] = "inspiration"
 
 
 class GapSelectionRequest(BaseModel):
@@ -210,6 +212,8 @@ class ContinueGapReviewRequest(BaseModel):
     num_ideas: int = Field(default=3, ge=1, le=5)
     gap_selection: GapSelectionRequest = Field(default_factory=GapSelectionRequest)
     generation_constraints: GenerationConstraintsRequest = Field(default_factory=GenerationConstraintsRequest)
+    tool_ids: list[str] = Field(default_factory=list, max_length=12)
+    tool_mode: Literal["inspiration", "required", "baseline", "avoid"] = "inspiration"
 
 
 class GapFeedbackRequest(BaseModel):
@@ -792,7 +796,8 @@ async def generate_ideas(
 
     service = ResearchIdeaWorkbenchService(db)
     try:
-        run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search)
+        tool_context = await service.load_tool_context(req.tool_ids, req.tool_mode)
+        run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search, tool_context=tool_context)
         ideas = await service.execute(project, run, num_ideas=req.num_ideas)
         return [_idea_response(idea) for idea in ideas]
     except Exception as e:
@@ -809,7 +814,8 @@ async def create_idea_run(
     """创建并同步执行一次可恢复的 Idea 工作台运行。"""
     project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
     service = ResearchIdeaWorkbenchService(db)
-    run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search)
+    tool_context = await service.load_tool_context(req.tool_ids, req.tool_mode)
+    run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search, tool_context=tool_context)
     ideas = await service.execute(project, run, num_ideas=req.num_ideas)
     return _run_response(run, ideas)
 
@@ -824,7 +830,8 @@ async def create_gap_preview_run(
     """创建一次停在 Gap Map 选择阶段的工作台运行。"""
     project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
     service = ResearchIdeaWorkbenchService(db)
-    run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search)
+    tool_context = await service.load_tool_context(req.tool_ids, req.tool_mode)
+    run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search, tool_context=tool_context)
     run = await service.execute_gap_preview(project, run)
     return _run_response(run)
 
@@ -845,6 +852,8 @@ async def continue_idea_run_from_gaps(
     if not run.gap_map:
         raise HTTPException(status_code=400, detail="当前运行还没有可继续的 Gap Map")
     service = ResearchIdeaWorkbenchService(db)
+    tool_context = await service.load_tool_context(req.tool_ids, req.tool_mode)
+    await service.attach_tool_context(run, tool_context)
     ideas = await service.continue_from_gap_review(
         project,
         run,
@@ -872,6 +881,8 @@ async def continue_idea_run_from_gaps_stream(
     if not run.gap_map:
         raise HTTPException(status_code=400, detail="当前运行还没有可继续的 Gap Map")
     service = ResearchIdeaWorkbenchService(db)
+    tool_context = await service.load_tool_context(req.tool_ids, req.tool_mode)
+    await service.attach_tool_context(run, tool_context)
 
     async def execute_with_progress(push):
         return await service.continue_from_gap_review(
@@ -950,7 +961,8 @@ async def create_idea_run_stream(
     """创建 Idea 工作台运行，并以 SSE 返回阶段和中间产物。"""
     project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
     service = ResearchIdeaWorkbenchService(db)
-    run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search)
+    tool_context = await service.load_tool_context(req.tool_ids, req.tool_mode)
+    run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search, tool_context=tool_context)
 
     async def execute_with_progress(push):
         return await service.execute(project, run, num_ideas=req.num_ideas, on_progress=push)
