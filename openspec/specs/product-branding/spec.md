@@ -48,6 +48,11 @@ Current project documentation SHALL refer to the active product as `AstraLoom`.
 - **AND** it includes GitHub-renderable diagrams for the research workflow and deployment architecture
 - **AND** it preserves bilingual lab self-hosting positioning and upload safety guidance
 
+#### Scenario: README title is centered
+- **WHEN** a prospective maintainer opens the README on GitHub
+- **THEN** the top product title is centered with the README hero block
+- **AND** it presents the product name as `AstraLoom`
+
 #### Scenario: README keeps security guidance concise
 - **WHEN** a reader scans the README project homepage
 - **THEN** the README includes concise warnings not to commit secrets, private papers, uploads, or backups
