@@ -92,12 +92,19 @@ docker compose up -d
 
 Do not commit `.env`, API keys, uploaded papers, private notes, or database backups.
 
-Open:
+Open the app from the machine where Docker is running:
+
+- Local machine: http://localhost
+- Lab server: http://<server-ip-or-domain>
+
+Useful endpoints:
 
 - Web app: http://localhost
 - API docs: http://localhost/api/docs
 - Health check: http://localhost/api/health
 - Migration health: http://localhost/api/health/db
+
+For lab-server deployments, replace `localhost` in the endpoints above with your server IP or domain.
 
 Apply or inspect migrations manually:
 
@@ -225,8 +232,15 @@ docker compose up -d
 
 不要把 `.env`、真实 API Key、论文 PDF、用户上传文件、组内私有笔记或数据库备份提交到 Git。
 
-访问：
+访问地址取决于 Docker 运行在哪里：
+
+- 本机运行：http://localhost
+- 实验室服务器运行：http://<服务器IP或域名>
+
+常用入口：
 
 - 前端界面：http://localhost
 - API 文档：http://localhost/api/docs
 - 健康检查：http://localhost/api/health
+
+如果部署在实验室服务器上，把上面入口里的 `localhost` 替换成服务器 IP 或域名。
