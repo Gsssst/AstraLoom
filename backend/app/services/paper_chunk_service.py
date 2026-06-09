@@ -211,8 +211,8 @@ class PaperChunkService:
         if requested_sections:
             section_candidates = [item for item in candidates if item.section in requested_sections]
             if section_candidates:
-                return cls.search_evidence_chunks(section_candidates, query, top_k=top_k), "section"
-        return cls.search_evidence_chunks(candidates, query, top_k=top_k), "document"
+                return cls.search_evidence_chunks(section_candidates, query, top_k=top_k, requested_sections=requested_sections), "section"
+        return cls.search_evidence_chunks(candidates, query, top_k=top_k, requested_sections=requested_sections), "document"
 
     @classmethod
     def retrieve_chunks(cls, full_text: str, query: str, top_k: int = 3) -> Tuple[List[Tuple[str, float]], str]:
@@ -226,8 +226,15 @@ class PaperChunkService:
         chunks: List[EvidenceChunk],
         query: str,
         top_k: int = 3,
+        requested_sections: Optional[set[str]] = None,
     ) -> List[EvidenceChunk]:
-        scored = cls.search_chunks([chunk.text for chunk in chunks], query, top_k=top_k)
+        scored = cls.search_chunks(
+            [chunk.text for chunk in chunks],
+            query,
+            top_k=max(top_k * 3, top_k),
+            requested_sections=requested_sections,
+            evidence_chunks=chunks,
+        )
         by_text: dict[str, List[EvidenceChunk]] = {}
         for chunk in chunks:
             by_text.setdefault(chunk.text, []).append(chunk)
@@ -242,10 +249,16 @@ class PaperChunkService:
                 page_start=base.page_start,
                 page_end=base.page_end,
             ))
-        return results
+        return cls._suppress_redundant_evidence(results, top_k=top_k)
 
     @staticmethod
-    def search_chunks(chunks: List[str], query: str, top_k: int = 3) -> List[Tuple[str, float]]:
+    def search_chunks(
+        chunks: List[str],
+        query: str,
+        top_k: int = 3,
+        requested_sections: Optional[set[str]] = None,
+        evidence_chunks: Optional[List[EvidenceChunk]] = None,
+    ) -> List[Tuple[str, float]]:
         """使用 BM25 检索与 query 最相关的 chunks。
 
         Args:
@@ -286,20 +299,61 @@ class PaperChunkService:
             bm25 = BM25Okapi(tokenized_chunks)
             scores = bm25.get_scores(tokenized_query)
 
-            # 按分数排序取 top_k
-            ranked = sorted(
-                enumerate(scores),
-                key=lambda x: x[1],
-                reverse=True,
-            )[:top_k]
-
-            # 归一化分数
             max_score = max(scores) if max(scores) > 0 else 1
-            return [(chunks[i], round(s / max_score, 3)) for i, s in ranked]
+            ranked = []
+            for i, score in enumerate(scores):
+                normalized = float(score) / max_score
+                section_boost = 0.0
+                if evidence_chunks and requested_sections and i < len(evidence_chunks):
+                    if evidence_chunks[i].section in requested_sections:
+                        section_boost = 0.15
+                ranked.append((chunks[i], round(min(1.0, normalized * 0.9 + section_boost), 3)))
+            ranked.sort(key=lambda x: x[1], reverse=True)
+            return PaperChunkService._suppress_redundant_chunk_texts(ranked, top_k=top_k)
 
         except ImportError:
             # 无 BM25 → 关键词简单匹配
             return PaperChunkService._fallback_search(chunks, query, top_k)
+
+    @staticmethod
+    def _chunk_tokens(text: str) -> set[str]:
+        return set(re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{1,2}", (text or "").lower()))
+
+    @classmethod
+    def _chunk_similarity(cls, left: str, right: str) -> float:
+        left_tokens = cls._chunk_tokens(left)
+        right_tokens = cls._chunk_tokens(right)
+        if not left_tokens or not right_tokens:
+            return 0.0
+        return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+    @classmethod
+    def _suppress_redundant_chunk_texts(cls, scored: List[Tuple[str, float]], top_k: int) -> List[Tuple[str, float]]:
+        selected: List[Tuple[str, float]] = []
+        deferred: List[Tuple[str, float]] = []
+        for text, score in scored:
+            if any(cls._chunk_similarity(text, chosen) >= 0.72 for chosen, _ in selected):
+                deferred.append((text, score))
+                continue
+            selected.append((text, score))
+            if len(selected) >= top_k:
+                return selected
+        selected.extend(deferred[:max(0, top_k - len(selected))])
+        return selected[:top_k]
+
+    @classmethod
+    def _suppress_redundant_evidence(cls, chunks: List[EvidenceChunk], top_k: int) -> List[EvidenceChunk]:
+        selected: List[EvidenceChunk] = []
+        deferred: List[EvidenceChunk] = []
+        for chunk in chunks:
+            if any(cls._chunk_similarity(chunk.text, chosen.text) >= 0.72 for chosen in selected):
+                deferred.append(chunk)
+                continue
+            selected.append(chunk)
+            if len(selected) >= top_k:
+                return selected
+        selected.extend(deferred[:max(0, top_k - len(selected))])
+        return selected[:top_k]
 
     @staticmethod
     def _fallback_search(chunks: List[str], query: str, top_k: int) -> List[Tuple[str, float]]:

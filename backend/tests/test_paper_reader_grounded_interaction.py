@@ -84,3 +84,22 @@ def test_page_aware_evidence_preserves_section_and_page_number():
     assert evidence[0].section == "method"
     assert evidence[0].page_start == 2
     assert "method-marker" in evidence[0].text
+
+
+def test_evidence_retrieval_suppresses_redundant_chunks():
+    repeated = " ".join(["contrastive alignment improves retrieval"] * 70)
+    full_text = "\n\n".join([
+        repeated,
+        repeated + " with a small wording change",
+        " ".join(["temporal localization benchmark reports failure cases"] * 70),
+    ])
+
+    evidence, scope = PaperChunkService.retrieve_evidence(
+        full_text,
+        "contrastive alignment retrieval failure cases",
+        top_k=2,
+    )
+
+    assert scope == "document"
+    assert len(evidence) == 2
+    assert not all("contrastive alignment" in item.text for item in evidence)

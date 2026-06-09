@@ -1,6 +1,9 @@
 """论文智能筛选服务 — 参考 AI-Researcher + SciPIP 的论文选择策略。"""
 
 import logging
+import math
+import re
+from datetime import datetime, timezone
 from typing import List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -17,6 +20,7 @@ TOP_VENUE_KEYWORDS = [
     "ECCV", "AAAI", "IJCAI", "SIGKDD", "WWW", "SIGIR", "CHI", "UIST",
     "Nature", "Science", "JMLR", "TPAMI", "TACL", "TMLR",
 ]
+RECOMMENDATION_MMR_LAMBDA = 0.78
 
 
 class PaperSelectionService:
@@ -140,7 +144,10 @@ class PaperSelectionService:
         except Exception:
             pass
 
-        # ====== 第 5 层：LLM 重排序（参考 AI-Researcher）======
+        # ====== 第 5 层：可解释质量/反馈信号调整 ======
+        all_candidates = await self._apply_recommendation_signals(all_candidates)
+
+        # ====== 第 6 层：LLM 重排序（参考 AI-Researcher）======
         if len(all_candidates) > max_papers:
             selected = await self._llm_rerank(
                 topic_name, topic_description, all_candidates, max_papers
@@ -148,10 +155,87 @@ class PaperSelectionService:
         else:
             selected = all_candidates[:max_papers]
 
-        # ====== 第 6 层：多样性采样 ======
+        # ====== 第 7 层：多样性采样 ======
         selected = self._diversity_sample(selected, max_papers)
 
         return selected[:max_papers]
+
+    async def _apply_recommendation_signals(
+        self,
+        candidates: List[Tuple[Paper, float, str]],
+    ) -> List[Tuple[Paper, float, str]]:
+        """Apply bounded quality and user/library feedback signals before final selection."""
+        if not candidates:
+            return []
+        interaction_by_id = await self._load_user_paper_signals([paper for paper, _score, _src in candidates])
+        adjusted = []
+        for paper, score, src in candidates:
+            if src == "manual":
+                adjusted.append((paper, 1.0, src))
+                continue
+            quality = self._paper_quality_score(paper)
+            feedback = interaction_by_id.get(str(getattr(paper, "id", "")), 0.0)
+            source_balance = 0.04 if src.startswith(("entity:", "semantic:")) else 0.0
+            external_penalty = 0.03 if src.startswith(("arxiv:", "s2:")) and not getattr(paper, "abstract", None) else 0.0
+            final_score = (
+                float(score) * 0.72
+                + quality * 0.18
+                + feedback * 0.08
+                + source_balance
+                - external_penalty
+            )
+            adjusted.append((paper, max(0.0, min(1.0, final_score)), src))
+        adjusted.sort(key=lambda item: item[1], reverse=True)
+        return adjusted
+
+    async def _load_user_paper_signals(self, papers: List[Paper]) -> dict[str, float]:
+        ids = [getattr(paper, "id", None) for paper in papers if self._looks_like_uuid(getattr(paper, "id", None))]
+        if not ids:
+            return {}
+        try:
+            result = await self.session.execute(select(UserPaper).where(UserPaper.paper_id.in_(ids)))
+        except Exception:
+            return {}
+        signals: dict[str, float] = {}
+        for item in result.scalars().all():
+            score = 0.0
+            if item.saved:
+                score += 0.45
+            if item.read_status == "completed":
+                score += 0.35
+            elif item.read_status == "reading":
+                score += 0.2
+            if item.personal_notes:
+                score += 0.12
+            if item.personal_tags:
+                score += 0.08
+            if item.personal_annotations:
+                score += 0.18
+            key = str(item.paper_id)
+            signals[key] = min(1.0, max(signals.get(key, 0.0), score))
+        return signals
+
+    @staticmethod
+    def _looks_like_uuid(value) -> bool:
+        return bool(re.fullmatch(r"[0-9a-fA-F-]{32,36}", str(value or "")))
+
+    @staticmethod
+    def _paper_quality_score(paper: Paper) -> float:
+        checks = [
+            bool(getattr(paper, "title", None)),
+            bool(getattr(paper, "abstract", None) and len(paper.abstract) >= 120),
+            bool(getattr(paper, "authors", None)),
+            bool(getattr(paper, "year", None)),
+            bool(getattr(paper, "arxiv_id", None) or getattr(paper, "doi", None)),
+            bool(getattr(paper, "full_text", None) and len(paper.full_text) >= 800),
+            bool(getattr(paper, "embedding", None) is not None),
+        ]
+        metadata = sum(1 for ready in checks if ready) / len(checks)
+        citation_score = min(1.0, math.log1p(max(0, int(getattr(paper, "citation_count", 0) or 0))) / math.log1p(500))
+        recency = 0.0
+        if getattr(paper, "year", None):
+            recency = max(0.0, min(1.0, 1 - max(0, datetime.now(timezone.utc).year - int(paper.year)) / 12))
+        return max(0.0, min(1.0, metadata * 0.62 + citation_score * 0.2 + recency * 0.18))
 
     async def _extract_entities(self, topic: str, description: str, keywords: List[str]) -> dict:
         """用 LLM 提取研究方向的关键实体（方法、任务、数据集）。"""
@@ -293,24 +377,44 @@ class PaperSelectionService:
         candidates: List[Tuple[Paper, float, str]],
         max_papers: int,
     ) -> List[Tuple[Paper, float, str]]:
-        """多样性采样：确保选出的论文覆盖不同子主题。"""
+        """MMR-style diversity sampling that keeps manual selections and avoids duplicates."""
         if len(candidates) <= max_papers:
             return candidates
 
-        selected = []
-        seen_tags = set()
-
-        # 优先选择有不同标签的论文
-        for paper, score, src in candidates:
-            tags = set(paper.tags[:3]) if paper.tags else set()
-            if not tags or not tags.intersection(seen_tags) or len(selected) < max_papers // 2:
-                selected.append((paper, score, src))
-                seen_tags.update(tags)
-                if len(selected) >= max_papers:
-                    break
-
-        # 如果还不够，从剩下的里面补
-        remaining = [(p, s, src) for p, s, src in candidates if (p, s, src) not in selected]
-        selected.extend(remaining[:max_papers - len(selected)])
-
+        pool = sorted(candidates, key=lambda item: item[1], reverse=True)
+        selected: List[Tuple[Paper, float, str]] = []
+        for item in list(pool):
+            if item[2] == "manual" and len(selected) < max_papers:
+                selected.append(item)
+                pool.remove(item)
+        while pool and len(selected) < max_papers:
+            best_index = 0
+            best_score = -1.0
+            for index, (paper, score, src) in enumerate(pool):
+                redundancy = max((self._paper_similarity(paper, chosen) for chosen, _score, _src in selected), default=0.0)
+                source_penalty = 0.08 if selected and sum(1 for _p, _s, selected_src in selected if selected_src.split(":", 1)[0] == src.split(":", 1)[0]) >= 2 else 0.0
+                duplicate_penalty = 0.12 if redundancy >= 0.65 else 0.0
+                mmr_score = RECOMMENDATION_MMR_LAMBDA * score - (1 - RECOMMENDATION_MMR_LAMBDA) * redundancy - source_penalty - duplicate_penalty
+                if mmr_score > best_score:
+                    best_score = mmr_score
+                    best_index = index
+            selected.append(pool.pop(best_index))
         return selected[:max_papers]
+
+    @staticmethod
+    def _paper_tokens(paper: Paper) -> set[str]:
+        return set(re.findall(r"[a-z0-9]+", (getattr(paper, "title", "") or "").lower()))
+
+    @classmethod
+    def _paper_similarity(cls, left: Paper, right: Paper) -> float:
+        if getattr(left, "arxiv_id", None) and getattr(left, "arxiv_id", None) == getattr(right, "arxiv_id", None):
+            return 1.0
+        if getattr(left, "doi", None) and getattr(left, "doi", None) == getattr(right, "doi", None):
+            return 1.0
+        left_tokens = cls._paper_tokens(left)
+        right_tokens = cls._paper_tokens(right)
+        title_sim = len(left_tokens & right_tokens) / len(left_tokens | right_tokens) if left_tokens and right_tokens else 0.0
+        left_tags = set(getattr(left, "tags", None) or [])
+        right_tags = set(getattr(right, "tags", None) or [])
+        tag_sim = len(left_tags & right_tags) / len(left_tags | right_tags) if left_tags and right_tags else 0.0
+        return max(title_sim, tag_sim * 0.8)

@@ -34,6 +34,14 @@ def test_academic_tokenizer_normalizes_punctuation_and_case():
     assert tokens == ["bert", "attention-based", "top-p", "模", "型"]
 
 
+def test_query_expansion_keeps_original_and_adds_academic_variants():
+    variants = hybrid_search.expand_academic_query("BERT Attention for Video Grounding")
+
+    assert variants[0] == "BERT Attention for Video Grounding"
+    assert any("bert" in variant.lower() and "attention" in variant.lower() for variant in variants)
+    assert len(variants) >= 2
+
+
 def test_invalidate_bm25_index_clears_cached_state():
     hybrid_search._bm25_index = {
         "corpus": [["cached"]],
@@ -136,8 +144,10 @@ async def test_weighted_rrf_promotes_overlap_and_falls_back_from_dense(monkeypat
 @pytest.mark.asyncio
 async def test_hybrid_defers_dense_fusion_for_partial_embedding_coverage(monkeypatch):
     service = HybridSearchService(SimpleNamespace())
+    calls = []
 
-    async def fake_bm25(_query, _top_k):
+    async def fake_bm25(query, _top_k):
+        calls.append(query)
         return [("exact-lexical", 1.0)]
 
     async def fail_dense(_query, _top_k):
@@ -153,6 +163,35 @@ async def test_hybrid_defers_dense_fusion_for_partial_embedding_coverage(monkeyp
     fused = await service.search_hybrid("attention", top_k=2)
 
     assert fused == [("exact-lexical", 1.0)]
+    assert calls == ["attention"]
+
+
+@pytest.mark.asyncio
+async def test_hybrid_runs_expanded_queries_when_terms_allow(monkeypatch):
+    service = HybridSearchService(SimpleNamespace())
+    bm25_queries = []
+    dense_queries = []
+
+    async def fake_bm25(query, _top_k):
+        bm25_queries.append(query)
+        return [(f"lex-{len(bm25_queries)}", 1.0)]
+
+    async def fake_dense(query, _top_k):
+        dense_queries.append(query)
+        return [(f"dense-{len(dense_queries)}", 1.0)]
+
+    async def full_coverage():
+        return 1.0
+
+    monkeypatch.setattr(service, "search_bm25", fake_bm25)
+    monkeypatch.setattr(service, "search_dense", fake_dense)
+    monkeypatch.setattr(service, "embedding_coverage", full_coverage)
+
+    fused = await service.search_hybrid("BERT attention video grounding", top_k=4)
+
+    assert len(bm25_queries) >= 2
+    assert len(dense_queries) == len(bm25_queries)
+    assert fused
 
 
 @pytest.mark.asyncio
@@ -188,7 +227,14 @@ async def test_ranked_api_requests_later_page_window_and_forwards_filters(monkey
         page_size=1,
         sort="created_desc",
         search_mode="dense",
+        owner=None,
+        importer=None,
+        local_source=None,
+        has_full_text=None,
+        has_embedding=None,
+        read_status=None,
         db=SimpleNamespace(),
+        user=None,
     )
 
     assert captured == {
