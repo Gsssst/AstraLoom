@@ -5,10 +5,18 @@ import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+const pdfWorkerUrl = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
   import.meta.url,
 ).toString();
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+if (typeof window !== 'undefined' && 'Worker' in window && !pdfjs.GlobalWorkerOptions.workerPort) {
+  try {
+    pdfjs.GlobalWorkerOptions.workerPort = new Worker(pdfWorkerUrl, { type: 'module' });
+  } catch (error) {
+    console.warn('PDF worker initialization fell back to workerSrc.', error);
+  }
+}
 
 const { Text } = Typography;
 

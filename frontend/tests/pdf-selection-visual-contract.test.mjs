@@ -36,6 +36,12 @@ test('production frontend serves pdf worker module assets as javascript', () => 
   assert.match(frontendNginxSource, /location \/assets\//);
 });
 
+test('pdf viewer initializes an explicit module worker port', () => {
+  assert.match(pdfViewerSource, /const pdfWorkerUrl = new URL\(/);
+  assert.match(pdfViewerSource, /pdfjs\.GlobalWorkerOptions\.workerSrc = pdfWorkerUrl/);
+  assert.match(pdfViewerSource, /pdfjs\.GlobalWorkerOptions\.workerPort = new Worker\(pdfWorkerUrl, \{ type: 'module' \}\)/);
+});
+
 test('pdf text selection uses a lighter separated highlight treatment', () => {
   assert.match(responsiveCssSource, /\.paper-pdf-page \.react-pdf__Page__textContent ::selection/);
   assert.match(responsiveCssSource, /background: rgba\(72, 145, 255, 0\.22\)/);
