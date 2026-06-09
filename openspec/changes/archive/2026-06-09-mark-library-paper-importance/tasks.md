@@ -14,4 +14,4 @@
 
 - [x] 3.1 Add backend tests for serialization and marker updates.
 - [x] 3.2 Run targeted backend tests, frontend build, and OpenSpec validation.
-- [ ] 3.3 Commit implementation and archive the OpenSpec change.
+- [x] 3.3 Commit implementation and archive the OpenSpec change.

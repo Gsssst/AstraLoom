@@ -39,6 +39,40 @@ TBD - created by archiving change paper-search-ingest. Update Purpose after arch
 - **WHEN** 发送查询请求但 paper_id 不存在
 - **THEN** 返回 404 错误
 
+### Requirement: Paper records expose core metadata
+The paper API SHALL expose paper identity, bibliographic metadata, source metadata, processing state, import ownership, and shared importance marker metadata.
+
+#### Scenario: Paper has a shared importance marker
+- **WHEN** a paper response is serialized
+- **AND** the paper has an importance label and note
+- **THEN** the response includes `importance_label` and `importance_note`
+
+#### Scenario: Paper has no shared importance marker
+- **WHEN** a paper response is serialized
+- **AND** the paper has no importance label
+- **THEN** the response includes a null or absent marker value that the frontend treats as unmarked
+
+### Requirement: Authenticated users can update shared paper importance
+The paper API SHALL allow authenticated users to set or clear a shared importance marker on a library paper.
+
+#### Scenario: User marks a paper as important
+- **WHEN** an authenticated user sets a paper marker to `important`
+- **THEN** the paper stores the marker
+- **AND** subsequent paper responses expose the marker to all users
+
+#### Scenario: User marks a paper as interesting
+- **WHEN** an authenticated user sets a paper marker to `interesting`
+- **THEN** the paper stores the marker
+- **AND** subsequent paper responses expose the marker to all users
+
+#### Scenario: User clears the marker
+- **WHEN** an authenticated user sets the paper marker label to null
+- **THEN** the paper clears the marker label and note
+
+#### Scenario: User submits an invalid marker
+- **WHEN** an authenticated user submits a marker label outside the supported values
+- **THEN** the API rejects the request with validation feedback
+
 ### Requirement: 分类管理 API
 系统 SHALL 提供论文分类的 CRUD 接口。
 
@@ -49,4 +83,3 @@ TBD - created by archiving change paper-search-ingest. Update Purpose after arch
 #### Scenario: 为论文设置分类
 - **WHEN** 发送 `PUT /api/papers/{paper_id}/categories` with `{"category_ids": [...]}`
 - **THEN** 更新论文的分类关联
-
