@@ -24,6 +24,7 @@ import {
   WorkflowUnavailableState,
 } from '../components/WorkflowState';
 import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
+import { scoreGraphEdgeStrength } from '../services/researchAlgorithms';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -1464,19 +1465,19 @@ const ResearchProjectPage: React.FC = () => {
       from: `paper:${item.paper_id}`,
       to: `project:${project.id}`,
       label: 'evidence',
-      strength: 'medium' as const,
+      strength: scoreGraphEdgeStrength({ relation: 'evidence', score: item.score, category: item.category }),
     })),
     ...gaps.slice(0, 4).flatMap((gap, index) => (gap.evidence_ids || []).slice(0, 2).map(evidenceId => ({
       from: `paper:${evidenceId}`,
       to: `gap:${index}`,
       label: 'supports gap',
-      strength: 'strong' as const,
+      strength: scoreGraphEdgeStrength({ relation: 'supports gap', count: gap.evidence_ids?.length || 0 }),
     }))),
     ...ideas.slice(0, 5).map(idea => ({
       from: `project:${project.id}`,
       to: `idea:${idea.id}`,
       label: 'proposal',
-      strength: 'strong' as const,
+      strength: scoreGraphEdgeStrength({ relation: 'proposal', score: idea.review_json?.aggregate_score }),
     })),
   ];
   const stageIndex = Math.max(0, stageItems.findIndex(([key]) => key === run?.stage));

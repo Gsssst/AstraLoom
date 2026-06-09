@@ -26,9 +26,15 @@ const responsiveCssSource = readFileSync(
   new URL('../src/styles/responsive.css', import.meta.url),
   'utf8',
 );
+const algorithmSource = readFileSync(
+  new URL('../src/services/researchAlgorithms.ts', import.meta.url),
+  'utf8',
+);
 
 test('paper detail exposes PaperQA-style evidence confidence and citation readiness', () => {
-  assert.match(paperDetailSource, /paperEvidenceConfidence/);
+  assert.match(paperDetailSource, /computeEvidenceConfidence/);
+  assert.match(paperDetailSource, /computeMetadataQuality/);
+  assert.match(paperDetailSource, /buildResearchCitationKey/);
   assert.match(paperDetailSource, /paper-answer-evidence-panel/);
   assert.match(paperDetailSource, /PaperQA 风格证据检查/);
   assert.match(paperDetailSource, /paper-citation-network-panel/);
@@ -37,8 +43,10 @@ test('paper detail exposes PaperQA-style evidence confidence and citation readin
 });
 
 test('paper library exposes JabRef-style citation keys and metadata quality', () => {
-  assert.match(papersPageSource, /buildPaperCitationKey/);
-  assert.match(papersPageSource, /paperMetadataQuality/);
+  assert.match(papersPageSource, /buildResearchCitationKey/);
+  assert.match(papersPageSource, /computeMetadataQuality/);
+  assert.match(papersPageSource, /computeDuplicateRiskMap/);
+  assert.match(papersPageSource, /duplicateRiskForPaper/);
   assert.match(papersPageSource, /JabRef 质量/);
   assert.match(papersPageSource, /疑似重复/);
   assert.match(papersPageSource, /key:\{citationKey\}/);
@@ -58,6 +66,7 @@ test('research page exposes a STORM-style process and graph', () => {
   assert.match(researchProjectSource, /storm-research-flow-panel/);
   assert.match(researchProjectSource, /researchGraphNodes/);
   assert.match(researchProjectSource, /researchGraphEdges/);
+  assert.match(researchProjectSource, /scoreGraphEdgeStrength/);
 });
 
 test('shared research knowledge graph is reusable and styled', () => {
@@ -69,4 +78,13 @@ test('shared research knowledge graph is reusable and styled', () => {
   assert.match(responsiveCssSource, /\.research-graph-edge/);
   assert.match(responsiveCssSource, /\.writing-file-tree-row/);
   assert.match(responsiveCssSource, /\.storm-flow-step/);
+});
+
+test('research workbench algorithms are centralized', () => {
+  assert.match(algorithmSource, /buildResearchCitationKey/);
+  assert.match(algorithmSource, /computeMetadataQuality/);
+  assert.match(algorithmSource, /computeDuplicateRiskMap/);
+  assert.match(algorithmSource, /computeEvidenceConfidence/);
+  assert.match(algorithmSource, /scoreGraphEdgeStrength/);
+  assert.match(writingPageSource, /scoreGraphEdgeStrength/);
 });

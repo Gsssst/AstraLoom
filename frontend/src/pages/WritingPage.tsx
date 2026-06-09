@@ -25,6 +25,7 @@ import { WorkflowEmptyState } from '../components/WorkflowState';
 import { DiffViewer, WritingProjectPanel, SectionEditor } from '../components/writing';
 import AuthenticatedPdfPreview from '../components/writing/AuthenticatedPdfPreview';
 import { getApiErrorDetails, type ApiErrorDetails } from '../services/apiError';
+import { scoreGraphEdgeStrength } from '../services/researchAlgorithms';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -369,13 +370,13 @@ const WritingPage: React.FC = () => {
       from: `writing:${selectedProject.id}`,
       to: `section:${section.id}`,
       label: 'contains',
-      strength: 'strong' as const,
+      strength: scoreGraphEdgeStrength({ relation: 'contains', count: projectSections.length }),
     })),
     ...evidenceCards.slice(0, 5).map((card: any) => ({
       from: `evidence:${card.id || card.paper_id || card.citation_marker}`,
       to: `writing:${selectedProject.id}`,
       label: 'supports',
-      strength: 'medium' as const,
+      strength: scoreGraphEdgeStrength({ relation: 'supports', score: card.score ?? card.relevance_score, category: card.source_label }),
     })),
   ] : [];
   const projectCitationSuggestions = evidenceCards
