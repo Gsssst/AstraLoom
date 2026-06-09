@@ -349,7 +349,7 @@ class ResearchIdeaWorkbenchService:
         )
 
         await self._transition(run, "deduplicating", callback=on_progress)
-        unique_candidates, duplicate_groups = self.deduplicate_candidates(tree_candidates)
+        unique_candidates, duplicate_groups = self.deduplicate_candidates(tree_candidates, evidence_map=evidence_map)
         run.candidate_pool = unique_candidates
         await self.session.commit()
         await self._emit(
@@ -372,7 +372,7 @@ class ResearchIdeaWorkbenchService:
             source_coverage=similar_work_context["source_coverage"],
         )
         adversarial_reviewed = self.adversarial_review_candidates(novelty_checked)
-        reviewed = self.apply_quality_adjustments(adversarial_reviewed)
+        reviewed = self.apply_quality_adjustments(adversarial_reviewed, evidence_map=evidence_map, gap_map=gap_map)
         selected, diversity_summary = self.select_diverse_proposals(reviewed, num_ideas)
         selected = [{**candidate, "gap_selection": generation_context.get("gap_selection")} for candidate in selected]
         run.candidate_pool = reviewed
@@ -916,19 +916,41 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
 
     @classmethod
     def deduplicate_candidates(
-        cls, candidates: list[dict[str, Any]], threshold: float = 0.72
+        cls,
+        candidates: list[dict[str, Any]],
+        threshold: float = 0.72,
+        *,
+        evidence_map: dict[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         unique: list[dict[str, Any]] = []
         duplicate_groups: list[dict[str, Any]] = []
         for candidate in candidates:
-            duplicate_of = None
-            for existing in unique:
-                if cls._candidate_similarity(candidate, existing) >= threshold:
-                    duplicate_of = existing
+            duplicate_index = None
+            duplicate_similarity = 0.0
+            for index, existing in enumerate(unique):
+                similarity = cls._candidate_similarity(candidate, existing)
+                if similarity >= threshold:
+                    duplicate_index = index
+                    duplicate_similarity = similarity
                     break
-            if duplicate_of:
+            if duplicate_index is not None:
+                duplicate_of = unique[duplicate_index]
+                candidate_quality = cls._candidate_pre_review_quality(candidate, evidence_map)
+                existing_quality = cls._candidate_pre_review_quality(duplicate_of, evidence_map)
+                keep_candidate = candidate_quality > existing_quality + 0.05
+                kept = candidate if keep_candidate else duplicate_of
+                merged = duplicate_of if keep_candidate else candidate
+                if keep_candidate:
+                    unique[duplicate_index] = candidate
                 duplicate_groups.append(
-                    {"kept": duplicate_of["title"], "merged": candidate["title"], "reason": "hypothesis_overlap"}
+                    {
+                        "kept": kept.get("title"),
+                        "merged": merged.get("title"),
+                        "reason": "composite_overlap",
+                        "similarity": round(duplicate_similarity, 3),
+                        "kept_quality": round(max(candidate_quality, existing_quality), 3),
+                        "merged_quality": round(min(candidate_quality, existing_quality), 3),
+                    }
                 )
             else:
                 unique.append(candidate)
@@ -936,11 +958,208 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
 
     @staticmethod
     def _candidate_similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
-        left_tokens = ResearchIdeaWorkbenchService._dedup_tokens(f"{left.get('title', '')} {left.get('hypothesis', '')}")
-        right_tokens = ResearchIdeaWorkbenchService._dedup_tokens(f"{right.get('title', '')} {right.get('hypothesis', '')}")
+        title_similarity = ResearchIdeaWorkbenchService._text_similarity(left.get("title", ""), right.get("title", ""))
+        hypothesis_similarity = ResearchIdeaWorkbenchService._text_similarity(left.get("hypothesis", ""), right.get("hypothesis", ""))
+        gap_similarity = ResearchIdeaWorkbenchService._text_similarity(left.get("gap", ""), right.get("gap", ""))
+        approach_similarity = ResearchIdeaWorkbenchService._text_similarity(left.get("approach", ""), right.get("approach", ""))
+        experiment_similarity = ResearchIdeaWorkbenchService._experiment_similarity(
+            left.get("minimum_experiment") or {},
+            right.get("minimum_experiment") or {},
+        )
+        evidence_similarity = ResearchIdeaWorkbenchService._list_similarity(left.get("evidence_ids") or [], right.get("evidence_ids") or [])
+        score = (
+            title_similarity * 0.18
+            + hypothesis_similarity * 0.34
+            + gap_similarity * 0.16
+            + approach_similarity * 0.12
+            + experiment_similarity * 0.10
+            + evidence_similarity * 0.10
+        )
+        if hypothesis_similarity >= 0.92 and title_similarity >= 0.35:
+            score = max(score, 0.78)
+        elif title_similarity >= 0.92 and hypothesis_similarity >= 0.45:
+            score = max(score, 0.74)
+        elif hypothesis_similarity >= 0.82 and (experiment_similarity >= 0.5 or evidence_similarity >= 0.5):
+            score = max(score, 0.73)
+        return round(min(1.0, score), 3)
+
+    @staticmethod
+    def _text_similarity(left: Any, right: Any) -> float:
+        left_tokens = ResearchIdeaWorkbenchService._dedup_tokens(str(left or ""))
+        right_tokens = ResearchIdeaWorkbenchService._dedup_tokens(str(right or ""))
         if not left_tokens or not right_tokens:
             return 0.0
         return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+    @staticmethod
+    def _list_similarity(left: list[Any], right: list[Any]) -> float:
+        left_values = {str(item).strip().lower() for item in left if str(item).strip()}
+        right_values = {str(item).strip().lower() for item in right if str(item).strip()}
+        if not left_values or not right_values:
+            return 0.0
+        return len(left_values & right_values) / len(left_values | right_values)
+
+    @staticmethod
+    def _experiment_similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
+        left_facets = ResearchIdeaWorkbenchService._experiment_facets(left)
+        right_facets = ResearchIdeaWorkbenchService._experiment_facets(right)
+        if not left_facets or not right_facets:
+            return 0.0
+        return len(left_facets & right_facets) / len(left_facets | right_facets)
+
+    @staticmethod
+    def _experiment_facets(experiment: dict[str, Any]) -> set[str]:
+        facets: set[str] = set()
+        dataset = str(experiment.get("dataset") or "").strip()
+        if dataset:
+            facets.add(f"dataset:{ResearchIdeaWorkbenchService._title_key(dataset)[:48]}")
+        for key in ("baselines", "metrics", "steps"):
+            values = experiment.get(key) or []
+            if isinstance(values, str):
+                values = [values]
+            for value in values[:5]:
+                facet = ResearchIdeaWorkbenchService._title_key(str(value))[:48]
+                if facet:
+                    facets.add(f"{key}:{facet}")
+        return facets
+
+    @classmethod
+    def _candidate_pre_review_quality(
+        cls,
+        candidate: dict[str, Any],
+        evidence_map: dict[str, Any] | None = None,
+    ) -> float:
+        evidence_profile = cls._candidate_evidence_profile(candidate, evidence_map or {})
+        experiment_profile = cls._candidate_experiment_profile(candidate)
+        specificity = min(len(cls._dedup_tokens(f"{candidate.get('hypothesis', '')} {candidate.get('approach', '')}")) / 36, 1.0)
+        tree = candidate.get("tree") or {}
+        tree_bonus = 0.08 if tree.get("source") == "llm" else 0.03 if tree.get("operator") and tree.get("operator") != "root" else 0.0
+        return round(
+            evidence_profile["coverage_score"] * 0.36
+            + experiment_profile["completeness"] * 0.38
+            + specificity * 0.18
+            + tree_bonus,
+            3,
+        )
+
+    @staticmethod
+    def _candidate_evidence_profile(
+        candidate: dict[str, Any],
+        evidence_map: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        evidence_ids = [str(item) for item in (candidate.get("evidence_ids") or []) if str(item).strip()]
+        lookup: dict[str, dict[str, Any]] = {}
+        for category in ("seed", "background", "inspiration"):
+            for item in (evidence_map or {}).get(category, []) or []:
+                if isinstance(item, dict) and item.get("paper_id"):
+                    lookup[str(item.get("paper_id"))] = {**item, "category": item.get("category") or category}
+
+        linked = [lookup[paper_id] for paper_id in evidence_ids if paper_id in lookup]
+        unknown_count = max(0, len(evidence_ids) - len(linked))
+        category_counts: dict[str, int] = {}
+        source_counts: dict[str, int] = {}
+        for item in linked:
+            category = str(item.get("category") or "unknown")
+            source = str(item.get("source") or category or "unknown")
+            category_counts[category] = category_counts.get(category, 0) + 1
+            source_counts[source] = source_counts.get(source, 0) + 1
+        if unknown_count and not lookup:
+            category_counts["unknown"] = unknown_count
+            source_counts["unknown"] = unknown_count
+
+        effective_count = len(linked) if lookup else len(evidence_ids)
+        category_diversity = len([key for key, value in category_counts.items() if value > 0 and key != "unknown"])
+        source_diversity = len([key for key, value in source_counts.items() if value > 0 and key != "unknown"])
+        seed_count = category_counts.get("seed", 0)
+        local_count = source_counts.get("local_library", 0)
+        external_count = sum(count for source, count in source_counts.items() if source not in {"local_library", "unknown"})
+        missing_ids = [paper_id for paper_id in evidence_ids if lookup and paper_id not in lookup]
+
+        count_score = min(effective_count, 4) / 4 * 0.38
+        category_score = min(category_diversity, 3) / 3 * 0.20
+        source_score = min(source_diversity, 3) / 3 * 0.16
+        seed_score = min(seed_count, 2) / 2 * 0.14
+        balance_score = 0.08 if local_count and external_count else 0.04 if category_diversity >= 2 else 0.0
+        thin_penalty = 0.16 if effective_count < 2 else 0.0
+        missing_penalty = min(0.12, len(missing_ids) * 0.04)
+        coverage_score = max(0.0, min(1.0, count_score + category_score + source_score + seed_score + balance_score - thin_penalty - missing_penalty))
+
+        return {
+            "evidence_ids": evidence_ids,
+            "evidence_count": len(evidence_ids),
+            "linked_count": len(linked),
+            "missing_ids": missing_ids[:6],
+            "category_counts": category_counts,
+            "source_counts": source_counts,
+            "category_diversity": category_diversity,
+            "source_diversity": source_diversity,
+            "seed_count": seed_count,
+            "local_count": local_count,
+            "external_count": external_count,
+            "coverage_score": round(coverage_score, 3),
+        }
+
+    @staticmethod
+    def _candidate_experiment_profile(candidate: dict[str, Any]) -> dict[str, Any]:
+        experiment = candidate.get("minimum_experiment") or {}
+
+        def normalize_list(value: Any) -> list[str]:
+            if isinstance(value, list):
+                return [str(item).strip() for item in value if str(item).strip()]
+            if isinstance(value, str) and value.strip():
+                return [value.strip()]
+            return []
+
+        dataset = str(experiment.get("dataset") or "").strip()
+        baselines = normalize_list(experiment.get("baselines"))
+        metrics = normalize_list(experiment.get("metrics"))
+        steps = normalize_list(experiment.get("steps"))
+        ablations = normalize_list(experiment.get("ablations") or experiment.get("ablation_plan"))
+        joined_baselines = " ".join(baselines).lower()
+        joined_steps = " ".join(steps).lower()
+        strong_baseline = bool(baselines) and (
+            "strong" in joined_baselines
+            or "baseline" in joined_baselines
+            or "强" in joined_baselines
+            or "sota" in joined_baselines
+        )
+        has_ablation = bool(ablations) or "ablation" in joined_steps or "消融" in joined_steps
+        falsification_tokens = ResearchIdeaWorkbenchService._dedup_tokens(str(candidate.get("falsification_test") or ""))
+
+        completeness = 0.0
+        completeness += 0.16 if dataset else 0.0
+        completeness += 0.20 if strong_baseline else 0.12 if baselines else 0.0
+        completeness += min(len(metrics), 2) / 2 * 0.18
+        completeness += min(len(steps), 4) / 4 * 0.22
+        completeness += 0.10 if len(falsification_tokens) >= 6 else 0.0
+        completeness += 0.08 if has_ablation else 0.0
+        completeness += 0.06 if len(baselines) >= 2 else 0.0
+
+        missing = []
+        if not dataset:
+            missing.append("dataset")
+        if not strong_baseline:
+            missing.append("strong_baseline")
+        if not metrics:
+            missing.append("metrics")
+        if len(steps) < 3:
+            missing.append("steps")
+        if len(falsification_tokens) < 6:
+            missing.append("falsification")
+        if not has_ablation:
+            missing.append("ablation")
+
+        return {
+            "dataset_present": bool(dataset),
+            "baseline_count": len(baselines),
+            "strong_baseline": strong_baseline,
+            "metric_count": len(metrics),
+            "step_count": len(steps),
+            "has_ablation": has_ablation,
+            "has_falsification": len(falsification_tokens) >= 6,
+            "missing": missing,
+            "completeness": round(max(0.0, min(1.0, completeness)), 3),
+        }
 
     @staticmethod
     def _dedup_tokens(text: str) -> set[str]:
@@ -1349,23 +1568,66 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             "summary": "；".join(objections[:2]) if objections else "未发现明显硬伤，但仍需人工复核新颖性与实验设置。",
         }
 
-    def apply_quality_adjustments(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def apply_quality_adjustments(
+        self,
+        candidates: list[dict[str, Any]],
+        *,
+        evidence_map: dict[str, Any] | None = None,
+        gap_map: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         adjusted = []
         for candidate in candidates:
             review = candidate.get("review") or {}
             scores = dict(review.get("scores") or {})
             novelty = candidate.get("novelty_check") or {}
             adversarial = candidate.get("adversarial_review") or {}
+            evidence_profile = self._candidate_evidence_profile(candidate, evidence_map or {})
+            experiment_profile = self._candidate_experiment_profile(candidate)
+            gap_alignment = self._candidate_gap_alignment(candidate, gap_map or {})
             if "novelty" in scores:
                 scores["novelty"] = round(max(1.0, min(10.0, scores["novelty"] * (0.72 + novelty.get("score", 0.5) * 0.28))), 1)
-            if "evidence_grounding" in scores and len(candidate.get("evidence_ids") or []) < 2:
-                scores["evidence_grounding"] = round(max(1.0, scores["evidence_grounding"] - 0.8), 1)
-            adjusted_review = {**review, "scores": scores}
+            if "evidence_grounding" in scores:
+                evidence_delta = (evidence_profile["coverage_score"] - 0.55) * 1.6
+                if evidence_profile["linked_count"] < 2 and evidence_profile["evidence_count"] < 2:
+                    evidence_delta -= 0.6
+                scores["evidence_grounding"] = round(max(1.0, min(10.0, scores["evidence_grounding"] + evidence_delta)), 1)
+            if "feasibility" in scores:
+                feasibility_delta = (experiment_profile["completeness"] - 0.6) * 1.1
+                scores["feasibility"] = round(max(1.0, min(10.0, scores["feasibility"] + feasibility_delta)), 1)
+            if "testability" in scores:
+                testability_delta = (experiment_profile["completeness"] - 0.55) * 1.4
+                scores["testability"] = round(max(1.0, min(10.0, scores["testability"] + testability_delta)), 1)
+            adjusted_review = {
+                **review,
+                "scores": scores,
+                "evidence_coverage": evidence_profile,
+                "experiment_completeness": experiment_profile,
+                "gap_alignment": gap_alignment,
+            }
             base_score = self._weighted_score(scores)
-            adjusted_score = round(max(1.0, base_score - float(adversarial.get("penalty", 0))), 2)
+            coverage_bonus = (evidence_profile["coverage_score"] - 0.5) * 0.7
+            experiment_bonus = (experiment_profile["completeness"] - 0.55) * 0.6
+            gap_bonus = (gap_alignment["alignment_score"] - 0.45) * 0.35
+            novelty_penalty = 0.8 if novelty.get("collision_risk") == "high" else 0.35 if novelty.get("collision_risk") == "medium" else 0.0
+            weak_evidence_penalty = 0.45 if evidence_profile["coverage_score"] < 0.35 else 0.0
+            weak_experiment_penalty = 0.55 if experiment_profile["completeness"] < 0.5 else 0.0
+            adjusted_score = round(max(
+                1.0,
+                base_score
+                + coverage_bonus
+                + experiment_bonus
+                + gap_bonus
+                - float(adversarial.get("penalty", 0))
+                - novelty_penalty
+                - weak_evidence_penalty
+                - weak_experiment_penalty,
+            ), 2)
             adjusted.append({
                 **candidate,
                 "review": adjusted_review,
+                "evidence_coverage": evidence_profile,
+                "experiment_completeness": experiment_profile,
+                "gap_alignment": gap_alignment,
                 "score": adjusted_score,
                 "base_score": base_score,
             })
@@ -1388,7 +1650,18 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             for candidate in remaining:
                 penalty, overlaps = self._selection_diversity_penalty(candidate, selected)
                 facet_bonus = self._selection_facet_bonus(candidate, selected)
-                selection_score = round(float(candidate.get("score") or 0) - penalty + facet_bonus, 2)
+                coverage_bonus = float((candidate.get("evidence_coverage") or {}).get("coverage_score") or 0) * 0.18
+                gap_bonus = float((candidate.get("gap_alignment") or {}).get("alignment_score") or 0) * 0.16
+                experiment_bonus = float((candidate.get("experiment_completeness") or {}).get("completeness") or 0) * 0.12
+                selection_score = round(
+                    float(candidate.get("score") or 0)
+                    - penalty
+                    + facet_bonus
+                    + coverage_bonus
+                    + gap_bonus
+                    + experiment_bonus,
+                    2,
+                )
                 ranked.append((selection_score, penalty, facet_bonus, overlaps, candidate))
             ranked.sort(key=lambda item: (item[0], float(item[4].get("score") or 0)), reverse=True)
             selection_score, penalty, facet_bonus, overlaps, chosen = ranked[0]
@@ -1440,6 +1713,9 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         path = str(candidate.get("path") or "").strip()
         if path:
             facets.append(f"path:{path}")
+        gap_title = str((candidate.get("gap_alignment") or {}).get("matched_gap_title") or candidate.get("gap") or "").strip()
+        if gap_title:
+            facets.append(f"gap:{self._facet_key(gap_title)[:36]}")
         operator = str((candidate.get("tree") or {}).get("operator") or "").strip()
         if operator:
             facets.append(f"operator:{operator}")
@@ -1447,6 +1723,11 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         dataset = str(experiment.get("dataset") or "").strip()
         if dataset:
             facets.append(f"dataset:{self._facet_key(dataset)[:36]}")
+        experiment_profile = candidate.get("experiment_completeness") or self._candidate_experiment_profile(candidate)
+        if experiment_profile.get("strong_baseline"):
+            facets.append("experiment:strong-baseline")
+        if experiment_profile.get("has_ablation"):
+            facets.append("experiment:ablation")
         for metric in (experiment.get("metrics") or [])[:2]:
             facets.append(f"metric:{self._facet_key(str(metric))[:28]}")
         for risk in (candidate.get("risks") or [])[:2]:
@@ -1454,10 +1735,16 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         evidence_ids = [str(item) for item in (candidate.get("evidence_ids") or []) if item]
         if evidence_ids:
             facets.append(f"evidence:{','.join(evidence_ids[:2])}")
+        evidence_profile = candidate.get("evidence_coverage") or {}
+        for category, count in sorted((evidence_profile.get("category_counts") or {}).items()):
+            if count:
+                facets.append(f"evidence-category:{category}")
+        if evidence_profile.get("source_diversity", 0) >= 2:
+            facets.append("evidence:multi-source")
         novelty_status = str((candidate.get("novelty_check") or {}).get("status") or "").strip()
         if novelty_status:
             facets.append(f"novelty:{novelty_status}")
-        return list(dict.fromkeys(facets))[:8]
+        return list(dict.fromkeys(facets))[:12]
 
     @staticmethod
     def _facet_key(text: str) -> str:
@@ -1495,7 +1782,9 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             for facet in (item.get("diversity_facets") or [])
         }
         new_facets = [facet for facet in (candidate.get("diversity_facets") or []) if facet not in used]
-        return round(min(0.5, len(new_facets) * 0.08), 2)
+        high_value_prefixes = ("gap:", "operator:", "dataset:", "evidence-category:", "evidence:multi-source", "risk:")
+        high_value = sum(1 for facet in new_facets if facet.startswith(high_value_prefixes))
+        return round(min(0.65, len(new_facets) * 0.05 + high_value * 0.07), 2)
 
     @staticmethod
     def _selection_rationale(
@@ -1514,7 +1803,44 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
         tree = candidate.get("tree") or {}
         if tree.get("operator"):
             parts.append(f"来源：{tree.get('operator')}")
+        coverage = candidate.get("evidence_coverage") or {}
+        if coverage.get("coverage_score") is not None:
+            parts.append(f"证据覆盖 {coverage.get('coverage_score')}")
+        gap_alignment = candidate.get("gap_alignment") or {}
+        if gap_alignment.get("matched_gap_title"):
+            parts.append(f"匹配 Gap：{gap_alignment.get('matched_gap_title')}")
         return "；".join(parts)
+
+    @staticmethod
+    def _candidate_gap_alignment(candidate: dict[str, Any], gap_map: dict[str, Any]) -> dict[str, Any]:
+        gaps = [gap for gap in (gap_map.get("gaps") or []) if isinstance(gap, dict)]
+        if not gaps:
+            return {"matched_gap_title": "", "alignment_score": 0.45, "selection_status": ""}
+        candidate_text = f"{candidate.get('gap', '')} {candidate.get('hypothesis', '')} {candidate.get('approach', '')}"
+        candidate_evidence = {str(item) for item in (candidate.get("evidence_ids") or []) if item}
+        ranked = []
+        for gap in gaps:
+            gap_text = f"{gap.get('title', '')} {gap.get('limitation', '')} {gap.get('opportunity', '')} {gap.get('research_question', '')}"
+            text_score = ResearchIdeaWorkbenchService._text_similarity(candidate_text, gap_text)
+            gap_evidence = {str(item) for item in (gap.get("evidence_ids") or []) if item}
+            evidence_score = ResearchIdeaWorkbenchService._list_similarity(list(candidate_evidence), list(gap_evidence))
+            feedback = gap.get("user_feedback") or {}
+            rating = str(feedback.get("rating") or "")
+            rating_bonus = {"strong": 0.12, "promising": 0.06, "weak": -0.04, "reject": -0.22}.get(rating, 0.0)
+            selection_status = str(gap.get("selection_status") or "")
+            selection_bonus = 0.10 if selection_status == "selected" else -0.10 if selection_status == "blocked" else 0.0
+            score = max(0.0, min(1.0, text_score * 0.58 + evidence_score * 0.24 + 0.12 + rating_bonus + selection_bonus))
+            ranked.append((score, text_score, evidence_score, gap))
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        score, text_score, evidence_score, matched = ranked[0]
+        return {
+            "matched_gap_title": str(matched.get("title") or ""),
+            "alignment_score": round(score, 3),
+            "text_similarity": round(text_score, 3),
+            "evidence_overlap": round(evidence_score, 3),
+            "selection_status": matched.get("selection_status") or "",
+            "feedback_rating": (matched.get("user_feedback") or {}).get("rating") or "",
+        }
 
     @staticmethod
     def _summarize_novelty(candidates: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1605,6 +1931,9 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                     "selection_score": candidate.get("selection_score"),
                     "diversity_facets": candidate.get("diversity_facets", []),
                     "suppressed_duplicates": candidate.get("suppressed_duplicates", []),
+                    "evidence_coverage": candidate.get("evidence_coverage"),
+                    "experiment_completeness": candidate.get("experiment_completeness"),
+                    "gap_alignment": candidate.get("gap_alignment"),
                     "gap_selection": candidate.get("gap_selection"),
                 },
                 experiment_plan=candidate["minimum_experiment"],

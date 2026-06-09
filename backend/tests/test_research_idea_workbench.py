@@ -254,11 +254,46 @@ def test_duplicate_candidates_are_merged_by_hypothesis_overlap():
     unique, duplicates = ResearchIdeaWorkbenchService.deduplicate_candidates(candidates)
 
     assert [candidate["title"] for candidate in unique] == ["Adaptive pruning", "Reliable retrieval"]
-    assert duplicates == [{
-        "kept": "Adaptive pruning",
-        "merged": "Adaptive pruning method",
-        "reason": "hypothesis_overlap",
-    }]
+    assert duplicates[0]["kept"] == "Adaptive pruning"
+    assert duplicates[0]["merged"] == "Adaptive pruning method"
+    assert duplicates[0]["reason"] == "composite_overlap"
+    assert duplicates[0]["similarity"] >= 0.72
+
+
+def test_duplicate_merging_keeps_stronger_later_candidate():
+    evidence = {
+        "seed": [{"paper_id": "p1", "title": "Seed"}],
+        "background": [{"paper_id": "p2", "title": "Background"}],
+        "inspiration": [{"paper_id": "p3", "title": "Inspiration", "source": "arxiv"}],
+    }
+    weak = {
+        "title": "Adaptive pruning",
+        "hypothesis": "adaptive pruning improves efficient inference",
+        "approach": "test pruning",
+        "gap": "Efficiency gap",
+        "evidence_ids": ["p1"],
+        "minimum_experiment": {"dataset": "", "baselines": [], "metrics": [], "steps": ["Run"]},
+    }
+    strong = {
+        "title": "Adaptive pruning with robust baselines",
+        "hypothesis": "adaptive pruning improves efficient inference",
+        "approach": "test pruning with robust baselines and ablation",
+        "gap": "Efficiency gap",
+        "evidence_ids": ["p1", "p2", "p3"],
+        "minimum_experiment": {
+            "dataset": "LatencyBench",
+            "baselines": ["Strong baseline", "No pruning"],
+            "metrics": ["accuracy", "latency"],
+            "steps": ["Reproduce", "Run", "Ablation", "Error analysis"],
+        },
+    }
+
+    unique, duplicates = ResearchIdeaWorkbenchService.deduplicate_candidates([weak, strong], evidence_map=evidence)
+
+    assert [candidate["title"] for candidate in unique] == ["Adaptive pruning with robust baselines"]
+    assert duplicates[0]["kept"] == "Adaptive pruning with robust baselines"
+    assert duplicates[0]["merged"] == "Adaptive pruning"
+    assert duplicates[0]["kept_quality"] > duplicates[0]["merged_quality"]
 
 
 @pytest.mark.asyncio
@@ -451,6 +486,74 @@ def test_adversarial_review_objects_to_weak_baseline_and_metrics():
     assert any("baseline" in item.lower() for item in adversarial["objections"])
 
 
+def test_quality_adjustment_records_evidence_and_experiment_profiles():
+    service = ResearchIdeaWorkbenchService(_Session())
+    evidence = {
+        "seed": [{"paper_id": "p1", "title": "Seed", "source": "local_library"}],
+        "background": [{"paper_id": "p2", "title": "Background", "source": "local_library"}],
+        "inspiration": [{"paper_id": "p3", "title": "External", "source": "arxiv"}],
+    }
+    gap_map = {"gaps": [{
+        "title": "Evidence gap",
+        "limitation": "Efficient inference lacks robust evidence",
+        "opportunity": "Use strong baselines",
+        "research_question": "Can pruning remain robust?",
+        "evidence_ids": ["p1", "p2"],
+        "selection_status": "selected",
+        "user_feedback": {"rating": "strong"},
+    }]}
+    candidate = {
+        "title": "Robust pruning",
+        "path": "grounded",
+        "gap": "Efficient inference lacks robust evidence",
+        "hypothesis": "adaptive pruning improves efficient inference under strong baselines",
+        "approach": "Use pruning with calibration and robust baseline comparisons",
+        "evidence_ids": ["p1", "p2", "p3"],
+        "falsification_test": "Reject if accuracy and latency do not improve under fixed budget",
+        "minimum_experiment": {
+            "dataset": "LatencyBench",
+            "baselines": ["Strong baseline", "No pruning"],
+            "metrics": ["accuracy", "latency"],
+            "steps": ["Reproduce", "Run pruning", "Ablation", "Error analysis"],
+        },
+        "review": {"scores": {"novelty": 7, "evidence_grounding": 7, "feasibility": 7, "testability": 7, "impact": 7, "clarity": 7}},
+        "novelty_check": {"score": 0.8, "collision_risk": "low"},
+        "adversarial_review": {"penalty": 0},
+    }
+
+    adjusted = service.apply_quality_adjustments([candidate], evidence_map=evidence, gap_map=gap_map)[0]
+
+    assert adjusted["evidence_coverage"]["coverage_score"] > 0.7
+    assert adjusted["evidence_coverage"]["source_diversity"] == 2
+    assert adjusted["experiment_completeness"]["completeness"] > 0.8
+    assert adjusted["gap_alignment"]["matched_gap_title"] == "Evidence gap"
+    assert adjusted["review"]["evidence_coverage"] == adjusted["evidence_coverage"]
+    assert adjusted["score"] > 6.5
+
+
+def test_quality_adjustment_penalizes_weak_evidence_and_experiment():
+    service = ResearchIdeaWorkbenchService(_Session())
+    candidate = {
+        "title": "Thin proposal",
+        "path": "grounded",
+        "gap": "Weak gap",
+        "hypothesis": "maybe it helps",
+        "approach": "try it",
+        "evidence_ids": ["missing"],
+        "falsification_test": "",
+        "minimum_experiment": {"dataset": "", "baselines": [], "metrics": [], "steps": ["Run"]},
+        "review": {"scores": {"novelty": 8, "evidence_grounding": 8, "feasibility": 8, "testability": 8, "impact": 8, "clarity": 8}},
+        "novelty_check": {"score": 0.35, "collision_risk": "medium"},
+        "adversarial_review": {"penalty": 1.2},
+    }
+
+    adjusted = service.apply_quality_adjustments([candidate], evidence_map={"seed": [], "background": [], "inspiration": []})[0]
+
+    assert adjusted["evidence_coverage"]["coverage_score"] < 0.4
+    assert adjusted["experiment_completeness"]["completeness"] < 0.5
+    assert adjusted["score"] < adjusted["base_score"] - 1.5
+
+
 def test_diverse_selection_prefers_distinct_facets_over_near_duplicate():
     service = ResearchIdeaWorkbenchService(_Session())
     candidates = [
@@ -493,6 +596,60 @@ def test_diverse_selection_prefers_distinct_facets_over_near_duplicate():
     assert selected[1]["selection_score"] <= selected[1]["score"] + 0.5
     assert "diversity_facets" in selected[1]
     assert any(item["reason"] == "diversity_near_duplicate" for item in summary["suppressed"])
+
+
+def test_diverse_selection_prefers_new_gap_and_evidence_facets():
+    service = ResearchIdeaWorkbenchService(_Session())
+    candidates = [
+        {
+            "title": "Gap A calibration",
+            "path": "grounded",
+            "gap": "Gap A",
+            "hypothesis": "calibration improves grounding",
+            "score": 8.5,
+            "evidence_ids": ["p1"],
+            "evidence_coverage": {"coverage_score": 0.6, "category_counts": {"seed": 1}, "source_diversity": 1},
+            "experiment_completeness": {"completeness": 0.8, "strong_baseline": True, "has_ablation": True},
+            "gap_alignment": {"matched_gap_title": "Gap A", "alignment_score": 0.9},
+            "minimum_experiment": {"dataset": "QA-Bench", "metrics": ["citation precision"], "baselines": ["Strong baseline"], "steps": ["Run", "Ablate", "Audit"]},
+            "risks": ["weak baseline"],
+            "tree": {"operator": "root"},
+        },
+        {
+            "title": "Gap A variant",
+            "path": "grounded",
+            "gap": "Gap A",
+            "hypothesis": "calibration improves grounding",
+            "score": 8.4,
+            "evidence_ids": ["p1"],
+            "evidence_coverage": {"coverage_score": 0.6, "category_counts": {"seed": 1}, "source_diversity": 1},
+            "experiment_completeness": {"completeness": 0.8, "strong_baseline": True, "has_ablation": True},
+            "gap_alignment": {"matched_gap_title": "Gap A", "alignment_score": 0.9},
+            "minimum_experiment": {"dataset": "QA-Bench", "metrics": ["citation precision"], "baselines": ["Strong baseline"], "steps": ["Run", "Ablate", "Audit"]},
+            "risks": ["weak baseline"],
+            "tree": {"operator": "strong_baseline"},
+        },
+        {
+            "title": "Gap B cost audit",
+            "path": "inspiration",
+            "gap": "Gap B",
+            "hypothesis": "cost audit improves deployment decisions",
+            "score": 8.0,
+            "evidence_ids": ["p2", "p3"],
+            "evidence_coverage": {"coverage_score": 0.85, "category_counts": {"background": 1, "inspiration": 1}, "source_diversity": 2},
+            "experiment_completeness": {"completeness": 0.9, "strong_baseline": True, "has_ablation": True},
+            "gap_alignment": {"matched_gap_title": "Gap B", "alignment_score": 0.86},
+            "minimum_experiment": {"dataset": "Latency-Bench", "metrics": ["latency"], "baselines": ["Strong baseline"], "steps": ["Run", "Ablate", "Audit"]},
+            "risks": ["cost tradeoff"],
+            "tree": {"operator": "cost_aware"},
+        },
+    ]
+
+    selected, summary = service.select_diverse_proposals(candidates, num_ideas=2)
+
+    assert [item["title"] for item in selected] == ["Gap A calibration", "Gap B cost audit"]
+    assert "匹配 Gap：Gap B" in selected[1]["selection_rationale"]
+    assert any(item["kept"] == "Gap A calibration" for item in summary["suppressed"])
 
 
 def test_validate_idea_blocks_high_collision_and_missing_experiment():
