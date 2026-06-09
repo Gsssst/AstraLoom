@@ -14,4 +14,4 @@
 
 - [x] 3.1 Add/update backend tests for retrieval expansion, diversity, chunk reranking, and recommendation scoring.
 - [x] 3.2 Run OpenSpec validation and focused backend tests.
-- [ ] 3.3 Commit implementation and archive the OpenSpec change.
+- [x] 3.3 Commit implementation and archive the OpenSpec change.
