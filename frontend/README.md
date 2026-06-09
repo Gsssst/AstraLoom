@@ -1,73 +1,79 @@
-# React + TypeScript + Vite
+# AstraLoom Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This package contains the AstraLoom web client.
 
-Currently, two official plugins are available:
+## Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- React 19
+- TypeScript
+- Vite 8
+- Ant Design 6
+- React Router
+- Zustand
+- Axios
+- react-markdown with GFM and KaTeX
+- react-pdf / pdfjs-dist
 
-## React Compiler
+## Local Development
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Install dependencies:
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Run the Vite dev server:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run dev
 ```
+
+The dev server usually runs at:
+
+```text
+http://localhost:5173
+```
+
+The frontend expects the backend API to be reachable through the configured Vite API base URL or the local proxy used by the current development setup.
+
+## Build
+
+```bash
+npm run build
+```
+
+Preview a production build:
+
+```bash
+npm run preview
+```
+
+## Contract Tests
+
+Focused frontend contract tests live in `frontend/tests/` and can be run with Node's built-in test runner. Examples:
+
+```bash
+node --test tests/app-layout-contract.test.mjs
+node --test tests/research-toolbox-contract.test.mjs
+node --test tests/writing-workbench-contract.test.mjs
+```
+
+## App Areas
+
+The main routes are defined in `src/App.tsx` and lazy-loaded through `src/routes/lazyRoutes.tsx`.
+
+- `/chat`: AI chat, RAG, web search, uploads, reasoning display.
+- `/papers`: paper library search, import, markers, reports.
+- `/toolbox`: reusable research tools, methods, datasets, metrics, and protocols.
+- `/research`: evidence-grounded idea generation and proposal review.
+- `/writing`: section-based LaTeX writing and AI writing assistance.
+- `/workspaces`: lab project spaces, resources, members, feedback issues.
+- `/settings`: profile, language, API configuration display, usage, subscriptions.
+- `/admin`: admin governance surfaces.
+
+## UI Notes
+
+- The app shell supports Simplified Chinese and English through `src/i18n/`.
+- Business page copy is still mostly Chinese and should be migrated incrementally when touching related pages.
+- Prefer existing components and Ant Design patterns before adding new abstractions.
+- Keep dense research workflows readable: stable dimensions, clear next actions, and no decorative page shells that reduce workspace width.
