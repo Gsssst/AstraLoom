@@ -103,3 +103,11 @@ The paper PDF reader SHALL use a production-safe PDF file descriptor and SHALL s
 - **WHEN** pdf.js fails to load or parse the configured PDF URL
 - **THEN** the PDF panel shows a concise error message with the failing URL context
 - **AND** the reader does not leave only the generic pdf.js fallback text visible.
+
+### Requirement: Production PDF worker assets are served as JavaScript modules
+The production frontend server SHALL serve pdf.js worker `.mjs` assets with a JavaScript MIME type so browsers can dynamically import the worker.
+
+#### Scenario: Browser loads the bundled pdf.js worker
+- **WHEN** the production build emits a hashed `pdf.worker.min-*.mjs` asset under `/assets/`
+- **THEN** the frontend server returns the worker with a JavaScript MIME type
+- **AND** pdf.js can import the worker instead of falling back to a failed fake worker setup.
