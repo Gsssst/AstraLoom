@@ -24,4 +24,4 @@
 - [x] 4.1 Add backend tests for CRUD, paper links, and idea-run toolbox context.
 - [x] 4.2 Add frontend contract tests for route, page controls, paper link action, and idea-run payload.
 - [x] 4.3 Run backend tests, frontend tests/build, and OpenSpec validation.
-- [ ] 4.4 Commit implementation and archive the OpenSpec change.
+- [x] 4.4 Commit implementation and archive the OpenSpec change.

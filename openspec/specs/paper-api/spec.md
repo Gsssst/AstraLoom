@@ -52,6 +52,14 @@ The paper API SHALL expose paper identity, bibliographic metadata, source metada
 - **AND** the paper has no importance label
 - **THEN** the response includes a null or absent marker value that the frontend treats as unmarked
 
+#### Scenario: Paper has linked toolbox entries
+- **WHEN** a paper is linked to one or more toolbox entries
+- **THEN** the paper detail workflow can retrieve the linked toolbox entries with relation labels and evidence notes
+
+#### Scenario: Paper has no linked toolbox entries
+- **WHEN** a paper has no toolbox links
+- **THEN** the toolbox-link response returns an empty list without failing the paper detail workflow
+
 ### Requirement: Authenticated users can update shared paper importance
 The paper API SHALL allow authenticated users to set or clear a shared importance marker on a library paper.
 
