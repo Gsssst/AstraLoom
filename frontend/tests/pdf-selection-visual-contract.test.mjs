@@ -10,6 +10,10 @@ const responsiveCssSource = readFileSync(
   new URL('../src/styles/responsive.css', import.meta.url),
   'utf8',
 );
+const frontendNginxSource = readFileSync(
+  new URL('../nginx-frontend.conf', import.meta.url),
+  'utf8',
+);
 
 test('pdf viewer scopes page-level selection styles', () => {
   assert.match(pdfViewerSource, /className="paper-pdf-page"/);
@@ -25,6 +29,11 @@ test('pdf viewer uses production-safe url descriptor and diagnostics', () => {
   assert.match(pdfViewerSource, /onLoadError=\{onDocLoadError\}/);
   assert.match(pdfViewerSource, /message="PDF 加载失败"/);
   assert.match(pdfViewerSource, /返回 application\/pdf/);
+});
+
+test('production frontend serves pdf worker module assets as javascript', () => {
+  assert.match(frontendNginxSource, /application\/javascript js mjs;/);
+  assert.match(frontendNginxSource, /location \/assets\//);
 });
 
 test('pdf text selection uses a lighter separated highlight treatment', () => {
