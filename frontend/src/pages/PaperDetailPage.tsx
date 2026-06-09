@@ -6,7 +6,7 @@ import {
 } from 'antd';
 import {
   ArrowLeftOutlined, StarFilled, TagOutlined, SendOutlined,
-  LinkOutlined, BulbOutlined,
+  LinkOutlined, BulbOutlined, ExclamationCircleOutlined, RocketOutlined,
   RobotOutlined, UserOutlined,
   MenuFoldOutlined, MenuUnfoldOutlined,
   CopyOutlined, RedoOutlined,
@@ -42,6 +42,8 @@ interface PaperData {
   full_text_preview: string | null; tags: any;
   categories: { id: string; name: string }[];
   similar_papers: { id: string; title: string; year: number | null; arxiv_id: string | null; tags: any }[];
+  importance_label?: PaperImportanceLabel | null;
+  importance_note?: string | null;
   created_at: string;
 }
 
@@ -82,6 +84,7 @@ interface PaperPdfQuote {
 }
 
 type PaperSelectionSource = 'pdf' | 'content';
+type PaperImportanceLabel = 'important' | 'interesting';
 
 interface PaperSelectionMenu {
   text: string;
@@ -131,6 +134,11 @@ const readingStatusMeta = {
   unread: { label: '待读', icon: <RollbackOutlined /> },
   reading: { label: '阅读中', icon: <PlayCircleOutlined /> },
   completed: { label: '已完成', icon: <CheckCircleOutlined /> },
+};
+
+const paperImportanceMeta: Record<PaperImportanceLabel, { label: string; color: string; icon: React.ReactNode }> = {
+  important: { label: '重点论文', color: 'volcano', icon: <ExclamationCircleOutlined /> },
+  interesting: { label: '有趣论文', color: 'geekblue', icon: <RocketOutlined /> },
 };
 
 const groundingInstruction = '请严格基于这篇论文的标题、摘要、全文片段和可检索内容回答；如果论文内容不足以支持结论，请明确说明“当前论文内容不足”，不要编造。';
@@ -629,6 +637,22 @@ const PaperDetailPage: React.FC = () => {
     }
   };
 
+  const handleImportanceChange = async (label: PaperImportanceLabel | null) => {
+    if (!isAuthenticated) { message.warning('请先登录'); return; }
+    if (!paperId) return;
+    try {
+      const response = await api.put(`/papers/${paperId}/importance`, { label });
+      setPaper(current => current ? {
+        ...current,
+        importance_label: response.data.importance_label,
+        importance_note: response.data.importance_note,
+      } : current);
+      message.success(label ? `已标记为${paperImportanceMeta[label].label}` : '已清除共享标记');
+    } catch {
+      message.error('共享标记更新失败');
+    }
+  };
+
   const handleClearChatHistory = () => {
     Modal.confirm({
       title: '清空这篇论文的问答记录？',
@@ -740,6 +764,33 @@ const PaperDetailPage: React.FC = () => {
               {showPdf ? '隐藏 PDF' : '显示 PDF'}
             </Button>
           )}
+          {isAuthenticated && (
+            <Space.Compact>
+              <Tooltip title="所有用户可见的重点论文标记">
+                <Button
+                  type={paper?.importance_label === 'important' ? 'primary' : 'default'}
+                  icon={<ExclamationCircleOutlined />}
+                  onClick={() => handleImportanceChange('important')}
+                >
+                  {!isMobile ? '重点' : undefined}
+                </Button>
+              </Tooltip>
+              <Tooltip title="所有用户可见的有趣论文标记">
+                <Button
+                  type={paper?.importance_label === 'interesting' ? 'primary' : 'default'}
+                  icon={<RocketOutlined />}
+                  onClick={() => handleImportanceChange('interesting')}
+                >
+                  {!isMobile ? '有趣' : undefined}
+                </Button>
+              </Tooltip>
+              {paper?.importance_label && (
+                <Tooltip title="清除共享标记">
+                  <Button icon={<CloseOutlined />} onClick={() => handleImportanceChange(null)} />
+                </Tooltip>
+              )}
+            </Space.Compact>
+          )}
           {isAuthenticated && <Button icon={saved ? <StarFilled style={{color:'#faad14'}}/> : <StarFilled/>} onClick={handleSave}>{saved?'':'收藏'}</Button>}
         </Space>
         {isMobile && (
@@ -768,6 +819,13 @@ const PaperDetailPage: React.FC = () => {
             {paper.arxiv_id && <a href={`https://arxiv.org/abs/${paper.arxiv_id.replace(/v\d+$/,'')}`} target="_blank"><Tag icon={<LinkOutlined />} color="#b31b1b">arXiv:{paper.arxiv_id}</Tag></a>}
             <Tag>{paper.citation_count} 引用</Tag>
             <Tag color="green">{paper.source}</Tag>
+            {paper.importance_label && (
+              <Tooltip title={paper.importance_note || '团队共享标记'}>
+                <Tag icon={paperImportanceMeta[paper.importance_label].icon} color={paperImportanceMeta[paper.importance_label].color}>
+                  {paperImportanceMeta[paper.importance_label].label}
+                </Tag>
+              </Tooltip>
+            )}
           </Space>
           <Space size="small" wrap style={{ marginBottom: 12 }}>
             <TagOutlined style={{ color: '#999' }} />

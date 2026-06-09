@@ -18,11 +18,11 @@
 | **Web 框架** | FastAPI 0.115+ | ASGI，自动生成 API 文档 (`/docs`) |
 | **ORM** | SQLAlchemy 2.0+ | 异步会话 (`AsyncSession`)，关系预加载 (`selectinload`) |
 | **数据库** | PostgreSQL 16 + pgvector | 向量嵌入与业务数据同行存储 |
-| **数据库迁移** | Alembic | 23 个迁移版本，位于 `backend/alembic/` |
+| **数据库迁移** | Alembic | 28 个迁移版本，位于 `backend/alembic/` |
 | **任务队列** | Celery 5.4+ | Redis 作为 Broker 和结果后端 |
 | **缓存/队列** | Redis 7 | 同时作为 Celery broker 和结果后端 |
-| **LLM 集成** | LiteLLM 1.52+ | 统一接口对接 DeepSeek V4 Pro |
-| **LLM 提供商** | DeepSeek V4 Pro | 支持思考/推理模式，100 万 Token 上下文 |
+| **LLM 集成** | LiteLLM 1.52+ + OpenAI Responses API | 统一接口对接 DeepSeek V4 Pro 与 OpenAI 兼容 GPT 端点 |
+| **LLM 提供商** | DeepSeek V4 Pro、OpenAI-compatible GPT | 支持模型切换、思考/推理摘要、多模型用量与费用统计 |
 | **向量嵌入** | sentence-transformers (all-MiniLM-L6-v2) | 384 维，本地推理 |
 | **词汇搜索** | rank-bm25 | 进程内 BM25 索引 |
 | **交叉编码器** | cross-encoder/ms-marco-MiniLM-L-6-v2 | 重排序 |
@@ -70,8 +70,8 @@ AstraLoom/
 │   │   │   └── agents/       # 5 个多智能体写作模块
 │   │   ├── tasks/            # 3 个 Celery 任务模块
 │   │   └── main.py           # FastAPI 入口
-│   ├── alembic/              # 数据库迁移 (23 个版本)
-│   ├── tests/                # 24 个测试文件
+│   ├── alembic/              # 数据库迁移 (28 个版本)
+│   ├── tests/                # 38 个测试文件
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
@@ -80,12 +80,12 @@ AstraLoom/
 │   │   ├── services/         # Axios API 客户端 (含拦截器)
 │   │   ├── stores/           # 4 个 Zustand Store
 │   │   └── styles/           # home.css, responsive.css
-│   ├── tests/                # 8 个契约测试
+│   ├── tests/                # 35 个契约测试
 │   └── package.json
 ├── nginx/                    # nginx.conf, nginx.prod.conf
 ├── openspec/                 # OpenSpec 规范驱动开发产物
 │   ├── project.md
-│   ├── specs/                # 69 个功能规格
+│   ├── specs/                # 91 个功能规格
 │   └── changes/              # 变更提案（设计文档，含归档）
 └── docker-compose.yml
 ```
@@ -125,6 +125,11 @@ AstraLoom/
 - **论文增强** (`backend/app/services/paper_enhance.py`)：
   - 相似论文计算、保存/取消保存、阅读状态管理、个人笔记。
 
+- **团队共享标记**：
+  - `papers.importance_label` 支持 `important` / `interesting` 两类公开标记。
+  - 论文库列表、分类视图、阅读队列和论文详情页都会展示该标记，便于团队快速识别重点论文和有趣论文。
+  - 与 `UserPaper.saved` 个人收藏分离，标记对所有用户可见。
+
 - **论文注释与阅读工作流** (`backend/app/services/paper_chunk_service.py`)：
   - 论文分块服务，支持基于块的 BM25 检索。
   - 用户论文注释（高亮、笔记、标签），阅读循环管理。
@@ -145,7 +150,7 @@ AstraLoom/
   - 检索质量基准测试，评估混合搜索和 RAG 的效果。
 
 **数据模型** (`backend/app/db/models/paper.py`)：
-- `Paper`：标题、作者（JSON）、年份、摘要、DOI、arxiv_id、来源、PDF 路径、全文、嵌入向量（Vector(384)）、标签（JSON）、分类（多对多，通过 `PaperCategory`）。
+- `Paper`：标题、作者（JSON）、年份、摘要、DOI、arxiv_id、来源、PDF 路径、全文、嵌入向量（Vector(384)）、标签（JSON）、团队共享重要/有趣标记、分类（多对多，通过 `PaperCategory`）。
 - `Category`：名称、描述、parent_id（自引用树形结构）。
 - `UserPaper`：user_id、paper_id、是否保存、阅读状态、个人笔记、个人标签、论文聊天历史（JSON）、注释列表。
 - `Folder`：名称、parent_id、user_id（嵌套文件夹树）。
@@ -159,6 +164,7 @@ AstraLoom/
 - `POST /api/papers/{id}/ask` + `/ask-stream` —— 基于 RAG 的论文问答
 - `POST /api/papers/{id}/auto-tag` —— AI 标签提取
 - `POST /api/papers/{id}/save`、`PUT /{id}/read-status` —— 个人论文库管理
+- `PUT /api/papers/{id}/importance` —— 团队共享重点/有趣论文标记
 - `GET /api/papers/pdf-proxy/{arxiv_id}` —— arXiv PDF 代理
 - `POST /api/papers/import-bibtex`、`/import-zotero` —— 外部导入
 - `GET /api/papers/search-evaluation` —— 检索基准测试
@@ -176,7 +182,8 @@ AstraLoom/
 
 - **LLM 服务** (`backend/app/services/llm.py`)：
   - `LLMService` 封装 `litellm.acompletion()`，含重试逻辑（最多 3 次，间隔 2 秒）。
-  - 渐进式 max_tokens 升级（16384 → 32768 → 65536），解决 DeepSeek V4 Pro 的 `reasoning_content` 消耗全部预算导致无可见内容的问题。
+  - 渐进式 max_tokens 升级（16384 → 32768 → 65536），解决推理模型消耗全部预算导致无可见内容的问题。
+  - 论文页 AI 问答使用模型级长输出预算：DeepSeek V4 Pro 最高 384K，OpenAI-compatible GPT 最高 128K。
   - `chat_stream()` —— 仅流式传输内容 Token（向后兼容）。
   - `chat_stream_with_thinking()` —— 流式传输结构化字典 `{"type": "reasoning"|"content"}`，供前端分离渲染。
   - `summarize_paper()` —— 结构化中文摘要（研究问题、方法、贡献、局限性、未来工作）。
@@ -306,8 +313,10 @@ AstraLoom/
 - `POST /writing/citations/smart-recommend` —— 上下文感知引文推荐
 - `POST /writing/latex/import` —— 导入 .tex 文件作为写作项目
 - `POST /writing/latex/compile-check` —— LaTeX 编译检查
-- 写作项目 CRUD，支持模板（空白、ACL、CVPR、NeurIPS、ICML、NSFC）
-- 多格式导出：Markdown、LaTeX、Word .docx
+- 按章节编辑论文草稿，支持 LaTeX 源码编辑、单栏/双栏/模板预览、跨章节合并预览。
+- `references.bib` 面板可从证据卡自动生成 BibTeX，`figures/` 面板维护图表清单并生成 LaTeX 插入片段。
+- 写作项目 CRUD，支持模板、章节结构、证据卡和 AI 章节辅助写作。
+- 多格式导出：Markdown、LaTeX、Word .docx。
 
 **草稿质量教练**：对写作草稿进行多维度质量评估，给出具体改进建议。
 
@@ -712,7 +721,7 @@ AstraLoom/
 
 ## 八、OpenSpec 规范体系
 
-项目采用 OpenSpec 规范驱动开发，当前共有 **69 个功能规格** 覆盖以下领域：
+项目采用 OpenSpec 规范驱动开发，当前共有 **91 个功能规格** 覆盖以下领域：
 
 - **论文**（14 个规格）：搜索、发现、导入、全文、注释、阅读、推送、检索评估等
 - **聊天**（5 个规格）：检索协调、网络搜索、思考展示、空响应保护等

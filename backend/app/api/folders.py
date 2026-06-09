@@ -152,6 +152,8 @@ def _paper_brief(paper: Paper, read_status: str | None = None) -> dict:
         "citation_count": paper.citation_count,
         "created_at": paper.created_at.isoformat() if paper.created_at else "",
         "read_status": read_status,
+        "importance_label": getattr(paper, "importance_label", None),
+        "importance_note": getattr(paper, "importance_note", None),
     }
 
 

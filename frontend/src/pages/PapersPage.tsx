@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Input, Button, List, Tag, Select, Space, Typography, Spin, Badge,
-  Card, message, Modal, Checkbox, Row, Col, Alert, Progress,
+  Card, message, Modal, Checkbox, Row, Col, Alert, Progress, Tooltip,
   Statistic, Empty, Segmented,
 } from 'antd';
 import {
@@ -43,6 +43,8 @@ interface PaperItem {
   read_status?: ReadingStatus | null;
   imported_by_user_id?: string | null;
   imported_by_username?: string | null;
+  importance_label?: PaperImportanceLabel | null;
+  importance_note?: string | null;
   has_pdf?: boolean;
   has_full_text?: boolean;
   has_embedding?: boolean;
@@ -102,6 +104,7 @@ interface CollectionCoverage {
 }
 
 type ReadingStatus = 'unread' | 'reading' | 'completed';
+type PaperImportanceLabel = 'important' | 'interesting';
 type SelectedExportFormat = 'bibtex' | 'markdown' | 'json';
 type RecommendationKind = 'classic' | 'recent' | 'gap' | 'related';
 type DiagnosticTab = 'hybrid' | 'bm25' | 'dense';
@@ -113,6 +116,10 @@ const readingStatusMeta: Record<ReadingStatus, { label: string; color: 'default'
   unread: { label: '待读', color: 'default' },
   reading: { label: '阅读中', color: 'processing' },
   completed: { label: '已完成', color: 'success' },
+};
+const paperImportanceMeta: Record<PaperImportanceLabel, { label: string; color: string; icon: React.ReactNode }> = {
+  important: { label: '重点论文', color: 'volcano', icon: <ExclamationCircleOutlined /> },
+  interesting: { label: '有趣论文', color: 'geekblue', icon: <RocketOutlined /> },
 };
 const providerGuidance: Record<string, { label: string; providers: string[]; description: string; retry: string }> = {
   scholarly: {
@@ -578,6 +585,30 @@ const PapersPage: React.FC = () => {
     } catch (error) { showPageError(isSaved ? '取消收藏失败' : '收藏失败', error, isSaved ? '取消收藏失败' : '收藏失败'); }
   }, [savedIds, isAuthenticated, showPageError]);
 
+  const handleImportanceChange = useCallback(async (
+    e: React.MouseEvent,
+    paper: PaperItem,
+    label: PaperImportanceLabel | null,
+  ) => {
+    e.stopPropagation();
+    if (!paper.id || !isAuthenticated) {
+      message.warning('请先登录');
+      return;
+    }
+    try {
+      const response = await api.put(`/papers/${paper.id}/importance`, { label });
+      setPapers(prev => prev.map(item => item.id === paper.id ? {
+        ...item,
+        importance_label: response.data.importance_label,
+        importance_note: response.data.importance_note,
+      } : item));
+      setPageActionError(null);
+      message.success(label ? `已标记为${paperImportanceMeta[label].label}` : '已清除共享标记');
+    } catch (error) {
+      showPageError('共享标记更新失败', error, '共享标记更新失败');
+    }
+  }, [isAuthenticated, showPageError]);
+
   const handleCreateCollection = useCallback(async () => {
     if (!isAuthenticated) {
       message.warning('请先登录');
@@ -903,6 +934,34 @@ const PapersPage: React.FC = () => {
             重置待读
           </Button>
         )}
+      </Space>
+    );
+  };
+
+  const renderImportanceActions = (paper: PaperItem) => {
+    if (!isAuthenticated || !paper.id) return null;
+    if (paper.importance_label) {
+      return (
+        <Tooltip title={paper.importance_note || '所有用户可见的共享标记'}>
+          <Button
+            type="text"
+            size="small"
+            icon={<CloseOutlined />}
+            onClick={e => handleImportanceChange(e, paper, null)}
+          >
+            清除
+          </Button>
+        </Tooltip>
+      );
+    }
+    return (
+      <Space size={2}>
+        <Tooltip title="标记为所有人可见的重点论文">
+          <Button type="text" size="small" icon={<ExclamationCircleOutlined />} onClick={e => handleImportanceChange(e, paper, 'important')} />
+        </Tooltip>
+        <Tooltip title="标记为所有人可见的有趣论文">
+          <Button type="text" size="small" icon={<RocketOutlined />} onClick={e => handleImportanceChange(e, paper, 'interesting')} />
+        </Tooltip>
       </Space>
     );
   };
@@ -1608,6 +1667,13 @@ const PapersPage: React.FC = () => {
                       {paper.arxiv_id && <Tag color="#b31b1b" style={{ borderRadius: 6 }}>arXiv:{paper.arxiv_id}</Tag>}
                       <Tag color={sc(paper.source)} style={{ borderRadius: 6 }}>{sl(paper.source)}</Tag>
                       {paper.imported_by_username && <Tag icon={<UserOutlined />} color="purple" style={{ borderRadius: 6 }}>导入：{paper.imported_by_username}</Tag>}
+                      {paper.importance_label && (
+                        <Tooltip title={paper.importance_note || '团队共享标记'}>
+                          <Tag icon={paperImportanceMeta[paper.importance_label].icon} color={paperImportanceMeta[paper.importance_label].color} style={{ borderRadius: 6 }}>
+                            {paperImportanceMeta[paper.importance_label].label}
+                          </Tag>
+                        </Tooltip>
+                      )}
                       {paper.id && <Tag color="cyan" style={{ borderRadius: 6 }}>key:{citationKey}</Tag>}
                       {paper.id && <Tag color={metadataQuality.tier === 'ready' ? 'green' : metadataQuality.tier === 'usable' ? 'gold' : 'orange'} style={{ borderRadius: 6 }}>元数据 {metadataQuality.percent}%</Tag>}
                       {duplicateRisk.risk !== 'none' && <Tag color={duplicateRisk.risk === 'strong' ? 'red' : 'orange'} style={{ borderRadius: 6 }}>疑似重复</Tag>}
@@ -1652,6 +1718,7 @@ const PapersPage: React.FC = () => {
                 {isAuthenticated && paper.id && (
                   <Col style={{ flexShrink: 0 }}>
                     <Space size={2}>
+                      {renderImportanceActions(paper)}
                       <Button type="text" size="small" icon={savedIds.has(paper.id) ? <StarFilled style={{ color: '#faad14' }} /> : <StarOutlined />} onClick={e => handleSave(e, paper)} />
                       <Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={e => handleDeleteClick(e, paper)} />
                     </Space>

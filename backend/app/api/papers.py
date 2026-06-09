@@ -52,6 +52,8 @@ class PaperBrief(BaseModel):
     read_status: Optional[str] = None
     imported_by_user_id: Optional[str] = None
     imported_by_username: Optional[str] = None
+    importance_label: Optional[Literal["important", "interesting"]] = None
+    importance_note: Optional[str] = None
     has_pdf: bool = False
     has_full_text: bool = False
     has_embedding: bool = False
@@ -68,6 +70,17 @@ class PaperDetail(PaperBrief):
     categories: list = []
     metadata_json: Optional[dict] = None
     similar_papers: list = []
+
+
+class PaperImportanceRequest(BaseModel):
+    label: Optional[Literal["important", "interesting"]] = Field(default=None, description="共享标记类型")
+    note: Optional[str] = Field(default=None, max_length=500, description="标记说明")
+
+
+class PaperImportanceResponse(BaseModel):
+    id: str
+    importance_label: Optional[Literal["important", "interesting"]] = None
+    importance_note: Optional[str] = None
 
 
 class PaperSearchResponse(BaseModel):
@@ -442,6 +455,8 @@ def _paper_brief(paper, *, remote: bool = False) -> PaperBrief:
         source_url=getattr(paper, "source_url", None),
         imported_by_user_id=None if remote else str(getattr(paper, "imported_by_user_id", None)) if getattr(paper, "imported_by_user_id", None) else None,
         imported_by_username=None if remote else getattr(paper, "imported_by_username", None),
+        importance_label=None if remote else getattr(paper, "importance_label", None),
+        importance_note=None if remote else getattr(paper, "importance_note", None),
         has_pdf=bool(processing.get("has_pdf", False)),
         has_full_text=bool(processing.get("has_full_text", False)),
         has_embedding=bool(processing.get("has_embedding", False)),
@@ -1111,6 +1126,8 @@ async def get_paper_detail(
         citation_count=paper.citation_count,
         imported_by_user_id=str(paper.imported_by_user_id) if paper.imported_by_user_id else None,
         imported_by_username=paper.imported_by_username,
+        importance_label=paper.importance_label,
+        importance_note=paper.importance_note,
         full_text_preview=paper.full_text[:5000] if paper.full_text else None,
         tags=paper.tags,
         categories=[
@@ -1469,6 +1486,40 @@ async def save_paper(paper_id: str, db: AsyncSession = Depends(get_db), user=Dep
     enhance = PaperEnhanceService(db)
     await enhance.save_paper(str(user.id), paper_id)
     return {"saved": True}
+
+
+@router.put("/{paper_id}/importance", response_model=PaperImportanceResponse)
+async def update_paper_importance(
+    paper_id: str,
+    req: PaperImportanceRequest,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """更新团队共享论文标记。"""
+    from uuid import UUID
+    try:
+        pid = UUID(paper_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid paper_id")
+
+    result = await db.execute(select(Paper).where(Paper.id == pid))
+    paper = result.scalar_one_or_none()
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文未找到")
+
+    if req.label is None:
+        paper.importance_label = None
+        paper.importance_note = None
+    else:
+        paper.importance_label = req.label
+        paper.importance_note = (req.note or "").strip() or None
+    await db.commit()
+    await db.refresh(paper)
+    return PaperImportanceResponse(
+        id=str(paper.id),
+        importance_label=paper.importance_label,
+        importance_note=paper.importance_note,
+    )
 
 
 class ReadStatusRequest(BaseModel):

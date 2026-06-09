@@ -66,3 +66,57 @@ async def test_update_read_status_preserves_existing_personal_state():
     assert user_paper.personal_tags == ["important"]
     assert user_paper.paper_chat_history == [{"role": "user", "content": "question"}]
     assert db.committed is True
+
+
+@pytest.mark.asyncio
+async def test_update_paper_importance_sets_and_clears_shared_marker():
+    paper = SimpleNamespace(
+        id=uuid4(),
+        importance_label=None,
+        importance_note=None,
+    )
+
+    class _Result:
+        def scalar_one_or_none(self):
+            return paper
+
+    class _Db:
+        committed = 0
+        refreshed = 0
+
+        async def execute(self, _query):
+            return _Result()
+
+        async def commit(self):
+            self.committed += 1
+
+        async def refresh(self, _paper):
+            self.refreshed += 1
+
+    db = _Db()
+
+    marked = await papers.update_paper_importance(
+        str(paper.id),
+        papers.PaperImportanceRequest(label="important", note="Core baseline"),
+        db=db,
+        user=SimpleNamespace(id=uuid4()),
+    )
+
+    assert marked.importance_label == "important"
+    assert marked.importance_note == "Core baseline"
+    assert paper.importance_label == "important"
+    assert paper.importance_note == "Core baseline"
+
+    cleared = await papers.update_paper_importance(
+        str(paper.id),
+        papers.PaperImportanceRequest(label=None, note="ignored"),
+        db=db,
+        user=SimpleNamespace(id=uuid4()),
+    )
+
+    assert cleared.importance_label is None
+    assert cleared.importance_note is None
+    assert paper.importance_label is None
+    assert paper.importance_note is None
+    assert db.committed == 2
+    assert db.refreshed == 2

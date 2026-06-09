@@ -139,12 +139,16 @@ def test_local_paper_brief_exposes_importer_metadata():
         source_url=None,
         imported_by_user_id=user_id,
         imported_by_username="gst",
+        importance_label="important",
+        importance_note="Shared reason",
     )
 
     brief = papers_api._paper_brief(paper)
 
     assert brief.imported_by_user_id == str(user_id)
     assert brief.imported_by_username == "gst"
+    assert brief.importance_label == "important"
+    assert brief.importance_note == "Shared reason"
 
 
 def test_local_paper_brief_exposes_processing_readiness():
