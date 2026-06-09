@@ -41,6 +41,12 @@ Current project documentation SHALL refer to the active product as `AstraLoom`.
 - **AND** it avoids implying that the project is intended as a centrally hosted public SaaS product
 - **AND** it includes guidance about files that should and should not be uploaded to GitHub
 
+#### Scenario: README uses GitHub-style project presentation
+- **WHEN** a prospective maintainer opens the README on GitHub
+- **THEN** the README presents AstraLoom with a concise tagline, badges or quick metadata, table of contents, feature overview, quick start, and deployment guidance
+- **AND** it includes GitHub-renderable diagrams for the research workflow and deployment architecture
+- **AND** it preserves bilingual lab self-hosting positioning and upload safety guidance
+
 ### Requirement: AstraLoom home page can retain the restored visual composition
 The AstraLoom home page SHALL use the restored pre-star-map visual composition while presenting the current product name as `AstraLoom`.
 
