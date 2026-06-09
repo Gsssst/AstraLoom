@@ -20,4 +20,4 @@
 - [x] 4.1 Add backend tests for novelty matrix, ranking penalty, and anti-collision repair.
 - [x] 4.2 Add frontend contract tests for novelty matrix display.
 - [x] 4.3 Run backend tests, frontend tests/build, and OpenSpec validation.
-- [ ] 4.4 Commit implementation and archive the OpenSpec change.
+- [x] 4.4 Commit implementation and archive the OpenSpec change.
