@@ -512,6 +512,10 @@ def _stream_event(event_type: str, data: Any = None) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _stream_heartbeat() -> str:
+    return ": ping\n\n"
+
+
 def _stream_idea_run_execution(
     *,
     db: AsyncSession,
@@ -547,7 +551,11 @@ def _stream_idea_run_execution(
                 if request and await request.is_disconnected():
                     task.cancel()
                     break
-                event = await queue.get()
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield _stream_heartbeat()
+                    continue
                 yield _stream_event(event.get("type", "message"), event)
                 if event.get("type") in {"done", "cancelled"}:
                     break

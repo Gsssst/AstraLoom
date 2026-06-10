@@ -138,3 +138,43 @@ async def test_cancel_idea_run_endpoint_returns_cancelled_run(monkeypatch):
     assert response.stage == "generating"
     assert response.progress == 56
     assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_idea_run_emits_heartbeat_when_business_events_pause(monkeypatch):
+    run = _run(status="running")
+    session = _CancelSession()
+    wait_for_calls = []
+
+    async def is_disconnected():
+        return False
+
+    request = SimpleNamespace(is_disconnected=is_disconnected)
+
+    async def fake_wait_for(awaitable, timeout):
+        wait_for_calls.append(timeout)
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        raise research.asyncio.TimeoutError
+
+    async def slow_execute(_push):
+        await research.asyncio.sleep(60)
+        return []
+
+    monkeypatch.setattr(research.asyncio, "wait_for", fake_wait_for)
+
+    response = research._stream_idea_run_execution(
+        db=session,
+        request=request,
+        run=run,
+        execute_factory=slow_execute,
+    )
+    stream = response.body_iterator
+
+    first = await anext(stream)
+    second = await anext(stream)
+    await stream.aclose()
+
+    assert '"type": "run"' in first
+    assert second == ": ping\n\n"
+    assert wait_for_calls == [15]
