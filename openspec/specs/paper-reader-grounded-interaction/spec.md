@@ -154,3 +154,16 @@ The paper PDF reader SHALL provide a browser-native PDF preview fallback when pd
 #### Scenario: User retries the enhanced reader
 - **WHEN** the native preview fallback is shown
 - **THEN** the user can retry the enhanced pdf.js reader without leaving the paper page.
+
+### Requirement: PDF worker cache is safely invalidated
+The paper PDF reader SHALL avoid stale cached pdf.js worker module responses after deployment fixes.
+
+#### Scenario: Browser imports the worker module
+- **WHEN** the reader configures the pdf.js worker source
+- **THEN** the worker URL includes an application-controlled version query
+- **AND** pdf.js imports the versioned worker URL.
+
+#### Scenario: Production serves the worker asset
+- **WHEN** the browser requests a bundled `pdf.worker.min-*.mjs` asset
+- **THEN** the production frontend server returns it as JavaScript
+- **AND** uses a revalidation cache policy rather than one-year immutable caching.
