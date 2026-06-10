@@ -39,9 +39,19 @@ test('pdf viewer uses conservative full-file loading for proxied pdfs', () => {
 
 test('pdf viewer surfaces loading timeouts with a direct fallback link', () => {
   assert.match(pdfViewerSource, /PDF_LOAD_TIMEOUT_MS = 20000/);
-  assert.match(pdfViewerSource, /setLoadError\('PDF 加载超时/);
+  assert.match(pdfViewerSource, /setNativeFallback\(true\)/);
+  assert.match(pdfViewerSource, /setLoadError\('PDF\.js 加载超时/);
   assert.match(pdfViewerSource, /直接打开 PDF/);
   assert.match(pdfViewerSource, /href=\{resolvedUrl\}/);
+});
+
+test('pdf viewer falls back to native browser preview when pdfjs stalls', () => {
+  assert.match(pdfViewerSource, /const \[nativeFallback, setNativeFallback\]/);
+  assert.match(pdfViewerSource, /const retryEnhancedReader = useCallback/);
+  assert.match(pdfViewerSource, /已切换到原生 PDF 预览/);
+  assert.match(pdfViewerSource, /重试增强阅读器/);
+  assert.match(pdfViewerSource, /className="paper-pdf-native-frame"/);
+  assert.match(pdfViewerSource, /src=\{resolvedUrl\}/);
 });
 
 test('production frontend serves pdf worker module assets as javascript', () => {
@@ -61,4 +71,11 @@ test('pdf text selection uses a lighter separated highlight treatment', () => {
   assert.match(responsiveCssSource, /background: rgba\(72, 145, 255, 0\.2\)/);
   assert.match(responsiveCssSource, /\.paper-pdf-page \.react-pdf__Page__textContent span \{\n  line-height: 1;/);
   assert.match(responsiveCssSource, /\.paper-pdf-page \.react-pdf__Page__textContent \.markedContent/);
+});
+
+test('native pdf fallback fills the reader panel', () => {
+  assert.match(responsiveCssSource, /\.paper-pdf-scroll-native/);
+  assert.match(responsiveCssSource, /\.paper-pdf-native-fallback/);
+  assert.match(responsiveCssSource, /\.paper-pdf-native-frame/);
+  assert.match(responsiveCssSource, /min-height: 420px/);
 });

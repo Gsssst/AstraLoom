@@ -32,6 +32,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
   const [pageNumber, setPageNumber] = useState(1);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [nativeFallback, setNativeFallback] = useState(false);
   const [pageWidth, setPageWidth] = useState(700);
   const contentRef = useRef<HTMLDivElement>(null);
   const resolvedUrl = React.useMemo(() => {
@@ -50,6 +51,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
     setNumPages(numPages);
     setPageNumber(current => Math.min(Math.max(current, 1), numPages || 1));
     setLoadError(null);
+    setNativeFallback(false);
     setLoading(false);
   }, []);
 
@@ -57,23 +59,34 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
     setLoading(false);
     setNumPages(0);
     setLoadError(error?.message || 'PDF 加载失败');
+    setNativeFallback(true);
+  }, []);
+
+  const retryEnhancedReader = useCallback(() => {
+    setNativeFallback(false);
+    setLoading(true);
+    setLoadError(null);
+    setNumPages(0);
+    setPageNumber(1);
   }, []);
 
   useEffect(() => {
     setLoading(true);
     setLoadError(null);
+    setNativeFallback(false);
     setNumPages(0);
     setPageNumber(1);
   }, [resolvedUrl]);
 
   useEffect(() => {
-    if (!resolvedUrl || !loading || loadError) return;
+    if (!resolvedUrl || !loading || loadError || nativeFallback) return;
     const timeout = window.setTimeout(() => {
       setLoading(false);
-      setLoadError('PDF 加载超时。服务器代理可能阻塞了 PDF.js 的读取流程，请尝试直接打开 PDF。');
+      setNativeFallback(true);
+      setLoadError('PDF.js 加载超时，已切换到浏览器原生 PDF 预览。');
     }, PDF_LOAD_TIMEOUT_MS);
     return () => window.clearTimeout(timeout);
-  }, [loadError, loading, resolvedUrl]);
+  }, [loadError, loading, nativeFallback, resolvedUrl]);
 
   useEffect(() => {
     const container = contentRef.current;
@@ -124,52 +137,85 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
         padding: '8px 12px', borderBottom: '1px solid #f0f0f0', background: '#fafafa',
         flexShrink: 0,
       }}>
-        <Button size="small" icon={<LeftOutlined />} disabled={pageNumber <= 1} onClick={() => setPageNumber(p => p - 1)} />
+        <Button size="small" icon={<LeftOutlined />} disabled={nativeFallback || pageNumber <= 1} onClick={() => setPageNumber(p => p - 1)} />
         <Space size={4}>
-          <InputNumber size="small" min={1} max={numPages} value={pageNumber} onChange={v => v && setPageNumber(v)} style={{ width: 50 }} />
-          <Text type="secondary" style={{ fontSize: 12 }}>/ {numPages}</Text>
+          <InputNumber size="small" min={1} max={numPages} value={pageNumber} disabled={nativeFallback} onChange={v => v && setPageNumber(v)} style={{ width: 50 }} />
+          <Text type="secondary" style={{ fontSize: 12 }}>/ {nativeFallback ? '-' : numPages}</Text>
         </Space>
-        <Button size="small" icon={<RightOutlined />} disabled={pageNumber >= numPages} onClick={() => setPageNumber(p => p + 1)} />
-        <Text type="secondary" style={{ fontSize: 12 }}>划词可加入提问</Text>
+        <Button size="small" icon={<RightOutlined />} disabled={nativeFallback || pageNumber >= numPages} onClick={() => setPageNumber(p => p + 1)} />
+        <Text type="secondary" style={{ fontSize: 12 }}>{nativeFallback ? '原生预览' : '划词可加入提问'}</Text>
       </div>
 
       {/* PDF 内容 */}
-      <div ref={contentRef} className="paper-pdf-scroll">
-        {loading && <Spin style={{ marginTop: 40 }} />}
-        {loadError && (
-          <Alert
-            type="error"
-            showIcon
-            style={{ margin: 16, textAlign: 'left' }}
-            message="PDF 加载失败"
-            description={
-              <Space direction="vertical" size={8}>
-                <Text>
-                  请确认 {resolvedUrl} 返回 application/pdf。浏览器错误：{loadError}
-                </Text>
-                <Button size="small" href={resolvedUrl} target="_blank" rel="noreferrer">
-                  直接打开 PDF
-                </Button>
-              </Space>
-            }
-          />
-        )}
-        <Document
-          file={documentFile}
-          onLoadSuccess={onDocLoad}
-          onLoadError={onDocLoadError}
-          loading={<Spin style={{ marginTop: 40 }} />}
-          error={null}
-        >
-          <div className="paper-pdf-page">
-            <Page
-              pageNumber={pageNumber}
-              renderTextLayer={true}
-              renderAnnotationLayer={true}
-              width={pageWidth}
+      <div ref={contentRef} className={`paper-pdf-scroll${nativeFallback ? ' paper-pdf-scroll-native' : ''}`}>
+        {nativeFallback ? (
+          <div className="paper-pdf-native-fallback">
+            <Alert
+              type="warning"
+              showIcon
+              className="paper-pdf-native-notice"
+              message="已切换到原生 PDF 预览"
+              description={
+                <Space direction="vertical" size={8}>
+                  <Text>
+                    {loadError || '增强阅读器暂时无法渲染该 PDF。原生预览可以继续阅读，但划词加入提问不可用。'}
+                  </Text>
+                  <Space wrap>
+                    <Button size="small" onClick={retryEnhancedReader}>
+                      重试增强阅读器
+                    </Button>
+                    <Button size="small" href={resolvedUrl} target="_blank" rel="noreferrer">
+                      直接打开 PDF
+                    </Button>
+                  </Space>
+                </Space>
+              }
+            />
+            <iframe
+              className="paper-pdf-native-frame"
+              title="PDF 原生预览"
+              src={resolvedUrl}
             />
           </div>
-        </Document>
+        ) : (
+          <>
+            {loading && <Spin style={{ marginTop: 40 }} />}
+            {loadError && (
+              <Alert
+                type="error"
+                showIcon
+                style={{ margin: 16, textAlign: 'left' }}
+                message="PDF 加载失败"
+                description={
+                  <Space direction="vertical" size={8}>
+                    <Text>
+                      请确认 {resolvedUrl} 返回 application/pdf。浏览器错误：{loadError}
+                    </Text>
+                    <Button size="small" href={resolvedUrl} target="_blank" rel="noreferrer">
+                      直接打开 PDF
+                    </Button>
+                  </Space>
+                }
+              />
+            )}
+            <Document
+              file={documentFile}
+              onLoadSuccess={onDocLoad}
+              onLoadError={onDocLoadError}
+              loading={<Spin style={{ marginTop: 40 }} />}
+              error={null}
+            >
+              <div className="paper-pdf-page">
+                <Page
+                  pageNumber={pageNumber}
+                  renderTextLayer={true}
+                  renderAnnotationLayer={true}
+                  width={pageWidth}
+                />
+              </div>
+            </Document>
+          </>
+        )}
       </div>
     </div>
   );

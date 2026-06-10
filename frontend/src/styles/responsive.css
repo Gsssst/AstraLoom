@@ -535,6 +535,35 @@
   background: #525659;
 }
 
+.paper-pdf-scroll-native {
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+.paper-pdf-native-fallback {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  background: #3f454a;
+}
+
+.paper-pdf-native-notice {
+  margin: 12px;
+  flex-shrink: 0;
+  text-align: left;
+}
+
+.paper-pdf-native-frame {
+  width: 100%;
+  min-height: 420px;
+  flex: 1;
+  border: 0;
+  background: #525659;
+}
+
 .paper-pdf-page {
   padding: 14px 0 24px;
 }
