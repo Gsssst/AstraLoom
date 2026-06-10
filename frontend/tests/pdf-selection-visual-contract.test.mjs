@@ -24,11 +24,24 @@ test('pdf viewer scopes page-level selection styles', () => {
 
 test('pdf viewer uses production-safe url descriptor and diagnostics', () => {
   assert.match(pdfViewerSource, /new URL\(url, window\.location\.origin\)\.toString\(\)/);
-  assert.match(pdfViewerSource, /const documentFile = React\.useMemo\(\(\) => \(\{ url: resolvedUrl \}\), \[resolvedUrl\]\)/);
+  assert.match(pdfViewerSource, /url: resolvedUrl/);
   assert.match(pdfViewerSource, /file=\{documentFile\}/);
   assert.match(pdfViewerSource, /onLoadError=\{onDocLoadError\}/);
   assert.match(pdfViewerSource, /message="PDF 加载失败"/);
   assert.match(pdfViewerSource, /返回 application\/pdf/);
+});
+
+test('pdf viewer uses conservative full-file loading for proxied pdfs', () => {
+  assert.match(pdfViewerSource, /disableRange: true/);
+  assert.match(pdfViewerSource, /disableStream: true/);
+  assert.match(pdfViewerSource, /disableAutoFetch: true/);
+});
+
+test('pdf viewer surfaces loading timeouts with a direct fallback link', () => {
+  assert.match(pdfViewerSource, /PDF_LOAD_TIMEOUT_MS = 20000/);
+  assert.match(pdfViewerSource, /setLoadError\('PDF 加载超时/);
+  assert.match(pdfViewerSource, /直接打开 PDF/);
+  assert.match(pdfViewerSource, /href=\{resolvedUrl\}/);
 });
 
 test('production frontend serves pdf worker module assets as javascript', () => {

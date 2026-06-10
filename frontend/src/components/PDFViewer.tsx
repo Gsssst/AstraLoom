@@ -19,6 +19,7 @@ if (typeof window !== 'undefined' && 'Worker' in window && !pdfjs.GlobalWorkerOp
 }
 
 const { Text } = Typography;
+const PDF_LOAD_TIMEOUT_MS = 20000;
 
 interface PDFViewerProps {
   url: string;
@@ -38,7 +39,12 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
     if (typeof window === 'undefined') return url;
     return new URL(url, window.location.origin).toString();
   }, [url]);
-  const documentFile = React.useMemo(() => ({ url: resolvedUrl }), [resolvedUrl]);
+  const documentFile = React.useMemo(() => ({
+    url: resolvedUrl,
+    disableRange: true,
+    disableStream: true,
+    disableAutoFetch: true,
+  }), [resolvedUrl]);
 
   const onDocLoad = useCallback(({ numPages }: any) => {
     setNumPages(numPages);
@@ -59,6 +65,15 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
     setNumPages(0);
     setPageNumber(1);
   }, [resolvedUrl]);
+
+  useEffect(() => {
+    if (!resolvedUrl || !loading || loadError) return;
+    const timeout = window.setTimeout(() => {
+      setLoading(false);
+      setLoadError('PDF 加载超时。服务器代理可能阻塞了 PDF.js 的读取流程，请尝试直接打开 PDF。');
+    }, PDF_LOAD_TIMEOUT_MS);
+    return () => window.clearTimeout(timeout);
+  }, [loadError, loading, resolvedUrl]);
 
   useEffect(() => {
     const container = contentRef.current;
@@ -127,7 +142,16 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
             showIcon
             style={{ margin: 16, textAlign: 'left' }}
             message="PDF 加载失败"
-            description={`请确认 ${resolvedUrl} 返回 application/pdf。浏览器错误：${loadError}`}
+            description={
+              <Space direction="vertical" size={8}>
+                <Text>
+                  请确认 {resolvedUrl} 返回 application/pdf。浏览器错误：{loadError}
+                </Text>
+                <Button size="small" href={resolvedUrl} target="_blank" rel="noreferrer">
+                  直接打开 PDF
+                </Button>
+              </Space>
+            }
           />
         )}
         <Document
