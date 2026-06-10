@@ -345,11 +345,16 @@ class LatexProcessor:
             "",
         ]
 
-        for sec in sections:
-            level = sec.get("level", 1)
+        for sec in sections or []:
+            level = sec.get("level", 1) if isinstance(sec, dict) else 1
+            try:
+                level = int(level)
+            except (TypeError, ValueError):
+                level = 1
             cmd = {1: "section", 2: "subsection", 3: "subsubsection"}.get(level, "section")
-            title = sec.get("title", "Untitled")
-            content = sec.get("content", "")
+            title = sec.get("title", "Untitled") if isinstance(sec, dict) else "Untitled"
+            content = sec.get("content", "") if isinstance(sec, dict) else ""
+            title = str(title or "Untitled")
             lines.append(f"\\{cmd}{{{title}}}")
             lines.append("")
             # 将 Markdown 内容转为纯文本（简化版）
@@ -373,9 +378,9 @@ class LatexProcessor:
             template="article",
         )
 
-    def _markdown_to_latex(self, md_text: str) -> str:
+    def _markdown_to_latex(self, md_text: str | None) -> str:
         """简化的 Markdown → LaTeX 转换。"""
-        text = md_text
+        text = "" if md_text is None else str(md_text)
         # **bold** → \\textbf{bold}
         text = re.sub(r'\*\*(.+?)\*\*', r'\\textbf{\1}', text)
         # *italic* → \\textit{italic}

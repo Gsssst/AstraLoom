@@ -301,6 +301,22 @@ Architecture details.
         assert r"\documentclass[conference]{IEEEtran}" in tex
         assert r"\usepackage{booktabs}" in tex
 
+    def test_render_to_tex_tolerates_null_section_content(self):
+        """空章节内容不应导致 LaTeX 预览接口 500。"""
+        from app.services.latex_processor import latex_processor
+
+        tex = latex_processor.render_to_tex(
+            "Test Paper",
+            [
+                {"title": "Introduction", "content": None, "level": 1},
+                {"title": None, "content": 123, "level": "bad-level"},
+            ],
+        )
+
+        assert r"\section{Introduction}" in tex
+        assert r"\section{Untitled}" in tex
+        assert "123" in tex
+
     def test_extract_bibliography(self):
         """提取 \\bibliography 引用。"""
         from app.services.latex_processor import latex_processor
