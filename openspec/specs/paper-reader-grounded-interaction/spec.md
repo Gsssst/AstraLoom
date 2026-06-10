@@ -112,17 +112,18 @@ The production frontend server SHALL serve pdf.js worker `.mjs` assets with a Ja
 - **THEN** the frontend server returns the worker with a JavaScript MIME type
 - **AND** pdf.js can import the worker instead of falling back to a failed fake worker setup.
 
-### Requirement: PDF reader initializes a real worker port in production
-The paper PDF reader SHALL initialize pdf.js with an explicit module `Worker` port when the browser supports workers, while preserving a worker source fallback.
+### Requirement: PDF reader uses pdf.js standard worker initialization
+The paper PDF reader SHALL configure the bundled pdf.js worker source and SHALL let pdf.js create and test its worker rather than injecting an externally supplied worker port.
 
-#### Scenario: Browser supports module workers
-- **WHEN** the paper PDF reader module loads in a browser with `Worker` support
-- **THEN** it creates a module worker from the bundled pdf.js worker asset
-- **AND** assigns it to `pdfjs.GlobalWorkerOptions.workerPort`.
+#### Scenario: Reader module configures pdf.js
+- **WHEN** the paper PDF reader module loads
+- **THEN** it assigns the bundled worker module URL to `pdfjs.GlobalWorkerOptions.workerSrc`
+- **AND** it does not assign `pdfjs.GlobalWorkerOptions.workerPort`.
 
-#### Scenario: Worker construction is unavailable
-- **WHEN** the runtime does not expose browser worker APIs
-- **THEN** the reader still configures `pdfjs.GlobalWorkerOptions.workerSrc` as a fallback path.
+#### Scenario: Worker initialization fails
+- **WHEN** pdf.js cannot initialize the configured worker source
+- **THEN** pdf.js reports the worker failure through its standard loading error path
+- **AND** the reader can fall back to native PDF preview.
 
 ### Requirement: Proxied PDF loading avoids unresolved spinner states
 The paper PDF reader SHALL use a conservative full-file pdf.js loading mode for same-origin proxied PDFs and SHALL surface a visible diagnostic if loading does not resolve within a bounded time.
