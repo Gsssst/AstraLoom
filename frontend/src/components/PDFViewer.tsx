@@ -10,13 +10,6 @@ const pdfWorkerUrl = new URL(
   import.meta.url,
 ).toString();
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-if (typeof window !== 'undefined' && 'Worker' in window && !pdfjs.GlobalWorkerOptions.workerPort) {
-  try {
-    pdfjs.GlobalWorkerOptions.workerPort = new Worker(pdfWorkerUrl, { type: 'module' });
-  } catch (error) {
-    console.warn('PDF worker initialization fell back to workerSrc.', error);
-  }
-}
 
 const { Text } = Typography;
 const PDF_LOAD_TIMEOUT_MS = 20000;

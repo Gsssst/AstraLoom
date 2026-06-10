@@ -59,10 +59,11 @@ test('production frontend serves pdf worker module assets as javascript', () => 
   assert.match(frontendNginxSource, /location \/assets\//);
 });
 
-test('pdf viewer initializes an explicit module worker port', () => {
+test('pdf viewer lets pdfjs initialize and test the bundled worker source', () => {
   assert.match(pdfViewerSource, /const pdfWorkerUrl = new URL\(/);
   assert.match(pdfViewerSource, /pdfjs\.GlobalWorkerOptions\.workerSrc = pdfWorkerUrl/);
-  assert.match(pdfViewerSource, /pdfjs\.GlobalWorkerOptions\.workerPort = new Worker\(pdfWorkerUrl, \{ type: 'module' \}\)/);
+  assert.doesNotMatch(pdfViewerSource, /GlobalWorkerOptions\.workerPort\s*=/);
+  assert.doesNotMatch(pdfViewerSource, /new Worker\(pdfWorkerUrl/);
 });
 
 test('pdf text selection uses a lighter separated highlight treatment', () => {
