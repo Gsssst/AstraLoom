@@ -356,3 +356,14 @@ test('writing page normalizes selected project payloads before rendering', () =>
   assert.match(writingPageSource, /syncProjectFromResponse/);
   assert.match(writingPageSource, /syncProjectFromNestedResponse/);
 });
+
+test('submission profile rendering tolerates missing inspection object', () => {
+  assert.match(writingPageSource, /const effectiveSubmissionProfile = submissionInspection \|\| exportReadiness\?\.submission_profile \|\| null/);
+  assert.match(writingPageSource, /effectiveSubmissionProfile\.venue/);
+  assert.match(writingPageSource, /effectiveSubmissionProfile\.year \|\| ''/);
+  assert.match(writingPageSource, /effectiveSubmissionProfile\.document_class/);
+  assert.match(writingPageSource, /const submissionWarnings = Array\.isArray\(effectiveSubmissionProfile\?\.warnings\)/);
+  assert.doesNotMatch(writingPageSource, /submissionInspection\.venue/);
+  assert.doesNotMatch(writingPageSource, /submissionInspection\.year/);
+  assert.doesNotMatch(writingPageSource, /submissionInspection\.document_class/);
+});

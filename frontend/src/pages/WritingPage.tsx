@@ -2090,6 +2090,12 @@ const WritingPage: React.FC = () => {
   ) : null;
 
   const publicationExportPanel = selectedProject ? (
+    (() => {
+      const effectiveSubmissionProfile = submissionInspection || exportReadiness?.submission_profile || null;
+      const submissionWarnings = Array.isArray(effectiveSubmissionProfile?.warnings)
+        ? effectiveSubmissionProfile.warnings
+        : [];
+      return (
     <Card
       id="writing-export-panel"
       title={<Space><FileZipOutlined /> 投稿导出包</Space>}
@@ -2152,7 +2158,7 @@ const WritingPage: React.FC = () => {
                 options={[
                   { label: '单栏', value: 'single_column' },
                   { label: '双栏', value: 'double_column' },
-                  { label: '模板', value: 'template', disabled: !(selectedProject?.metadata_json?.submission_profile?.document_class) },
+                  { label: '模板', value: 'template', disabled: !effectiveSubmissionProfile?.document_class },
                 ]}
               />
             </Col>
@@ -2163,23 +2169,23 @@ const WritingPage: React.FC = () => {
             </Col>
           </Row>
         </div>
-        {(submissionInspection || exportReadiness?.submission_profile) && (
+        {effectiveSubmissionProfile && (
           <div style={{ marginTop: 12 }}>
             <Space wrap>
               <Tag color={latexCompileLayout === 'double_column' ? 'geekblue' : latexCompileLayout === 'template' ? 'purple' : 'default'}>
                 {latexCompileLayout === 'double_column' ? '双栏编译' : latexCompileLayout === 'template' ? '模板编译' : '单栏编译'}
               </Tag>
-              <Tag color={(submissionInspection?.template_status || submissionInspection?.status) === 'ready' ? 'green' : 'gold'}>
-                {submissionInspection?.status_label || exportReadiness?.submission_profile?.status_label || '模板状态'}
+              <Tag color={(effectiveSubmissionProfile.template_status || effectiveSubmissionProfile.status) === 'ready' ? 'green' : 'gold'}>
+                {effectiveSubmissionProfile.status_label || '模板状态'}
               </Tag>
-              {(submissionInspection?.template_source || submissionInspection?.source_filename) && (
-                <Tag>{submissionInspection.template_source || submissionInspection.source_filename}</Tag>
+              {(effectiveSubmissionProfile.template_source || effectiveSubmissionProfile.source_filename) && (
+                <Tag>{effectiveSubmissionProfile.template_source || effectiveSubmissionProfile.source_filename}</Tag>
               )}
-              {(submissionInspection?.document_class || exportReadiness?.submission_profile?.document_class) && (
-                <Tag color="blue">documentclass: {submissionInspection.document_class || exportReadiness?.submission_profile?.document_class}</Tag>
+              {effectiveSubmissionProfile.document_class && (
+                <Tag color="blue">documentclass: {effectiveSubmissionProfile.document_class}</Tag>
               )}
-              {(submissionInspection?.venue || exportReadiness?.submission_profile?.venue) && (
-                <Tag color="purple">{submissionInspection.venue || exportReadiness?.submission_profile?.venue} {submissionInspection.year || exportReadiness?.submission_profile?.year}</Tag>
+              {effectiveSubmissionProfile.venue && (
+                <Tag color="purple">{effectiveSubmissionProfile.venue} {effectiveSubmissionProfile.year || ''}</Tag>
               )}
               {(submissionInspection || selectedProject?.metadata_json?.submission_profile?.template_source) && (
                 <Button
@@ -2193,12 +2199,12 @@ const WritingPage: React.FC = () => {
                 </Button>
               )}
             </Space>
-            {(submissionInspection?.warnings?.length || exportReadiness?.submission_profile?.warnings?.length) ? (
+            {submissionWarnings.length ? (
               <Alert
                 type="warning"
                 showIcon
                 message="模板检查提醒"
-                description={(submissionInspection?.warnings || exportReadiness?.submission_profile?.warnings || []).join(' ')}
+                description={submissionWarnings.join(' ')}
                 style={{ borderRadius: 8, marginTop: 8 }}
               />
             ) : null}
@@ -2255,6 +2261,8 @@ const WritingPage: React.FC = () => {
         </Button>
       </Space>
     </Card>
+      );
+    })()
   ) : null;
 
   const activeSection = selectedProject
