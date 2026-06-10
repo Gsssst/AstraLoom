@@ -9,7 +9,8 @@ const pdfWorkerUrl = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
   import.meta.url,
 ).toString();
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+const versionedPdfWorkerUrl = `${pdfWorkerUrl}?v=2026-06-10-1`;
+pdfjs.GlobalWorkerOptions.workerSrc = versionedPdfWorkerUrl;
 
 const { Text } = Typography;
 const PDF_LOAD_TIMEOUT_MS = 20000;

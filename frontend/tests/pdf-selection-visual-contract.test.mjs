@@ -55,13 +55,17 @@ test('pdf viewer falls back to native browser preview when pdfjs stalls', () => 
 });
 
 test('production frontend serves pdf worker module assets as javascript', () => {
+  assert.match(frontendNginxSource, /location ~ \^\/assets\/pdf\\\.worker\\\.min-\.\*\\\.mjs\$/);
   assert.match(frontendNginxSource, /application\/javascript js mjs;/);
+  assert.match(frontendNginxSource, /application\/javascript mjs;/);
+  assert.match(frontendNginxSource, /max-age=300, must-revalidate/);
   assert.match(frontendNginxSource, /location \/assets\//);
 });
 
 test('pdf viewer lets pdfjs initialize and test the bundled worker source', () => {
   assert.match(pdfViewerSource, /const pdfWorkerUrl = new URL\(/);
-  assert.match(pdfViewerSource, /pdfjs\.GlobalWorkerOptions\.workerSrc = pdfWorkerUrl/);
+  assert.match(pdfViewerSource, /const versionedPdfWorkerUrl = `\$\{pdfWorkerUrl\}\?v=2026-06-10-1`/);
+  assert.match(pdfViewerSource, /pdfjs\.GlobalWorkerOptions\.workerSrc = versionedPdfWorkerUrl/);
   assert.doesNotMatch(pdfViewerSource, /GlobalWorkerOptions\.workerPort\s*=/);
   assert.doesNotMatch(pdfViewerSource, /new Worker\(pdfWorkerUrl/);
 });
