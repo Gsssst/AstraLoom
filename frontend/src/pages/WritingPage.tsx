@@ -182,6 +182,27 @@ type SupportFiles = {
   };
 };
 
+const normalizeWritingProject = (project: any) => {
+  if (!project?.id) return null;
+  const sections = Array.isArray(project.sections) ? project.sections : [];
+  return {
+    ...project,
+    id: String(project.id),
+    title: project.title || 'Untitled',
+    description: project.description || '',
+    template_type: project.template_type || 'blank',
+    status: project.status || 'draft',
+    metadata_json: project.metadata_json || {},
+    sections,
+    progress: project.progress || {
+      percentage: 0,
+      completed: 0,
+      total: sections.length,
+      total_words: 0,
+    },
+  };
+};
+
 const getProjectWritingBrief = (project: any): ProposalWritingBrief | null => {
   const brief = project?.metadata_json?.writing_brief;
   return brief && typeof brief === 'object' ? brief : null;
@@ -476,6 +497,34 @@ const WritingPage: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  const clearSelectedProject = useCallback(() => {
+    setSelectedProject(null);
+    setProjectSections([]);
+    setActiveSectionId(null);
+    setEvidenceCards([]);
+    setEvidenceCoverage(null);
+    setEvidenceTable(null);
+    setSupportFiles(null);
+    setFigureDraft({ label: '', path: '', caption: '', note: '', width: '\\linewidth' });
+    setCitationChecks({});
+    setCitationChecking({});
+    setQualityChecks({});
+    setQualityChecking({});
+    setLatexPreviewChecks({});
+    setLatexPreviewing({});
+    setManuscriptPreview(null);
+    setSectionAiState({});
+    setExportReadiness(null);
+    setExportPackage(null);
+    setWorkbenchSummary(null);
+    setSubmissionVenue('');
+    setSubmissionYear('');
+    setSubmissionInspection(null);
+    setSubmissionTemplateFile(null);
+    setLatexCompileLayout('single_column');
+    setPageActionError(null);
+  }, []);
+
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const projectId = params.get('project');
@@ -484,13 +533,18 @@ const WritingPage: React.FC = () => {
     setPaperWorkflow('manuscript');
     api.get(`/writing/projects/${projectId}`)
       .then(response => {
-        setSelectedProject(response.data);
-        setProjectSections(response.data.sections || []);
-        setActiveSectionId((response.data.sections || [])[0]?.id || null);
+        const project = normalizeWritingProject(response.data);
+        if (!project) throw new Error('写作项目返回数据不完整');
+        setSelectedProject(project);
+        setProjectSections(project.sections);
+        setActiveSectionId(project.sections[0]?.id || null);
         setPageActionError(null);
       })
-      .catch(error => showPageError('无法打开写作项目', error, '无法打开写作项目'));
-  }, [location.search, showPageError]);
+      .catch(error => {
+        clearSelectedProject();
+        showPageError('无法打开写作项目', error, '无法打开写作项目');
+      });
+  }, [clearSelectedProject, location.search, showPageError]);
 
   useEffect(() => {
     if (!selectedProject?.id) {
@@ -627,31 +681,57 @@ const WritingPage: React.FC = () => {
   };
   const handleApplyDiff = (result: string) => { setPolishResult(result); setDiffResult(null); message.success('Diff 修改已应用'); };
   const handleSelectProject = async (p: any) => {
-    setSelectedProject(p);
-    setProjectSections(p.sections || []);
+    const project = normalizeWritingProject(p);
+    if (!project) {
+      clearSelectedProject();
+      message.error('写作项目数据不完整，已取消选择');
+      return;
+    }
+    setSelectedProject(project);
+    setProjectSections(project.sections);
     setCitationChecks({});
     setQualityChecks({});
     setLatexPreviewChecks({});
     setManuscriptPreview(null);
     setSectionAiState({});
-    setActiveSectionId((p.sections || [])[0]?.id || null);
+    setActiveSectionId(project.sections[0]?.id || null);
     setEvidenceTable(null);
     setSupportFiles(null);
-    const profile = p.metadata_json?.submission_profile || {};
+    const profile = project.metadata_json?.submission_profile || {};
     setSubmissionVenue(profile.venue || '');
     setSubmissionYear(profile.year || '');
     setSubmissionInspection(profile.template_source ? profile : null);
     setSubmissionTemplateFile(null);
+    setPageActionError(null);
   };
+  const handleProjectDeleted = useCallback((projectId: string) => {
+    if (selectedProject?.id === projectId) clearSelectedProject();
+    setProjectRefreshSignal(v => v + 1);
+  }, [clearSelectedProject, selectedProject?.id]);
+  const applySelectedProjectUpdate = useCallback((payload: any) => {
+    const project = normalizeWritingProject(payload);
+    if (!project) return null;
+    setSelectedProject(project);
+    setProjectSections(project.sections);
+    return project;
+  }, []);
+  const syncProjectFromResponse = useCallback((payload: any) => {
+    const project = applySelectedProjectUpdate(payload);
+    if (!project) throw new Error('写作项目返回数据不完整');
+    return project;
+  }, [applySelectedProjectUpdate]);
+  const syncProjectFromNestedResponse = useCallback((payload: any) => {
+    const project = syncProjectFromResponse(payload?.project);
+    return project;
+  }, [syncProjectFromResponse]);
   const handleCreateReviewDraft = async () => {
     const topic = draftTopic.trim();
     if (!topic) { message.warning('请先输入研究方向'); return; }
     setDraftLoading(true);
     try {
       const r = await api.post('/writing/projects/from-topic', { topic, max_papers: 8, language: 'chinese' });
-      const project = r.data.project;
-      setSelectedProject(project);
-      setProjectSections(project.sections || []);
+      const project = syncProjectFromResponse(r.data.project);
+      setActiveSectionId(project.sections[0]?.id || null);
       setProjectRefreshSignal(v => v + 1);
       setPageActionError(null);
       message.success(r.data.evidence_status === 'sufficient' ? '综述草稿已创建' : '已创建草稿，但证据不足，建议先补充论文');
@@ -729,8 +809,7 @@ const WritingPage: React.FC = () => {
     setSupportFilesSaving(true);
     try {
       const response = await api.put(`/writing/projects/${selectedProject.id}/support-files`, { figures });
-      setSelectedProject(response.data.project);
-      setProjectSections(response.data.project.sections || []);
+      syncProjectFromNestedResponse(response.data);
       setSupportFiles(response.data.support_files);
       setPageActionError(null);
       message.success('figures/ 清单已保存');
@@ -1054,8 +1133,7 @@ const WritingPage: React.FC = () => {
       const response = await api.post(`/writing/projects/${selectedProject.id}/submission-template`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
-      setSelectedProject(response.data.project);
-      setProjectSections(response.data.project.sections || []);
+      syncProjectFromNestedResponse(response.data);
       setSubmissionInspection(response.data.inspection);
       setSubmissionTemplateFile(null);
       setExportPackage(null);
@@ -1080,8 +1158,7 @@ const WritingPage: React.FC = () => {
         document_options: profile.document_options || [],
         packages: profile.packages || [],
       });
-      setSelectedProject(response.data);
-      setProjectSections(response.data.sections || []);
+      syncProjectFromResponse(response.data);
       setExportPackage(null);
       setManuscriptPreview(null);
       setLatexPreviewChecks({});
@@ -1100,8 +1177,7 @@ const WritingPage: React.FC = () => {
     setSubmissionUploading(true);
     try {
       const response = await api.delete(`/writing/projects/${selectedProject.id}/submission-template`);
-      setSelectedProject(response.data.project);
-      setProjectSections(response.data.project.sections || []);
+      syncProjectFromNestedResponse(response.data);
       setSubmissionInspection(null);
       setSubmissionTemplateFile(null);
       setLatexCompileLayout('single_column');
@@ -2301,7 +2377,12 @@ const WritingPage: React.FC = () => {
               />
             </Tooltip>
           </div>
-          <WritingProjectPanel onSelectProject={handleSelectProject} selectedProjectId={selectedProject?.id} refreshSignal={projectRefreshSignal} />
+          <WritingProjectPanel
+            onSelectProject={handleSelectProject}
+            onProjectDeleted={handleProjectDeleted}
+            selectedProjectId={selectedProject?.id}
+            refreshSignal={projectRefreshSignal}
+          />
           {selectedProject && (
             <Card
               size="small"
@@ -2524,7 +2605,12 @@ const WritingPage: React.FC = () => {
 
   const surveyWorkflowPanel = (
     <div style={{ display: 'grid', gridTemplateColumns: '280px minmax(0, 1fr)', gap: 20, alignItems: 'start' }}>
-      <WritingProjectPanel onSelectProject={handleSelectProject} selectedProjectId={selectedProject?.id} refreshSignal={projectRefreshSignal} />
+      <WritingProjectPanel
+        onSelectProject={handleSelectProject}
+        onProjectDeleted={handleProjectDeleted}
+        selectedProjectId={selectedProject?.id}
+        refreshSignal={projectRefreshSignal}
+      />
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <Card style={cardStyle} styles={{ body: { padding: 16 } }}>
           <Text strong>从研究方向创建综述草稿</Text>

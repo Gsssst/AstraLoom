@@ -312,3 +312,47 @@ test('project file tree rows navigate to support file panels', () => {
   assert.match(writingPageSource, /role="button"/);
   assert.match(writingPageSource, /onClick=\{\(\) => handleFileTreeOpen\(file\)\}/);
 });
+
+test('writing project panel closes create modal and reports create failures', () => {
+  assert.match(projectPanelSource, /if \(loading\) return/);
+  assert.match(projectPanelSource, /setShowCreate\(false\)/);
+  assert.match(projectPanelSource, /setNewTitle\(''\)/);
+  assert.match(projectPanelSource, /setSelectedCollectionIds\(\[\]\)/);
+  assert.match(projectPanelSource, /onSelectProject\(project\)/);
+  assert.match(projectPanelSource, /message\.success\('写作项目已创建'\)/);
+  assert.match(projectPanelSource, /message\.error\(fallback \|\| '创建写作项目失败'\)/);
+});
+
+test('writing project delete action does not select project cards', () => {
+  assert.match(projectPanelSource, /onProjectDeleted\?: \(projectId: string\) => void/);
+  assert.match(projectPanelSource, /onProjectDeleted\?\.\(id\)/);
+  assert.match(projectPanelSource, /<span onClick=\{event => event\.stopPropagation\(\)\}>/);
+  assert.match(projectPanelSource, /event\?\.stopPropagation\?\.\(\)/);
+  assert.match(projectPanelSource, /onClick=\{event => event\.stopPropagation\(\)\}/);
+  assert.match(projectPanelSource, /message\.error\('删除写作项目失败'\)/);
+});
+
+test('writing page clears stale selected project state after deletion', () => {
+  assert.match(writingPageSource, /const clearSelectedProject = useCallback/);
+  assert.match(writingPageSource, /setSelectedProject\(null\)/);
+  assert.match(writingPageSource, /setProjectSections\(\[\]\)/);
+  assert.match(writingPageSource, /setActiveSectionId\(null\)/);
+  assert.match(writingPageSource, /setEvidenceCards\(\[\]\)/);
+  assert.match(writingPageSource, /setManuscriptPreview\(null\)/);
+  assert.match(writingPageSource, /setSectionAiState\(\{\}\)/);
+  assert.match(writingPageSource, /const handleProjectDeleted = useCallback/);
+  assert.match(writingPageSource, /selectedProject\?\.id === projectId/);
+  assert.match(writingPageSource, /clearSelectedProject\(\)/);
+  assert.match(writingPageSource, /onProjectDeleted=\{handleProjectDeleted\}/);
+});
+
+test('writing page normalizes selected project payloads before rendering', () => {
+  assert.match(writingPageSource, /const normalizeWritingProject = \(project: any\) =>/);
+  assert.match(writingPageSource, /if \(!project\?\.id\) return null/);
+  assert.match(writingPageSource, /metadata_json: project\.metadata_json \|\| \{\}/);
+  assert.match(writingPageSource, /sections,\n\s+progress: project\.progress \|\|/);
+  assert.match(writingPageSource, /const project = normalizeWritingProject\(p\)/);
+  assert.match(writingPageSource, /message\.error\('写作项目数据不完整，已取消选择'\)/);
+  assert.match(writingPageSource, /syncProjectFromResponse/);
+  assert.match(writingPageSource, /syncProjectFromNestedResponse/);
+});

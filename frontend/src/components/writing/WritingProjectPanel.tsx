@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Alert, Card, Button, List, Tag, Progress, Space, Modal, Input, Select, Typography, Popconfirm } from 'antd';
+import { Alert, Card, Button, List, Tag, Progress, Space, Modal, Input, Select, Typography, Popconfirm, message } from 'antd';
 import { PlusOutlined, DeleteOutlined, FolderOutlined } from '@ant-design/icons';
 import api from '../../services/api';
 
@@ -40,11 +40,40 @@ interface CollectionOption {
 
 interface WritingProjectPanelProps {
   onSelectProject: (project: Project) => void;
+  onProjectDeleted?: (projectId: string) => void;
   selectedProjectId?: string;
   refreshSignal?: number;
 }
 
-const WritingProjectPanel: React.FC<WritingProjectPanelProps> = ({ onSelectProject, selectedProjectId, refreshSignal = 0 }) => {
+const normalizeProject = (project: any): Project | null => {
+  if (!project?.id) return null;
+  const sections = Array.isArray(project.sections) ? project.sections : [];
+  const rawProgress = project.progress || {};
+  const progress = {
+    percentage: Number(rawProgress.percentage || 0),
+    completed: Number(rawProgress.completed || 0),
+    total: Number(rawProgress.total || sections.length || 0),
+    total_words: Number(rawProgress.total_words || 0),
+  };
+  return {
+    ...project,
+    id: String(project.id),
+    title: project.title || 'Untitled',
+    description: project.description || '',
+    template_type: project.template_type || 'blank',
+    status: project.status || 'draft',
+    metadata_json: project.metadata_json || {},
+    sections,
+    progress,
+  };
+};
+
+const WritingProjectPanel: React.FC<WritingProjectPanelProps> = ({
+  onSelectProject,
+  onProjectDeleted,
+  selectedProjectId,
+  refreshSignal = 0,
+}) => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [researchProjects, setResearchProjects] = useState<ResearchProjectOption[]>([]);
@@ -99,7 +128,11 @@ const WritingProjectPanel: React.FC<WritingProjectPanelProps> = ({ onSelectProje
   };
 
   const handleCreate = async () => {
-    if (!newTitle.trim()) return;
+    if (loading) return;
+    if (!newTitle.trim()) {
+      message.warning('请先填写项目标题');
+      return;
+    }
     setLoading(true);
     try {
       const response = await api.post('/writing/projects', {
@@ -112,21 +145,32 @@ const WritingProjectPanel: React.FC<WritingProjectPanelProps> = ({ onSelectProje
         research_project_id: selectedResearchProjectId,
         collection_ids: selectedCollectionIds,
       });
+      const project = normalizeProject(response.data);
+      if (!project) throw new Error('写作项目创建成功，但返回数据不完整');
       setShowCreate(false);
       setNewTitle(''); setNewDesc(''); setNewTemplate('blank');
       setWritingType('paper'); setTargetVenue(''); setTargetYear('');
       setSelectedResearchProjectId(undefined); setSelectedCollectionIds([]);
-      onSelectProject(response.data);
-      loadProjects();
-    } catch { /* ignore */ }
+      onSelectProject(project);
+      await loadProjects();
+      message.success('写作项目已创建');
+    } catch (error) {
+      const fallback = error instanceof Error ? error.message : '创建写作项目失败';
+      message.error(fallback || '创建写作项目失败');
+    }
     finally { setLoading(false); }
   };
 
   const handleDelete = async (id: string) => {
     try {
       await api.delete(`/writing/projects/${id}`);
-      loadProjects();
-    } catch { /* ignore */ }
+      setProjects(prev => prev.filter(project => project.id !== id));
+      onProjectDeleted?.(id);
+      await loadProjects();
+      message.success('项目已删除');
+    } catch {
+      message.error('删除写作项目失败');
+    }
   };
 
   return (
@@ -142,7 +186,10 @@ const WritingProjectPanel: React.FC<WritingProjectPanelProps> = ({ onSelectProje
         size="small"
         dataSource={projects}
         locale={{ emptyText: '暂无项目，点击"新建"创建' }}
-        renderItem={(project) => (
+        renderItem={(rawProject) => {
+          const project = normalizeProject(rawProject);
+          if (!project) return null;
+          return (
           <Card
             size="small"
             hoverable
@@ -152,9 +199,24 @@ const WritingProjectPanel: React.FC<WritingProjectPanelProps> = ({ onSelectProje
             }}
             onClick={() => onSelectProject(project)}
             extra={
-              <Popconfirm title="确定删除？" onConfirm={() => handleDelete(project.id)}>
-                <Button size="small" type="text" danger icon={<DeleteOutlined />} />
-              </Popconfirm>
+              <span onClick={event => event.stopPropagation()}>
+                <Popconfirm
+                  title="确定删除？"
+                  onConfirm={(event) => {
+                    event?.stopPropagation?.();
+                    handleDelete(project.id);
+                  }}
+                  onCancel={(event) => event?.stopPropagation?.()}
+                >
+                  <Button
+                    size="small"
+                    type="text"
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={event => event.stopPropagation()}
+                  />
+                </Popconfirm>
+              </span>
             }
           >
             <Text strong ellipsis style={{ fontSize: 13 }}>{project.title}</Text>
@@ -176,7 +238,8 @@ const WritingProjectPanel: React.FC<WritingProjectPanelProps> = ({ onSelectProje
             <Progress percent={project.progress.percentage} size="small" style={{ marginTop: 4 }}
               format={() => `${project.progress.completed}/${project.progress.total}`} />
           </Card>
-        )}
+          );
+        }}
       />
 
       <Modal title="新建写作项目" open={showCreate} onOk={handleCreate} onCancel={() => setShowCreate(false)}
