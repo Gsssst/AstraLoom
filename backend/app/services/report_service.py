@@ -24,7 +24,7 @@ MAX_STRUCTURED_BLOCKS = 80
 MAX_STRUCTURED_BLOCK_CHARS = 1800
 MAX_STRUCTURED_TABLE_ROWS = 40
 MAX_STRUCTURED_TABLE_COLS = 12
-SUPPORTED_PDF_STRUCTURED_BACKENDS = {"lightweight", "command", "auto"}
+SUPPORTED_PDF_STRUCTURED_BACKENDS = {"lightweight", "command", "docling", "auto"}
 
 
 @dataclass
@@ -372,6 +372,167 @@ def structured_extraction_from_external_payload(
     )
 
 
+def _object_to_plain_dict(value: Any) -> Optional[dict[str, Any]]:
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump()
+            return dumped if isinstance(dumped, dict) else None
+        except Exception:
+            return None
+    if hasattr(value, "dict"):
+        try:
+            dumped = value.dict()
+            return dumped if isinstance(dumped, dict) else None
+        except Exception:
+            return None
+    return None
+
+
+def _docling_page_from_item(item: Any) -> Optional[int]:
+    payload = _object_to_plain_dict(item) or {}
+    for key in ("page", "page_no", "page_number", "page_index"):
+        page = _coerce_page_number(payload.get(key))
+        if page:
+            return page
+
+    prov = payload.get("prov") or getattr(item, "prov", None)
+    if isinstance(prov, list) and prov:
+        first = prov[0]
+        first_payload = _object_to_plain_dict(first) or {}
+        page = _coerce_page_number(first_payload.get("page_no") or first_payload.get("page"))
+        if page:
+            return page
+    elif prov:
+        prov_payload = _object_to_plain_dict(prov) or {}
+        page = _coerce_page_number(prov_payload.get("page_no") or prov_payload.get("page"))
+        if page:
+            return page
+    return None
+
+
+def _docling_text_from_item(item: Any) -> str:
+    payload = _object_to_plain_dict(item) or {}
+    for key in ("text", "caption", "content", "markdown", "html"):
+        value = payload.get(key) or getattr(item, key, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    if hasattr(item, "export_to_markdown"):
+        try:
+            markdown = item.export_to_markdown()
+            if isinstance(markdown, str) and markdown.strip():
+                return markdown.strip()
+        except Exception:
+            return ""
+    return ""
+
+
+def _docling_item_type(item: Any, fallback: str) -> str:
+    payload = _object_to_plain_dict(item) or {}
+    raw = (
+        payload.get("type")
+        or payload.get("label")
+        or payload.get("category")
+        or getattr(item, "label", None)
+        or fallback
+    )
+    return _normalize_external_block_type(raw)
+
+
+def structured_extraction_from_docling_document(document: Any, *, source_path: str) -> StructuredPdfExtraction:
+    """Normalize a Docling document object into internal structured blocks."""
+    blocks: list[StructuredPdfBlock] = []
+    page_count = 0
+
+    if hasattr(document, "export_to_dict"):
+        try:
+            exported = document.export_to_dict()
+            external = structured_extraction_from_external_payload(
+                exported,
+                source_path=source_path,
+                parser="docling",
+            )
+            blocks.extend(external.blocks)
+            page_count = max(page_count, external.page_count)
+        except Exception as exc:
+            logger.warning("Docling dict 导出归一化失败: %s", exc)
+
+    collection_specs = [
+        ("texts", "text"),
+        ("tables", "table"),
+        ("pictures", "visual"),
+        ("figures", "visual"),
+        ("formulas", "formula"),
+        ("groups", "structured"),
+    ]
+    seen: set[tuple[str, Optional[int], str]] = {
+        (block.block_type, block.page, block.text)
+        for block in blocks
+    }
+    for attr, fallback_type in collection_specs:
+        items = getattr(document, attr, None)
+        if isinstance(items, dict):
+            iterable = list(items.values())
+        elif isinstance(items, list):
+            iterable = items
+        else:
+            continue
+        for item in iterable:
+            text = _docling_text_from_item(item)
+            if not text:
+                continue
+            block_type = _docling_item_type(item, fallback_type)
+            page = _docling_page_from_item(item)
+            key = (block_type, page, text[:MAX_STRUCTURED_BLOCK_CHARS])
+            if key in seen:
+                continue
+            seen.add(key)
+            blocks.append(StructuredPdfBlock(
+                block_type=block_type,
+                page=page,
+                source="docling",
+                text=text[:MAX_STRUCTURED_BLOCK_CHARS],
+                metadata={"docling_collection": attr},
+            ))
+            if len(blocks) >= MAX_STRUCTURED_BLOCKS:
+                break
+        if len(blocks) >= MAX_STRUCTURED_BLOCKS:
+            break
+
+    if hasattr(document, "export_to_markdown") and len(blocks) < MAX_STRUCTURED_BLOCKS:
+        try:
+            markdown = document.export_to_markdown()
+        except Exception:
+            markdown = ""
+        if isinstance(markdown, str) and markdown.strip():
+            text = markdown.strip()[:MAX_STRUCTURED_BLOCK_CHARS]
+            key = ("docling_markdown", None, text)
+            if key not in seen:
+                blocks.append(StructuredPdfBlock(
+                    block_type="docling_markdown",
+                    page=None,
+                    source="docling",
+                    text=text,
+                    metadata={"docling_export": "markdown"},
+                ))
+
+    pages = getattr(document, "pages", None)
+    if isinstance(pages, dict):
+        page_count = max(page_count, len(pages))
+    elif isinstance(pages, list):
+        page_count = max(page_count, len(pages))
+    else:
+        page_count = max(page_count, max((block.page or 0 for block in blocks), default=0))
+
+    return StructuredPdfExtraction(
+        source_path=source_path,
+        page_count=page_count,
+        blocks=blocks[:MAX_STRUCTURED_BLOCKS],
+        parser="docling",
+    )
+
+
 def extract_pdf_structured_content_lightweight(path: str) -> StructuredPdfExtraction:
     """Extract LLM-readable structured PDF blocks with installed parsers."""
     blocks: list[StructuredPdfBlock] = []
@@ -490,12 +651,38 @@ def extract_pdf_structured_content_with_command(path: str) -> StructuredPdfExtra
     return extraction
 
 
+def extract_pdf_structured_content_with_docling(path: str) -> StructuredPdfExtraction:
+    """Run optional Docling conversion and normalize its document output."""
+    parser_subprocess_environment()
+    try:
+        from docling.document_converter import DocumentConverter
+    except Exception as exc:
+        raise RuntimeError(f"Docling is not installed or unavailable: {exc}") from exc
+
+    converter = DocumentConverter()
+    result = converter.convert(path)
+    document = getattr(result, "document", result)
+    extraction = structured_extraction_from_docling_document(document, source_path=path)
+    if not extraction.blocks:
+        raise RuntimeError("Docling returned no usable structured blocks")
+    return extraction
+
+
 def extract_pdf_structured_content(path: str) -> StructuredPdfExtraction:
     """Extract structured PDF content with optional advanced parser fallback."""
     backend = str(settings.PDF_STRUCTURED_PARSER_BACKEND or "lightweight").strip().lower()
     if backend not in SUPPORTED_PDF_STRUCTURED_BACKENDS:
         logger.warning("未知 PDF 结构化解析后端 %s，使用轻量解析", backend)
         backend = "lightweight"
+
+    if backend in {"docling", "auto"}:
+        try:
+            return extract_pdf_structured_content_with_docling(path)
+        except Exception as exc:
+            if backend == "docling":
+                logger.warning("Docling PDF 解析失败，回退轻量解析: %s", exc)
+            else:
+                logger.info("Docling PDF 解析不可用，尝试其他解析后端: %s", exc)
 
     if backend in {"command", "auto"}:
         try:

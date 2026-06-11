@@ -1,4 +1,6 @@
 import pytest
+import sys
+import types
 
 from app.services.paper_chunk_service import PaperChunkService
 from app.services import memory_service, report_service
@@ -292,6 +294,101 @@ def test_command_backend_failure_falls_back_to_lightweight(monkeypatch):
 
     monkeypatch.setattr(report_service.settings, "PDF_STRUCTURED_PARSER_BACKEND", "command")
     monkeypatch.setattr(report_service, "extract_pdf_structured_content_with_command", failing_command)
+    monkeypatch.setattr(report_service, "extract_pdf_structured_content_lightweight", lambda _path: fallback)
+
+    extraction = report_service.extract_pdf_structured_content("/tmp/paper.pdf")
+
+    assert extraction.parser == "test-lightweight"
+    assert extraction.blocks[0].text == "fallback caption"
+
+
+class _FakeDoclingItem:
+    def __init__(self, text, *, label=None, page_no=None):
+        self.text = text
+        self.label = label
+        self.prov = [{"page_no": page_no}] if page_no else []
+
+
+class _FakeDoclingTable:
+    def __init__(self, markdown, *, page_no=None):
+        self._markdown = markdown
+        self.prov = [{"page_no": page_no}] if page_no else []
+
+    def export_to_markdown(self):
+        return self._markdown
+
+
+class _FakeDoclingDocument:
+    pages = {1: object(), 2: object(), 3: object()}
+
+    def __init__(self):
+        self.texts = [_FakeDoclingItem("Docling paragraph about multimodal fusion.", page_no=1)]
+        self.tables = [_FakeDoclingTable("| Model | Score |\n| --- | --- |\n| Ours | 92 |", page_no=2)]
+        self.pictures = [_FakeDoclingItem("Figure 3. Attention heatmap.", label="figure_caption", page_no=3)]
+
+    def export_to_dict(self):
+        return {
+            "blocks": [
+                {"type": "formula", "text": "L = L_v + L_t", "page": 2},
+            ],
+        }
+
+    def export_to_markdown(self):
+        return "# Docling Markdown\n\nFull document markdown."
+
+
+def test_docling_document_normalizes_markdown_dict_and_collections():
+    extraction = report_service.structured_extraction_from_docling_document(
+        _FakeDoclingDocument(),
+        source_path="/tmp/paper.pdf",
+    )
+
+    types_by_text = {block.text: block.block_type for block in extraction.blocks}
+
+    assert extraction.parser == "docling"
+    assert extraction.page_count == 3
+    assert types_by_text["L = L_v + L_t"] == "formula"
+    assert types_by_text["Docling paragraph about multimodal fusion."] == "text"
+    assert types_by_text["| Model | Score |\n| --- | --- |\n| Ours | 92 |"] == "table"
+    assert types_by_text["Figure 3. Attention heatmap."] == "caption"
+    assert any(block.block_type == "docling_markdown" for block in extraction.blocks)
+
+
+def test_docling_backend_success_uses_optional_python_api(monkeypatch):
+    seen_paths = []
+
+    class FakeConverter:
+        def convert(self, path):
+            seen_paths.append(path)
+            return types.SimpleNamespace(document=_FakeDoclingDocument())
+
+    fake_converter_module = types.ModuleType("docling.document_converter")
+    fake_converter_module.DocumentConverter = FakeConverter
+    fake_docling_module = types.ModuleType("docling")
+
+    monkeypatch.setitem(sys.modules, "docling", fake_docling_module)
+    monkeypatch.setitem(sys.modules, "docling.document_converter", fake_converter_module)
+
+    extraction = report_service.extract_pdf_structured_content_with_docling("/tmp/paper.pdf")
+
+    assert seen_paths == ["/tmp/paper.pdf"]
+    assert extraction.parser == "docling"
+    assert any(block.source == "docling" for block in extraction.blocks)
+
+
+def test_docling_backend_failure_falls_back_to_lightweight(monkeypatch):
+    fallback = report_service.StructuredPdfExtraction(
+        source_path="/tmp/paper.pdf",
+        page_count=1,
+        parser="test-lightweight",
+        blocks=[report_service.StructuredPdfBlock(block_type="caption", text="fallback caption", page=1)],
+    )
+
+    def failing_docling(_path):
+        raise RuntimeError("docling missing")
+
+    monkeypatch.setattr(report_service.settings, "PDF_STRUCTURED_PARSER_BACKEND", "docling")
+    monkeypatch.setattr(report_service, "extract_pdf_structured_content_with_docling", failing_docling)
     monkeypatch.setattr(report_service, "extract_pdf_structured_content_lightweight", lambda _path: fallback)
 
     extraction = report_service.extract_pdf_structured_content("/tmp/paper.pdf")
