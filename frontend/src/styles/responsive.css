@@ -743,6 +743,41 @@
   line-height: 1.35;
 }
 
+.paper-parse-status-card {
+  border: 1px solid rgba(51, 138, 119, 0.14);
+  background: #fff;
+}
+
+.paper-parse-count-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
+  gap: 8px;
+}
+
+.paper-parse-count-item {
+  display: flex;
+  min-height: 58px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid rgba(51, 138, 119, 0.12);
+  border-radius: 8px;
+  background: rgba(51, 138, 119, 0.04);
+}
+
+.paper-parse-count-item .ant-typography:last-child {
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.paper-parse-error {
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 77, 79, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 77, 79, 0.04);
+}
+
 .paper-annotation-item {
   padding: 10px 12px;
   border: 1px solid rgba(240, 199, 94, 0.35);

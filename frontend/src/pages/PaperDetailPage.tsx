@@ -13,7 +13,7 @@ import {
   DatabaseOutlined, GlobalOutlined,
   DeleteOutlined, CloseOutlined,
   PlayCircleOutlined, CheckCircleOutlined, RollbackOutlined,
-  BookOutlined, NodeIndexOutlined,
+  BookOutlined, NodeIndexOutlined, FileSearchOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
@@ -35,16 +35,33 @@ import {
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
 
+interface StructuredPdfParseStatus {
+  ready: boolean;
+  parser?: string | null;
+  source_path?: string | null;
+  page_count: number;
+  parsed_at?: string | null;
+  table_count: number;
+  caption_count: number;
+  visual_count: number;
+  ocr_count: number;
+  formula_count: number;
+  block_count: number;
+  block_counts?: Record<string, number>;
+  last_error?: { message?: string; parser_backend?: string; failed_at?: string; [key: string]: any } | null;
+}
+
 interface PaperData {
   id: string; title: string; authors: string[]; year: number | null;
   abstract: string | null; arxiv_id: string | null; doi: string | null;
   source: string; source_url: string | null; citation_count: number;
-  pdf_url?: string | null;
+  pdf_url?: string | null; pdf_path?: string | null;
   full_text_preview: string | null; tags: any;
   categories: { id: string; name: string }[];
   similar_papers: { id: string; title: string; year: number | null; arxiv_id: string | null; tags: any }[];
   importance_label?: PaperImportanceLabel | null;
   importance_note?: string | null;
+  structured_parse_status?: StructuredPdfParseStatus | null;
   created_at: string;
 }
 
@@ -204,6 +221,12 @@ const paperEvidenceConfidenceMeta = {
   weak: { label: '证据不足', color: 'orange' },
 };
 
+const formatParseTime = (value?: string | null) => {
+  if (!value) return '未记录';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+};
+
 const PDF_PANEL_MIN_PERCENT = 42;
 const PDF_PANEL_MAX_PERCENT = 82;
 const CHAT_COLLAPSE_THRESHOLD_PERCENT = 84;
@@ -224,6 +247,8 @@ const PaperDetailPage: React.FC = () => {
   const [insightLoading, setInsightLoading] = useState(false);
   const [annotationSaving, setAnnotationSaving] = useState(false);
   const [deletingAnnotationIds, setDeletingAnnotationIds] = useState<Set<string>>(new Set());
+  const [parseStatus, setParseStatus] = useState<StructuredPdfParseStatus | null>(null);
+  const [parseLoading, setParseLoading] = useState(false);
   const [showPdf, setShowPdf] = useState(false);
   const [targetPdfPage, setTargetPdfPage] = useState<number | null>(null);
   const [mobilePanel, setMobilePanel] = useState<'content' | 'pdf' | 'chat'>('content');
@@ -355,6 +380,7 @@ const PaperDetailPage: React.FC = () => {
     setLoading(true);
     api.get(`/papers/${paperId}`).then(res => {
       setPaper(res.data);
+      setParseStatus(res.data.structured_parse_status || null);
       if (res.data.tags && typeof res.data.tags === 'object' && res.data.tags.domain) setShowPdf(true);
     }).catch(() => message.error('论文加载失败')).finally(() => setLoading(false));
   }, [paperId]);
@@ -779,6 +805,27 @@ const PaperDetailPage: React.FC = () => {
     }
   };
 
+  const handleReparseStructuredPdf = async () => {
+    if (!paperId || parseLoading) return;
+    setParseLoading(true);
+    try {
+      const response = await api.post(`/papers/${paperId}/reparse-structured-pdf`, {}, { timeout: 300000 });
+      setParseStatus(response.data);
+      setPaper(current => current ? { ...current, structured_parse_status: response.data } : current);
+      message.success('PDF 结构化解析已刷新');
+    } catch (error: any) {
+      const status = error.response?.data?.detail?.status;
+      if (status) {
+        setParseStatus(status);
+        setPaper(current => current ? { ...current, structured_parse_status: status } : current);
+      }
+      const detail = error.response?.data?.detail;
+      message.error(detail?.message || detail || 'PDF 结构化解析失败');
+    } finally {
+      setParseLoading(false);
+    }
+  };
+
   const handleLinkTool = async () => {
     if (!paperId || !selectedToolId) {
       message.warning('请选择要关联的工具');
@@ -837,6 +884,18 @@ const PaperDetailPage: React.FC = () => {
 
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
   if (!paper) return <Empty description="论文未找到" />;
+  const activeParseStatus = parseStatus || paper.structured_parse_status || null;
+  const parseStatusColor = activeParseStatus?.ready ? 'green' : activeParseStatus?.last_error ? 'red' : 'default';
+  const parseStatusLabel = activeParseStatus?.ready ? '结构化已就绪' : activeParseStatus?.last_error ? '解析失败' : '结构化未就绪';
+  const structuredCountItems = activeParseStatus ? [
+    ['页数', activeParseStatus.page_count],
+    ['结构块', activeParseStatus.block_count],
+    ['表格', activeParseStatus.table_count],
+    ['图注', activeParseStatus.caption_count],
+    ['视觉', activeParseStatus.visual_count],
+    ['OCR', activeParseStatus.ocr_count],
+    ['公式', activeParseStatus.formula_count],
+  ] : [];
 
   return (
     <div className="paper-detail-page">
@@ -994,6 +1053,62 @@ const PaperDetailPage: React.FC = () => {
                 </Col>
               ))}
             </Row>
+          </Card>
+          <Card
+            size="small"
+            className="paper-parse-status-card"
+            title={<span><FileSearchOutlined /> PDF 结构化解析</span>}
+            extra={
+              <Space size={6} wrap>
+                <Tag color={parseStatusColor}>{parseStatusLabel}</Tag>
+                {isAdmin && (
+                  <Button
+                    size="small"
+                    icon={<FileSearchOutlined />}
+                    loading={parseLoading}
+                    disabled={!paper.arxiv_id && !paper.pdf_url && !paper.pdf_path && !activeParseStatus?.source_path}
+                    onClick={handleReparseStructuredPdf}
+                  >
+                    重新解析 PDF
+                  </Button>
+                )}
+              </Space>
+            }
+            style={{ marginTop: 16, borderRadius: 12 }}
+          >
+            {activeParseStatus ? (
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                <Space size={6} wrap>
+                  <Tag color={activeParseStatus.parser ? 'geekblue' : 'default'}>parser: {activeParseStatus.parser || '未记录'}</Tag>
+                  <Tag color={activeParseStatus.parsed_at ? 'blue' : 'default'}>解析时间: {formatParseTime(activeParseStatus.parsed_at)}</Tag>
+                </Space>
+                <div className="paper-parse-count-grid">
+                  {structuredCountItems.map(([label, value]) => (
+                    <div className="paper-parse-count-item" key={label}>
+                      <Text type="secondary">{label}</Text>
+                      <Text strong>{Number(value || 0)}</Text>
+                    </div>
+                  ))}
+                </div>
+                {activeParseStatus.last_error ? (
+                  <div className="paper-parse-error">
+                    <Space size={6} wrap>
+                      <Tag color="red">{activeParseStatus.last_error.parser_backend || 'parser'}</Tag>
+                      {activeParseStatus.last_error.failed_at && <Tag color="red">失败时间: {formatParseTime(activeParseStatus.last_error.failed_at)}</Tag>}
+                    </Space>
+                    <Text type="danger" style={{ display: 'block', marginTop: 6 }}>
+                      {activeParseStatus.last_error.message || '最近一次结构化解析失败'}
+                    </Text>
+                  </div>
+                ) : (
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    最近一次结构化解析无错误记录。
+                  </Text>
+                )}
+              </Space>
+            ) : (
+              <Text type="secondary">尚未检测到 PDF 结构化解析状态。</Text>
+            )}
           </Card>
           {isAuthenticated && (
             <Card

@@ -63,6 +63,22 @@ class PaperBrief(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class StructuredPdfParseStatus(BaseModel):
+    ready: bool = False
+    parser: Optional[str] = None
+    source_path: Optional[str] = None
+    page_count: int = 0
+    parsed_at: Optional[str] = None
+    table_count: int = 0
+    caption_count: int = 0
+    visual_count: int = 0
+    ocr_count: int = 0
+    formula_count: int = 0
+    block_count: int = 0
+    block_counts: dict[str, int] = Field(default_factory=dict)
+    last_error: Optional[dict] = None
+
+
 class PaperDetail(PaperBrief):
     pdf_path: Optional[str]
     full_text_preview: Optional[str] = None
@@ -70,6 +86,7 @@ class PaperDetail(PaperBrief):
     categories: list = []
     metadata_json: Optional[dict] = None
     similar_papers: list = []
+    structured_parse_status: Optional[StructuredPdfParseStatus] = None
 
 
 class PaperImportanceRequest(BaseModel):
@@ -103,6 +120,7 @@ class PaperProcessingStatus(BaseModel):
     status: Literal["ready", "needs_full_text", "needs_embedding", "needs_tags", "needs_processing"]
     missing: list[str] = []
     repair_actions: list[dict] = []
+    structured_parse_status: Optional[StructuredPdfParseStatus] = None
 
 
 class PaperProcessingStatusResponse(BaseModel):
@@ -517,10 +535,15 @@ def _paper_processing_flags(paper: Paper) -> dict[str, Any]:
 
 
 def _paper_processing_status(paper: Paper) -> PaperProcessingStatus:
+    from app.services.report_service import structured_pdf_parse_status_from_paper
+
     flags = _paper_processing_flags(paper)
+    structured_status = structured_pdf_parse_status_from_paper(paper)
     actions = []
     if not flags["has_full_text"] and paper.arxiv_id:
         actions.append({"key": "full_text", "label": "补全文", "endpoint": f"/papers/{paper.id}/load-full-text"})
+    if flags["has_pdf"] or paper.arxiv_id:
+        actions.append({"key": "structured_parse", "label": "重解析 PDF", "endpoint": f"/papers/{paper.id}/reparse-structured-pdf"})
     if not flags["has_embedding"]:
         actions.append({"key": "embedding", "label": "生成向量", "endpoint": f"/papers/{paper.id}/embedding"})
     if not flags["has_tags"]:
@@ -538,6 +561,7 @@ def _paper_processing_status(paper: Paper) -> PaperProcessingStatus:
         status=flags["status"],
         missing=flags["missing"],
         repair_actions=actions,
+        structured_parse_status=StructuredPdfParseStatus(**structured_status),
     )
 
 
@@ -1119,6 +1143,7 @@ async def get_paper_detail(
             asyncio.create_task(ensure_full_text(paper))
         except Exception:
             pass
+    from app.services.report_service import structured_pdf_parse_status_from_paper
 
     return PaperDetail(
         id=str(paper.id),
@@ -1143,6 +1168,7 @@ async def get_paper_detail(
             for c in (paper.categories or [])
         ],
         metadata_json=paper.metadata_json,
+        structured_parse_status=StructuredPdfParseStatus(**structured_pdf_parse_status_from_paper(paper)),
         created_at=paper.created_at.isoformat() if paper.created_at else "",
         similar_papers=[
             {"id": str(sp.id), "title": sp.title, "year": sp.year, "arxiv_id": sp.arxiv_id, "tags": sp.tags}
@@ -1622,7 +1648,42 @@ async def load_full_text(paper_id: str, db: AsyncSession = Depends(get_db), user
     from app.services.report_service import ensure_full_text
     text = await ensure_full_text(paper)
     await db.commit()
-    return {"full_text_length": len(text) if text else 0, "success": bool(text)}
+    from app.services.report_service import structured_pdf_parse_status_from_paper
+    return {
+        "full_text_length": len(text) if text else 0,
+        "success": bool(text),
+        "structured_parse_status": structured_pdf_parse_status_from_paper(paper),
+    }
+
+
+@router.post("/{paper_id}/reparse-structured-pdf", response_model=StructuredPdfParseStatus)
+async def reparse_structured_pdf(paper_id: str, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    """Force structured PDF parsing and refresh parser status metadata."""
+    from uuid import UUID
+    try:
+        pid = UUID(paper_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid paper_id")
+
+    result = await db.execute(select(Paper).where(Paper.id == pid))
+    paper = result.scalar_one_or_none()
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文未找到")
+
+    from app.services.report_service import force_structured_pdf_reparse, structured_pdf_parse_status_from_paper
+    try:
+        status = await force_structured_pdf_reparse(paper, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        status = structured_pdf_parse_status_from_paper(paper)
+        status["last_error"] = status.get("last_error") or {"message": str(exc)}
+        await db.commit()
+        raise HTTPException(status_code=500, detail={"message": "结构化解析失败", "status": status})
+
+    await db.commit()
+    await db.refresh(paper)
+    return StructuredPdfParseStatus(**structured_pdf_parse_status_from_paper(paper))
 
 
 @router.get("/pdf-proxy/{arxiv_id:path}")

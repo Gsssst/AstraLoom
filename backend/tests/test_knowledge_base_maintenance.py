@@ -3,13 +3,14 @@
 from types import SimpleNamespace
 from uuid import uuid4
 
+from fastapi import HTTPException
 import pytest
 
 from app.api import papers as papers_api
 from app.api.chat_sessions import _retrieval_status
 from app.core.security import require_admin
 from app.main import app
-from app.services import hybrid_search
+from app.services import hybrid_search, report_service
 
 
 def _route(path: str, method: str):
@@ -91,7 +92,140 @@ def test_processing_flags_and_repair_actions_reflect_missing_artifacts():
         "status": "needs_processing",
     }
     assert status.status == "needs_processing"
-    assert [action["key"] for action in status.repair_actions] == ["full_text", "embedding", "tags"]
+    assert [action["key"] for action in status.repair_actions] == ["full_text", "structured_parse", "embedding", "tags"]
+    assert status.structured_parse_status.ready is False
+
+
+def test_structured_parse_status_reports_cached_counts_and_parser():
+    paper = SimpleNamespace(
+        pdf_path="/data/paper.pdf",
+        metadata_json={
+            report_service.PDF_STRUCTURED_METADATA_KEY: {
+                "version": report_service.PDF_STRUCTURED_METADATA_VERSION,
+                "source_path": "/data/paper.pdf",
+                "parser": "docling",
+                "parsed_at": "2026-06-11T12:00:00+00:00",
+                "page_count": 9,
+                "table_count": 2,
+                "caption_count": 3,
+                "visual_count": 1,
+                "blocks": [
+                    {"type": "table", "text": "table", "page": 4},
+                    {"type": "ocr", "text": "ocr", "page": 5},
+                    {"type": "formula", "text": "formula", "page": 6},
+                ],
+            }
+        },
+    )
+
+    status = report_service.structured_pdf_parse_status_from_paper(paper)
+
+    assert status["ready"] is True
+    assert status["parser"] == "docling"
+    assert status["page_count"] == 9
+    assert status["table_count"] == 2
+    assert status["ocr_count"] == 1
+    assert status["formula_count"] == 1
+    assert status["block_count"] == 3
+
+
+class _ScalarOneResult:
+    def __init__(self, item):
+        self.item = item
+
+    def scalar_one_or_none(self):
+        return self.item
+
+
+class _PaperDb:
+    def __init__(self, paper):
+        self.paper = paper
+        self.commits = 0
+        self.refreshed = []
+        self.executed = []
+
+    async def execute(self, statement):
+        self.executed.append(statement)
+        return _ScalarOneResult(self.paper)
+
+    async def commit(self):
+        self.commits += 1
+
+    async def refresh(self, paper):
+        self.refreshed.append(paper)
+
+
+@pytest.mark.asyncio
+async def test_reparse_structured_pdf_endpoint_refreshes_metadata(monkeypatch):
+    paper_id = uuid4()
+    paper = SimpleNamespace(
+        id=paper_id,
+        title="Structured paper",
+        arxiv_id=None,
+        pdf_path="/data/paper.pdf",
+        metadata_json={
+            report_service.PDF_STRUCTURED_PARSE_ERROR_KEY: {"message": "old failure"}
+        },
+    )
+    db = _PaperDb(paper)
+
+    def fake_extract(path):
+        assert path == "/data/paper.pdf"
+        return report_service.StructuredPdfExtraction(
+            source_path=path,
+            page_count=4,
+            parser="test-parser",
+            blocks=[
+                report_service.StructuredPdfBlock(
+                    block_type="table",
+                    page=2,
+                    source="test",
+                    text="| Model | Accuracy |",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(report_service, "extract_pdf_structured_content", fake_extract)
+
+    status = await papers_api.reparse_structured_pdf(str(paper_id), db=db, user=SimpleNamespace(role="admin"))
+
+    assert status.ready is True
+    assert status.parser == "test-parser"
+    assert status.page_count == 4
+    assert status.table_count == 1
+    assert status.last_error is None
+    assert report_service.PDF_STRUCTURED_PARSE_ERROR_KEY not in paper.metadata_json
+    assert db.commits == 1
+    assert db.refreshed == [paper]
+
+
+@pytest.mark.asyncio
+async def test_reparse_structured_pdf_endpoint_persists_visible_failure(monkeypatch):
+    paper_id = uuid4()
+    paper = SimpleNamespace(
+        id=paper_id,
+        title="Broken paper",
+        arxiv_id=None,
+        pdf_path="/data/broken.pdf",
+        metadata_json={},
+    )
+    db = _PaperDb(paper)
+
+    def fake_extract(_path):
+        raise RuntimeError("parser binary missing")
+
+    monkeypatch.setattr(report_service, "extract_pdf_structured_content", fake_extract)
+    monkeypatch.setattr(report_service.settings, "PDF_STRUCTURED_PARSER_BACKEND", "command")
+
+    with pytest.raises(HTTPException) as raised:
+        await papers_api.reparse_structured_pdf(str(paper_id), db=db, user=SimpleNamespace(role="admin"))
+
+    assert raised.value.status_code == 500
+    assert db.commits == 1
+    error = paper.metadata_json[report_service.PDF_STRUCTURED_PARSE_ERROR_KEY]
+    assert error["message"] == "parser binary missing"
+    assert error["parser_backend"] == "command"
+    assert raised.value.detail["status"]["last_error"]["message"] == "parser binary missing"
 
 
 def test_processing_flags_mark_ready_when_full_text_embedding_and_tags_exist():

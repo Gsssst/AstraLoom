@@ -7,6 +7,7 @@ import re
 import shlex
 import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
@@ -19,6 +20,7 @@ from app.db.models.paper import Paper
 logger = logging.getLogger(__name__)
 _full_text_tasks: dict[str, asyncio.Task[str]] = {}
 PDF_STRUCTURED_METADATA_KEY = "pdf_structured_content"
+PDF_STRUCTURED_PARSE_ERROR_KEY = "pdf_structured_parse_error"
 PDF_STRUCTURED_METADATA_VERSION = 1
 MAX_STRUCTURED_BLOCKS = 80
 MAX_STRUCTURED_BLOCK_CHARS = 1800
@@ -85,6 +87,7 @@ class StructuredPdfExtraction:
             "version": self.version,
             "source_path": self.source_path,
             "parser": self.parser,
+            "parsed_at": datetime.now(timezone.utc).isoformat(),
             "page_count": self.page_count,
             "table_count": self.table_count,
             "caption_count": self.caption_count,
@@ -708,6 +711,97 @@ def structured_pdf_metadata_from_paper(paper: Paper) -> Optional[StructuredPdfEx
 def structured_pdf_evidence_blocks_from_paper(paper: Paper) -> list[dict[str, Any]]:
     extraction = structured_pdf_metadata_from_paper(paper)
     return extraction.to_evidence_blocks() if extraction else []
+
+
+def structured_pdf_parse_status_from_paper(paper: Paper) -> dict[str, Any]:
+    """Return UI/API friendly structured PDF parse status."""
+    metadata = getattr(paper, "metadata_json", None) or {}
+    payload = metadata.get(PDF_STRUCTURED_METADATA_KEY)
+    error = metadata.get(PDF_STRUCTURED_PARSE_ERROR_KEY)
+    blocks = payload.get("blocks") if isinstance(payload, dict) else []
+    block_counts: dict[str, int] = {}
+    if isinstance(blocks, list):
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "structured")
+            block_counts[block_type] = block_counts.get(block_type, 0) + 1
+
+    pdf_path = getattr(paper, "pdf_path", None)
+    source_path = payload.get("source_path") if isinstance(payload, dict) else pdf_path
+    source_matches = not pdf_path or not source_path or source_path == pdf_path
+    ready = bool(
+        isinstance(payload, dict)
+        and payload.get("version") == PDF_STRUCTURED_METADATA_VERSION
+        and isinstance(blocks, list)
+        and source_matches
+    )
+
+    return {
+        "ready": ready,
+        "parser": payload.get("parser") if isinstance(payload, dict) else None,
+        "source_path": source_path,
+        "page_count": payload.get("page_count") if isinstance(payload, dict) else 0,
+        "parsed_at": payload.get("parsed_at") if isinstance(payload, dict) else None,
+        "table_count": payload.get("table_count") if isinstance(payload, dict) else block_counts.get("table", 0),
+        "caption_count": payload.get("caption_count") if isinstance(payload, dict) else block_counts.get("caption", 0),
+        "visual_count": payload.get("visual_count") if isinstance(payload, dict) else block_counts.get("visual", 0),
+        "ocr_count": block_counts.get("ocr", 0),
+        "formula_count": block_counts.get("formula", 0),
+        "block_count": len(blocks) if isinstance(blocks, list) else 0,
+        "block_counts": block_counts,
+        "last_error": error if isinstance(error, dict) else None,
+    }
+
+
+async def _persist_structured_pdf_metadata(
+    paper: Paper,
+    metadata: dict[str, Any],
+    db: Optional[AsyncSession] = None,
+) -> None:
+    paper.metadata_json = metadata
+    if db is not None:
+        await db.execute(update(Paper).where(Paper.id == paper.id).values(metadata_json=metadata))
+        return
+
+    try:
+        from app.db.session import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as s:
+            await s.execute(
+                update(Paper).where(Paper.id == paper.id).values(metadata_json=metadata)
+            )
+            await s.commit()
+    except Exception as exc:
+        logger.warning("PDF 结构化元数据持久化失败 %s: %s", getattr(paper, "id", ""), exc)
+
+
+async def force_structured_pdf_reparse(paper: Paper, db: Optional[AsyncSession] = None) -> dict[str, Any]:
+    """Force structured PDF parsing and persist status or latest failure."""
+    pdf_path = getattr(paper, "pdf_path", None)
+    if not pdf_path:
+        if getattr(paper, "arxiv_id", None):
+            await ensure_full_text(paper)
+            pdf_path = getattr(paper, "pdf_path", None)
+        if not pdf_path:
+            raise ValueError("PDF 不可用，无法重新解析")
+
+    metadata = dict(getattr(paper, "metadata_json", None) or {})
+    try:
+        extraction = await asyncio.to_thread(extract_pdf_structured_content, pdf_path)
+        metadata[PDF_STRUCTURED_METADATA_KEY] = extraction.to_metadata()
+        metadata.pop(PDF_STRUCTURED_PARSE_ERROR_KEY, None)
+    except Exception as exc:
+        metadata[PDF_STRUCTURED_PARSE_ERROR_KEY] = {
+            "message": str(exc)[:1000],
+            "parser_backend": settings.PDF_STRUCTURED_PARSER_BACKEND,
+            "failed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await _persist_structured_pdf_metadata(paper, metadata, db)
+        raise
+
+    await _persist_structured_pdf_metadata(paper, metadata, db)
+    return structured_pdf_parse_status_from_paper(paper)
 
 
 async def ensure_structured_pdf_content(paper: Paper) -> Optional[StructuredPdfExtraction]:
