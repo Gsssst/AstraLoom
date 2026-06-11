@@ -2,9 +2,11 @@
 
 import asyncio
 import logging
-from typing import List
+import re
+from dataclasses import dataclass, field
+from typing import Any, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.services.llm import llm_service
 from app.services.arxiv_pdf_cache import ensure_cached_arxiv_pdf
@@ -12,6 +14,111 @@ from app.db.models.paper import Paper
 
 logger = logging.getLogger(__name__)
 _full_text_tasks: dict[str, asyncio.Task[str]] = {}
+PDF_STRUCTURED_METADATA_KEY = "pdf_structured_content"
+PDF_STRUCTURED_METADATA_VERSION = 1
+MAX_STRUCTURED_BLOCKS = 80
+MAX_STRUCTURED_BLOCK_CHARS = 1800
+MAX_STRUCTURED_TABLE_ROWS = 40
+MAX_STRUCTURED_TABLE_COLS = 12
+
+
+@dataclass
+class StructuredPdfBlock:
+    """A page-aware PDF block that can be used as retrieval evidence."""
+
+    block_type: str
+    text: str
+    page: Optional[int] = None
+    source: str = "pdfplumber"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "type": self.block_type,
+            "page": self.page,
+            "source": self.source,
+            "text": self.text[:MAX_STRUCTURED_BLOCK_CHARS],
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_metadata(cls, payload: dict[str, Any]) -> "StructuredPdfBlock":
+        return cls(
+            block_type=str(payload.get("type") or "structured"),
+            page=payload.get("page"),
+            source=str(payload.get("source") or "metadata"),
+            text=str(payload.get("text") or ""),
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+        )
+
+
+@dataclass
+class StructuredPdfExtraction:
+    """Bounded structured extraction summary for one PDF."""
+
+    source_path: str
+    page_count: int
+    blocks: list[StructuredPdfBlock]
+    parser: str = "pdfplumber"
+    version: int = PDF_STRUCTURED_METADATA_VERSION
+
+    @property
+    def table_count(self) -> int:
+        return sum(1 for block in self.blocks if block.block_type == "table")
+
+    @property
+    def caption_count(self) -> int:
+        return sum(1 for block in self.blocks if block.block_type == "caption")
+
+    @property
+    def visual_count(self) -> int:
+        return sum(1 for block in self.blocks if block.block_type == "visual")
+
+    def to_metadata(self) -> dict[str, Any]:
+        bounded_blocks = self.blocks[:MAX_STRUCTURED_BLOCKS]
+        return {
+            "version": self.version,
+            "source_path": self.source_path,
+            "parser": self.parser,
+            "page_count": self.page_count,
+            "table_count": self.table_count,
+            "caption_count": self.caption_count,
+            "visual_count": self.visual_count,
+            "blocks": [block.to_metadata() for block in bounded_blocks],
+        }
+
+    def to_evidence_blocks(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": block.block_type,
+                "page": block.page,
+                "source": block.source,
+                "text": block.text,
+                "metadata": block.metadata,
+            }
+            for block in self.blocks[:MAX_STRUCTURED_BLOCKS]
+            if block.text.strip()
+        ]
+
+    @classmethod
+    def from_metadata(cls, payload: dict[str, Any]) -> Optional["StructuredPdfExtraction"]:
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("version") != PDF_STRUCTURED_METADATA_VERSION:
+            return None
+        blocks_payload = payload.get("blocks")
+        if not isinstance(blocks_payload, list):
+            return None
+        return cls(
+            source_path=str(payload.get("source_path") or ""),
+            page_count=int(payload.get("page_count") or 0),
+            parser=str(payload.get("parser") or "metadata"),
+            blocks=[
+                StructuredPdfBlock.from_metadata(item)
+                for item in blocks_payload
+                if isinstance(item, dict) and str(item.get("text") or "").strip()
+            ],
+        )
 
 
 async def ensure_full_text(paper: Paper) -> str:
@@ -68,6 +175,199 @@ def _extract_pdf_text(path: str) -> str:
         return ""
 
 
+def _clean_table_cell(value: Any) -> str:
+    text = "" if value is None else str(value)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text.replace("|", "\\|")
+
+
+def _deduplicate_header_names(header: list[str]) -> list[str]:
+    seen: dict[str, int] = {}
+    deduped: list[str] = []
+    for index, name in enumerate(header, 1):
+        base = name or f"Column {index}"
+        count = seen.get(base, 0) + 1
+        seen[base] = count
+        deduped.append(base if count == 1 else f"{base} {count}")
+    return deduped
+
+
+def table_to_markdown(table: list[list[Any]]) -> str:
+    """Convert a pdfplumber table into compact Markdown."""
+    rows = [
+        [_clean_table_cell(cell) for cell in row[:MAX_STRUCTURED_TABLE_COLS]]
+        for row in table[:MAX_STRUCTURED_TABLE_ROWS]
+        if row and any(_clean_table_cell(cell) for cell in row)
+    ]
+    if not rows:
+        return ""
+
+    max_cols = max(len(row) for row in rows)
+    normalized = [row + [""] * (max_cols - len(row)) for row in rows]
+    header = _deduplicate_header_names(normalized[0])
+    body = normalized[1:] or [[""] * max_cols]
+
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(["---"] * max_cols) + " |",
+    ]
+    lines.extend("| " + " | ".join(row) + " |" for row in body)
+    if len(table) > MAX_STRUCTURED_TABLE_ROWS:
+        lines.append(f"\n_Table truncated to first {MAX_STRUCTURED_TABLE_ROWS} rows._")
+    return "\n".join(lines).strip()
+
+
+CAPTION_PATTERN = re.compile(
+    r"(?im)^\s*((?:fig(?:ure)?|table)\s*\.?\s*\d+[a-z]?[^\n]{0,500}(?:\n(?!\s*(?:fig(?:ure)?|table)\s*\.?\s*\d+|\s*\d+\s+[A-Z]).{0,500}){0,2})"
+)
+
+
+def extract_caption_blocks(text: str, page_number: int) -> list[StructuredPdfBlock]:
+    """Extract figure/table captions from page text."""
+    blocks: list[StructuredPdfBlock] = []
+    for match in CAPTION_PATTERN.finditer(text or ""):
+        caption = re.sub(r"\s+", " ", match.group(1)).strip()
+        if len(caption) < 12:
+            continue
+        caption_type = "table_caption" if caption.lower().startswith("table") else "figure_caption"
+        blocks.append(StructuredPdfBlock(
+            block_type="caption",
+            page=page_number,
+            source="pdfplumber",
+            text=f"[PDF caption, page {page_number}] {caption}"[:MAX_STRUCTURED_BLOCK_CHARS],
+            metadata={"caption_type": caption_type},
+        ))
+    return blocks
+
+
+def extract_pdf_structured_content(path: str) -> StructuredPdfExtraction:
+    """Extract LLM-readable structured PDF blocks with installed parsers.
+
+    This intentionally remains lightweight: tables are converted to Markdown,
+    captions are pulled from page text, and images are represented as presence
+    placeholders until an OCR/VLM backend is introduced.
+    """
+    blocks: list[StructuredPdfBlock] = []
+    page_count = 0
+    parser = "pdfplumber"
+
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(path) as pdf:
+            page_count = len(pdf.pages)
+            for page_number, page in enumerate(pdf.pages, 1):
+                page_text = page.extract_text() or ""
+                blocks.extend(extract_caption_blocks(page_text, page_number))
+
+                try:
+                    tables = page.extract_tables() or []
+                except Exception as exc:
+                    logger.warning("PDF 第 %s 页表格解析失败: %s", page_number, exc)
+                    tables = []
+
+                for table_index, table in enumerate(tables, 1):
+                    markdown = table_to_markdown(table)
+                    if not markdown:
+                        continue
+                    blocks.append(StructuredPdfBlock(
+                        block_type="table",
+                        page=page_number,
+                        source="pdfplumber",
+                        text=(
+                            f"[PDF table, page {page_number}, table {table_index}]\n"
+                            f"{markdown}"
+                        )[:MAX_STRUCTURED_BLOCK_CHARS],
+                        metadata={"table_index": table_index},
+                    ))
+    except Exception as exc:
+        logger.warning(f"pdfplumber 结构化解析失败，尝试 fitz 图片检测: {exc}")
+        parser = "fitz"
+
+    try:
+        import fitz
+
+        doc = fitz.open(path)
+        try:
+            page_count = page_count or doc.page_count
+            for page_index in range(doc.page_count):
+                page = doc.load_page(page_index)
+                page_number = page_index + 1
+                images = page.get_images(full=True) or []
+                if images:
+                    blocks.append(StructuredPdfBlock(
+                        block_type="visual",
+                        page=page_number,
+                        source="fitz",
+                        text=(
+                            f"[PDF visual placeholder, page {page_number}] "
+                            f"Detected {len(images)} embedded image(s). "
+                            "No OCR or pixel-level visual analysis has been performed."
+                        ),
+                        metadata={"image_count": len(images)},
+                    ))
+        finally:
+            doc.close()
+    except Exception as exc:
+        logger.warning(f"fitz 图片检测失败: {exc}")
+
+    return StructuredPdfExtraction(
+        source_path=path,
+        page_count=page_count,
+        blocks=blocks[:MAX_STRUCTURED_BLOCKS],
+        parser=parser,
+    )
+
+
+def structured_pdf_metadata_from_paper(paper: Paper) -> Optional[StructuredPdfExtraction]:
+    metadata = getattr(paper, "metadata_json", None) or {}
+    extraction = StructuredPdfExtraction.from_metadata(metadata.get(PDF_STRUCTURED_METADATA_KEY))
+    pdf_path = getattr(paper, "pdf_path", None)
+    if extraction and pdf_path and extraction.source_path and extraction.source_path != pdf_path:
+        return None
+    return extraction
+
+
+def structured_pdf_evidence_blocks_from_paper(paper: Paper) -> list[dict[str, Any]]:
+    extraction = structured_pdf_metadata_from_paper(paper)
+    return extraction.to_evidence_blocks() if extraction else []
+
+
+async def ensure_structured_pdf_content(paper: Paper) -> Optional[StructuredPdfExtraction]:
+    """Return cached structured PDF metadata or lazily parse the local PDF."""
+    cached = structured_pdf_metadata_from_paper(paper)
+    if cached:
+        return cached
+
+    pdf_path = getattr(paper, "pdf_path", None)
+    if not pdf_path:
+        return None
+
+    try:
+        extraction = await asyncio.to_thread(extract_pdf_structured_content, pdf_path)
+    except Exception as exc:
+        logger.warning("PDF 结构化解析失败 %s: %s", pdf_path, exc)
+        return None
+
+    if not extraction.blocks:
+        return extraction
+
+    metadata = dict(getattr(paper, "metadata_json", None) or {})
+    metadata[PDF_STRUCTURED_METADATA_KEY] = extraction.to_metadata()
+    paper.metadata_json = metadata
+    try:
+        from app.db.session import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as s:
+            await s.execute(
+                update(Paper).where(Paper.id == paper.id).values(metadata_json=metadata)
+            )
+            await s.commit()
+    except Exception as exc:
+        logger.warning(f"PDF 结构化元数据持久化失败 {getattr(paper, 'id', '')}: {exc}")
+    return extraction
+
+
 def extract_pdf_page_texts(path: str) -> list[str]:
     """Extract PDF text page by page for evidence navigation."""
     try:
@@ -106,16 +406,22 @@ async def _download_and_parse_full_text(paper: Paper) -> str:
             logger.warning(f"PDF 未提取到有效正文: {clean_id}")
             return paper.abstract or ""
 
+        structured_extraction = await asyncio.to_thread(extract_pdf_structured_content, cached_pdf.path)
+        metadata = dict(getattr(paper, "metadata_json", None) or {})
+        if structured_extraction.blocks:
+            metadata[PDF_STRUCTURED_METADATA_KEY] = structured_extraction.to_metadata()
+
         # 保存到数据库（持久化，避免下次请求重新下载）
         paper.full_text = full_text
+        paper.metadata_json = metadata
         try:
             from app.db.session import AsyncSessionLocal
-            from sqlalchemy import update
             async with AsyncSessionLocal() as s:
                 await s.execute(
                     update(Paper).where(Paper.id == paper.id).values(
                         full_text=full_text,
                         pdf_path=cached_pdf.path,
+                        metadata_json=metadata,
                     )
                 )
                 await s.commit()

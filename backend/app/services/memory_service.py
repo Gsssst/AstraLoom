@@ -199,19 +199,29 @@ async def build_paper_context_with_evidence(
     if paper.full_text and len(paper.full_text) >= 500:
         from app.services.paper_chunk_service import paper_chunk_service
         page_texts = []
+        structured_blocks = []
         if getattr(paper, "pdf_path", None):
             try:
-                from app.services.report_service import extract_pdf_page_texts
+                from app.services.report_service import (
+                    ensure_structured_pdf_content,
+                    extract_pdf_page_texts,
+                    structured_pdf_evidence_blocks_from_paper,
+                )
                 import asyncio
 
                 page_texts = await asyncio.to_thread(extract_pdf_page_texts, paper.pdf_path)
+                structured_blocks = structured_pdf_evidence_blocks_from_paper(paper)
+                if not structured_blocks:
+                    structured_extraction = await ensure_structured_pdf_content(paper)
+                    structured_blocks = structured_extraction.to_evidence_blocks() if structured_extraction else []
             except Exception as exc:
-                logger.warning(f"PDF 按页解析失败，使用全文证据: {exc}")
+                logger.warning(f"PDF 按页/结构化解析失败，使用全文证据: {exc}")
         evidence_chunks, retrieval_scope = paper_chunk_service.retrieve_evidence(
             paper.full_text,
             question,
             top_k=4,
             page_texts=page_texts or None,
+            structured_blocks=structured_blocks or None,
         )
 
         if evidence_chunks:
@@ -222,21 +232,29 @@ async def build_paper_context_with_evidence(
                 label = "★ 高度相关" if evidence.score > 0.8 else ("◎ 相关" if evidence.score > 0.5 else "○ 部分相关")
                 page_label = f"，PDF 第 {evidence.page_start} 页" if evidence.page_start else ""
                 section_label = f"，章节: {evidence.section}" if evidence.section else ""
+                type_label = {
+                    "table": "，类型: 表格",
+                    "caption": "，类型: 图/表标题",
+                    "visual": "，类型: 图片占位",
+                }.get(evidence.source_type, "")
                 evidence_id = f"E{i + 1}"
                 chunk_lines.append(
-                    f"\n### [{evidence_id}] {label} (相关度: {evidence.score:.0%}{section_label}{page_label})\n{evidence.text}"
+                    f"\n### [{evidence_id}] {label} (相关度: {evidence.score:.0%}{section_label}{page_label}{type_label})\n{evidence.text}"
                 )
                 evidence_refs.append({
                     "id": evidence_id,
                     "title": paper.title,
                     "source": "current_paper",
                     "type": "paper_evidence",
+                    "evidence_type": evidence.source_type,
+                    "parser_source": evidence.source,
                     "section": evidence.section,
                     "page": evidence.page_start,
                     "page_start": evidence.page_start,
                     "page_end": evidence.page_end,
                     "score": evidence.score,
                     "snippet": evidence.snippet(),
+                    "metadata": evidence.metadata or {},
                 })
 
             relevant_context = "\n".join(chunk_lines)
@@ -263,6 +281,8 @@ async def build_paper_context_with_evidence(
         "content": (
             "你是这篇论文的专家助手。请严格基于以下论文内容回答用户问题。"
             "回答中的关键结论必须绑定证据编号（例如 [E1]）。"
+            "证据类型可能包含正文、表格、图/表标题或图片占位；图片占位只表示 PDF 页面中存在嵌入图片，"
+            "不能当作已经完成像素级视觉理解或图表数值读取。"
             "如果证据不足以支持用户要求的章节、实验数据或方法细节，请明确说明“当前论文内容不足”，"
             "不要根据摘要或常识补全不存在的内容。"
             f"{evidence_warning}\n\n"

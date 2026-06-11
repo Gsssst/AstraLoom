@@ -21,6 +21,9 @@ class EvidenceChunk:
     section: Optional[str] = None
     page_start: Optional[int] = None
     page_end: Optional[int] = None
+    source_type: str = "text"
+    source: str = "current_paper"
+    metadata: Optional[dict] = None
 
     def snippet(self, limit: int = 320) -> str:
         cleaned = re.sub(r"\s+", " ", self.text).strip()
@@ -181,6 +184,7 @@ class PaperChunkService:
                     section=cls._section_for_text(chunk) or current_section,
                     page_start=page_index,
                     page_end=page_index,
+                    source_type="text",
                 ))
         return candidates
 
@@ -191,11 +195,33 @@ class PaperChunkService:
             candidates: List[EvidenceChunk] = []
             for section, section_text in sections:
                 candidates.extend(
-                    EvidenceChunk(text=chunk, score=0.0, section=section)
+                    EvidenceChunk(text=chunk, score=0.0, section=section, source_type="text")
                     for chunk in cls.chunk_full_text(section_text)
                 )
             return candidates
-        return [EvidenceChunk(text=chunk, score=0.0) for chunk in cls.chunk_full_text(full_text)]
+        return [EvidenceChunk(text=chunk, score=0.0, source_type="text") for chunk in cls.chunk_full_text(full_text)]
+
+    @classmethod
+    def _structured_evidence_candidates(cls, structured_blocks: Optional[List[dict]]) -> List[EvidenceChunk]:
+        candidates: List[EvidenceChunk] = []
+        for block in structured_blocks or []:
+            if not isinstance(block, dict):
+                continue
+            text = str(block.get("text") or "").strip()
+            if not text:
+                continue
+            page = block.get("page")
+            candidates.append(EvidenceChunk(
+                text=text,
+                score=0.0,
+                section=None,
+                page_start=page if isinstance(page, int) else None,
+                page_end=page if isinstance(page, int) else None,
+                source_type=str(block.get("type") or "structured"),
+                source=str(block.get("source") or "pdf_structured"),
+                metadata=block.get("metadata") if isinstance(block.get("metadata"), dict) else {},
+            ))
+        return candidates
 
     @classmethod
     def retrieve_evidence(
@@ -204,15 +230,19 @@ class PaperChunkService:
         query: str,
         top_k: int = 3,
         page_texts: Optional[List[str]] = None,
+        structured_blocks: Optional[List[dict]] = None,
     ) -> Tuple[List[EvidenceChunk], str]:
         """Return structured evidence snippets, preferring explicitly requested sections."""
         candidates = cls._page_evidence_candidates(page_texts) if page_texts else cls._document_evidence_candidates(full_text)
+        structured_candidates = cls._structured_evidence_candidates(structured_blocks)
+        candidates = [*structured_candidates, *candidates]
         requested_sections = set(cls.detect_requested_sections(query))
         if requested_sections:
             section_candidates = [item for item in candidates if item.section in requested_sections]
             if section_candidates:
                 return cls.search_evidence_chunks(section_candidates, query, top_k=top_k, requested_sections=requested_sections), "section"
-        return cls.search_evidence_chunks(candidates, query, top_k=top_k, requested_sections=requested_sections), "document"
+        scope = "structured+document" if structured_candidates else "document"
+        return cls.search_evidence_chunks(candidates, query, top_k=top_k, requested_sections=requested_sections), scope
 
     @classmethod
     def retrieve_chunks(cls, full_text: str, query: str, top_k: int = 3) -> Tuple[List[Tuple[str, float]], str]:
@@ -248,6 +278,9 @@ class PaperChunkService:
                 section=base.section,
                 page_start=base.page_start,
                 page_end=base.page_end,
+                source_type=base.source_type,
+                source=base.source,
+                metadata=base.metadata,
             ))
         return cls._suppress_redundant_evidence(results, top_k=top_k)
 
