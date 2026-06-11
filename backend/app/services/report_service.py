@@ -1,13 +1,17 @@
 """组会报告生成服务。"""
 
 import asyncio
+import json
 import logging
 import re
+import shlex
+import subprocess
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 
+from app.core.config import settings
 from app.services.llm import llm_service
 from app.services.arxiv_pdf_cache import ensure_cached_arxiv_pdf
 from app.db.models.paper import Paper
@@ -20,6 +24,7 @@ MAX_STRUCTURED_BLOCKS = 80
 MAX_STRUCTURED_BLOCK_CHARS = 1800
 MAX_STRUCTURED_TABLE_ROWS = 40
 MAX_STRUCTURED_TABLE_COLS = 12
+SUPPORTED_PDF_STRUCTURED_BACKENDS = {"lightweight", "command", "auto"}
 
 
 @dataclass
@@ -240,13 +245,135 @@ def extract_caption_blocks(text: str, page_number: int) -> list[StructuredPdfBlo
     return blocks
 
 
-def extract_pdf_structured_content(path: str) -> StructuredPdfExtraction:
-    """Extract LLM-readable structured PDF blocks with installed parsers.
+def parser_subprocess_environment() -> dict[str, str]:
+    """Build environment for optional external PDF parser commands."""
+    import os
 
-    This intentionally remains lightweight: tables are converted to Markdown,
-    captions are pulled from page text, and images are represented as presence
-    placeholders until an OCR/VLM backend is introduced.
-    """
+    env = dict(os.environ)
+    runtime_values = {
+        "HF_ENDPOINT": settings.HF_ENDPOINT,
+        "HF_HOME": settings.HF_HOME,
+        "TRANSFORMERS_CACHE": settings.TRANSFORMERS_CACHE,
+        "SENTENCE_TRANSFORMERS_HOME": settings.SENTENCE_TRANSFORMERS_HOME,
+    }
+    for key, value in runtime_values.items():
+        if str(value or "").strip():
+            env[key] = str(value).strip()
+    return env
+
+
+def _coerce_page_number(value: Any) -> Optional[int]:
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+        return parsed if parsed > 0 else None
+    return None
+
+
+def _normalize_external_block_type(value: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "structured").lower()).strip("_")
+    aliases = {
+        "table_caption": "caption",
+        "figure_caption": "caption",
+        "fig_caption": "caption",
+        "image": "visual",
+        "picture": "visual",
+        "figure": "visual",
+        "chart": "visual",
+        "ocr": "ocr",
+        "formula": "formula",
+        "equation": "formula",
+    }
+    return aliases.get(normalized, normalized or "structured")
+
+
+def _external_block_text(item: dict[str, Any]) -> str:
+    for key in ("text", "markdown", "content", "html"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    table = item.get("table")
+    if isinstance(table, list):
+        return table_to_markdown(table)
+    return ""
+
+
+def _iter_external_parser_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ("blocks", "elements", "chunks", "items"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+
+    pages = payload.get("pages")
+    items: list[dict[str, Any]] = []
+    if isinstance(pages, list):
+        for page_index, page in enumerate(pages, 1):
+            if not isinstance(page, dict):
+                continue
+            page_number = _coerce_page_number(page.get("page") or page.get("page_number")) or page_index
+            page_blocks = page.get("blocks") or page.get("elements") or []
+            if isinstance(page_blocks, list):
+                for block in page_blocks:
+                    if isinstance(block, dict):
+                        merged = dict(block)
+                        merged.setdefault("page", page_number)
+                        items.append(merged)
+            page_text = page.get("text") or page.get("markdown")
+            if isinstance(page_text, str) and page_text.strip():
+                items.append({"type": "text", "text": page_text, "page": page_number})
+    return items
+
+
+def structured_extraction_from_external_payload(
+    payload: Any,
+    *,
+    source_path: str,
+    parser: str = "command",
+) -> StructuredPdfExtraction:
+    """Normalize external parser JSON into the internal structured format."""
+    blocks: list[StructuredPdfBlock] = []
+    max_page = 0
+    for index, item in enumerate(_iter_external_parser_items(payload), 1):
+        text = _external_block_text(item)
+        if not text:
+            continue
+        page = _coerce_page_number(
+            item.get("page")
+            or item.get("page_number")
+            or item.get("page_index")
+            or item.get("pageNumber")
+        )
+        if page:
+            max_page = max(max_page, page)
+        raw_type = item.get("type") or item.get("category") or item.get("kind") or item.get("label")
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        blocks.append(StructuredPdfBlock(
+            block_type=_normalize_external_block_type(raw_type),
+            page=page,
+            source=parser,
+            text=text[:MAX_STRUCTURED_BLOCK_CHARS],
+            metadata={**metadata, "external_index": index},
+        ))
+        if len(blocks) >= MAX_STRUCTURED_BLOCKS:
+            break
+
+    payload_page_count = payload.get("page_count") if isinstance(payload, dict) else None
+    return StructuredPdfExtraction(
+        source_path=source_path,
+        page_count=_coerce_page_number(payload_page_count) or max_page,
+        blocks=blocks,
+        parser=parser,
+    )
+
+
+def extract_pdf_structured_content_lightweight(path: str) -> StructuredPdfExtraction:
+    """Extract LLM-readable structured PDF blocks with installed parsers."""
     blocks: list[StructuredPdfBlock] = []
     page_count = 0
     parser = "pdfplumber"
@@ -317,6 +444,69 @@ def extract_pdf_structured_content(path: str) -> StructuredPdfExtraction:
         blocks=blocks[:MAX_STRUCTURED_BLOCKS],
         parser=parser,
     )
+
+
+def _parser_command_args(path: str) -> list[str]:
+    command = str(settings.PDF_STRUCTURED_PARSER_COMMAND or "").strip()
+    if not command:
+        return []
+    args = shlex.split(command)
+    return [arg.format(pdf_path=path) for arg in args]
+
+
+def extract_pdf_structured_content_with_command(path: str) -> StructuredPdfExtraction:
+    """Run an optional external parser command and normalize its JSON output."""
+    args = _parser_command_args(path)
+    if not args:
+        raise RuntimeError("PDF_STRUCTURED_PARSER_COMMAND is not configured")
+
+    timeout = max(1.0, float(settings.PDF_STRUCTURED_PARSER_TIMEOUT_SECONDS or 120.0))
+    max_output = max(1024, int(settings.PDF_STRUCTURED_PARSER_MAX_OUTPUT_BYTES or 5_000_000))
+    completed = subprocess.run(
+        args,
+        check=False,
+        capture_output=True,
+        text=False,
+        timeout=timeout,
+        env=parser_subprocess_environment(),
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"advanced parser exited {completed.returncode}: {stderr}")
+    if len(completed.stdout) > max_output:
+        raise RuntimeError(f"advanced parser output exceeds {max_output} bytes")
+    try:
+        payload = json.loads(completed.stdout.decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"advanced parser returned invalid JSON: {exc}") from exc
+
+    extraction = structured_extraction_from_external_payload(
+        payload,
+        source_path=path,
+        parser="command",
+    )
+    if not extraction.blocks:
+        raise RuntimeError("advanced parser returned no usable structured blocks")
+    return extraction
+
+
+def extract_pdf_structured_content(path: str) -> StructuredPdfExtraction:
+    """Extract structured PDF content with optional advanced parser fallback."""
+    backend = str(settings.PDF_STRUCTURED_PARSER_BACKEND or "lightweight").strip().lower()
+    if backend not in SUPPORTED_PDF_STRUCTURED_BACKENDS:
+        logger.warning("未知 PDF 结构化解析后端 %s，使用轻量解析", backend)
+        backend = "lightweight"
+
+    if backend in {"command", "auto"}:
+        try:
+            return extract_pdf_structured_content_with_command(path)
+        except Exception as exc:
+            if backend == "command":
+                logger.warning("高级 PDF 解析失败，回退轻量解析: %s", exc)
+            else:
+                logger.info("高级 PDF 解析不可用，使用轻量解析: %s", exc)
+
+    return extract_pdf_structured_content_lightweight(path)
 
 
 def structured_pdf_metadata_from_paper(paper: Paper) -> Optional[StructuredPdfExtraction]:
