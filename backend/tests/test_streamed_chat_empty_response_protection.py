@@ -77,6 +77,7 @@ def test_stream_failure_content_replaces_blank_reply_with_visible_fallback():
 
 
 def test_llm_service_builds_openai_compatible_kwargs(monkeypatch, tmp_path):
+    monkeypatch.setattr(llm_module.settings, "LLM_PROVIDER", "deepseek")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_KEY", "sk-compatible")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_BASE", "https://llm.example.com/v1")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_MODEL", "gpt-5.5")
@@ -95,6 +96,7 @@ def test_llm_service_builds_openai_compatible_kwargs(monkeypatch, tmp_path):
 
 
 def test_llm_service_uses_provider_specific_paper_chat_limits(monkeypatch, tmp_path):
+    monkeypatch.setattr(llm_module.settings, "LLM_PROVIDER", "deepseek")
     monkeypatch.setattr(llm_module.settings, "DEEPSEEK_API_KEY", "sk-deepseek")
     monkeypatch.setattr(llm_module.settings, "DEEPSEEK_API_BASE", "https://api.deepseek.com")
     monkeypatch.setattr(llm_module.settings, "DEEPSEEK_MODEL", "deepseek-v4-pro")
@@ -114,6 +116,7 @@ def test_llm_service_uses_provider_specific_paper_chat_limits(monkeypatch, tmp_p
 
 
 def test_llm_service_rejects_unconfigured_provider_without_changing_selection(monkeypatch, tmp_path):
+    monkeypatch.setattr(llm_module.settings, "LLM_PROVIDER", "deepseek")
     monkeypatch.setattr(llm_module.settings, "DEEPSEEK_API_KEY", "sk-deepseek")
     monkeypatch.setattr(llm_module.settings, "DEEPSEEK_API_BASE", "https://api.deepseek.com")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_KEY", "")
@@ -136,6 +139,7 @@ async def test_llm_usage_records_active_model(monkeypatch, tmp_path):
         captured.append(kwargs)
 
     monkeypatch.setattr(UsageTracker, "log_usage", fake_log_usage)
+    monkeypatch.setattr(llm_module.settings, "LLM_PROVIDER", "deepseek")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_KEY", "sk-compatible")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_BASE", "https://llm.example.com/v1")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_MODEL", "gpt-5.5")
@@ -151,6 +155,7 @@ async def test_llm_usage_records_active_model(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_settings_api_config_lists_models_without_keys(monkeypatch, tmp_path):
+    monkeypatch.setattr(llm_module.settings, "LLM_PROVIDER", "deepseek")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_KEY", "sk-compatible")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_BASE", "https://llm.example.com/v1")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_MODEL", "gpt-5.5")
@@ -167,6 +172,7 @@ async def test_settings_api_config_lists_models_without_keys(monkeypatch, tmp_pa
 
 @pytest.mark.asyncio
 async def test_settings_api_update_switches_openai_compatible_model(monkeypatch, tmp_path):
+    monkeypatch.setattr(llm_module.settings, "LLM_PROVIDER", "deepseek")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_KEY", "sk-compatible")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_BASE", "https://llm.example.com/v1")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_MODEL", "gpt-5.5")

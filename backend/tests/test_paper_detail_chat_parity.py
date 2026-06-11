@@ -201,6 +201,32 @@ async def test_paper_chat_marks_late_stream_failure_without_error_content(monkey
 
 
 @pytest.mark.asyncio
+async def test_paper_chat_does_not_interrupt_slow_thinking_answer_after_content(monkeypatch):
+    async def _slow_answer_stream(**_kwargs):
+        yield {"type": "reasoning", "content": "分析中"}
+        yield {"type": "content", "content": "第一段回答"}
+        await asyncio.sleep(0.03)
+        yield {"type": "content", "content": "，后续回答"}
+
+    monkeypatch.setattr(papers, "PAPER_CHAT_PRIMARY_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(papers.llm_service, "chat_stream_with_thinking", _slow_answer_stream)
+
+    events = [
+        event async for event in papers._stream_paper_answer_events(
+            [{"role": "user", "content": "question"}],
+            show_thinking=True,
+            max_tokens=128000,
+        )
+    ]
+
+    assert events == [
+        {"type": "reasoning", "content": "分析中"},
+        {"type": "content", "content": "第一段回答"},
+        {"type": "content", "content": "，后续回答"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_paper_chat_recovers_visible_answer_after_thinking_timeout(monkeypatch):
     async def _stalled_reasoning_stream(**_kwargs):
         yield {"type": "reasoning", "content": "仍在分析"}

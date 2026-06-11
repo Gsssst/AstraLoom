@@ -1,6 +1,7 @@
 """论文 API — 搜索、详情、入库、分类管理。"""
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Optional, List, Any, AsyncIterator, Literal
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
@@ -1419,6 +1420,38 @@ PAPER_CHAT_RECOVERY_PROMPT = (
 )
 
 
+async def _stream_thinking_until_first_visible_content(
+    context: list[dict[str, str]],
+    *,
+    max_tokens: int,
+) -> AsyncIterator[dict[str, str]]:
+    """Stream thinking events, guarding only the wait for first visible content."""
+    import asyncio
+
+    stream = llm_service.chat_stream_with_thinking(
+        messages=context,
+        temperature=0.5,
+        max_tokens=max_tokens,
+    )
+    deadline = time.monotonic() + PAPER_CHAT_PRIMARY_TIMEOUT_SECONDS
+    emitted_content = False
+    while True:
+        try:
+            if emitted_content:
+                event = await anext(stream)
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("paper chat primary stream produced no visible content before timeout")
+                event = await asyncio.wait_for(anext(stream), timeout=remaining)
+        except StopAsyncIteration:
+            return
+
+        if event["type"] == "content" and event["content"]:
+            emitted_content = True
+        yield event
+
+
 async def _stream_paper_answer_events(
     context: list[dict[str, str]],
     *,
@@ -1429,17 +1462,10 @@ async def _stream_paper_answer_events(
     emitted_content = False
     try:
         if show_thinking:
-            import asyncio
-
-            async with asyncio.timeout(PAPER_CHAT_PRIMARY_TIMEOUT_SECONDS):
-                async for event in llm_service.chat_stream_with_thinking(
-                    messages=context,
-                    temperature=0.5,
-                    max_tokens=max_tokens,
-                ):
-                    if event["type"] == "content" and event["content"]:
-                        emitted_content = True
-                    yield event
+            async for event in _stream_thinking_until_first_visible_content(context, max_tokens=max_tokens):
+                if event["type"] == "content" and event["content"]:
+                    emitted_content = True
+                yield event
         else:
             async for token in llm_service.chat_stream(
                 messages=context,
