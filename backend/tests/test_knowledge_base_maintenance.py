@@ -128,6 +128,8 @@ def test_structured_parse_status_reports_cached_counts_and_parser():
     assert status["ocr_count"] == 1
     assert status["formula_count"] == 1
     assert status["block_count"] == 3
+    assert status["table_quality"]["table_count"] == 1
+    assert status["table_quality"]["quality"] in {"high", "medium", "low"}
 
 
 class _ScalarOneResult:

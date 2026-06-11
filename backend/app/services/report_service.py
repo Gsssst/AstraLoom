@@ -27,6 +27,7 @@ MAX_STRUCTURED_BLOCK_CHARS = 1800
 MAX_STRUCTURED_TABLE_ROWS = 40
 MAX_STRUCTURED_TABLE_COLS = 12
 SUPPORTED_PDF_STRUCTURED_BACKENDS = {"lightweight", "command", "docling", "auto"}
+GENERIC_TABLE_HEADER_PATTERN = re.compile(r"^column\s+\d+$", re.IGNORECASE)
 
 
 @dataclass
@@ -81,6 +82,10 @@ class StructuredPdfExtraction:
     def visual_count(self) -> int:
         return sum(1 for block in self.blocks if block.block_type == "visual")
 
+    @property
+    def table_quality(self) -> dict[str, Any]:
+        return structured_table_quality_from_blocks(self.blocks)
+
     def to_metadata(self) -> dict[str, Any]:
         bounded_blocks = self.blocks[:MAX_STRUCTURED_BLOCKS]
         return {
@@ -92,6 +97,7 @@ class StructuredPdfExtraction:
             "table_count": self.table_count,
             "caption_count": self.caption_count,
             "visual_count": self.visual_count,
+            "table_quality": structured_table_quality_from_blocks(bounded_blocks),
             "blocks": [block.to_metadata() for block in bounded_blocks],
         }
 
@@ -223,6 +229,86 @@ def table_to_markdown(table: list[list[Any]]) -> str:
     if len(table) > MAX_STRUCTURED_TABLE_ROWS:
         lines.append(f"\n_Table truncated to first {MAX_STRUCTURED_TABLE_ROWS} rows._")
     return "\n".join(lines).strip()
+
+
+def _markdown_table_rows(text: str) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|") or not stripped.endswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if cells and all(re.fullmatch(r"-{3,}:?", cell.replace(" ", "")) for cell in cells):
+            continue
+        rows.append(cells)
+    return rows
+
+
+def structured_table_quality_from_blocks(blocks: list[StructuredPdfBlock]) -> dict[str, Any]:
+    """Compute lightweight quality signals for persisted table blocks."""
+    table_blocks = [block for block in blocks if block.block_type == "table"]
+    warnings: list[str] = []
+    if not table_blocks:
+        return {
+            "table_count": 0,
+            "low_quality_table_count": 0,
+            "average_rows": 0.0,
+            "empty_cell_ratio": 0.0,
+            "generic_header_ratio": 0.0,
+            "quality": "none",
+            "warnings": [],
+        }
+
+    total_rows = 0
+    total_cells = 0
+    empty_cells = 0
+    generic_headers = 0
+    header_cells = 0
+    low_quality = 0
+    for block in table_blocks:
+        rows = _markdown_table_rows(block.text)
+        total_rows += len(rows)
+        cells = [cell for row in rows for cell in row]
+        total_cells += len(cells)
+        empty_cells += sum(1 for cell in cells if not cell.strip())
+        header = rows[0] if rows else []
+        header_cells += len(header)
+        generic_headers += sum(1 for cell in header if GENERIC_TABLE_HEADER_PATTERN.match(cell.strip()))
+        non_empty_cells = sum(1 for cell in cells if cell.strip())
+        empty_ratio = (sum(1 for cell in cells if not cell.strip()) / len(cells)) if cells else 1.0
+        block_generic_header_ratio = (
+            sum(1 for cell in header if GENERIC_TABLE_HEADER_PATTERN.match(cell.strip())) / len(header)
+            if header else 1.0
+        )
+        if len(rows) < 2 or non_empty_cells <= 4 or empty_ratio >= 0.35 or block_generic_header_ratio >= 0.35:
+            low_quality += 1
+
+    empty_cell_ratio = round(empty_cells / total_cells, 3) if total_cells else 1.0
+    generic_header_ratio = round(generic_headers / header_cells, 3) if header_cells else 0.0
+    average_rows = round(total_rows / len(table_blocks), 2)
+    low_quality_ratio = low_quality / len(table_blocks)
+    if low_quality_ratio >= 0.5:
+        quality = "low"
+        warnings.append("多数表格疑似解析不完整")
+    elif low_quality:
+        quality = "medium"
+        warnings.append("部分表格疑似解析不完整")
+    else:
+        quality = "high"
+    if generic_header_ratio >= 0.2:
+        warnings.append("存在较多泛化列名，表头识别质量偏低")
+    if empty_cell_ratio >= 0.25:
+        warnings.append("表格空单元格比例偏高")
+
+    return {
+        "table_count": len(table_blocks),
+        "low_quality_table_count": low_quality,
+        "average_rows": average_rows,
+        "empty_cell_ratio": empty_cell_ratio,
+        "generic_header_ratio": generic_header_ratio,
+        "quality": quality,
+        "warnings": warnings,
+    }
 
 
 CAPTION_PATTERN = re.compile(
@@ -720,12 +806,15 @@ def structured_pdf_parse_status_from_paper(paper: Paper) -> dict[str, Any]:
     error = metadata.get(PDF_STRUCTURED_PARSE_ERROR_KEY)
     blocks = payload.get("blocks") if isinstance(payload, dict) else []
     block_counts: dict[str, int] = {}
+    parsed_blocks: list[StructuredPdfBlock] = []
     if isinstance(blocks, list):
         for block in blocks:
             if not isinstance(block, dict):
                 continue
             block_type = str(block.get("type") or "structured")
             block_counts[block_type] = block_counts.get(block_type, 0) + 1
+            if str(block.get("text") or "").strip():
+                parsed_blocks.append(StructuredPdfBlock.from_metadata(block))
 
     pdf_path = getattr(paper, "pdf_path", None)
     source_path = payload.get("source_path") if isinstance(payload, dict) else pdf_path
@@ -750,6 +839,11 @@ def structured_pdf_parse_status_from_paper(paper: Paper) -> dict[str, Any]:
         "formula_count": block_counts.get("formula", 0),
         "block_count": len(blocks) if isinstance(blocks, list) else 0,
         "block_counts": block_counts,
+        "table_quality": (
+            payload.get("table_quality")
+            if isinstance(payload, dict) and isinstance(payload.get("table_quality"), dict)
+            else structured_table_quality_from_blocks(parsed_blocks)
+        ),
         "last_error": error if isinstance(error, dict) else None,
     }
 

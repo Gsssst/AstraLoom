@@ -77,6 +77,7 @@ class StructuredPdfParseStatus(BaseModel):
     formula_count: int = 0
     block_count: int = 0
     block_counts: dict[str, int] = Field(default_factory=dict)
+    table_quality: Optional[dict] = None
     last_error: Optional[dict] = None
 
 

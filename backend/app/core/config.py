@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     SENTENCE_TRANSFORMERS_HOME: str = "./model-cache/sentence-transformers"
 
     # --- PDF 结构化解析（可选高级后端） ---
-    PDF_STRUCTURED_PARSER_BACKEND: str = "lightweight"  # lightweight, command, docling, auto
+    PDF_STRUCTURED_PARSER_BACKEND: str = "auto"  # lightweight, command, docling, auto
     PDF_STRUCTURED_PARSER_COMMAND: str = ""
     PDF_STRUCTURED_PARSER_TIMEOUT_SECONDS: float = 120.0
     PDF_STRUCTURED_PARSER_MAX_OUTPUT_BYTES: int = 5_000_000

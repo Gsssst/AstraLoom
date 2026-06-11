@@ -121,6 +121,57 @@ def test_pdf_table_rows_convert_to_markdown():
     assert "| Ours | 81.4 | 80.2 |" in markdown
 
 
+def test_structured_table_quality_flags_low_fidelity_tables():
+    low = report_service.StructuredPdfBlock(
+        block_type="table",
+        page=7,
+        text=(
+            "[PDF table, page 7, table 2]\n"
+            "| Column 1 | Column 2 | Column 3 |\n"
+            "| --- | --- | --- |\n"
+            "|  |  |  |"
+        ),
+    )
+    high = report_service.StructuredPdfBlock(
+        block_type="table",
+        page=8,
+        text=(
+            "[PDF table, page 8, table 1]\n"
+            "| Model | C-Acc | EtF1 |\n"
+            "| --- | --- | --- |\n"
+            "| Ours | 80.9 | 53.5 |\n"
+            "| Gemini | 74.1 | 61.1 |"
+        ),
+    )
+
+    low_quality = report_service.structured_table_quality_from_blocks([low])
+    mixed_quality = report_service.structured_table_quality_from_blocks([low, high])
+
+    assert low_quality["quality"] == "low"
+    assert low_quality["low_quality_table_count"] == 1
+    assert any("表头" in warning or "不完整" in warning for warning in low_quality["warnings"])
+    assert mixed_quality["quality"] == "low"
+    assert mixed_quality["low_quality_table_count"] == 1
+
+
+def test_structured_table_quality_keeps_compact_valid_tables_high_quality():
+    compact = report_service.StructuredPdfBlock(
+        block_type="table",
+        page=6,
+        text=(
+            "[PDF table, page 6, table 1]\n"
+            "| Reward Functions | C-Acc | EtF1 | tIoU | TF1 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| RtIoU + RC-Acc + RCaption | +11.57 | +8.84 | +4.30 | +3.89 |"
+        ),
+    )
+
+    quality = report_service.structured_table_quality_from_blocks([compact])
+
+    assert quality["quality"] == "high"
+    assert quality["low_quality_table_count"] == 0
+
+
 def test_caption_blocks_are_page_aware():
     blocks = report_service.extract_caption_blocks(
         "Figure 2. Overall architecture of the multimodal encoder.\n"
@@ -155,6 +206,128 @@ def test_structured_table_evidence_is_retrieved_with_page_number():
     assert evidence[0].source_type == "table"
     assert evidence[0].page_start == 7
     assert "91.3" in evidence[0].text
+
+
+def test_section_first_table_question_keeps_structured_table_evidence():
+    full_text = "\n\n".join([
+        "1 Introduction",
+        _paragraph("intro-marker"),
+        "5 Experiments",
+        _paragraph("experiment-marker"),
+    ])
+    structured_blocks = [
+        {
+            "type": "table",
+            "page": 6,
+            "source": "docling",
+            "text": (
+                "[PDF table, page 6, table 1]\n"
+                "| Reward Functions | C-Acc | EtF1 |\n"
+                "| --- | --- | --- |\n"
+                "| RtIoU + RC-Acc + RCaption | +11.57 | +8.84 |"
+            ),
+            "metadata": {"table_index": 1},
+        }
+    ]
+
+    evidence, scope = PaperChunkService.retrieve_evidence(
+        full_text,
+        "请基于实验表格说明 Caption reward 的贡献和 OMTG Bench 结果",
+        top_k=4,
+        structured_blocks=structured_blocks,
+    )
+
+    assert scope == "section+structured"
+    assert any(item.source_type == "table" and item.page_start == 6 for item in evidence)
+    assert any("experiment-marker" in item.text for item in evidence)
+
+
+def test_table_evidence_lane_demotes_low_fidelity_tables():
+    candidates = [
+        PaperChunkService._structured_evidence_candidates([{
+            "type": "table",
+            "page": 1,
+            "source": "pdfplumber",
+            "text": "[PDF table]\n| Caption Reward OMTG | Column 2 |\n| --- | --- |\n|  |  |",
+        }])[0],
+        PaperChunkService._structured_evidence_candidates([{
+            "type": "table",
+            "page": 6,
+            "source": "docling",
+            "text": (
+                "[PDF table]\n"
+                "| Reward Functions | C-Acc | EtF1 |\n"
+                "| --- | --- | --- |\n"
+                "| RtIoU + RC-Acc + RCaption | +11.57 | +8.84 |"
+            ),
+        }])[0],
+    ]
+    for item in candidates:
+        item.score = 0.8
+
+    results = PaperChunkService._table_evidence_lane(
+        candidates,
+        "Caption reward 对 OMTG Bench 的 EtF1 贡献是多少？",
+        top_k=2,
+    )
+
+    assert results[0].page_start == 6
+    assert "+8.84" in results[0].text
+
+
+def test_omtg_table_question_prefers_real_tables_over_figure_captions():
+    candidates = PaperChunkService._structured_evidence_candidates([
+        {
+            "type": "caption",
+            "page": 3,
+            "source": "pdfplumber",
+            "text": "[PDF caption, page 3] Figure 2. Overview of OMTG Bench data generation with Caption Reward.",
+            "metadata": {"caption_type": "figure_caption"},
+        },
+        {
+            "type": "caption",
+            "page": 6,
+            "source": "pdfplumber",
+            "text": "[PDF caption, page 6] Table 3. Ablation on reward functions on OMTG Bench.",
+            "metadata": {"caption_type": "table_caption"},
+        },
+        {
+            "type": "table",
+            "page": 6,
+            "source": "docling",
+            "text": (
+                "[PDF table]\n"
+                "| Reward Functions | C-Acc | EtF1 | tIoU | TF1 |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| RtIoU + RC-Acc + RCaption | +11.57 | +8.84 | +4.30 | +3.89 |"
+            ),
+            "metadata": {"table_index": 3},
+        },
+        {
+            "type": "table",
+            "page": 7,
+            "source": "docling",
+            "text": (
+                "[PDF table]\n"
+                "| Model | C-Acc | EtF1 |\n"
+                "| --- | --- | --- |\n"
+                "| Gemini-2.5-Pro | 74.1 | 61.1 |\n"
+                "| OMTG-4B | 55.63 | 65.40 |"
+            ),
+            "metadata": {"table_index": 1},
+        },
+    ])
+
+    results = PaperChunkService._table_evidence_lane(
+        candidates,
+        "请基于实验表格说明 Caption reward 的贡献、OMTG Bench 的结果和 baseline 对比",
+        top_k=3,
+    )
+
+    assert results[0].source_type == "table"
+    assert results[0].page_start == 6
+    assert "RCaption" in results[0].text
+    assert all("Figure 2" not in item.text for item in results[:2])
 
 
 async def _identity_ensure_structured_pdf_content(paper):
@@ -395,3 +568,29 @@ def test_docling_backend_failure_falls_back_to_lightweight(monkeypatch):
 
     assert extraction.parser == "test-lightweight"
     assert extraction.blocks[0].text == "fallback caption"
+
+
+def test_auto_backend_prefers_docling_when_available(monkeypatch):
+    docling = report_service.StructuredPdfExtraction(
+        source_path="/tmp/paper.pdf",
+        page_count=1,
+        parser="docling",
+        blocks=[report_service.StructuredPdfBlock(
+            block_type="table",
+            text="| Model | Score |\n| --- | --- |\n| Ours | 92 |",
+            page=1,
+            source="docling",
+        )],
+    )
+
+    def fail_lightweight(_path):
+        raise AssertionError("auto should prefer docling before lightweight fallback")
+
+    monkeypatch.setattr(report_service.settings, "PDF_STRUCTURED_PARSER_BACKEND", "auto")
+    monkeypatch.setattr(report_service, "extract_pdf_structured_content_with_docling", lambda _path: docling)
+    monkeypatch.setattr(report_service, "extract_pdf_structured_content_lightweight", fail_lightweight)
+
+    extraction = report_service.extract_pdf_structured_content("/tmp/paper.pdf")
+
+    assert extraction.parser == "docling"
+    assert extraction.blocks[0].source == "docling"

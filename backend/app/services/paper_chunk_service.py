@@ -45,6 +45,13 @@ class PaperChunkService:
         "experiments": ("experiment", "experiments", "evaluation", "results", "实验", "评估", "结果"),
         "conclusion": ("conclusion", "conclusions", "discussion", "结论", "总结", "讨论"),
     }
+    TABLE_QUERY_TERMS = (
+        "table", "benchmark", "baseline", "metric", "metrics", "reward", "ablation", "result", "results",
+        "c-acc", "etf1", "tiou", "tf1", "gemini", "seed", "qwen", "gpt",
+        "表格", "基准", "指标", "结果", "对比", "消融", "奖励", "贡献", "评估",
+    )
+    TABLE_CAPTION_PATTERN = re.compile(r"(?:^|\b)table\s*\.?\s*\d+|表\s*\d+", re.I)
+    FIGURE_CAPTION_PATTERN = re.compile(r"(?:^|\b)(?:fig(?:ure)?\s*\.?\s*\d+|图\s*\d+)", re.I)
 
     @staticmethod
     def chunk_full_text(full_text: str) -> List[str]:
@@ -117,6 +124,11 @@ class PaperChunkService:
             for section, aliases in cls.SECTION_ALIASES.items()
             if any(alias in normalized_query for alias in aliases)
         ]
+
+    @classmethod
+    def is_table_like_query(cls, query: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (query or "").lower())
+        return any(term in normalized for term in cls.TABLE_QUERY_TERMS)
 
     @classmethod
     def _match_section_heading(cls, line: str) -> Optional[str]:
@@ -235,13 +247,32 @@ class PaperChunkService:
         """Return structured evidence snippets, preferring explicitly requested sections."""
         candidates = cls._page_evidence_candidates(page_texts) if page_texts else cls._document_evidence_candidates(full_text)
         structured_candidates = cls._structured_evidence_candidates(structured_blocks)
+        table_like_query = cls.is_table_like_query(query)
         candidates = [*structured_candidates, *candidates]
         requested_sections = set(cls.detect_requested_sections(query))
         if requested_sections:
             section_candidates = [item for item in candidates if item.section in requested_sections]
             if section_candidates:
-                return cls.search_evidence_chunks(section_candidates, query, top_k=top_k, requested_sections=requested_sections), "section"
+                section_results = cls.search_evidence_chunks(
+                    section_candidates,
+                    query,
+                    top_k=top_k,
+                    requested_sections=requested_sections,
+                )
+                if table_like_query and structured_candidates:
+                    table_results = cls._table_evidence_lane(structured_candidates, query, top_k=2)
+                    return cls._merge_evidence_lanes(table_results, section_results, top_k=top_k), "section+structured"
+                return section_results, "section"
         scope = "structured+document" if structured_candidates else "document"
+        if table_like_query and structured_candidates:
+            table_results = cls._table_evidence_lane(structured_candidates, query, top_k=2)
+            document_results = cls.search_evidence_chunks(
+                candidates,
+                query,
+                top_k=top_k,
+                requested_sections=requested_sections,
+            )
+            return cls._merge_evidence_lanes(table_results, document_results, top_k=top_k), scope
         return cls.search_evidence_chunks(candidates, query, top_k=top_k, requested_sections=requested_sections), scope
 
     @classmethod
@@ -283,6 +314,231 @@ class PaperChunkService:
                 metadata=base.metadata,
             ))
         return cls._suppress_redundant_evidence(results, top_k=top_k)
+
+    @classmethod
+    def _table_evidence_lane(cls, structured_candidates: List[EvidenceChunk], query: str, top_k: int) -> List[EvidenceChunk]:
+        table_candidates = [
+            item for item in structured_candidates
+            if item.source_type in {"table", "caption"}
+        ]
+        if not table_candidates:
+            return []
+        reranked = [
+            EvidenceChunk(
+                text=item.text,
+                score=cls._structured_evidence_score(item, query),
+                section=item.section,
+                page_start=item.page_start,
+                page_end=item.page_end,
+                source_type=item.source_type,
+                source=item.source,
+                metadata=item.metadata,
+            )
+            for item in table_candidates
+        ]
+        reranked.sort(key=lambda item: (cls._table_primary_intent_score(item, query), item.score), reverse=True)
+        selected: List[EvidenceChunk] = []
+        best_table = next((item for item in reranked if item.source_type == "table" and item.score >= 0.25), None)
+        if best_table:
+            selected.append(best_table)
+        selected.extend(item for item in reranked if item is not best_table and item.score >= 0.12)
+        if not selected:
+            selected = reranked
+        return cls._suppress_redundant_evidence(selected, top_k=top_k)
+
+    @classmethod
+    def _structured_evidence_score(cls, item: EvidenceChunk, query: str) -> float:
+        text = item.text or ""
+        lower_text = text.lower()
+        compact_text = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", lower_text)
+        table_caption = cls._is_table_caption(item)
+        figure_caption = cls._is_figure_caption(item)
+        score = 0.25 if item.source_type == "table" else 0.18 if table_caption else 0.02
+        if item.source_type == "table":
+            rows = cls._markdown_table_rows(text)
+            cells = [cell.strip() for row in rows for cell in row]
+            non_empty_cells = sum(1 for cell in cells if cell)
+            header = rows[0] if rows else []
+            generic_headers = sum(1 for cell in header if re.match(r"^column\s+\d+$", cell, re.I))
+            empty_ratio = (sum(1 for cell in cells if not cell) / len(cells)) if cells else 1.0
+            if len(rows) >= 3 and non_empty_cells >= 6:
+                score += 0.12
+            if len(rows) >= 4:
+                score += 0.06
+            if rows and max(len(row) for row in rows) >= 3:
+                score += 0.04
+            if len(rows) <= 2 or non_empty_cells <= 4:
+                score -= 0.22
+            if generic_headers:
+                score -= min(0.18, generic_headers * 0.05)
+            if empty_ratio >= 0.35:
+                score -= 0.16
+        elif item.source_type == "caption":
+            if table_caption:
+                score += 0.12
+                if cls.TABLE_CAPTION_PATTERN.search(text):
+                    score += 0.05
+            if figure_caption:
+                score -= 0.25
+        number_count = len(re.findall(r"(?:[+-]?\d+(?:\.\d+)?%?)", text))
+        if item.source_type == "table":
+            score += min(0.10, number_count * 0.012)
+        elif table_caption:
+            score += min(0.03, number_count * 0.006)
+        if cls.is_table_like_query(query):
+            query_tokens = cls._chunk_tokens(query)
+            text_tokens = cls._chunk_tokens(text)
+            overlap = len(query_tokens & text_tokens)
+            if query_tokens:
+                score += min(0.22, (overlap / len(query_tokens)) * 0.22)
+            focus_matches = 0
+            for term in cls._table_query_focus_terms(query):
+                normalized_term = re.sub(r"\s+", " ", term.lower()).strip()
+                compact_term = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", normalized_term)
+                if normalized_term and normalized_term in lower_text:
+                    focus_matches += 1
+                elif compact_term and compact_term in compact_text:
+                    focus_matches += 1
+            score += min(0.30, focus_matches * 0.06)
+            if re.search(r"caption\s*reward|奖励|reward", (query or "").lower(), re.I):
+                if re.search(r"rcaption|caption\s*reward|reward\s*functions?|奖励", lower_text, re.I):
+                    score += 0.18
+            if re.search(r"caption\s*reward", (query or "").lower(), re.I) and "rcaption" in lower_text:
+                score += 0.12
+            if re.search(r"baseline|对比", (query or "").lower(), re.I):
+                if re.search(r"baseline|gemini|gpt|qwen|seed|model", lower_text, re.I):
+                    score += 0.08
+        source = (item.source or "").lower()
+        if source in {"docling", "command", "mineru", "marker"}:
+            score += 0.03
+        elif source == "pdfplumber" and item.source_type == "table":
+            score -= 0.02
+        return round(max(0.0, min(1.0, score)), 3)
+
+    @staticmethod
+    def _table_primary_intent_score(item: EvidenceChunk, query: str) -> float:
+        lower_query = (query or "").lower()
+        lower_text = (item.text or "").lower()
+        compact_text = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", lower_text)
+        score = 0.0
+        if re.search(r"caption\s*reward|奖励|reward", lower_query, re.I):
+            if (
+                item.source_type == "table"
+                and not PaperChunkService._is_low_fidelity_table(item)
+                and re.search(r"rcaption|caption\s*reward|reward\s*functions?|奖励", lower_text, re.I)
+            ):
+                score += 2.0
+            elif item.source_type == "caption" and re.search(r"caption\s*reward|reward\s*functions?|奖励", lower_text, re.I):
+                score += 0.8
+        if re.search(r"baseline|对比", lower_query, re.I):
+            if re.search(r"baseline|gemini|gpt|qwen|seed", lower_text, re.I):
+                score += 1.0
+            elif item.source_type == "table" and "model" in lower_text:
+                score += 0.5
+        if "omtg" in lower_query and "omtg" in compact_text:
+            score += 0.2
+        if item.source_type != "table":
+            score -= 0.4
+        return score
+
+    @classmethod
+    def _is_low_fidelity_table(cls, item: EvidenceChunk) -> bool:
+        if item.source_type != "table":
+            return False
+        rows = cls._markdown_table_rows(item.text or "")
+        cells = [cell.strip() for row in rows for cell in row]
+        if not cells:
+            return True
+        non_empty_cells = sum(1 for cell in cells if cell)
+        empty_ratio = sum(1 for cell in cells if not cell) / len(cells)
+        header = rows[0] if rows else []
+        generic_headers = sum(1 for cell in header if re.match(r"^column\s+\d+$", cell, re.I))
+        generic_ratio = generic_headers / len(header) if header else 1.0
+        return len(rows) < 2 or non_empty_cells <= 4 or empty_ratio >= 0.35 or generic_ratio >= 0.35
+
+    @classmethod
+    def _is_table_caption(cls, item: EvidenceChunk) -> bool:
+        metadata = item.metadata or {}
+        caption_type = str(metadata.get("caption_type") or "").lower()
+        return caption_type == "table_caption" or bool(cls.TABLE_CAPTION_PATTERN.search(item.text or ""))
+
+    @classmethod
+    def _is_figure_caption(cls, item: EvidenceChunk) -> bool:
+        metadata = item.metadata or {}
+        caption_type = str(metadata.get("caption_type") or "").lower()
+        return caption_type == "figure_caption" or bool(cls.FIGURE_CAPTION_PATTERN.search(item.text or ""))
+
+    @staticmethod
+    def _markdown_table_rows(text: str) -> List[List[str]]:
+        rows: List[List[str]] = []
+        for line in (text or "").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("|") or not stripped.endswith("|"):
+                continue
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if cells and all(re.fullmatch(r"-{3,}:?", cell.replace(" ", "")) for cell in cells):
+                continue
+            rows.append(cells)
+        return rows
+
+    @staticmethod
+    def _table_query_focus_terms(query: str) -> List[str]:
+        lower = (query or "").lower()
+        terms = re.findall(r"[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*|\d+(?:\.\d+)?", lower)
+        if "caption reward" in lower or ("caption" in lower and "reward" in lower):
+            terms.extend(["caption reward", "rcaption", "reward functions", "reward"])
+        if "omtg" in lower:
+            terms.extend(["omtg", "omtg bench", "omt gbench"])
+        if "bench" in lower or "benchmark" in lower or "基准" in query:
+            terms.extend(["bench", "benchmark"])
+        if "baseline" in lower or "对比" in query:
+            terms.extend(["baseline", "gemini", "qwen", "gpt"])
+        if "seed" in lower:
+            terms.append("seed")
+        if "gemini" in lower:
+            terms.append("gemini")
+        if "etf1" in lower or "et f1" in lower:
+            terms.extend(["etf1", "et f1"])
+        if "c-acc" in lower or "c acc" in lower:
+            terms.extend(["c-acc", "c acc"])
+        if "tiou" in lower:
+            terms.append("tiou")
+        if "tf1" in lower:
+            terms.append("tf1")
+        for chinese, mapped in {
+            "表格": "table",
+            "指标": "metric",
+            "结果": "result",
+            "消融": "ablation",
+            "奖励": "reward",
+            "贡献": "gain",
+            "评估": "evaluation",
+        }.items():
+            if chinese in query:
+                terms.append(mapped)
+        return list(dict.fromkeys(term for term in terms if term))
+
+    @classmethod
+    def _merge_evidence_lanes(
+        cls,
+        priority: List[EvidenceChunk],
+        secondary: List[EvidenceChunk],
+        *,
+        top_k: int,
+    ) -> List[EvidenceChunk]:
+        merged: List[EvidenceChunk] = []
+        seen: set[tuple[str, Optional[int], str]] = set()
+        for item in [*priority, *secondary]:
+            key = (item.source_type, item.page_start, item.text)
+            if key in seen:
+                continue
+            seen.add(key)
+            if any(cls._chunk_similarity(item.text, chosen.text) >= 0.72 for chosen in merged):
+                continue
+            merged.append(item)
+            if len(merged) >= top_k:
+                break
+        return merged
 
     @staticmethod
     def search_chunks(

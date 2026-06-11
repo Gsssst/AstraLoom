@@ -76,6 +76,15 @@ interface ProcessingStatusItem {
     visual_count?: number;
     ocr_count?: number;
     formula_count?: number;
+    table_quality?: {
+      quality?: 'none' | 'low' | 'medium' | 'high' | string;
+      low_quality_table_count?: number;
+      table_count?: number;
+      warnings?: string[];
+      empty_cell_ratio?: number;
+      generic_header_ratio?: number;
+      average_rows?: number;
+    } | null;
     last_error?: { message?: string; parser_backend?: string; failed_at?: string } | null;
   } | null;
 }
@@ -1035,6 +1044,12 @@ const PapersPage: React.FC = () => {
   const localSourceOptions = ['arxiv', 'openalex', 'semantic_scholar', 'google_scholar', 'manual', 'bibtex_import', 'zotero_import']
     .map(value => ({ value, label: sl(value) }));
   const duplicateRiskMap = computeDuplicateRiskMap(papers);
+  const tableQualityMeta = (quality?: string | null) => {
+    if (quality === 'high') return { color: 'green', label: '表格高' };
+    if (quality === 'medium') return { color: 'gold', label: '表格中' };
+    if (quality === 'low') return { color: 'orange', label: '表格低' };
+    return { color: 'default', label: '表格无' };
+  };
   const reportPresetOptions = [
     { value: 'default', label: '默认逐篇' },
     { value: 'compare', label: '横向对比' },
@@ -1166,6 +1181,15 @@ const PapersPage: React.FC = () => {
                           结构化 {item.structured_parse_status?.last_error ? '失败' : item.structured_parse_status?.ready ? `已 ${item.structured_parse_status?.block_count || 0}` : '缺'}
                         </Tag>
                       </Tooltip>
+                      {item.structured_parse_status?.ready && item.structured_parse_status?.table_count ? (() => {
+                        const meta = tableQualityMeta(item.structured_parse_status?.table_quality?.quality);
+                        const warnings = item.structured_parse_status?.table_quality?.warnings || [];
+                        return (
+                          <Tooltip title={warnings.length ? warnings.join('；') : `低质量表格 ${item.structured_parse_status?.table_quality?.low_quality_table_count || 0}/${item.structured_parse_status?.table_count || 0}`}>
+                            <Tag color={meta.color}>{meta.label}</Tag>
+                          </Tooltip>
+                        );
+                      })() : null}
                       {item.imported_by_username && <Tag color="purple">导入：{item.imported_by_username}</Tag>}
                     </Space>}
                   />
