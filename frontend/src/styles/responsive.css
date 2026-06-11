@@ -778,6 +778,61 @@
   background: rgba(255, 77, 79, 0.04);
 }
 
+.workspace-resource-links-card .ant-card-head {
+  min-width: 0;
+}
+
+.workspace-resource-links-card .ant-list-item {
+  padding-inline: 0;
+}
+
+.workspace-resource-link-item {
+  align-items: flex-start !important;
+  gap: 10px;
+}
+
+.workspace-resource-link-item .ant-list-item-action {
+  margin-inline-start: 0;
+}
+
+.workspace-resource-link-content {
+  min-width: 0;
+  flex: 1 1 160px;
+}
+
+.workspace-resource-link-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.workspace-resource-link-name {
+  display: block;
+  min-width: 96px;
+  max-width: 100%;
+  flex: 1 1 120px;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.workspace-resource-link-tags {
+  flex: 0 0 auto;
+}
+
+.workspace-resource-link-description {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.workspace-resource-link-action {
+  white-space: nowrap;
+}
+
 .paper-annotation-item {
   padding: 10px 12px;
   border: 1px solid rgba(240, 199, 94, 0.35);

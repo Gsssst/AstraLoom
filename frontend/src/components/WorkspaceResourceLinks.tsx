@@ -89,6 +89,7 @@ const WorkspaceResourceLinks: React.FC<WorkspaceResourceLinksProps> = ({
     <Card
       size="small"
       title={<Space><AppstoreOutlined />{title}</Space>}
+      className="workspace-resource-links-card"
       style={{ borderRadius: 12 }}
       extra={<Button size="small" type="link" onClick={fetchLinks} loading={loading}>刷新</Button>}
     >
@@ -102,9 +103,11 @@ const WorkspaceResourceLinks: React.FC<WorkspaceResourceLinksProps> = ({
               dataSource={linkedSpaces}
               renderItem={(space) => (
                 <List.Item
+                  className="workspace-resource-link-item"
                   actions={space.can_edit ? [
                     <Button
                       key="unlink"
+                      className="workspace-resource-link-action"
                       size="small"
                       danger
                       icon={<MinusCircleOutlined />}
@@ -115,10 +118,20 @@ const WorkspaceResourceLinks: React.FC<WorkspaceResourceLinksProps> = ({
                     </Button>,
                   ] : []}
                 >
-                  <List.Item.Meta
-                    title={<Space><Text strong>{space.name}</Text><Tag color="green">已加入</Tag><Tag>{space.role}</Tag></Space>}
-                    description={space.description || `${space.member_count || 1} 人协作`}
-                  />
+                  <div className="workspace-resource-link-content">
+                    <div className="workspace-resource-link-title-row">
+                      <Text strong ellipsis={{ tooltip: space.name }} className="workspace-resource-link-name">
+                        {space.name}
+                      </Text>
+                      <Space size={6} wrap className="workspace-resource-link-tags">
+                        <Tag color="green">已加入</Tag>
+                        <Tag>{space.role}</Tag>
+                      </Space>
+                    </div>
+                    <Text type="secondary" className="workspace-resource-link-description">
+                      {space.description || `${space.member_count || 1} 人协作`}
+                    </Text>
+                  </div>
                 </List.Item>
               )}
             />
@@ -133,9 +146,11 @@ const WorkspaceResourceLinks: React.FC<WorkspaceResourceLinksProps> = ({
               dataSource={availableSpaces}
               renderItem={(space) => (
                 <List.Item
+                  className="workspace-resource-link-item"
                   actions={[
                     <Button
                       key="link"
+                      className="workspace-resource-link-action"
                       size="small"
                       icon={<PlusOutlined />}
                       loading={updatingSpaceId === space.id}
@@ -145,10 +160,19 @@ const WorkspaceResourceLinks: React.FC<WorkspaceResourceLinksProps> = ({
                     </Button>,
                   ]}
                 >
-                  <List.Item.Meta
-                    title={<Space><Text>{space.name}</Text><Tag>{space.role}</Tag></Space>}
-                    description={space.description || `${space.member_count || 1} 人协作`}
-                  />
+                  <div className="workspace-resource-link-content">
+                    <div className="workspace-resource-link-title-row">
+                      <Text ellipsis={{ tooltip: space.name }} className="workspace-resource-link-name">
+                        {space.name}
+                      </Text>
+                      <Space size={6} wrap className="workspace-resource-link-tags">
+                        <Tag>{space.role}</Tag>
+                      </Space>
+                    </div>
+                    <Text type="secondary" className="workspace-resource-link-description">
+                      {space.description || `${space.member_count || 1} 人协作`}
+                    </Text>
+                  </div>
                 </List.Item>
               )}
             />
