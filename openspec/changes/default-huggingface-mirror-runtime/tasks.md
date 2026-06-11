@@ -10,4 +10,4 @@
 - [x] 2.1 Update runtime env tests for mirror defaults and override behavior.
 - [x] 2.2 Update docs to describe mirror as default.
 - [x] 2.3 Validate OpenSpec and run targeted tests.
-- [ ] 2.4 Commit changes.
+- [x] 2.4 Commit changes.
