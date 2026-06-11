@@ -67,6 +67,17 @@ interface ProcessingStatusItem {
   status: string;
   missing: string[];
   repair_actions: { key: string; label: string; endpoint: string }[];
+  structured_parse_status?: {
+    ready: boolean;
+    parser?: string | null;
+    block_count?: number;
+    table_count?: number;
+    caption_count?: number;
+    visual_count?: number;
+    ocr_count?: number;
+    formula_count?: number;
+    last_error?: { message?: string; parser_backend?: string; failed_at?: string } | null;
+  } | null;
 }
 
 interface PaperCollection {
@@ -1088,6 +1099,7 @@ const PapersPage: React.FC = () => {
                 <Button icon={<RedoOutlined />} loading={kbAction === 'bm25'} onClick={() => runKbAction('bm25', '/papers/maintenance/rebuild-bm25')}>重建 BM25</Button>
                 <Button loading={kbAction === 'embeddings'} onClick={() => runKbAction('embeddings', '/papers/maintenance/backfill-embeddings?limit=20')}>补 20 篇向量</Button>
                 <Button loading={kbAction === 'fulltext'} onClick={() => runKbAction('fulltext', '/papers/maintenance/backfill-full-text?limit=5')}>补 5 篇全文</Button>
+                <Button loading={kbAction === 'structured'} onClick={() => runKbAction('structured', '/papers/maintenance/backfill-structured-pdf?limit=5')}>解析 5 篇 PDF</Button>
               </Space>
             </>
           ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无维护状态" />}
@@ -1149,6 +1161,11 @@ const PapersPage: React.FC = () => {
                       <Tag color={item.has_full_text ? 'green' : 'default'}>全文 {item.has_full_text ? '有' : '缺'}</Tag>
                       <Tag color={item.has_embedding ? 'green' : 'default'}>向量 {item.has_embedding ? '有' : '缺'}</Tag>
                       <Tag color={item.has_tags ? 'green' : 'default'}>标签 {item.has_tags ? '有' : '缺'}</Tag>
+                      <Tooltip title={item.structured_parse_status?.last_error?.message || item.structured_parse_status?.parser || 'PDF 结构化解析状态'}>
+                        <Tag color={item.structured_parse_status?.last_error ? 'red' : item.structured_parse_status?.ready ? 'green' : 'default'}>
+                          结构化 {item.structured_parse_status?.last_error ? '失败' : item.structured_parse_status?.ready ? `已 ${item.structured_parse_status?.block_count || 0}` : '缺'}
+                        </Tag>
+                      </Tooltip>
                       {item.imported_by_username && <Tag color="purple">导入：{item.imported_by_username}</Tag>}
                     </Space>}
                   />

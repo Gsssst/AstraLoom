@@ -689,6 +689,24 @@
   font-size: 11px;
 }
 
+.paper-chat-turn-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 7px 9px;
+  border: 1px solid rgba(250, 173, 20, 0.24);
+  border-radius: 8px;
+  background: rgba(250, 173, 20, 0.08);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.paper-chat-turn-warning .anticon {
+  margin-top: 2px;
+  color: #d48806;
+}
+
 .paper-reading-assistant-card {
   border: 1px solid rgba(117, 96, 196, 0.12);
   background:

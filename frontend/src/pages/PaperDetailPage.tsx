@@ -141,6 +141,7 @@ interface PaperChatMessage {
   reasoning?: string;
   thinkingStartedAt?: number;
   _reasoningStreaming?: boolean;
+  warning?: string;
 }
 
 interface PaperChatEvidenceMeta {
@@ -468,6 +469,19 @@ const PaperDetailPage: React.FC = () => {
     });
   };
 
+  const appendStreamingWarning = (content: string) => {
+    setChatMsgs(prev => {
+      const msgs = [...prev];
+      const last = msgs[msgs.length - 1];
+      if (last?.role === 'assistant') {
+        msgs[msgs.length - 1] = { ...last, warning: content, _streaming: false, _reasoningStreaming: false };
+      } else {
+        msgs.push({ role: 'assistant', content: '', warning: content, _streaming: false });
+      }
+      return msgs;
+    });
+  };
+
   const consumePaperChatStream = async (response: Response) => {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
@@ -476,6 +490,7 @@ const PaperDetailPage: React.FC = () => {
     let reasoning = '';
     let references: PaperChatReference[] = [];
     let evidence: PaperChatEvidenceMeta | null = null;
+    let warning: string | undefined;
     let finished = false;
 
     const handleFrame = (frame: string) => {
@@ -497,6 +512,9 @@ const PaperDetailPage: React.FC = () => {
         } else if (event.type === 'meta' && typeof event.content === 'object') {
           references = event.content.references || [];
           evidence = event.content.evidence || null;
+        } else if (event.type === 'warning' && typeof event.content === 'string') {
+          warning = event.content;
+          appendStreamingWarning(event.content);
         } else if ((event.type === 'content' || event.type === 'error') && typeof event.content === 'string') {
           full += event.content;
           appendStreamingReply(event.content, references, evidence);
@@ -527,7 +545,7 @@ const PaperDetailPage: React.FC = () => {
       }
     }
     setChatMsgs(prev => prev.map(msg => msg._streaming ? { ...msg, _streaming: false, _reasoningStreaming: false } : msg));
-    return { content: full, references, reasoning, evidence };
+    return { content: full, references, reasoning, evidence, warning };
   };
 
   const handleWebSearchToggle = () => {
@@ -592,7 +610,7 @@ const PaperDetailPage: React.FC = () => {
       if (!response.ok) throw new Error('Stream failed');
       const reply = await consumePaperChatStream(response);
       // Save to DB
-      const allMsgs = [...chatMsgs, userMessage, { role: 'assistant', content: reply.content, references: reply.references, reasoning: reply.reasoning, evidence: reply.evidence }];
+      const allMsgs = [...chatMsgs, userMessage, { role: 'assistant', content: reply.content, references: reply.references, reasoning: reply.reasoning, evidence: reply.evidence, warning: reply.warning }];
       api.post(`/papers/${paperId}/chat-history`, { messages: allMsgs }).catch(()=>{});
     } catch {
       if (!templateMode) {
@@ -1370,6 +1388,12 @@ const PaperDetailPage: React.FC = () => {
                             {msg.quote && <div className="paper-chat-message-quote"><strong>PDF 第 {msg.quote.pageNumber} 页</strong><br />{msg.quote.text}</div>}
                             <div style={{whiteSpace:'pre-wrap'}}>{msg.displayContent || msg.content}</div>
                           </> : <Markdown content={msg.content} />}
+                        </div>
+                      )}
+                      {msg.role === 'assistant' && msg.warning && (
+                        <div className="paper-chat-turn-warning">
+                          <ExclamationCircleOutlined />
+                          <Text type="secondary">{msg.warning}</Text>
                         </div>
                       )}
                       {msg.role === 'assistant' && !msg._streaming && (

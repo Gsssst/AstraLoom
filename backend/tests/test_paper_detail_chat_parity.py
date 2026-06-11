@@ -179,6 +179,28 @@ async def test_paper_chat_skips_recovery_when_primary_stream_returns_content(mon
 
 
 @pytest.mark.asyncio
+async def test_paper_chat_marks_late_stream_failure_without_error_content(monkeypatch):
+    async def _interrupted_content_stream(**_kwargs):
+        yield "已经生成的回答"
+        raise RuntimeError("upstream disconnected")
+
+    monkeypatch.setattr(papers.llm_service, "chat_stream", _interrupted_content_stream)
+
+    events = [
+        event async for event in papers._stream_paper_answer_events(
+            [{"role": "user", "content": "question"}],
+            show_thinking=False,
+            max_tokens=128000,
+        )
+    ]
+
+    assert events == [
+        {"type": "content", "content": "已经生成的回答"},
+        {"type": "warning", "content": papers.PAPER_CHAT_INTERRUPTED_WARNING},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_paper_chat_recovers_visible_answer_after_thinking_timeout(monkeypatch):
     async def _stalled_reasoning_stream(**_kwargs):
         yield {"type": "reasoning", "content": "仍在分析"}

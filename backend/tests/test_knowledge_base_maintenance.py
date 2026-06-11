@@ -52,6 +52,7 @@ def test_maintenance_routes_are_fixed_paths_and_admin_only():
         ("/api/papers/maintenance/rebuild-bm25", "POST"),
         ("/api/papers/maintenance/backfill-embeddings", "POST"),
         ("/api/papers/maintenance/backfill-full-text", "POST"),
+        ("/api/papers/maintenance/backfill-structured-pdf", "POST"),
         ("/api/papers/maintenance/recommendations", "GET"),
         ("/api/papers/maintenance/search-diagnostics", "GET"),
     ]:
@@ -135,6 +136,17 @@ class _ScalarOneResult:
 
     def scalar_one_or_none(self):
         return self.item
+
+
+class _ScalarListResult:
+    def __init__(self, items):
+        self.items = items
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self.items
 
 
 class _PaperDb:
@@ -226,6 +238,59 @@ async def test_reparse_structured_pdf_endpoint_persists_visible_failure(monkeypa
     assert error["message"] == "parser binary missing"
     assert error["parser_backend"] == "command"
     assert raised.value.detail["status"]["last_error"]["message"] == "parser binary missing"
+
+
+@pytest.mark.asyncio
+async def test_backfill_structured_pdf_parse_repairs_bounded_candidates(monkeypatch):
+    papers = [
+        SimpleNamespace(id=uuid4(), title="Needs parse", arxiv_id=None, pdf_path="/data/a.pdf", metadata_json={}),
+        SimpleNamespace(
+            id=uuid4(),
+            title="Already parsed",
+            arxiv_id=None,
+            pdf_path="/data/b.pdf",
+            metadata_json={
+                report_service.PDF_STRUCTURED_METADATA_KEY: {
+                    "version": report_service.PDF_STRUCTURED_METADATA_VERSION,
+                    "source_path": "/data/b.pdf",
+                    "parser": "test",
+                    "page_count": 1,
+                    "blocks": [],
+                }
+            },
+        ),
+    ]
+
+    class _Db:
+        commits = 0
+
+        async def execute(self, _statement):
+            return _ScalarListResult(papers)
+
+        async def commit(self):
+            self.commits += 1
+
+    async def fake_reparse(paper, db):
+        paper.metadata_json = {
+            report_service.PDF_STRUCTURED_METADATA_KEY: {
+                "version": report_service.PDF_STRUCTURED_METADATA_VERSION,
+                "source_path": paper.pdf_path,
+                "parser": "test-parser",
+                "page_count": 2,
+                "blocks": [{"type": "table", "text": "table"}],
+            }
+        }
+        return {"ready": True}
+
+    monkeypatch.setattr(report_service, "force_structured_pdf_reparse", fake_reparse)
+
+    db = _Db()
+    result = await papers_api.backfill_structured_pdf_parse(limit=5, db=db, user=SimpleNamespace(role="admin"))
+
+    assert result.processed == 1
+    assert result.success == 1
+    assert result.failed == 0
+    assert db.commits == 1
 
 
 def test_processing_flags_mark_ready_when_full_text_embedding_and_tags_exist():

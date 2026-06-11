@@ -280,6 +280,7 @@ def _coverage_severity(coverage: float) -> Literal["high", "medium", "low"]:
 
 async def _maintenance_recommendations(db: AsyncSession, *, include_samples: bool = True) -> list[MaintenanceRecommendation]:
     from app.services.hybrid_search import bm25_index_status
+    from app.services.report_service import structured_pdf_parse_status_from_paper
 
     total = await _paper_count(db)
     if total <= 0:
@@ -289,6 +290,19 @@ async def _maintenance_recommendations(db: AsyncSession, *, include_samples: boo
     embedding_papers = await _paper_count(db, Paper.embedding.is_not(None))
     missing_full_text = max(total - full_text_papers, 0)
     missing_embeddings = max(total - embedding_papers, 0)
+    structured_candidates_result = await db.execute(
+        select(Paper)
+        .where((Paper.pdf_path.is_not(None)) | (Paper.arxiv_id.is_not(None)))
+        .order_by(Paper.created_at.desc())
+        .limit(200)
+    )
+    structured_candidates = structured_candidates_result.scalars().all()
+    structured_parse_needed = []
+    for paper in structured_candidates:
+        structured_status = structured_pdf_parse_status_from_paper(paper)
+        if not structured_status.get("ready") or structured_status.get("last_error"):
+            structured_parse_needed.append(paper)
+    missing_structured_parse = len(structured_parse_needed)
     full_text_coverage = full_text_papers / total
     embedding_coverage = embedding_papers / total
     bm25_status = bm25_index_status()
@@ -319,6 +333,18 @@ async def _maintenance_recommendations(db: AsyncSession, *, include_samples: boo
             reason=f"当前向量覆盖率约 {embedding_coverage:.0%}。覆盖率偏低时 Hybrid 会弱化或降级语义检索，复杂语义问题更容易漏召回。",
             action_label="补 20 篇向量",
             action_endpoint="/papers/maintenance/backfill-embeddings?limit=20",
+            sample_papers=samples,
+        ))
+
+    if missing_structured_parse:
+        samples = [_maintenance_sample(paper) for paper in structured_parse_needed[:3]] if include_samples else []
+        recommendations.append(MaintenanceRecommendation(
+            id="backfill-structured-pdf",
+            title="结构化解析 PDF",
+            severity="medium",
+            reason=f"当前有 {missing_structured_parse} 篇论文可刷新 PDF 结构化解析。表格、图注、OCR 和公式证据依赖这一步。",
+            action_label="解析 5 篇 PDF",
+            action_endpoint="/papers/maintenance/backfill-structured-pdf?limit=5",
             sample_papers=samples,
         ))
 
@@ -1020,6 +1046,53 @@ async def backfill_retrieval_full_text(
     return action
 
 
+@router.post("/maintenance/backfill-structured-pdf", response_model=MaintenanceActionResult)
+async def backfill_structured_pdf_parse(
+    limit: int = Query(default=5, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Run bounded structured PDF parsing for papers that need parser metadata."""
+    from app.services.report_service import (
+        force_structured_pdf_reparse,
+        structured_pdf_parse_status_from_paper,
+    )
+
+    result = await db.execute(
+        select(Paper)
+        .where((Paper.pdf_path.is_not(None)) | (Paper.arxiv_id.is_not(None)))
+        .order_by(Paper.created_at.desc())
+        .limit(limit * 4)
+    )
+    candidates = result.scalars().all()
+    papers = []
+    for candidate in candidates:
+        status = structured_pdf_parse_status_from_paper(candidate)
+        if not status.get("ready") or status.get("last_error"):
+            papers.append(candidate)
+        if len(papers) >= limit:
+            break
+    action = MaintenanceActionResult(processed=len(papers))
+    for paper in papers:
+        try:
+            status = structured_pdf_parse_status_from_paper(paper)
+            if status.get("ready") and not status.get("last_error"):
+                action.skipped += 1
+                continue
+            refreshed = await force_structured_pdf_reparse(paper, db)
+            if refreshed.get("ready"):
+                action.success += 1
+            else:
+                action.skipped += 1
+                action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": "no structured blocks"})
+        except Exception as exc:
+            action.failed += 1
+            action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": str(exc)})
+    if action.success or action.failed:
+        await db.commit()
+    return action
+
+
 @router.get("/maintenance/recommendations", response_model=list[MaintenanceRecommendation])
 async def get_retrieval_maintenance_recommendations(
     db: AsyncSession = Depends(get_db),
@@ -1338,6 +1411,7 @@ def _paper_evidence_meta(references: list[dict]) -> dict:
 
 
 PAPER_CHAT_RECOVERY_STATUS = "首轮生成未返回正文，正在切换稳定回答模式..."
+PAPER_CHAT_INTERRUPTED_WARNING = "回答生成中断，以上内容可能不完整。"
 PAPER_CHAT_PRIMARY_TIMEOUT_SECONDS = 30.0
 PAPER_CHAT_RECOVERY_PROMPT = (
     "请停止继续展开分析，直接根据已有上下文输出简洁、完整的最终答案。"
@@ -1378,7 +1452,9 @@ async def _stream_paper_answer_events(
                 yield {"type": "content", "content": token}
     except Exception as exc:
         if emitted_content:
-            raise
+            logger.warning("论文问答已输出正文后中断: %s", exc)
+            yield {"type": "warning", "content": PAPER_CHAT_INTERRUPTED_WARNING}
+            return
         logger.warning(f"论文问答首轮未返回正文，切换稳定模式: {exc}")
 
     if emitted_content:
@@ -1469,6 +1545,8 @@ async def ask_about_paper_stream(paper_id: str, req: AskPaperRequest, db: AsyncS
                 elif event["type"] == "content":
                     full += event["content"]
                     yield _stream_event("content", event["content"])
+                elif event["type"] == "warning":
+                    yield _stream_event("warning", event["content"])
         except Exception as exc:
             logger.exception(f"论文问答流式生成失败: {exc}")
             full, appended = _stream_failure_content(full)
