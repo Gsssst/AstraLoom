@@ -14,16 +14,16 @@ def _disable_structured_providers(monkeypatch):
 BING_HTML = """
 <ol id="b_results">
   <li class="b_algo">
-    <h2><a href="https://example.com/bing">Bing paper</a></h2>
-    <div class="b_caption"><p>Bing snippet</p></div>
+    <h2><a href="https://example.com/bing">Video grounding paper</a></h2>
+    <div class="b_caption"><p>Video grounding benchmark and temporal reasoning snippet</p></div>
   </li>
 </ol>
 """
 
 DUCKDUCKGO_HTML = """
 <div class="result">
-  <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fddg">DuckDuckGo paper</a>
-  <a class="result__snippet">DuckDuckGo snippet</a>
+  <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fddg">DuckDuckGo video grounding paper</a>
+  <a class="result__snippet">Video grounding long video understanding snippet</a>
 </div>
 """
 
@@ -31,9 +31,9 @@ BING_RSS = """
 <rss version="2.0">
   <channel>
     <item>
-      <title>RSS paper</title>
+      <title>RSS video grounding paper</title>
       <link>https://example.com/rss</link>
-      <description>RSS snippet</description>
+      <description>Video grounding retrieval snippet</description>
     </item>
   </channel>
 </rss>
@@ -43,21 +43,21 @@ BING_RSS = """
 def test_parse_bing_results_returns_bounded_snippets():
     results = web_search._parse_bing_results(BING_HTML + BING_HTML, max_results=1)
 
-    assert results == ["### Bing paper\nBing snippet\n来源: https://example.com/bing"]
+    assert results == ["### Video grounding paper\nVideo grounding benchmark and temporal reasoning snippet\n来源: https://example.com/bing"]
 
 
 def test_parse_duckduckgo_results_returns_bounded_snippets():
     results = web_search._parse_duckduckgo_results(DUCKDUCKGO_HTML, max_results=1)
 
-    assert results == ["### DuckDuckGo paper\nDuckDuckGo snippet\n来源: https://example.com/ddg"]
+    assert results == ["### DuckDuckGo video grounding paper\nVideo grounding long video understanding snippet\n来源: https://example.com/ddg"]
 
 
 def test_parse_bing_rss_results_returns_structured_items():
     results = web_search._parse_bing_rss_result_items(BING_RSS, max_results=1, query="paper")
 
     assert results == [web_search.WebSearchResult(
-        title="RSS paper",
-        snippet="RSS snippet",
+            title="RSS video grounding paper",
+            snippet="Video grounding retrieval snippet",
         url="https://example.com/rss",
         provider="bing_rss",
         query="paper",
@@ -108,7 +108,7 @@ async def test_search_web_aggregates_bing_and_duckduckgo(monkeypatch):
 
     result = await web_search.search_web("video grounding", max_results=1, search_depth="quick")
 
-    assert "DuckDuckGo paper" in result
+    assert "DuckDuckGo video grounding paper" in result
     assert len(client.urls) == 3
     assert client.urls[0] == "https://www.bing.com/search?q=video%20grounding&format=rss"
     assert client.urls[1] == "https://www.bing.com/search?q=video%20grounding"
@@ -145,12 +145,39 @@ def test_plan_search_queries_expands_breadth_by_depth():
     assert len(web_search.plan_search_queries("video grounding", "deep")) == 5
 
 
+def test_filter_relevant_results_drops_unrelated_dictionary_pages():
+    query = "multimodal large language model memory"
+    results = [
+        web_search.WebSearchResult(
+            title="请_百度百科",
+            snippet="请的意思、读音、部首、笔顺。",
+            url="https://baike.baidu.com/item/%E8%AF%B7",
+            provider="bing_rss",
+            query="请",
+            rank=0,
+        ),
+        web_search.WebSearchResult(
+            title="Memory-augmented multimodal large language models",
+            snippet="A survey of long-context vision language model memory for video understanding.",
+            url="https://example.com/mllm-memory",
+            provider="bing",
+            query=query,
+            rank=1,
+        ),
+    ]
+
+    filtered = web_search.filter_relevant_results(query, results)
+
+    assert [item.title for item in filtered] == ["Memory-augmented multimodal large language models"]
+    assert filtered[0].as_reference()["retrieval_query"] == query
+
+
 @pytest.mark.asyncio
 async def test_search_web_prefers_configured_tavily_without_unneeded_html_fallback(monkeypatch):
     client = _FakeClient([_FakeResponse(payload={
         "results": [{
-            "title": "Tavily result",
-            "content": "Structured answer context",
+            "title": "Tavily video grounding result",
+            "content": "Structured video grounding answer context",
             "url": "https://example.com/tavily",
         }],
     })])
@@ -168,8 +195,8 @@ async def test_search_web_fills_sparse_structured_results_with_html_fallback(mon
     client = _FakeClient([
         _FakeResponse(payload={
             "results": [{
-                "title": "Tavily result",
-                "content": "Structured answer context",
+            "title": "Tavily video grounding result",
+            "content": "Structured video grounding answer context",
                 "url": "https://example.com/tavily",
             }],
         }),

@@ -435,6 +435,24 @@ async def add_workspace_member(
     return space
 
 
+@router.get("/{space_id}/members/candidates")
+async def list_workspace_member_candidates(
+    space_id: str,
+    q: str = "",
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    service = WorkspaceService(db)
+    try:
+        candidates = await service.search_member_candidates(space_id, user, q=q, limit=limit)
+    except PermissionError as exc:
+        _permission_error(exc)
+    if candidates is None:
+        raise HTTPException(status_code=404, detail="项目空间未找到")
+    return {"users": candidates}
+
+
 @router.delete("/{space_id}/members/{user_id}")
 async def remove_workspace_member(
     space_id: str,

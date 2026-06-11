@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  Alert, Button, Card, Col, Drawer, Empty, Form, Input, List, Modal, Progress, Row, Select, Space, Statistic, Tabs, Tag, Timeline, Typography, message,
+  Alert, AutoComplete, Avatar, Button, Card, Col, Drawer, Empty, Form, Input, List, Modal, Progress, Row, Select, Space, Statistic, Tabs, Tag, Timeline, Typography, message,
 } from 'antd';
 import {
   AppstoreOutlined, ArrowLeftOutlined, BookOutlined, BugOutlined, CommentOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined,
@@ -113,6 +113,8 @@ const WorkspaceDetailPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [memberModalOpen, setMemberModalOpen] = useState(false);
   const [memberSaving, setMemberSaving] = useState(false);
+  const [memberCandidates, setMemberCandidates] = useState<any[]>([]);
+  const [memberCandidateLoading, setMemberCandidateLoading] = useState(false);
   const [memberForm] = Form.useForm();
   const [resourceForm] = Form.useForm();
   const [resourceSaving, setResourceSaving] = useState(false);
@@ -214,6 +216,31 @@ const WorkspaceDetailPage: React.FC = () => {
     } finally {
       setMemberSaving(false);
     }
+  };
+
+  const fetchMemberCandidates = async (q = '') => {
+    if (!spaceId || space?.role !== 'owner') return;
+    setMemberCandidateLoading(true);
+    try {
+      const response = await api.get(`/workspaces/${spaceId}/members/candidates`, {
+        params: { q: q || undefined, limit: 20 },
+      });
+      setMemberCandidates(response.data.users || []);
+      setWorkspaceActionError(null);
+    } catch (error: any) {
+      const detail = getApiErrorDetails(error, { fallback: '候选成员加载失败' });
+      setWorkspaceActionError({ title: '候选成员加载失败', detail });
+      message.warning(detail.message);
+    } finally {
+      setMemberCandidateLoading(false);
+    }
+  };
+
+  const openMemberModal = () => {
+    setMemberModalOpen(true);
+    memberForm.resetFields();
+    memberForm.setFieldsValue({ role: 'viewer' });
+    fetchMemberCandidates('');
   };
 
   const handleRemoveMember = async (userId: string) => {
@@ -725,7 +752,7 @@ const WorkspaceDetailPage: React.FC = () => {
     <Card
       title="成员"
       style={{ borderRadius: 14 }}
-      extra={space.role === 'owner' && <Button size="small" icon={<PlusOutlined />} onClick={() => setMemberModalOpen(true)}>添加</Button>}
+      extra={space.role === 'owner' && <Button size="small" icon={<PlusOutlined />} onClick={openMemberModal}>添加</Button>}
     >
       <List
         dataSource={space.members || []}
@@ -1069,8 +1096,30 @@ const WorkspaceDetailPage: React.FC = () => {
 
       <Modal title="添加空间成员" open={memberModalOpen} onOk={handleAddMember} confirmLoading={memberSaving} onCancel={() => setMemberModalOpen(false)} okText="添加">
         <Form form={memberForm} layout="vertical" initialValues={{ role: 'viewer' }}>
-          <Form.Item name="account" label="用户名或邮箱" rules={[{ required: true, message: '请输入用户名或邮箱' }]}>
-            <Input placeholder="例如 gst 或 researcher@example.com" />
+          <Form.Item
+            name="account"
+            label="用户名或邮箱"
+            extra="可以从列表选择，也可以直接输入完整用户名或邮箱。"
+            rules={[{ required: true, message: '请输入用户名或邮箱' }]}
+          >
+            <AutoComplete
+              allowClear
+              placeholder="搜索并选择用户，也可以直接输入用户名或邮箱"
+              onSearch={fetchMemberCandidates}
+              notFoundContent={memberCandidateLoading ? '加载中...' : '暂无匹配用户'}
+              options={memberCandidates.map(candidate => ({
+                value: candidate.account || candidate.username || candidate.email,
+                label: (
+                  <Space>
+                    <Avatar size={22} src={candidate.avatar} icon={<UserOutlined />} />
+                    <span>{candidate.display_name || candidate.username}</span>
+                    <Text type="secondary">{candidate.email}</Text>
+                    {candidate.is_member && <Tag color="green">已是 {candidate.member_role}</Tag>}
+                  </Space>
+                ),
+                disabled: candidate.member_role === 'owner',
+              }))}
+            />
           </Form.Item>
           <Form.Item name="role" label="角色">
             <Select options={[{ value: 'viewer', label: 'viewer：只读' }, { value: 'editor', label: 'editor：编辑者' }]} />

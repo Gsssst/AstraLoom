@@ -93,6 +93,21 @@ const formatElapsed = (ms: number) => {
   return `${Math.round(seconds)}s`;
 };
 
+const referenceTooltip = (ref: any) => {
+  if (ref.source === 'web') {
+    return `网页检索来源：${ref.provider || 'unknown'}；查询：${ref.retrieval_query || ref.query || 'unknown'}`;
+  }
+  return ref.arxiv_id ? `知识库论文：${ref.arxiv_id}` : '知识库检索来源';
+};
+
+const referenceLabel = (ref: any) => {
+  const title = ref.title || ref.url || ref.arxiv_id || '未命名来源';
+  const source = ref.source === 'web' ? '网页来源' : '知识库';
+  const provider = ref.source === 'web' && ref.provider ? ` · ${ref.provider}` : '';
+  const year = ref.year ? ` (${ref.year})` : '';
+  return `${source}${provider} · ${title.slice(0, 40)}${title.length > 40 ? '...' : ''}${year}`;
+};
+
 const ChatPage: React.FC = () => {
   const { token } = theme.useToken();
   const screens = Grid.useBreakpoint();
@@ -560,7 +575,7 @@ const ChatPage: React.FC = () => {
                       <Button type="text" size="small" onClick={async () => { if (msg.id) try { await api.post('/chat/feedback', { message_id: msg.id, rating: 'like' }); message.success('已反馈'); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '反馈提交失败' })); } }} style={{ fontSize: 11, color: token.colorTextQuaternary }}>👍</Button>
                       <Button type="text" size="small" onClick={async () => { if (msg.id) try { await api.post('/chat/feedback', { message_id: msg.id, rating: 'dislike' }); message.success('已反馈'); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '反馈提交失败' })); } }} style={{ fontSize: 11, color: token.colorTextQuaternary }}>👎</Button></>}
                     </div>
-                    {msg.references && msg.references.length > 0 && <div style={{ marginTop: 8, padding: '8px 12px', background: token.colorBgElevated, borderRadius: 12, border: `1px solid ${token.colorBorderSecondary}` }}><Text type="secondary" style={{ fontSize: 11 }}>📎 引用：</Text>{(msg.references as any[]).map((ref: any, ri: number) => <Tag key={`${ref.url || ref.arxiv_id || ref.title}-${ri}`} color={ref.source === 'web' ? 'cyan' : 'geekblue'} style={{ marginTop: 4, cursor: ref.url || ref.arxiv_id ? 'pointer' : 'default', borderRadius: 8 }} onClick={() => { if (ref.url) window.open(ref.url, '_blank', 'noopener,noreferrer'); else if (ref.arxiv_id) window.open(`https://arxiv.org/abs/${ref.arxiv_id.replace(/v\d+$/, '')}`, '_blank', 'noopener,noreferrer'); }}>[{ri + 1}] {ref.source === 'web' ? '网页 · ' : ''}{ref.title?.slice(0, 40)}{ref.title?.length > 40 ? '...' : ''}{ref.year ? ` (${ref.year})` : ''}</Tag>)}</div>}
+                    {msg.references && msg.references.length > 0 && <div style={{ marginTop: 8, padding: '8px 12px', background: token.colorBgElevated, borderRadius: 12, border: `1px solid ${token.colorBorderSecondary}` }}><Text type="secondary" style={{ fontSize: 11 }}>检索来源：</Text>{(msg.references as any[]).map((ref: any, ri: number) => <Tooltip key={`${ref.url || ref.arxiv_id || ref.title}-${ri}`} title={referenceTooltip(ref)}><Tag color={ref.source === 'web' ? 'cyan' : 'geekblue'} style={{ marginTop: 4, cursor: ref.url || ref.arxiv_id ? 'pointer' : 'default', borderRadius: 8 }} onClick={() => { if (ref.url) window.open(ref.url, '_blank', 'noopener,noreferrer'); else if (ref.arxiv_id) window.open(`https://arxiv.org/abs/${ref.arxiv_id.replace(/v\d+$/, '')}`, '_blank', 'noopener,noreferrer'); }}>[{ri + 1}] {referenceLabel(ref)}</Tag></Tooltip>)}</div>}
                     <div style={{ fontSize: 11, color: token.colorTextQuaternary, marginTop: 4, textAlign: msg.role === 'user' ? 'right' : 'left', padding: '0 4px' }}>{msg.created_at ? new Date(msg.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : ''}</div>
                   </div>
                 </div>

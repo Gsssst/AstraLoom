@@ -16,6 +16,57 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+ENGLISH_QUERY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "about",
+    "can",
+    "could",
+    "find",
+    "for",
+    "from",
+    "help",
+    "how",
+    "latest",
+    "me",
+    "of",
+    "official",
+    "on",
+    "paper",
+    "papers",
+    "please",
+    "research",
+    "show",
+    "survey",
+    "the",
+    "to",
+    "what",
+    "with",
+}
+
+CHINESE_QUERY_STOPWORDS = (
+    "请帮我",
+    "帮我",
+    "请你",
+    "请",
+    "一下",
+    "最新进展",
+    "官方资料",
+    "论文综述",
+    "论文",
+    "综述",
+    "资料",
+    "研究",
+    "进展",
+    "相关",
+    "关于",
+    "怎么",
+    "如何",
+    "什么",
+)
+
 
 @dataclass(frozen=True)
 class WebSearchResult:
@@ -33,6 +84,8 @@ class WebSearchResult:
             "source": "web",
             "provider": self.provider,
             "query": self.query,
+            "retrieval_query": self.query,
+            "rank": self.rank,
             "snippet": self.snippet,
         }
 
@@ -80,6 +133,83 @@ def _result_key(result: WebSearchResult) -> str:
     if canonical and canonical != "/":
         return canonical
     return re.sub(r"\W+", "", result.title.lower())
+
+
+def _normalize_relevance_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").lower()).strip()
+
+
+def _query_relevance_terms(query: str) -> set[str]:
+    """Extract high-signal terms used to reject obviously unrelated web results."""
+    normalized = _normalize_relevance_text(query)
+    for stopword in CHINESE_QUERY_STOPWORDS:
+        normalized = normalized.replace(stopword, " ")
+
+    terms: set[str] = set()
+    for token in re.findall(r"[a-z0-9][a-z0-9_+\-.]{1,}", normalized):
+        token = token.strip("_+-.")
+        if len(token) >= 2 and token not in ENGLISH_QUERY_STOPWORDS:
+            terms.add(token)
+            for part in re.split(r"[-_.+]", token):
+                if len(part) >= 3 and part not in ENGLISH_QUERY_STOPWORDS:
+                    terms.add(part)
+
+    for phrase in re.findall(r"[\u4e00-\u9fff]{2,}", normalized):
+        if phrase not in CHINESE_QUERY_STOPWORDS:
+            terms.add(phrase)
+    return terms
+
+
+def _result_relevance_score(query: str, result: WebSearchResult) -> float:
+    terms = _query_relevance_terms(query)
+    if not terms:
+        return 1.0
+
+    title = _normalize_relevance_text(result.title)
+    snippet = _normalize_relevance_text(result.snippet)
+    url = _normalize_relevance_text(urllib.parse.unquote(result.url))
+    weighted_matches = 0.0
+    total_weight = 0.0
+
+    for term in terms:
+        weight = 1.0
+        if len(term) >= 5 or re.fullmatch(r"[a-z0-9][a-z0-9_+\-.]{3,}", term):
+            weight = 1.4
+        total_weight += weight
+        if term in title:
+            weighted_matches += weight * 1.0
+        elif term in snippet:
+            weighted_matches += weight * 0.75
+        elif term in url:
+            weighted_matches += weight * 0.5
+
+    return weighted_matches / max(total_weight, 1.0)
+
+
+def _is_relevant_result(query: str, result: WebSearchResult) -> bool:
+    terms = _query_relevance_terms(query)
+    if not terms:
+        return True
+    score = _result_relevance_score(query, result)
+    if score >= 0.22:
+        return True
+
+    searchable = _normalize_relevance_text(
+        " ".join([result.title, result.snippet, urllib.parse.unquote(result.url)])
+    )
+    long_terms = [term for term in terms if len(term) >= 5]
+    return any(term in searchable for term in long_terms)
+
+
+def filter_relevant_results(query: str, results: list[WebSearchResult]) -> list[WebSearchResult]:
+    """Remove search-provider fallbacks that clearly do not match the user's query."""
+    if not results:
+        return []
+    filtered = [result for result in results if _is_relevant_result(query, result)]
+    dropped = len(results) - len(filtered)
+    if dropped:
+        logger.info("Filtered off-topic web results: query=%s dropped=%s kept=%s", query[:80], dropped, len(filtered))
+    return filtered
 
 
 def _parse_bing_result_items(html: str, max_results: int, *, query: str = "") -> list[WebSearchResult]:
@@ -400,7 +530,7 @@ async def search_web_results(
         if len(primary) < max_results:
             fallback = await _run_searches(client, queries, (_search_bing_rss, _search_bing, _search_duckduckgo), max_results)
 
-    merged = _deduplicate_results([*primary, *fallback])
+    merged = filter_relevant_results(query, _deduplicate_results([*primary, *fallback]))
 
     logger.info(
         "Web research completed: query=%s variants=%s primary_providers=%s unique_results=%s",

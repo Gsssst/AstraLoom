@@ -100,6 +100,28 @@ class WorkspaceService:
         data["role"] = role
         return data
 
+    async def get_space_admin_detail(self, space_id: str, admin: User) -> dict | None:
+        try:
+            sid = UUID(space_id)
+        except ValueError:
+            return None
+        result = await self.session.execute(
+            select(ProjectSpace)
+            .where(ProjectSpace.id == sid, ProjectSpace.status != "deleted")
+            .options(
+                selectinload(ProjectSpace.members),
+                selectinload(ProjectSpace.resources),
+            )
+        )
+        space = result.scalars().unique().one_or_none()
+        if not space:
+            return None
+        data = await self.space_to_dict(space, admin.id, include_summary=True)
+        data["role"] = self._role_for(space, admin.id)
+        data["admin_view"] = True
+        data["admin_can_inspect"] = True
+        return data
+
     async def update_space(self, space_id: str, user: User, **updates) -> dict | None:
         access = await self.get_space_for_user(space_id, user)
         if not access:
@@ -171,6 +193,33 @@ class WorkspaceService:
         await self.session.commit()
         detail = await self.get_space_detail(str(space.id), user)
         return detail
+
+    async def search_member_candidates(
+        self,
+        space_id: str,
+        user: User,
+        q: str = "",
+        limit: int = 20,
+    ) -> list[dict] | None:
+        access = await self.get_space_for_user(space_id, user)
+        if not access:
+            return None
+        space, current_role = access
+        if current_role != "owner":
+            raise PermissionError("只有项目空间 owner 可以查看可添加成员")
+        q = (q or "").strip()
+        limit = max(1, min(limit, 50))
+        statement = select(User).where(User.is_active.is_(True))
+        if q:
+            needle = f"%{q}%"
+            statement = statement.where(or_(User.username.ilike(needle), User.email.ilike(needle), User.display_name.ilike(needle)))
+        statement = statement.order_by(User.created_at.desc()).limit(limit)
+        result = await self.session.execute(statement)
+        member_roles = {str(member.user_id): member.role for member in space.members or []}
+        return [
+            self._member_candidate_dict(candidate, member_roles.get(str(candidate.id)))
+            for candidate in result.scalars().all()
+        ]
 
     async def remove_member(self, space_id: str, user: User, member_user_id: str) -> dict | None:
         access = await self.get_space_for_user(space_id, user)
@@ -1069,6 +1118,20 @@ class WorkspaceService:
 
     def _display_name(self, user: User) -> str:
         return user.display_name or user.username or user.email or "未知用户"
+
+    def _member_candidate_dict(self, user: User, existing_role: Optional[str] = None) -> dict:
+        return {
+            "id": str(user.id),
+            "username": user.username,
+            "email": user.email,
+            "display_name": user.display_name,
+            "avatar": user.avatar,
+            "role": user.role,
+            "is_member": bool(existing_role),
+            "member_role": existing_role,
+            "label": self._display_name(user),
+            "account": user.username or user.email,
+        }
 
     def _notify_issue_members(
         self,

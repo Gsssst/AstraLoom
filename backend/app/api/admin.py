@@ -154,6 +154,20 @@ async def list_admin_workspaces(
     }
 
 
+@router.get("/workspaces/{space_id}")
+async def get_admin_workspace_detail(
+    space_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """管理员查看项目空间内容。"""
+    service = WorkspaceService(db)
+    detail = await service.get_space_admin_detail(space_id, admin)
+    if not detail:
+        raise HTTPException(status_code=404, detail="项目空间未找到")
+    return detail
+
+
 @router.get("/workspace-activities")
 async def list_admin_workspace_activities(
     limit: int = 30,

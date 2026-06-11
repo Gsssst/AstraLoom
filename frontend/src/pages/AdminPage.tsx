@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Alert, Avatar, Button, Card, Col, Input, Row, Select, Space,
+  Alert, Avatar, Button, Card, Col, Drawer, Empty, Input, List, Row, Select, Space,
   Statistic, Switch, Table, Tag, Timeline, Typography, message,
 } from 'antd';
 import {
-  AuditOutlined, DatabaseOutlined, ReloadOutlined, SafetyCertificateOutlined,
+  AuditOutlined, DatabaseOutlined, EyeOutlined, ReloadOutlined, SafetyCertificateOutlined,
   TeamOutlined, UserOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
@@ -37,6 +37,9 @@ const AdminPage: React.FC = () => {
   const [workspaceQuery, setWorkspaceQuery] = useState('');
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
   const [adminActionError, setAdminActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
+  const [workspaceDetailOpen, setWorkspaceDetailOpen] = useState(false);
+  const [workspaceDetailLoading, setWorkspaceDetailLoading] = useState(false);
+  const [workspaceDetail, setWorkspaceDetail] = useState<any>(null);
 
   const isAdmin = user?.role === 'admin';
 
@@ -84,6 +87,42 @@ const AdminPage: React.FC = () => {
       setUpdatingUserId(null);
     }
   };
+
+  const openWorkspaceDetail = async (workspace: any) => {
+    setWorkspaceDetailOpen(true);
+    setWorkspaceDetailLoading(true);
+    setWorkspaceDetail(null);
+    try {
+      const response = await api.get(`/admin/workspaces/${workspace.id}`);
+      setWorkspaceDetail(response.data);
+      setAdminActionError(null);
+    } catch (error: any) {
+      const detail = getApiErrorDetails(error, { fallback: '空间内容加载失败' });
+      setAdminActionError({ title: '空间内容加载失败', detail });
+      message.warning(detail.message);
+    } finally {
+      setWorkspaceDetailLoading(false);
+    }
+  };
+
+  const renderResourceGroup = (title: string, items: any[] = []) => (
+    <Card size="small" title={title} style={{ borderRadius: 12 }}>
+      {items.length ? (
+        <List
+          size="small"
+          dataSource={items}
+          renderItem={(item: any) => (
+            <List.Item>
+              <List.Item.Meta
+                title={<Text strong ellipsis>{item.title}</Text>}
+                description={<Text type="secondary" ellipsis>{item.subtitle || item.path}</Text>}
+              />
+            </List.Item>
+          )}
+        />
+      ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无" />}
+    </Card>
+  );
 
   if (!isAdmin) {
     return (
@@ -292,6 +331,15 @@ const AdminPage: React.FC = () => {
               width: 110,
               render: (status: string) => <Tag color={status === 'active' ? 'green' : 'default'}>{status}</Tag>,
             },
+            {
+              title: '操作',
+              width: 120,
+              render: (_: any, record: any) => (
+                <Button size="small" icon={<EyeOutlined />} onClick={() => openWorkspaceDetail(record)}>
+                  查看内容
+                </Button>
+              ),
+            },
           ]}
         />
       </Card>
@@ -318,6 +366,85 @@ const AdminPage: React.FC = () => {
           <Alert type="info" showIcon message="暂无空间活动" description="创建空间、绑定资源或管理成员后，这里会出现治理时间线。" />
         )}
       </Card>
+
+      <Drawer
+        title={workspaceDetail?.name || '项目空间内容'}
+        open={workspaceDetailOpen}
+        onClose={() => setWorkspaceDetailOpen(false)}
+        width={640}
+      >
+        <Card loading={workspaceDetailLoading} bordered={false} styles={{ body: { padding: 0 } }}>
+          {workspaceDetail ? (
+            <Space direction="vertical" size={16} style={{ width: '100%' }}>
+              <Alert
+                type="info"
+                showIcon
+                message="管理员只读查看"
+                description="这里展示空间成员、资源、Issue 和最近活动，用于治理和排障。"
+                style={{ borderRadius: 12 }}
+              />
+              <Space wrap>
+                <Tag color="purple">成员 {workspaceDetail.member_count || 0}</Tag>
+                <Tag color="geekblue">{workspaceDetail.dashboard?.stage_label || '科研看板'}</Tag>
+                <Tag>进度 {workspaceDetail.dashboard?.progress_score || 0}%</Tag>
+              </Space>
+              <Card size="small" title="成员" style={{ borderRadius: 12 }}>
+                <List
+                  size="small"
+                  dataSource={workspaceDetail.members || []}
+                  renderItem={(member: any) => (
+                    <List.Item>
+                      <List.Item.Meta
+                        avatar={<Avatar size={24} src={member.avatar} icon={<UserOutlined />} />}
+                        title={<Space><Text strong>{member.display_name || member.username}</Text><Tag>{member.role}</Tag></Space>}
+                        description={member.email}
+                      />
+                    </List.Item>
+                  )}
+                />
+              </Card>
+              {renderResourceGroup('论文资源', workspaceDetail.summary?.linked_resources?.papers || [])}
+              {renderResourceGroup('研究方向', workspaceDetail.summary?.linked_resources?.research_projects || [])}
+              {renderResourceGroup('写作草稿', workspaceDetail.summary?.linked_resources?.writing_projects || [])}
+              <Card size="small" title="开放 Issue" style={{ borderRadius: 12 }}>
+                {(workspaceDetail.issue_summary || []).length ? (
+                  <List
+                    size="small"
+                    dataSource={workspaceDetail.issue_summary || []}
+                    renderItem={(issue: any) => (
+                      <List.Item>
+                        <List.Item.Meta
+                          title={<Space size={6}><Tag color={issue.priority === 'urgent' ? 'red' : issue.priority === 'high' ? 'orange' : 'blue'}>{issue.priority}</Tag><Text strong>{issue.title}</Text></Space>}
+                          description={issue.path}
+                        />
+                      </List.Item>
+                    )}
+                  />
+                ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无开放 Issue" />}
+              </Card>
+              <Card size="small" title="最近活动" style={{ borderRadius: 12 }}>
+                {(workspaceDetail.activities || []).length ? (
+                  <Timeline
+                    items={(workspaceDetail.activities || []).slice(0, 8).map((item: any) => ({
+                      children: (
+                        <Space direction="vertical" size={2}>
+                          <Text><Text strong>{item.actor_name}</Text> {activityLabel[item.action] || item.action}</Text>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            {item.created_at ? new Date(item.created_at).toLocaleString() : ''}
+                            {item.metadata_json?.title ? ` · ${item.metadata_json.title}` : ''}
+                          </Text>
+                        </Space>
+                      ),
+                    }))}
+                  />
+                ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无活动" />}
+              </Card>
+            </Space>
+          ) : !workspaceDetailLoading ? (
+            <Empty description="未加载空间内容" />
+          ) : null}
+        </Card>
+      </Drawer>
     </PageShell>
   );
 };

@@ -32,6 +32,7 @@ def test_workspace_routes_require_authentication():
         ("/api/workspaces/{space_id}", "PATCH"),
         ("/api/workspaces/{space_id}", "DELETE"),
         ("/api/workspaces/{space_id}/members", "POST"),
+        ("/api/workspaces/{space_id}/members/candidates", "GET"),
         ("/api/workspaces/{space_id}/members/{user_id}", "DELETE"),
         ("/api/workspaces/{space_id}/activities", "GET"),
         ("/api/workspaces/{space_id}/resource-candidates", "GET"),
@@ -218,6 +219,26 @@ def test_workspace_activity_records_include_actor_resource_and_metadata():
     assert activity.action == "resource_linked"
     assert activity.resource_type == "papers"
     assert activity.metadata_json["title"] == "Grounded Video Reasoning"
+
+
+def test_workspace_member_candidate_marks_existing_members():
+    service = WorkspaceService(SimpleNamespace())
+    user_id = uuid4()
+    user = SimpleNamespace(
+        id=user_id,
+        username="alice",
+        email="alice@example.com",
+        display_name="Alice",
+        avatar=None,
+        role="user",
+    )
+
+    candidate = service._member_candidate_dict(user, existing_role="editor")
+
+    assert candidate["account"] == "alice"
+    assert candidate["label"] == "Alice"
+    assert candidate["is_member"] is True
+    assert candidate["member_role"] == "editor"
 
 
 def test_workspace_dashboard_stage_progress_and_status_cards():

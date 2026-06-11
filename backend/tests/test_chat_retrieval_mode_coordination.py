@@ -88,7 +88,16 @@ async def test_mixed_retrieval_combines_knowledge_base_and_web_context(monkeypat
     assert "知识库" in context[1]["content"]
     assert references == [
         {"title": "Multimodal Research", "arxiv_id": "2606.00001", "year": 2026, "similarity": 0.9123, "source": "local_library"},
-        {"title": "Web result", "url": "https://example.com", "source": "web", "provider": "bing", "query": "multimodal models", "snippet": "recent result"},
+        {
+            "title": "Web result",
+            "url": "https://example.com",
+            "source": "web",
+            "provider": "bing",
+            "query": "multimodal models",
+            "retrieval_query": "multimodal models",
+            "rank": 0,
+            "snippet": "recent result",
+        },
     ]
 
 

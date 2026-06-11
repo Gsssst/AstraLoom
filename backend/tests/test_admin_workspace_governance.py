@@ -46,6 +46,7 @@ def _dependency_calls(path: str, method: str):
         ("/api/admin/users", "GET"),
         ("/api/admin/users/{user_id}", "PATCH"),
         ("/api/admin/workspaces", "GET"),
+        ("/api/admin/workspaces/{space_id}", "GET"),
         ("/api/admin/workspace-activities", "GET"),
     ],
 )
@@ -65,6 +66,43 @@ async def test_last_active_admin_cannot_be_removed():
 @pytest.mark.asyncio
 async def test_admin_safeguard_allows_changes_when_another_admin_exists():
     await admin_api._ensure_not_last_admin(_CountSession(1), uuid4())
+
+
+@pytest.mark.asyncio
+async def test_admin_workspace_detail_uses_admin_inspection_service(monkeypatch):
+    expected = {"id": "space-1", "admin_view": True, "members": [], "summary": {}}
+
+    async def fake_detail(self, space_id, admin):
+        assert space_id == "space-1"
+        assert admin.role == "admin"
+        return expected
+
+    monkeypatch.setattr(admin_api.WorkspaceService, "get_space_admin_detail", fake_detail)
+
+    result = await admin_api.get_admin_workspace_detail(
+        "space-1",
+        db=SimpleNamespace(),
+        admin=SimpleNamespace(role="admin"),
+    )
+
+    assert result is expected
+
+
+@pytest.mark.asyncio
+async def test_admin_workspace_detail_returns_404_for_missing_space(monkeypatch):
+    async def fake_detail(self, space_id, admin):
+        return None
+
+    monkeypatch.setattr(admin_api.WorkspaceService, "get_space_admin_detail", fake_detail)
+
+    with pytest.raises(HTTPException) as error:
+        await admin_api.get_admin_workspace_detail(
+            "missing",
+            db=SimpleNamespace(),
+            admin=SimpleNamespace(role="admin"),
+        )
+
+    assert error.value.status_code == 404
 
 
 def test_workspace_role_counts_include_known_roles():
