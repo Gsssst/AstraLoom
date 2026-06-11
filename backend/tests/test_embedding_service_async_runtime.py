@@ -129,3 +129,17 @@ async def test_generate_embedding_applies_huggingface_runtime_env(monkeypatch):
         "TRANSFORMERS_CACHE": "/cache/transformers",
         "SENTENCE_TRANSFORMERS_HOME": "/cache/st",
     }
+
+
+def test_huggingface_endpoint_defaults_to_mirror():
+    assert embedding_service.settings.HF_ENDPOINT == "https://hf-mirror.com"
+
+
+def test_runtime_env_overrides_existing_huggingface_endpoint(monkeypatch):
+    monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
+    monkeypatch.setattr(embedding_service, "_runtime_env_configured", False)
+    monkeypatch.setattr(embedding_service.settings, "HF_ENDPOINT", "https://hf-mirror.com")
+
+    embedding_service._configure_runtime_environment()
+
+    assert embedding_service.os.environ["HF_ENDPOINT"] == "https://hf-mirror.com"

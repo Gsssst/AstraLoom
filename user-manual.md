@@ -417,14 +417,14 @@ AI 对话适合做快速问答、搜索增强和文件分析。
 
 建议定期检查迁移状态和后台任务日志。
 
-如果补向量失败并且后端日志出现 `huggingface.co`、`all-MiniLM-L6-v2` 或 `Network is unreachable`，说明本地向量模型还没有下载成功。管理员可以在服务器 `.env` 中加入：
+系统默认通过 `HF_ENDPOINT=https://hf-mirror.com` 下载 HuggingFace 兼容模型。如果补向量失败并且后端日志出现 `all-MiniLM-L6-v2` 或 `Network is unreachable`，说明本地向量模型还没有下载成功。管理员可以在服务器 `.env` 中确认或覆盖：
 
 ```bash
 HF_ENDPOINT=https://hf-mirror.com
 EMBEDDING_MODEL_NAME=all-MiniLM-L6-v2
 ```
 
-然后重建或重启 backend / celery-worker，再重新执行补向量。模型会缓存到 Docker volume `model_cache`，后续不会每次重新下载。
+然后重建或重启 backend / celery-worker，再重新执行补向量。embedding 和 reranker 模型会缓存到 Docker volume `model_cache`，后续不会每次重新下载。
 
 ## 10. 推荐使用流程
 

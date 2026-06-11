@@ -81,7 +81,7 @@ class Settings(BaseSettings):
 
     # --- 本地向量模型 ---
     EMBEDDING_MODEL_NAME: str = "all-MiniLM-L6-v2"
-    HF_ENDPOINT: str = ""
+    HF_ENDPOINT: str = "https://hf-mirror.com"
     HF_HOME: str = "./model-cache/huggingface"
     TRANSFORMERS_CACHE: str = "./model-cache/transformers"
     SENTENCE_TRANSFORMERS_HOME: str = "./model-cache/sentence-transformers"

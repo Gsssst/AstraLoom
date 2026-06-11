@@ -338,7 +338,10 @@ class RerankService:
     @classmethod
     def _get_model(cls):
         if cls._model is None:
+            from app.services.embedding_service import _configure_runtime_environment
             from sentence_transformers import CrossEncoder
+
+            _configure_runtime_environment()
             cls._model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
             logger.info("Cross-Encoder 模型已加载")
         return cls._model

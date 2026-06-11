@@ -37,6 +37,7 @@ Thumbs.db
 
 # Docker
 .docker/
+backend/model-cache/
 
 # Celery Beat runtime state
 celerybeat-schedule*

@@ -114,14 +114,14 @@ docker compose exec backend alembic current
 curl http://127.0.0.1:8000/api/health/db
 ```
 
-If paper embedding backfill fails on a fresh server with HuggingFace network errors, set a mirror in `.env` and rebuild/restart backend services:
+HuggingFace model downloads default to the mirror below. Override `HF_ENDPOINT` in `.env` only if your deployment needs another HuggingFace-compatible endpoint:
 
 ```bash
 HF_ENDPOINT=https://hf-mirror.com
 EMBEDDING_MODEL_NAME=all-MiniLM-L6-v2
 ```
 
-The backend and worker mount `/app/model-cache` from the `model_cache` Docker volume, so the sentence-transformers model is reused after the first successful download.
+The backend and worker mount `/app/model-cache` from the `model_cache` Docker volume, so sentence-transformers embedding and reranker models are reused after the first successful download.
 
 ## Model Configuration
 

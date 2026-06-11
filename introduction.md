@@ -202,7 +202,7 @@ flowchart TB
 
 开发环境使用 `docker-compose.yml`，生产环境可叠加 `docker-compose.prod.yml`。数据库迁移由 Alembic 管理，部署后应确认迁移已到最新版本。
 
-论文库向量检索使用本地 `sentence-transformers` 模型，首次补向量时会下载 `all-MiniLM-L6-v2`。如果服务器不能直连 HuggingFace，可以在 `.env` 中配置 `HF_ENDPOINT=https://hf-mirror.com`；后端和 worker 会把模型缓存写入 Docker volume `model_cache`，下载成功后重启或重建容器仍可复用。
+论文库向量检索使用本地 `sentence-transformers` 模型，首次补向量时会下载 `all-MiniLM-L6-v2`。系统默认通过 `HF_ENDPOINT=https://hf-mirror.com` 访问 HuggingFace 兼容镜像；如需使用其他镜像，可在 `.env` 中覆盖该变量。后端和 worker 会把模型缓存写入 Docker volume `model_cache`，下载成功后重启或重建容器仍可复用。
 
 ## 5. 数据边界与 GitHub 上传边界
 

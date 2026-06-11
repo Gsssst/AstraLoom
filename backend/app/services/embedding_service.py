@@ -34,7 +34,7 @@ def _configure_runtime_environment() -> None:
 
     for key, value in env_values.items():
         if value:
-            os.environ.setdefault(key, value)
+            os.environ[key] = value
 
     _runtime_env_configured = True
 
