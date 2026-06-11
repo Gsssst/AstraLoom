@@ -1,7 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { Alert, Spin, Button, Space, Typography, InputNumber } from 'antd';
-import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
@@ -29,6 +28,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
   const [nativeFallback, setNativeFallback] = useState(false);
   const [pageWidth, setPageWidth] = useState(700);
   const contentRef = useRef<HTMLDivElement>(null);
+  const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const resolvedUrl = React.useMemo(() => {
     if (!url) return '';
     if (typeof window === 'undefined') return url;
@@ -98,11 +98,46 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
 
   useEffect(() => {
     if (!targetPage || targetPage < 1) return;
-    setPageNumber(current => {
-      const bounded = numPages ? Math.min(targetPage, numPages) : targetPage;
-      return current === bounded ? current : bounded;
+    const bounded = numPages ? Math.min(targetPage, numPages) : targetPage;
+    setPageNumber(current => current === bounded ? current : bounded);
+    window.requestAnimationFrame(() => {
+      pageRefs.current.get(bounded)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
     });
   }, [targetPage, numPages]);
+
+  const syncCurrentPageFromScroll = useCallback(() => {
+    const container = contentRef.current;
+    if (!container || !numPages) return;
+
+    const readingLine = container.getBoundingClientRect().top + 80;
+    let closestPage = pageNumber;
+    let closestDistance = Number.POSITIVE_INFINITY;
+
+    pageRefs.current.forEach((node, page) => {
+      const rect = node.getBoundingClientRect();
+      const distance = Math.abs(rect.top - readingLine);
+      if (distance < closestDistance) {
+        closestDistance = distance;
+        closestPage = page;
+      }
+    });
+
+    if (closestPage !== pageNumber) {
+      setPageNumber(closestPage);
+    }
+  }, [numPages, pageNumber]);
+
+  const handlePageJump = useCallback((page: number | null) => {
+    if (!page) return;
+    const bounded = Math.min(Math.max(page, 1), numPages || page);
+    setPageNumber(bounded);
+    pageRefs.current.get(bounded)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }, [numPages]);
+
+  const pageNumbers = React.useMemo(
+    () => Array.from({ length: numPages }, (_, index) => index + 1),
+    [numPages],
+  );
 
   // 文本选择事件
   const handleMouseUp = useCallback(() => {
@@ -113,7 +148,9 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
       if (text && text.length > 5 && text.length < 800) {
         const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
         const rect = range?.getBoundingClientRect();
-        onTextSelect(text, pageNumber, {
+        const selectionNode = sel?.anchorNode instanceof Element ? sel.anchorNode : sel?.anchorNode?.parentElement;
+        const selectedPage = Number(selectionNode?.closest<HTMLElement>('.paper-pdf-page')?.dataset.pageNumber) || pageNumber;
+        onTextSelect(text, selectedPage, {
           x: rect ? rect.left + rect.width / 2 : window.innerWidth / 2,
           y: rect ? rect.top - 12 : 96,
         });
@@ -131,17 +168,15 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
         padding: '8px 12px', borderBottom: '1px solid #f0f0f0', background: '#fafafa',
         flexShrink: 0,
       }}>
-        <Button size="small" icon={<LeftOutlined />} disabled={nativeFallback || pageNumber <= 1} onClick={() => setPageNumber(p => p - 1)} />
         <Space size={4}>
-          <InputNumber size="small" min={1} max={numPages} value={pageNumber} disabled={nativeFallback} onChange={v => v && setPageNumber(v)} style={{ width: 50 }} />
+          <InputNumber size="small" min={1} max={numPages} value={pageNumber} disabled={nativeFallback} onChange={handlePageJump} style={{ width: 58 }} />
           <Text type="secondary" style={{ fontSize: 12 }}>/ {nativeFallback ? '-' : numPages}</Text>
         </Space>
-        <Button size="small" icon={<RightOutlined />} disabled={nativeFallback || pageNumber >= numPages} onClick={() => setPageNumber(p => p + 1)} />
-        <Text type="secondary" style={{ fontSize: 12 }}>{nativeFallback ? '原生预览' : '划词可加入提问'}</Text>
+        <Text type="secondary" style={{ fontSize: 12 }}>{nativeFallback ? '原生预览' : '滚动阅读 · 划词可加入提问'}</Text>
       </div>
 
       {/* PDF 内容 */}
-      <div ref={contentRef} className={`paper-pdf-scroll${nativeFallback ? ' paper-pdf-scroll-native' : ''}`}>
+      <div ref={contentRef} className={`paper-pdf-scroll${nativeFallback ? ' paper-pdf-scroll-native' : ''}`} onScroll={syncCurrentPageFromScroll}>
         {nativeFallback ? (
           <div className="paper-pdf-native-fallback">
             <Alert
@@ -199,13 +234,25 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
               loading={<Spin style={{ marginTop: 40 }} />}
               error={null}
             >
-              <div className="paper-pdf-page">
-                <Page
-                  pageNumber={pageNumber}
-                  renderTextLayer={true}
-                  renderAnnotationLayer={true}
-                  width={pageWidth}
-                />
+              <div className="paper-pdf-pages">
+                {pageNumbers.map(page => (
+                  <div
+                    key={page}
+                    className="paper-pdf-page"
+                    data-page-number={page}
+                    ref={(node) => {
+                      if (node) pageRefs.current.set(page, node);
+                      else pageRefs.current.delete(page);
+                    }}
+                  >
+                    <Page
+                      pageNumber={page}
+                      renderTextLayer={true}
+                      renderAnnotationLayer={true}
+                      width={pageWidth}
+                    />
+                  </div>
+                ))}
               </div>
             </Document>
           </>

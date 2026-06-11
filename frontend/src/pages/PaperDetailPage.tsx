@@ -204,6 +204,11 @@ const paperEvidenceConfidenceMeta = {
   weak: { label: '证据不足', color: 'orange' },
 };
 
+const PDF_PANEL_MIN_PERCENT = 42;
+const PDF_PANEL_MAX_PERCENT = 82;
+const CHAT_COLLAPSE_THRESHOLD_PERCENT = 84;
+const CHAT_REOPEN_WIDTH_PERCENT = 65;
+
 const PaperDetailPage: React.FC = () => {
   const { paperId } = useParams<{ paperId: string }>();
   const navigate = useNavigate();
@@ -222,6 +227,9 @@ const PaperDetailPage: React.FC = () => {
   const [showPdf, setShowPdf] = useState(false);
   const [targetPdfPage, setTargetPdfPage] = useState<number | null>(null);
   const [mobilePanel, setMobilePanel] = useState<'content' | 'pdf' | 'chat'>('content');
+  const [pdfPanelWidth, setPdfPanelWidth] = useState(CHAT_REOPEN_WIDTH_PERCENT);
+  const [chatCollapsed, setChatCollapsed] = useState(false);
+  const paperBodyRef = useRef<HTMLDivElement>(null);
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
 
@@ -307,6 +315,41 @@ const PaperDetailPage: React.FC = () => {
         ? '论文库增强'
         : '仅当前论文';
 
+  const handlePanelResizePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (isMobile || !showPdf) return;
+    event.preventDefault();
+    const container = paperBodyRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    event.currentTarget.setPointerCapture(event.pointerId);
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const rawPercent = ((moveEvent.clientX - rect.left) / rect.width) * 100;
+      if (rawPercent >= CHAT_COLLAPSE_THRESHOLD_PERCENT) {
+        setPdfPanelWidth(PDF_PANEL_MAX_PERCENT);
+        setChatCollapsed(true);
+        return;
+      }
+      setChatCollapsed(false);
+      setPdfPanelWidth(Math.min(Math.max(rawPercent, PDF_PANEL_MIN_PERCENT), PDF_PANEL_MAX_PERCENT));
+    };
+
+    const handlePointerUp = () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+  };
+
+  const reopenChatPanel = () => {
+    setChatCollapsed(false);
+    setPdfPanelWidth(CHAT_REOPEN_WIDTH_PERCENT);
+  };
+
   useEffect(() => {
     if (!paperId) return;
     setLoading(true);
@@ -315,6 +358,13 @@ const PaperDetailPage: React.FC = () => {
       if (res.data.tags && typeof res.data.tags === 'object' && res.data.tags.domain) setShowPdf(true);
     }).catch(() => message.error('论文加载失败')).finally(() => setLoading(false));
   }, [paperId]);
+
+  useEffect(() => {
+    if (!showPdf || isMobile) {
+      setChatCollapsed(false);
+      setPdfPanelWidth(CHAT_REOPEN_WIDTH_PERCENT);
+    }
+  }, [isMobile, showPdf]);
 
   useEffect(() => {
     if (!paperId || !isAuthenticated) return;
@@ -857,12 +907,29 @@ const PaperDetailPage: React.FC = () => {
         )}
       </div>
 
-      <div className="paper-detail-body">
+      <div className="paper-detail-body" ref={paperBodyRef}>
         {/* PDF 面板 */}
         {pdfUrl && (isMobile ? mobilePanel === 'pdf' : showPdf) && (
-          <div className="paper-detail-pdf-panel" style={{ borderRight: '1px solid #f0f0f0', flexShrink: 0, height: '100%' }}>
+          <div
+            className="paper-detail-pdf-panel"
+            style={{
+              width: !isMobile && showPdf ? `${chatCollapsed ? PDF_PANEL_MAX_PERCENT : pdfPanelWidth}%` : undefined,
+              flexShrink: 0,
+              height: '100%',
+            }}
+          >
             <PDFViewer url={pdfUrl} onTextSelect={handlePdfTextSelect} targetPage={targetPdfPage} />
           </div>
+        )}
+
+        {!isMobile && showPdf && pdfUrl && (
+          <div
+            className="paper-detail-resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整 PDF 和 AI 问答宽度"
+            onPointerDown={handlePanelResizePointerDown}
+          />
         )}
 
         {/* 中间内容 — 显示 PDF 时自动隐藏 */}
@@ -1110,8 +1177,25 @@ const PaperDetailPage: React.FC = () => {
         </div>
         )}
 
-        {/* AI 问答面板 — PDF 显示时 35%，否则 35% */}
-        {(!isMobile || mobilePanel === 'chat') && <div className="paper-detail-chat-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#fafafa', flexShrink: 0 }}>
+        {/* AI 问答面板 */}
+        {(!isMobile || mobilePanel === 'chat') && chatCollapsed && showPdf ? (
+          <div className="paper-detail-chat-rail">
+            <Tooltip title="展开 AI 问答">
+              <Button type="primary" shape="circle" icon={<RobotOutlined />} onClick={reopenChatPanel} />
+            </Tooltip>
+            <Text className="paper-detail-chat-rail-label">AI 问答</Text>
+          </div>
+        ) : (!isMobile || mobilePanel === 'chat') && <div
+          className="paper-detail-chat-panel"
+          style={{
+            width: !isMobile && showPdf ? `calc(${100 - pdfPanelWidth}% - 10px)` : undefined,
+            display: 'flex',
+            flexDirection: 'column',
+            height: '100%',
+            background: '#fafafa',
+            flexShrink: 0,
+          }}
+        >
           <Card title={<span><RobotOutlined /> AI 问答</span>} extra={chatMsgs.length > 0 ? <Tooltip title="清空问答记录"><Button type="text" danger size="small" icon={<DeleteOutlined />} disabled={asking} onClick={handleClearChatHistory} /></Tooltip> : null} size="small"
             className="paper-detail-chat-card"
             style={{ flex: 1, display: 'flex', flexDirection: 'column', borderRadius: 0, border: 'none' }}

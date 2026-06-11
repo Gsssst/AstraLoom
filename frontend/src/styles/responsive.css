@@ -370,10 +370,61 @@
 
 .paper-detail-pdf-panel {
   width: 65%;
+  border-right: 0;
 }
 
 .paper-detail-chat-panel {
   width: 35%;
+}
+
+.paper-detail-resize-handle {
+  position: relative;
+  z-index: 2;
+  width: 10px;
+  flex: 0 0 10px;
+  cursor: col-resize;
+  background: linear-gradient(90deg, #f4f5f8 0%, #ffffff 45%, #eef0f4 100%);
+  border-inline: 1px solid #e5e7eb;
+  touch-action: none;
+}
+
+.paper-detail-resize-handle::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 42px;
+  border-radius: 999px;
+  background: #b8beca;
+  content: "";
+  transform: translate(-50%, -50%);
+}
+
+.paper-detail-resize-handle:hover::after,
+.paper-detail-resize-handle:active::after {
+  background: #7560c4;
+}
+
+.paper-detail-chat-rail {
+  display: flex;
+  width: 58px;
+  min-width: 58px;
+  height: 100%;
+  flex: 0 0 58px;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 8px;
+  border-left: 1px solid #e7e8ef;
+  background: #fbfbfd;
+}
+
+.paper-detail-chat-rail-label {
+  writing-mode: vertical-rl;
+  letter-spacing: 0;
+  color: #6b6478;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .paper-detail-pdf-panel,
@@ -527,10 +578,8 @@
 }
 
 .paper-pdf-scroll {
-  display: flex;
   flex: 1;
   min-height: 0;
-  justify-content: center;
   overflow: auto;
   background: #525659;
 }
@@ -564,8 +613,21 @@
   background: #525659;
 }
 
+.paper-pdf-pages {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 0 28px;
+}
+
 .paper-pdf-page {
-  padding: 14px 0 24px;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  scroll-margin-top: 12px;
 }
 
 .paper-pdf-page .react-pdf__Page__textContent {
