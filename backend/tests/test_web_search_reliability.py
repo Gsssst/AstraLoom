@@ -145,6 +145,30 @@ def test_plan_search_queries_expands_breadth_by_depth():
     assert len(web_search.plan_search_queries("video grounding", "deep")) == 5
 
 
+def test_plan_search_queries_normalizes_chinese_academic_paper_request():
+    queries = web_search.plan_search_queries("请给我找10篇关于多模态大模型的论文", "deep")
+
+    assert queries[0] == "多模态大模型"
+    assert "multimodal large language model papers" in queries
+    assert "MLLM survey" in queries
+    assert "vision language model papers" in queries
+    assert all("请" not in query for query in queries)
+    assert all("10" not in query for query in queries)
+    assert all("关于" not in query for query in queries)
+
+
+def test_query_relevance_terms_ignore_chinese_request_scaffolding():
+    terms = web_search._query_relevance_terms("请给我找10篇关于多模态大模型的论文")
+
+    assert "多模态大模型" in terms
+    assert "multimodal" in terms
+    assert "mllm" in terms
+    assert "vision" in terms
+    assert "请" not in terms
+    assert "给我找" not in terms
+    assert "10" not in terms
+
+
 def test_filter_relevant_results_drops_unrelated_dictionary_pages():
     query = "multimodal large language model memory"
     results = [
@@ -170,6 +194,41 @@ def test_filter_relevant_results_drops_unrelated_dictionary_pages():
 
     assert [item.title for item in filtered] == ["Memory-augmented multimodal large language models"]
     assert filtered[0].as_reference()["retrieval_query"] == query
+
+
+def test_filter_relevant_results_drops_chinese_translation_pages_for_academic_query():
+    query = "请给我找10篇关于多模态大模型的论文"
+    results = [
+        web_search.WebSearchResult(
+            title="请 - Google 翻译",
+            snippet="请的英文翻译、发音和例句。",
+            url="https://translate.google.com/?sl=zh-CN&tl=en&text=%E8%AF%B7",
+            provider="bing_rss",
+            query="请",
+            rank=0,
+        ),
+        web_search.WebSearchResult(
+            title="请的意思 - 汉语词典",
+            snippet="请字的拼音、部首、笔画和解释。",
+            url="https://example.com/chinese/%E8%AF%B7",
+            provider="bing_rss",
+            query="请",
+            rank=1,
+        ),
+        web_search.WebSearchResult(
+            title="A Survey on Multimodal Large Language Models",
+            snippet="Recent multimodal large language model and MLLM papers for vision-language reasoning.",
+            url="https://example.com/mllm-survey",
+            provider="bing",
+            query="multimodal large language model papers",
+            rank=2,
+        ),
+    ]
+
+    filtered = web_search.filter_relevant_results(query, results)
+
+    assert [item.title for item in filtered] == ["A Survey on Multimodal Large Language Models"]
+    assert filtered[0].as_reference()["retrieval_query"] == "multimodal large language model papers"
 
 
 @pytest.mark.asyncio

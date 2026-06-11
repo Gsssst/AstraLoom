@@ -47,10 +47,24 @@ ENGLISH_QUERY_STOPWORDS = {
 }
 
 CHINESE_QUERY_STOPWORDS = (
+    "请给我找",
+    "请帮我找",
     "请帮我",
+    "帮我找",
     "帮我",
     "请你",
     "请",
+    "给我找",
+    "给我",
+    "找一下",
+    "查找",
+    "搜索",
+    "检索",
+    "寻找",
+    "推荐",
+    "列出",
+    "整理",
+    "找",
     "一下",
     "最新进展",
     "官方资料",
@@ -62,10 +76,47 @@ CHINESE_QUERY_STOPWORDS = (
     "进展",
     "相关",
     "关于",
+    "有关",
+    "方面",
     "怎么",
     "如何",
     "什么",
+    "哪些",
+    "一些",
+    "几篇",
+    "篇",
+    "个",
+    "条",
+    "的",
 )
+
+CHINESE_RESEARCH_TOPIC_ALIASES = (
+    (
+        ("多模态", "大模型"),
+        (
+            "multimodal large language model papers",
+            "MLLM survey",
+            "vision language model papers",
+        ),
+    ),
+    (
+        ("多模态", "大语言模型"),
+        (
+            "multimodal large language model papers",
+            "MLLM survey",
+            "vision language model papers",
+        ),
+    ),
+    (
+        ("视觉语言模型",),
+        (
+            "vision language model papers",
+            "multimodal large language model papers",
+        ),
+    ),
+)
+
+CHINESE_SEARCH_PUNCTUATION = "，。！？；：、（）【】《》“”‘’\"'`~!?,;:()[]{}<>"
 
 
 @dataclass(frozen=True)
@@ -139,14 +190,68 @@ def _normalize_relevance_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").lower()).strip()
 
 
+def _dedupe_preserving_order(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
+
+
+def _contains_chinese(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
+
+
+def _strip_chinese_request_scaffolding(query: str) -> str:
+    """Turn polite Chinese paper-finding requests into compact topic text."""
+    text = _normalize_relevance_text(query)
+    if not _contains_chinese(text):
+        return text
+
+    text = re.sub(f"[{re.escape(CHINESE_SEARCH_PUNCTUATION)}]", " ", text)
+    text = re.sub(r"\d+\s*(?:篇|个|条|份|本)", " ", text)
+    text = re.sub(r"[一二两三四五六七八九十百千]+\s*(?:篇|个|条|份|本)", " ", text)
+
+    for stopword in sorted(CHINESE_QUERY_STOPWORDS, key=len, reverse=True):
+        text = text.replace(stopword, " ")
+
+    # Remove leftover request-only counters without stripping useful years.
+    text = re.sub(r"(?<!20)\b\d{1,2}\b", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or _normalize_relevance_text(query)
+
+
+def _topic_aliases_for_query(query: str) -> list[str]:
+    normalized = _strip_chinese_request_scaffolding(query)
+    compact = re.sub(r"\s+", "", normalized)
+    aliases: list[str] = []
+    if _contains_chinese(compact):
+        for required_terms, mapped_aliases in CHINESE_RESEARCH_TOPIC_ALIASES:
+            if all(term in compact for term in required_terms):
+                aliases.extend(mapped_aliases)
+    else:
+        lowered = normalized.lower()
+        if "multimodal large language model" in lowered or "mllm" in lowered:
+            aliases.extend(["MLLM survey", "vision language model papers"])
+        if "vision language model" in lowered:
+            aliases.append("multimodal large language model papers")
+    return _dedupe_preserving_order(aliases)
+
+
+def _topic_focused_query(query: str) -> str:
+    return _strip_chinese_request_scaffolding(query) if _contains_chinese(query) else _normalize_relevance_text(query)
+
+
 def _query_relevance_terms(query: str) -> set[str]:
     """Extract high-signal terms used to reject obviously unrelated web results."""
-    normalized = _normalize_relevance_text(query)
+    normalized = _topic_focused_query(query)
     for stopword in CHINESE_QUERY_STOPWORDS:
         normalized = normalized.replace(stopword, " ")
 
     terms: set[str] = set()
-    for token in re.findall(r"[a-z0-9][a-z0-9_+\-.]{1,}", normalized):
+    aliases = [alias.lower() for alias in _topic_aliases_for_query(query)]
+    normalized_with_aliases = " ".join([normalized, *aliases])
+    for alias in aliases:
+        if " " in alias:
+            terms.add(alias.lower())
+
+    for token in re.findall(r"[a-z0-9][a-z0-9_+\-.]{1,}", normalized_with_aliases):
         token = token.strip("_+-.")
         if len(token) >= 2 and token not in ENGLISH_QUERY_STOPWORDS:
             terms.add(token)
@@ -154,7 +259,7 @@ def _query_relevance_terms(query: str) -> set[str]:
                 if len(part) >= 3 and part not in ENGLISH_QUERY_STOPWORDS:
                     terms.add(part)
 
-    for phrase in re.findall(r"[\u4e00-\u9fff]{2,}", normalized):
+    for phrase in re.findall(r"[\u4e00-\u9fff]{2,}", normalized_with_aliases):
         if phrase not in CHINESE_QUERY_STOPWORDS:
             terms.add(phrase)
     return terms
@@ -346,19 +451,20 @@ def available_web_provider_names() -> list[str]:
 
 def plan_search_queries(query: str, search_depth: str = "standard") -> list[str]:
     """Create bounded deterministic variants inspired by planner-based research agents."""
-    base = re.sub(r"\s+", " ", query).strip()
+    base = _topic_focused_query(query)
     if not base:
         return []
     limits = {"quick": 1, "standard": 3, "deep": 5}
     limit = limits.get(search_depth, limits["standard"])
     current_year = datetime.now().year
-    contains_chinese = bool(re.search(r"[\u4e00-\u9fff]", base))
-    suffixes = (
-        ["", " 最新进展", " 官方资料", " 论文 综述", f" {current_year}"]
+    contains_chinese = _contains_chinese(base)
+    aliases = _topic_aliases_for_query(base)
+    variants = (
+        [base, *aliases, f"{base} 最新进展", f"{base} 综述", f"{base} {current_year}"]
         if contains_chinese
-        else ["", " latest developments", " official documentation", " research paper survey", f" {current_year}"]
+        else [base, *aliases, f"{base} latest developments", f"{base} official documentation", f"{base} research paper survey", f"{base} {current_year}"]
     )
-    return list(dict.fromkeys(f"{base}{suffix}".strip() for suffix in suffixes))[:limit]
+    return _dedupe_preserving_order(variants)[:limit]
 
 
 async def _search_bing(client: httpx.AsyncClient, query: str, max_results: int) -> list[WebSearchResult]:
