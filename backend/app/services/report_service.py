@@ -7,6 +7,7 @@ import logging
 import re
 import shlex
 import subprocess
+from html.parser import HTMLParser
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, List, Optional
@@ -22,12 +23,14 @@ logger = logging.getLogger(__name__)
 _full_text_tasks: dict[str, asyncio.Task[str]] = {}
 PDF_STRUCTURED_METADATA_KEY = "pdf_structured_content"
 PDF_STRUCTURED_PARSE_ERROR_KEY = "pdf_structured_parse_error"
+PDF_TABLE_REPAIR_ERROR_KEY = "pdf_table_repair_error"
 PDF_STRUCTURED_METADATA_VERSION = 1
 MAX_STRUCTURED_BLOCKS = 80
 MAX_STRUCTURED_BLOCK_CHARS = 1800
 MAX_STRUCTURED_TABLE_BLOCK_CHARS = 20000
 SUPPORTED_PDF_STRUCTURED_BACKENDS = {"lightweight", "command", "docling", "auto"}
 GENERIC_TABLE_HEADER_PATTERN = re.compile(r"^column\s+\d+$", re.IGNORECASE)
+MERGED_NUMERIC_CELL_PATTERN = re.compile(r"(?:[+-]?\d+(?:\.\d+)?%?\s+){2,}[+-]?\d+(?:\.\d+)?%?")
 
 
 def structured_block_text_limit(block_type: str) -> int:
@@ -112,7 +115,7 @@ class StructuredPdfExtraction:
                 "type": block.block_type,
                 "page": block.page,
                 "source": block.source,
-                "text": block.text,
+                "text": evidence_text_from_structured_block(block),
                 "metadata": block.metadata,
             }
             for block in self.blocks[:MAX_STRUCTURED_BLOCKS]
@@ -234,6 +237,28 @@ def table_to_markdown(table: list[list[Any]]) -> str:
     return "\n".join(lines).strip()
 
 
+def evidence_text_from_structured_block(block: StructuredPdfBlock) -> str:
+    """Use repaired cell metadata for table evidence when available."""
+    if block.block_type != "table":
+        return block.text
+    metadata = block.metadata or {}
+    rows = _normalize_table_rows(metadata.get("rows"))
+    if not rows:
+        headers = metadata.get("headers")
+        cells = metadata.get("cells")
+        if isinstance(headers, list) and isinstance(cells, list):
+            rows = [headers, *_normalize_table_rows(cells)]
+    if rows:
+        markdown = table_to_markdown(rows)
+        if markdown:
+            caption = str(metadata.get("caption") or "").strip()
+            prefix = f"[PDF repaired table, page {block.page or 'unknown'}, table {metadata.get('table_index') or '?'}]"
+            if caption:
+                prefix += f"\nCaption: {caption}"
+            return f"{prefix}\n{markdown}"[:MAX_STRUCTURED_TABLE_BLOCK_CHARS]
+    return block.text
+
+
 def _markdown_table_rows(text: str) -> list[list[str]]:
     rows: list[list[str]] = []
     for line in (text or "").splitlines():
@@ -258,7 +283,10 @@ def structured_table_quality_from_blocks(blocks: list[StructuredPdfBlock]) -> di
             "average_rows": 0.0,
             "empty_cell_ratio": 0.0,
             "generic_header_ratio": 0.0,
+            "merged_numeric_cell_count": 0,
+            "inconsistent_row_count": 0,
             "quality": "none",
+            "flags": [],
             "warnings": [],
         }
 
@@ -268,6 +296,10 @@ def structured_table_quality_from_blocks(blocks: list[StructuredPdfBlock]) -> di
     generic_headers = 0
     header_cells = 0
     low_quality = 0
+    merged_numeric_cell_count = 0
+    inconsistent_row_count = 0
+    malformed_table_count = 0
+    flags: set[str] = set()
     for block in table_blocks:
         rows = _markdown_table_rows(block.text)
         total_rows += len(rows)
@@ -277,13 +309,39 @@ def structured_table_quality_from_blocks(blocks: list[StructuredPdfBlock]) -> di
         header = rows[0] if rows else []
         header_cells += len(header)
         generic_headers += sum(1 for cell in header if GENERIC_TABLE_HEADER_PATTERN.match(cell.strip()))
+        merged_numeric = sum(1 for cell in cells if MERGED_NUMERIC_CELL_PATTERN.search(cell.strip()))
+        merged_numeric_cell_count += merged_numeric
+        widths = [len(row) for row in rows if row]
+        expected_width = max(set(widths), key=widths.count) if widths else 0
+        inconsistent_rows = sum(1 for width in widths if expected_width and width != expected_width)
+        inconsistent_row_count += inconsistent_rows
+        if not rows or not header or expected_width <= 1:
+            malformed_table_count += 1
         non_empty_cells = sum(1 for cell in cells if cell.strip())
         empty_ratio = (sum(1 for cell in cells if not cell.strip()) / len(cells)) if cells else 1.0
         block_generic_header_ratio = (
             sum(1 for cell in header if GENERIC_TABLE_HEADER_PATTERN.match(cell.strip())) / len(header)
             if header else 1.0
         )
-        if len(rows) < 2 or non_empty_cells <= 4 or empty_ratio >= 0.35 or block_generic_header_ratio >= 0.35:
+        if merged_numeric:
+            flags.add("merged_numeric_cells")
+        if inconsistent_rows:
+            flags.add("inconsistent_row_widths")
+        if len(rows) < 2 or not header:
+            flags.add("malformed_markdown_table")
+        if block_generic_header_ratio >= 0.35:
+            flags.add("generic_headers")
+        if empty_ratio >= 0.35:
+            flags.add("many_empty_cells")
+        if (
+            len(rows) < 2
+            or non_empty_cells <= 4
+            or empty_ratio >= 0.35
+            or block_generic_header_ratio >= 0.35
+            or merged_numeric > 0
+            or inconsistent_rows > max(1, len(rows) // 4)
+            or expected_width <= 1
+        ):
             low_quality += 1
 
     empty_cell_ratio = round(empty_cells / total_cells, 3) if total_cells else 1.0
@@ -302,6 +360,12 @@ def structured_table_quality_from_blocks(blocks: list[StructuredPdfBlock]) -> di
         warnings.append("存在较多泛化列名，表头识别质量偏低")
     if empty_cell_ratio >= 0.25:
         warnings.append("表格空单元格比例偏高")
+    if merged_numeric_cell_count:
+        warnings.append("检测到疑似粘连的连续数值单元格")
+    if inconsistent_row_count:
+        warnings.append("检测到行列数量不一致，表格结构可能错位")
+    if malformed_table_count:
+        warnings.append("检测到 Markdown 表格结构不完整")
 
     return {
         "table_count": len(table_blocks),
@@ -309,7 +373,11 @@ def structured_table_quality_from_blocks(blocks: list[StructuredPdfBlock]) -> di
         "average_rows": average_rows,
         "empty_cell_ratio": empty_cell_ratio,
         "generic_header_ratio": generic_header_ratio,
+        "merged_numeric_cell_count": merged_numeric_cell_count,
+        "inconsistent_row_count": inconsistent_row_count,
+        "malformed_table_count": malformed_table_count,
         "quality": quality,
+        "flags": sorted(flags),
         "warnings": warnings,
     }
 
@@ -357,6 +425,7 @@ def parser_subprocess_environment() -> dict[str, str]:
 def parser_runtime_health() -> dict[str, Any]:
     """Return operational health for configured structured PDF parsers."""
     command = str(settings.PDF_STRUCTURED_PARSER_COMMAND or "").strip()
+    table_command = str(settings.PDF_TABLE_PARSER_COMMAND or "").strip()
     return {
         "configured_backend": settings.PDF_STRUCTURED_PARSER_BACKEND,
         "supported_backends": sorted(SUPPORTED_PDF_STRUCTURED_BACKENDS),
@@ -365,8 +434,10 @@ def parser_runtime_health() -> dict[str, Any]:
             "fitz": importlib.util.find_spec("fitz") is not None,
             "docling": importlib.util.find_spec("docling") is not None,
             "command": bool(command),
+            "table_command": bool(table_command),
         },
         "command_configured": bool(command),
+        "table_command_configured": bool(table_command),
         "hf_endpoint": settings.HF_ENDPOINT,
         "hf_home": settings.HF_HOME,
         "transformers_cache": settings.TRANSFORMERS_CACHE,
@@ -404,11 +475,143 @@ def _external_block_text(item: dict[str, Any]) -> str:
     for key in ("text", "markdown", "content", "html"):
         value = item.get(key)
         if isinstance(value, str) and value.strip():
+            if key == "html":
+                rows = html_table_to_rows(value)
+                if rows:
+                    return table_to_markdown(rows)
             return value.strip()
     table = item.get("table")
     if isinstance(table, list):
         return table_to_markdown(table)
+    rows = _table_rows_from_parser_item(item)
+    if rows:
+        return table_to_markdown(rows)
     return ""
+
+
+class _HtmlTableParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[list[str]] = []
+        self._current_row: Optional[list[str]] = None
+        self._current_cell: Optional[list[str]] = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        if tag.lower() == "tr":
+            self._current_row = []
+        elif tag.lower() in {"td", "th"} and self._current_row is not None:
+            self._current_cell = []
+
+    def handle_data(self, data: str) -> None:
+        if self._current_cell is not None:
+            self._current_cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        lowered = tag.lower()
+        if lowered in {"td", "th"} and self._current_row is not None and self._current_cell is not None:
+            cell = re.sub(r"\s+", " ", "".join(self._current_cell)).strip()
+            self._current_row.append(cell)
+            self._current_cell = None
+        elif lowered == "tr" and self._current_row is not None:
+            if any(cell.strip() for cell in self._current_row):
+                self.rows.append(self._current_row)
+            self._current_row = None
+
+
+def html_table_to_rows(html: str) -> list[list[str]]:
+    parser = _HtmlTableParser()
+    try:
+        parser.feed(html or "")
+    except Exception:
+        return []
+    return parser.rows
+
+
+def _normalize_table_rows(value: Any) -> list[list[str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[list[str]] = []
+    for row in value:
+        if isinstance(row, dict):
+            cells = row.get("cells") or row.get("row") or row.get("values")
+            if not isinstance(cells, list):
+                cells = list(row.values())
+        else:
+            cells = row
+        if isinstance(cells, list):
+            normalized = []
+            for cell in cells:
+                if isinstance(cell, dict):
+                    normalized.append(str(cell.get("text") or cell.get("value") or cell.get("content") or "").strip())
+                else:
+                    normalized.append(str(cell or "").strip())
+            if any(normalized):
+                rows.append(normalized)
+    return rows
+
+
+def _normalize_table_cells(value: Any) -> list[list[str]]:
+    if not isinstance(value, list):
+        return []
+    if value and all(isinstance(item, list) for item in value):
+        return _normalize_table_rows(value)
+    positioned: dict[int, dict[int, str]] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        row = item.get("row") if item.get("row") is not None else item.get("row_index")
+        col = item.get("col") if item.get("col") is not None else item.get("col_index")
+        if not isinstance(row, int) or not isinstance(col, int):
+            continue
+        positioned.setdefault(row, {})[col] = str(item.get("text") or item.get("value") or item.get("content") or "").strip()
+    rows: list[list[str]] = []
+    for row_index in sorted(positioned):
+        cols = positioned[row_index]
+        if not cols:
+            continue
+        max_col = max(cols)
+        row = [cols.get(col_index, "") for col_index in range(max_col + 1)]
+        if any(row):
+            rows.append(row)
+    return rows
+
+
+def _table_rows_from_parser_item(item: dict[str, Any]) -> list[list[str]]:
+    for key in ("rows", "table", "data"):
+        rows = _normalize_table_rows(item.get(key))
+        if rows:
+            return rows
+    rows = _normalize_table_cells(item.get("cells"))
+    if rows:
+        return rows
+    html = item.get("html") or item.get("table_html")
+    if isinstance(html, str) and html.strip():
+        return html_table_to_rows(html)
+    markdown = item.get("markdown") or item.get("text")
+    if isinstance(markdown, str):
+        rows = _markdown_table_rows(markdown)
+        if rows:
+            return rows
+    return []
+
+
+def _table_caption_from_item(item: dict[str, Any]) -> str:
+    for key in ("caption", "title", "label"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return re.sub(r"\s+", " ", value).strip()
+    return ""
+
+
+def _table_confidence_from_item(item: dict[str, Any]) -> Optional[float]:
+    for key in ("confidence", "score", "table_confidence"):
+        value = item.get(key)
+        try:
+            if value is not None:
+                return round(float(value), 4)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _iter_external_parser_items(payload: Any) -> list[dict[str, Any]]:
@@ -417,7 +620,7 @@ def _iter_external_parser_items(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(payload, dict):
         return []
 
-    for key in ("blocks", "elements", "chunks", "items"):
+    for key in ("tables", "blocks", "elements", "chunks", "items"):
         value = payload.get(key)
         if isinstance(value, list):
             return [item for item in value if isinstance(item, dict)]
@@ -440,6 +643,77 @@ def _iter_external_parser_items(payload: Any) -> list[dict[str, Any]]:
             if isinstance(page_text, str) and page_text.strip():
                 items.append({"type": "text", "text": page_text, "page": page_number})
     return items
+
+
+def structured_table_extraction_from_external_payload(
+    payload: Any,
+    *,
+    source_path: str,
+    parser: str = "table_command",
+) -> StructuredPdfExtraction:
+    blocks: list[StructuredPdfBlock] = []
+    max_page = 0
+    for index, item in enumerate(_iter_external_parser_items(payload), 1):
+        raw_type = item.get("type") or item.get("category") or item.get("kind") or item.get("label") or "table"
+        block_type = _normalize_external_block_type(raw_type)
+        rows = _table_rows_from_parser_item(item)
+        if block_type != "table" and not rows:
+            continue
+        if not rows:
+            continue
+        page = _coerce_page_number(
+            item.get("page")
+            or item.get("page_number")
+            or item.get("page_index")
+            or item.get("pageNumber")
+        )
+        if page:
+            max_page = max(max_page, page)
+        markdown = table_to_markdown(rows)
+        if not markdown:
+            continue
+        caption = _table_caption_from_item(item)
+        confidence = _table_confidence_from_item(item)
+        header = rows[0] if rows else []
+        body = rows[1:] if len(rows) > 1 else []
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        normalized_metadata = {
+            **metadata,
+            "table_index": item.get("table_index") or item.get("index") or index,
+            "caption": caption,
+            "headers": header,
+            "cells": body,
+            "rows": rows,
+            "row_count": len(body),
+            "column_count": max((len(row) for row in rows), default=0),
+            "confidence": confidence,
+            "repair_source": parser,
+            "high_fidelity": True,
+        }
+        if isinstance(item.get("bbox"), list):
+            normalized_metadata["bbox"] = item.get("bbox")
+        if isinstance(item.get("cells"), list) and item.get("cells") and isinstance(item.get("cells")[0], dict):
+            normalized_metadata["cell_objects"] = item.get("cells")
+        blocks.append(StructuredPdfBlock(
+            block_type="table",
+            page=page,
+            source=parser,
+            text=(
+                f"[PDF repaired table, page {page or 'unknown'}, table {normalized_metadata['table_index']}]\n"
+                f"{markdown}"
+            )[:MAX_STRUCTURED_TABLE_BLOCK_CHARS],
+            metadata=normalized_metadata,
+        ))
+        if len(blocks) >= MAX_STRUCTURED_BLOCKS:
+            break
+
+    payload_page_count = payload.get("page_count") if isinstance(payload, dict) else None
+    return StructuredPdfExtraction(
+        source_path=source_path,
+        page_count=_coerce_page_number(payload_page_count) or max_page,
+        blocks=blocks,
+        parser=parser,
+    )
 
 
 def structured_extraction_from_external_payload(
@@ -465,6 +739,8 @@ def structured_extraction_from_external_payload(
             max_page = max(max_page, page)
         raw_type = item.get("type") or item.get("category") or item.get("kind") or item.get("label")
         block_type = _normalize_external_block_type(raw_type)
+        if block_type == "structured" and _table_rows_from_parser_item(item):
+            block_type = "table"
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         blocks.append(StructuredPdfBlock(
             block_type=block_type,
@@ -728,6 +1004,14 @@ def _parser_command_args(path: str) -> list[str]:
     return [arg.format(pdf_path=path) for arg in args]
 
 
+def _table_parser_command_args(path: str) -> list[str]:
+    command = str(settings.PDF_TABLE_PARSER_COMMAND or "").strip()
+    if not command:
+        return []
+    args = shlex.split(command)
+    return [arg.format(pdf_path=path) for arg in args]
+
+
 def extract_pdf_structured_content_with_command(path: str) -> StructuredPdfExtraction:
     """Run an optional external parser command and normalize its JSON output."""
     args = _parser_command_args(path)
@@ -764,6 +1048,99 @@ def extract_pdf_structured_content_with_command(path: str) -> StructuredPdfExtra
     return extraction
 
 
+def extract_pdf_tables_with_command(path: str) -> StructuredPdfExtraction:
+    """Run optional high-fidelity table parser command and normalize its JSON output."""
+    args = _table_parser_command_args(path)
+    if not args:
+        raise RuntimeError("PDF_TABLE_PARSER_COMMAND is not configured")
+
+    timeout = max(1.0, float(settings.PDF_TABLE_PARSER_TIMEOUT_SECONDS or 180.0))
+    max_output = max(1024, int(settings.PDF_TABLE_PARSER_MAX_OUTPUT_BYTES or 10_000_000))
+    completed = subprocess.run(
+        args,
+        check=False,
+        capture_output=True,
+        text=False,
+        timeout=timeout,
+        env=parser_subprocess_environment(),
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"table parser exited {completed.returncode}: {stderr}")
+    if len(completed.stdout) > max_output:
+        raise RuntimeError(f"table parser output exceeds {max_output} bytes")
+    try:
+        payload = json.loads(completed.stdout.decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"table parser returned invalid JSON: {exc}") from exc
+
+    extraction = structured_table_extraction_from_external_payload(
+        payload,
+        source_path=path,
+        parser="table_command",
+    )
+    if not extraction.blocks:
+        raise RuntimeError("table parser returned no usable table blocks")
+    return extraction
+
+
+def merge_repaired_table_blocks(
+    base: StructuredPdfExtraction,
+    repair: StructuredPdfExtraction,
+) -> StructuredPdfExtraction:
+    """Prefer high-fidelity repaired tables while preserving non-table structure."""
+    repaired_tables = [block for block in repair.blocks if block.block_type == "table"]
+    if not repaired_tables:
+        return base
+    non_table_blocks = [block for block in base.blocks if block.block_type != "table"]
+    original_table_count = sum(1 for block in base.blocks if block.block_type == "table")
+    merged_blocks = [*non_table_blocks, *repaired_tables]
+    for block in merged_blocks:
+        if block.block_type == "table":
+            block.metadata = {
+                **(block.metadata or {}),
+                "repair_status": "repaired",
+                "original_table_count": original_table_count,
+            }
+    return StructuredPdfExtraction(
+        source_path=base.source_path,
+        page_count=max(base.page_count, repair.page_count),
+        blocks=merged_blocks[:MAX_STRUCTURED_BLOCKS],
+        parser=f"{base.parser}+table_command",
+    )
+
+
+def repair_low_quality_tables_if_configured(extraction: StructuredPdfExtraction) -> StructuredPdfExtraction:
+    """Run high-fidelity table repair only when quality checks show damaged tables."""
+    if not str(settings.PDF_TABLE_PARSER_COMMAND or "").strip():
+        return extraction
+    quality = structured_table_quality_from_blocks(extraction.blocks)
+    if quality.get("quality") != "low" and not quality.get("flags"):
+        return extraction
+    try:
+        repair = extract_pdf_tables_with_command(extraction.source_path)
+        merged = merge_repaired_table_blocks(extraction, repair)
+        for block in merged.blocks:
+            if block.block_type == "table":
+                block.metadata = {
+                    **(block.metadata or {}),
+                    "quality_flags": quality.get("flags") or [],
+                    "repair_trigger": "low_quality_table",
+                }
+        return merged
+    except Exception as exc:
+        logger.warning("高精度表格修复失败，保留原解析结果: %s", exc)
+        for block in extraction.blocks:
+            if block.block_type == "table":
+                block.metadata = {
+                    **(block.metadata or {}),
+                    "quality_flags": quality.get("flags") or [],
+                    "repair_status": "failed",
+                    "repair_error": str(exc)[:500],
+                }
+        return extraction
+
+
 def extract_pdf_structured_content_with_docling(path: str) -> StructuredPdfExtraction:
     """Run optional Docling conversion and normalize its document output."""
     parser_subprocess_environment()
@@ -788,25 +1165,30 @@ def extract_pdf_structured_content(path: str) -> StructuredPdfExtraction:
         logger.warning("未知 PDF 结构化解析后端 %s，使用轻量解析", backend)
         backend = "lightweight"
 
+    extraction: Optional[StructuredPdfExtraction] = None
     if backend in {"docling", "auto"}:
         try:
-            return extract_pdf_structured_content_with_docling(path)
+            extraction = extract_pdf_structured_content_with_docling(path)
         except Exception as exc:
             if backend == "docling":
                 logger.warning("Docling PDF 解析失败，回退轻量解析: %s", exc)
             else:
                 logger.info("Docling PDF 解析不可用，尝试其他解析后端: %s", exc)
+        if extraction:
+            return repair_low_quality_tables_if_configured(extraction)
 
     if backend in {"command", "auto"}:
         try:
-            return extract_pdf_structured_content_with_command(path)
+            extraction = extract_pdf_structured_content_with_command(path)
         except Exception as exc:
             if backend == "command":
                 logger.warning("高级 PDF 解析失败，回退轻量解析: %s", exc)
             else:
                 logger.info("高级 PDF 解析不可用，使用轻量解析: %s", exc)
+        if extraction:
+            return repair_low_quality_tables_if_configured(extraction)
 
-    return extract_pdf_structured_content_lightweight(path)
+    return repair_low_quality_tables_if_configured(extract_pdf_structured_content_lightweight(path))
 
 
 def structured_pdf_metadata_from_paper(paper: Paper) -> Optional[StructuredPdfExtraction]:
@@ -828,6 +1210,7 @@ def structured_pdf_parse_status_from_paper(paper: Paper) -> dict[str, Any]:
     metadata = getattr(paper, "metadata_json", None) or {}
     payload = metadata.get(PDF_STRUCTURED_METADATA_KEY)
     error = metadata.get(PDF_STRUCTURED_PARSE_ERROR_KEY)
+    repair_error = metadata.get(PDF_TABLE_REPAIR_ERROR_KEY)
     blocks = payload.get("blocks") if isinstance(payload, dict) else []
     block_counts: dict[str, int] = {}
     parsed_blocks: list[StructuredPdfBlock] = []
@@ -869,7 +1252,33 @@ def structured_pdf_parse_status_from_paper(paper: Paper) -> dict[str, Any]:
             else structured_table_quality_from_blocks(parsed_blocks)
         ),
         "parser_health": parser_runtime_health(),
+        "table_repair": table_repair_status_from_blocks(parsed_blocks),
         "last_error": error if isinstance(error, dict) else None,
+        "last_table_repair_error": repair_error if isinstance(repair_error, dict) else None,
+    }
+
+
+def table_repair_status_from_blocks(blocks: list[StructuredPdfBlock]) -> dict[str, Any]:
+    table_blocks = [block for block in blocks if block.block_type == "table"]
+    repaired = [
+        block for block in table_blocks
+        if (block.metadata or {}).get("high_fidelity") or (block.metadata or {}).get("repair_status") == "repaired"
+    ]
+    failed = [
+        block for block in table_blocks
+        if (block.metadata or {}).get("repair_status") == "failed"
+    ]
+    return {
+        "configured": bool(str(settings.PDF_TABLE_PARSER_COMMAND or "").strip()),
+        "table_count": len(table_blocks),
+        "repaired_table_count": len(repaired),
+        "failed_table_count": len(failed),
+        "has_repaired_tables": bool(repaired),
+        "repair_sources": sorted({
+            str((block.metadata or {}).get("repair_source") or block.source)
+            for block in repaired
+            if str((block.metadata or {}).get("repair_source") or block.source).strip()
+        }),
     }
 
 
@@ -954,6 +1363,41 @@ async def force_structured_pdf_reparse(paper: Paper, db: Optional[AsyncSession] 
         metadata[PDF_STRUCTURED_PARSE_ERROR_KEY] = {
             "message": str(exc)[:1000],
             "parser_backend": settings.PDF_STRUCTURED_PARSER_BACKEND,
+            "failed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await _persist_structured_pdf_metadata(paper, metadata, db)
+        raise
+
+    await _persist_structured_pdf_metadata(paper, metadata, db)
+    return structured_pdf_parse_status_from_paper(paper)
+
+
+async def force_table_repair(paper: Paper, db: Optional[AsyncSession] = None) -> dict[str, Any]:
+    """Force high-fidelity table repair for an already parseable PDF."""
+    metadata = dict(getattr(paper, "metadata_json", None) or {})
+    try:
+        pdf_path = await resolve_paper_pdf_path(paper, db)
+        if not pdf_path:
+            raise ValueError("PDF 不可用：当前论文没有本地 PDF 路径，也没有可恢复的 arXiv PDF")
+        base = StructuredPdfExtraction.from_metadata(metadata.get(PDF_STRUCTURED_METADATA_KEY))
+        if not base:
+            base = await asyncio.to_thread(extract_pdf_structured_content_lightweight, pdf_path)
+        repair = await asyncio.to_thread(extract_pdf_tables_with_command, pdf_path)
+        merged = merge_repaired_table_blocks(base, repair)
+        quality = structured_table_quality_from_blocks(base.blocks)
+        for block in merged.blocks:
+            if block.block_type == "table":
+                block.metadata = {
+                    **(block.metadata or {}),
+                    "quality_flags": quality.get("flags") or [],
+                    "repair_trigger": "manual_table_repair",
+                }
+        metadata[PDF_STRUCTURED_METADATA_KEY] = merged.to_metadata()
+        metadata.pop(PDF_TABLE_REPAIR_ERROR_KEY, None)
+    except Exception as exc:
+        metadata[PDF_TABLE_REPAIR_ERROR_KEY] = {
+            "message": str(exc)[:1000],
+            "parser_command_configured": bool(str(settings.PDF_TABLE_PARSER_COMMAND or "").strip()),
             "failed_at": datetime.now(timezone.utc).isoformat(),
         }
         await _persist_structured_pdf_metadata(paper, metadata, db)

@@ -53,6 +53,7 @@ def test_maintenance_routes_are_fixed_paths_and_admin_only():
         ("/api/papers/maintenance/backfill-embeddings", "POST"),
         ("/api/papers/maintenance/backfill-full-text", "POST"),
         ("/api/papers/maintenance/backfill-structured-pdf", "POST"),
+        ("/api/papers/maintenance/repair-tables", "POST"),
         ("/api/papers/maintenance/recommendations", "GET"),
         ("/api/papers/maintenance/search-diagnostics", "GET"),
     ]:
@@ -131,6 +132,8 @@ def test_structured_parse_status_reports_cached_counts_and_parser():
     assert status["table_quality"]["table_count"] == 1
     assert status["table_quality"]["quality"] in {"high", "medium", "low"}
     assert status["parser_health"]["configured_backend"]
+    assert status["table_repair"]["table_count"] == 1
+    assert status["parser_health"]["available"]["table_command"] in {True, False}
 
 
 def test_parser_runtime_health_reports_available_backends(monkeypatch):
@@ -337,6 +340,61 @@ async def test_backfill_structured_pdf_parse_repairs_bounded_candidates(monkeypa
 
     db = _Db()
     result = await papers_api.backfill_structured_pdf_parse(limit=5, db=db, user=SimpleNamespace(role="admin"))
+
+    assert result.processed == 1
+    assert result.success == 1
+    assert result.failed == 0
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_repair_low_quality_tables_endpoint_repairs_candidates(monkeypatch):
+    low_quality_metadata = {
+        report_service.PDF_STRUCTURED_METADATA_KEY: {
+            "version": report_service.PDF_STRUCTURED_METADATA_VERSION,
+            "source_path": "/data/low.pdf",
+            "parser": "test",
+            "page_count": 3,
+            "blocks": [
+                {
+                    "type": "table",
+                    "page": 3,
+                    "text": "| Task | Scores |\n| --- | --- |\n| GSM8K | 72.4 81.5 90.2 |",
+                }
+            ],
+        }
+    }
+    papers = [
+        SimpleNamespace(id=uuid4(), title="Low quality table", arxiv_id=None, pdf_path="/data/low.pdf", metadata_json=low_quality_metadata),
+        SimpleNamespace(id=uuid4(), title="No parse", arxiv_id=None, pdf_path="/data/no.pdf", metadata_json={}),
+    ]
+
+    class _Db:
+        commits = 0
+
+        async def execute(self, _statement):
+            return _ScalarListResult(papers)
+
+        async def commit(self):
+            self.commits += 1
+
+    async def fake_repair(paper, db):
+        paper.metadata_json[report_service.PDF_STRUCTURED_METADATA_KEY]["blocks"] = [
+            {
+                "type": "table",
+                "page": 3,
+                "source": "table_command",
+                "text": "| Task | Score |\n| --- | --- |\n| GSM8K | 72.4 |",
+                "metadata": {"high_fidelity": True, "repair_status": "repaired"},
+            }
+        ]
+        return report_service.structured_pdf_parse_status_from_paper(paper)
+
+    monkeypatch.setattr(report_service.settings, "PDF_TABLE_PARSER_COMMAND", "fake-table-parser {pdf_path}")
+    monkeypatch.setattr(report_service, "force_table_repair", fake_repair)
+
+    db = _Db()
+    result = await papers_api.repair_low_quality_tables(limit=5, db=db, user=SimpleNamespace(role="admin"))
 
     assert result.processed == 1
     assert result.success == 1

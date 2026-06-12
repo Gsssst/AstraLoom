@@ -84,8 +84,20 @@ interface ProcessingStatusItem {
       empty_cell_ratio?: number;
       generic_header_ratio?: number;
       average_rows?: number;
+      flags?: string[];
+      merged_numeric_cell_count?: number;
+      inconsistent_row_count?: number;
+    } | null;
+    table_repair?: {
+      configured?: boolean;
+      table_count?: number;
+      repaired_table_count?: number;
+      failed_table_count?: number;
+      has_repaired_tables?: boolean;
+      repair_sources?: string[];
     } | null;
     last_error?: { message?: string; parser_backend?: string; failed_at?: string } | null;
+    last_table_repair_error?: { message?: string; failed_at?: string } | null;
   } | null;
 }
 
@@ -1115,6 +1127,7 @@ const PapersPage: React.FC = () => {
                 <Button loading={kbAction === 'embeddings'} onClick={() => runKbAction('embeddings', '/papers/maintenance/backfill-embeddings?limit=20')}>补 20 篇向量</Button>
                 <Button loading={kbAction === 'fulltext'} onClick={() => runKbAction('fulltext', '/papers/maintenance/backfill-full-text?limit=5')}>补 5 篇全文</Button>
                 <Button loading={kbAction === 'structured'} onClick={() => runKbAction('structured', '/papers/maintenance/backfill-structured-pdf?limit=5')}>解析 5 篇 PDF</Button>
+                <Button loading={kbAction === 'tableRepair'} onClick={() => runKbAction('tableRepair', '/papers/maintenance/repair-tables?limit=5')}>修复 5 篇表格</Button>
               </Space>
             </>
           ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无维护状态" />}
@@ -1184,10 +1197,28 @@ const PapersPage: React.FC = () => {
                       {item.structured_parse_status?.ready && item.structured_parse_status?.table_count ? (() => {
                         const meta = tableQualityMeta(item.structured_parse_status?.table_quality?.quality);
                         const warnings = item.structured_parse_status?.table_quality?.warnings || [];
+                        const flags = item.structured_parse_status?.table_quality?.flags || [];
+                        const repair = item.structured_parse_status?.table_repair;
                         return (
-                          <Tooltip title={warnings.length ? warnings.join('；') : `低质量表格 ${item.structured_parse_status?.table_quality?.low_quality_table_count || 0}/${item.structured_parse_status?.table_count || 0}`}>
-                            <Tag color={meta.color}>{meta.label}</Tag>
-                          </Tooltip>
+                          <>
+                            <Tooltip title={[...warnings, ...flags].length ? [...warnings, ...flags].join('；') : `低质量表格 ${item.structured_parse_status?.table_quality?.low_quality_table_count || 0}/${item.structured_parse_status?.table_count || 0}`}>
+                              <Tag color={meta.color}>{meta.label}</Tag>
+                            </Tooltip>
+                            {repair?.has_repaired_tables ? (
+                              <Tooltip title={`修复来源：${(repair.repair_sources || []).join('、') || '高精度表格解析器'}`}>
+                                <Tag color="green">表格已修复 {repair.repaired_table_count || 0}</Tag>
+                              </Tooltip>
+                            ) : item.structured_parse_status?.table_quality?.quality === 'low' ? (
+                              <Tooltip title={repair?.configured ? '可运行高精度表格修复' : '未配置 PDF_TABLE_PARSER_COMMAND'}>
+                                <Tag color={repair?.configured ? 'orange' : 'red'}>{repair?.configured ? '待表格修复' : '修复未配置'}</Tag>
+                              </Tooltip>
+                            ) : null}
+                            {item.structured_parse_status?.last_table_repair_error?.message && (
+                              <Tooltip title={item.structured_parse_status.last_table_repair_error.message}>
+                                <Tag color="red">表格修复失败</Tag>
+                              </Tooltip>
+                            )}
+                          </>
                         );
                       })() : null}
                       {item.imported_by_username && <Tag color="purple">导入：{item.imported_by_username}</Tag>}

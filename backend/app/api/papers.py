@@ -79,7 +79,9 @@ class StructuredPdfParseStatus(BaseModel):
     block_counts: dict[str, int] = Field(default_factory=dict)
     table_quality: Optional[dict] = None
     parser_health: Optional[dict] = None
+    table_repair: Optional[dict] = None
     last_error: Optional[dict] = None
+    last_table_repair_error: Optional[dict] = None
 
 
 class PaperDetail(PaperBrief):
@@ -301,11 +303,21 @@ async def _maintenance_recommendations(db: AsyncSession, *, include_samples: boo
     )
     structured_candidates = structured_candidates_result.scalars().all()
     structured_parse_needed = []
+    table_repair_needed = []
     for paper in structured_candidates:
         structured_status = structured_pdf_parse_status_from_paper(paper)
         if not structured_status.get("ready") or structured_status.get("last_error"):
             structured_parse_needed.append(paper)
+        else:
+            table_quality = structured_status.get("table_quality") or {}
+            table_repair = structured_status.get("table_repair") or {}
+            if (
+                int(table_quality.get("low_quality_table_count") or 0) > 0
+                and not table_repair.get("has_repaired_tables")
+            ):
+                table_repair_needed.append(paper)
     missing_structured_parse = len(structured_parse_needed)
+    low_quality_table_parse = len(table_repair_needed)
     full_text_coverage = full_text_papers / total
     embedding_coverage = embedding_papers / total
     bm25_status = bm25_index_status()
@@ -348,6 +360,18 @@ async def _maintenance_recommendations(db: AsyncSession, *, include_samples: boo
             reason=f"当前有 {missing_structured_parse} 篇论文可刷新 PDF 结构化解析。表格、图注、OCR 和公式证据依赖这一步。",
             action_label="解析 5 篇 PDF",
             action_endpoint="/papers/maintenance/backfill-structured-pdf?limit=5",
+            sample_papers=samples,
+        ))
+
+    if low_quality_table_parse:
+        samples = [_maintenance_sample(paper) for paper in table_repair_needed[:3]] if include_samples else []
+        recommendations.append(MaintenanceRecommendation(
+            id="repair-low-quality-tables",
+            title="修复低质量表格",
+            severity="high",
+            reason=f"当前有 {low_quality_table_parse} 篇论文的表格解析质量偏低。精确数值问答需要先用高精度表格解析器修复 cell 结构。",
+            action_label="修复 5 篇表格",
+            action_endpoint="/papers/maintenance/repair-tables?limit=5",
             sample_papers=samples,
         ))
 
@@ -1088,6 +1112,57 @@ async def backfill_structured_pdf_parse(
             else:
                 action.skipped += 1
                 action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": "no structured blocks"})
+        except Exception as exc:
+            action.failed += 1
+            action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": str(exc)})
+    if action.success or action.failed:
+        await db.commit()
+    return action
+
+
+@router.post("/maintenance/repair-tables", response_model=MaintenanceActionResult)
+async def repair_low_quality_tables(
+    limit: int = Query(default=5, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Run bounded high-fidelity table repair for papers with low-quality parsed tables."""
+    from app.services.report_service import (
+        force_table_repair,
+        structured_pdf_parse_status_from_paper,
+    )
+
+    result = await db.execute(
+        select(Paper)
+        .where((Paper.pdf_path.is_not(None)) | (Paper.arxiv_id.is_not(None)))
+        .order_by(Paper.created_at.desc())
+        .limit(limit * 8)
+    )
+    candidates = result.scalars().all()
+    papers = []
+    for candidate in candidates:
+        status = structured_pdf_parse_status_from_paper(candidate)
+        table_quality = status.get("table_quality") or {}
+        table_repair = status.get("table_repair") or {}
+        if (
+            status.get("ready")
+            and int(table_quality.get("low_quality_table_count") or 0) > 0
+            and not table_repair.get("has_repaired_tables")
+        ):
+            papers.append(candidate)
+        if len(papers) >= limit:
+            break
+
+    action = MaintenanceActionResult(processed=len(papers))
+    for paper in papers:
+        try:
+            refreshed = await force_table_repair(paper, db)
+            repair_status = refreshed.get("table_repair") or {}
+            if repair_status.get("has_repaired_tables"):
+                action.success += 1
+            else:
+                action.skipped += 1
+                action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": "no repaired table blocks"})
         except Exception as exc:
             action.failed += 1
             action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": str(exc)})

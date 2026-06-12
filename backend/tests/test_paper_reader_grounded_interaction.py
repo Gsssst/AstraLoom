@@ -685,6 +685,85 @@ def test_external_parser_payload_normalizes_common_block_shapes():
     assert all(block.source == "command" for block in extraction.blocks)
 
 
+def test_high_fidelity_table_payload_normalizes_cells_and_html():
+    extraction = report_service.structured_table_extraction_from_external_payload(
+        {
+            "tables": [
+                {
+                    "page": 3,
+                    "caption": "Table 3. RULER subtask results.",
+                    "confidence": 0.97,
+                    "cells": [
+                        {"row": 0, "col": 0, "text": "Task"},
+                        {"row": 0, "col": 1, "text": "Accuracy"},
+                        {"row": 1, "col": 0, "text": "GSM8K strict"},
+                        {"row": 1, "col": 1, "text": "72.4"},
+                    ],
+                },
+                {
+                    "page": 4,
+                    "html": "<table><tr><th>Model</th><th>PG-19</th></tr><tr><td>Ours</td><td>8.2</td></tr></table>",
+                },
+            ],
+            "page_count": 5,
+        },
+        source_path="/tmp/paper.pdf",
+        parser="marker",
+    )
+
+    assert extraction.page_count == 5
+    assert len(extraction.blocks) == 2
+    assert extraction.blocks[0].metadata["headers"] == ["Task", "Accuracy"]
+    assert extraction.blocks[0].metadata["cells"] == [["GSM8K strict", "72.4"]]
+    assert extraction.blocks[0].metadata["confidence"] == 0.97
+    assert "GSM8K strict" in extraction.blocks[0].text
+    assert extraction.blocks[1].metadata["headers"] == ["Model", "PG-19"]
+    assert "Ours" in extraction.blocks[1].text
+
+
+def test_low_quality_detection_flags_merged_numeric_cells():
+    block = report_service.StructuredPdfBlock(
+        block_type="table",
+        page=3,
+        text=(
+            "| Task | Scores |\n"
+            "| --- | --- |\n"
+            "| GSM8K | 72.4 81.5 90.2 |\n"
+            "| COQA | 61.1 63.2 64.9 |"
+        ),
+    )
+
+    quality = report_service.structured_table_quality_from_blocks([block])
+
+    assert quality["quality"] == "low"
+    assert quality["merged_numeric_cell_count"] == 2
+    assert "merged_numeric_cells" in quality["flags"]
+
+
+def test_repaired_table_metadata_drives_evidence_text():
+    block = report_service.StructuredPdfBlock(
+        block_type="table",
+        page=3,
+        source="table_command",
+        text="bad merged table text",
+        metadata={
+            "table_index": 3,
+            "caption": "Table 3. RULER",
+            "headers": ["Task", "Accuracy"],
+            "cells": [["GSM8K strict", "72.4"], ["COQA f1", "83.1"]],
+            "repair_source": "marker",
+            "high_fidelity": True,
+        },
+    )
+
+    text = report_service.evidence_text_from_structured_block(block)
+
+    assert "bad merged" not in text
+    assert "Caption: Table 3. RULER" in text
+    assert "| GSM8K strict | 72.4 |" in text
+    assert "| COQA f1 | 83.1 |" in text
+
+
 def test_parser_subprocess_environment_uses_huggingface_mirror(monkeypatch):
     monkeypatch.setattr(report_service.settings, "HF_ENDPOINT", "https://hf-mirror.com")
     monkeypatch.setattr(report_service.settings, "HF_HOME", "/cache/hf")
@@ -726,6 +805,75 @@ def test_command_parser_success_normalizes_json(monkeypatch):
     assert captured["env"]["HF_ENDPOINT"] == "https://hf-mirror.com"
     assert extraction.blocks[0].block_type == "ocr"
     assert extraction.blocks[0].page == 2
+
+
+def test_table_parser_command_success_normalizes_json(monkeypatch):
+    captured = {}
+
+    class Completed:
+        returncode = 0
+        stdout = b'{"tables":[{"page":3,"caption":"Table 3","rows":[["Task","Score"],["GSM8K","72.4"]]}]}'
+        stderr = b""
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs["env"]
+        captured["timeout"] = kwargs["timeout"]
+        return Completed()
+
+    monkeypatch.setattr(report_service.settings, "PDF_TABLE_PARSER_COMMAND", "table-parser --json {pdf_path}")
+    monkeypatch.setattr(report_service.settings, "PDF_TABLE_PARSER_TIMEOUT_SECONDS", 17)
+    monkeypatch.setattr(report_service.settings, "PDF_TABLE_PARSER_MAX_OUTPUT_BYTES", 4096)
+    monkeypatch.setattr(report_service.settings, "HF_ENDPOINT", "https://hf-mirror.com")
+    monkeypatch.setattr(report_service.subprocess, "run", fake_run)
+
+    extraction = report_service.extract_pdf_tables_with_command("/tmp/paper.pdf")
+
+    assert captured["args"] == ["table-parser", "--json", "/tmp/paper.pdf"]
+    assert captured["timeout"] == 17
+    assert captured["env"]["HF_ENDPOINT"] == "https://hf-mirror.com"
+    assert extraction.blocks[0].source == "table_command"
+    assert extraction.blocks[0].metadata["cells"] == [["GSM8K", "72.4"]]
+
+
+def test_structured_parse_auto_repairs_low_quality_tables(monkeypatch):
+    base = report_service.StructuredPdfExtraction(
+        source_path="/tmp/paper.pdf",
+        page_count=3,
+        parser="test-lightweight",
+        blocks=[
+            report_service.StructuredPdfBlock(
+                block_type="table",
+                page=3,
+                text="| Task | Scores |\n| --- | --- |\n| GSM8K | 72.4 81.5 90.2 |",
+            )
+        ],
+    )
+    repair = report_service.StructuredPdfExtraction(
+        source_path="/tmp/paper.pdf",
+        page_count=3,
+        parser="table_command",
+        blocks=[
+            report_service.StructuredPdfBlock(
+                block_type="table",
+                page=3,
+                source="table_command",
+                text="| Task | Score |\n| --- | --- |\n| GSM8K | 72.4 |",
+                metadata={"high_fidelity": True, "cells": [["GSM8K", "72.4"]]},
+            )
+        ],
+    )
+
+    monkeypatch.setattr(report_service.settings, "PDF_STRUCTURED_PARSER_BACKEND", "lightweight")
+    monkeypatch.setattr(report_service.settings, "PDF_TABLE_PARSER_COMMAND", "fake-table-parser {pdf_path}")
+    monkeypatch.setattr(report_service, "extract_pdf_structured_content_lightweight", lambda _path: base)
+    monkeypatch.setattr(report_service, "extract_pdf_tables_with_command", lambda _path: repair)
+
+    extraction = report_service.extract_pdf_structured_content("/tmp/paper.pdf")
+
+    assert extraction.parser == "test-lightweight+table_command"
+    assert extraction.blocks[0].metadata["repair_status"] == "repaired"
+    assert extraction.blocks[0].metadata["repair_trigger"] == "low_quality_table"
 
 
 def test_command_backend_failure_falls_back_to_lightweight(monkeypatch):
