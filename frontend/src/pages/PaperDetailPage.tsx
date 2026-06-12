@@ -14,7 +14,7 @@ import {
   DeleteOutlined, CloseOutlined,
   PlayCircleOutlined, CheckCircleOutlined, RollbackOutlined,
   BookOutlined, NodeIndexOutlined, FileSearchOutlined,
-  ToolOutlined,
+  ToolOutlined, DownOutlined, UpOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import Markdown from '../components/Markdown';
@@ -364,6 +364,7 @@ const PaperDetailPage: React.FC = () => {
   const [paperRagEnabled, setPaperRagEnabled] = useState(true);
   const [webSearch, setWebSearch] = useState(false);
   const [searchDepth, setSearchDepth] = useState<'quick' | 'standard' | 'deep'>('standard');
+  const [expandedReferencePanels, setExpandedReferencePanels] = useState<Record<string, boolean>>({});
   const [tagging, setTagging] = useState(false);
   const [paperTools, setPaperTools] = useState<ToolboxTool[]>([]);
   const [availableTools, setAvailableTools] = useState<ToolboxTool[]>([]);
@@ -636,11 +637,40 @@ const PaperDetailPage: React.FC = () => {
     return 'geekblue';
   };
 
+  const isTableLikeEvidenceReference = (ref: PaperChatReference) => {
+    const evidenceType = String(ref.evidence_type || '').toLowerCase();
+    const kind = String(ref.metadata?.kind || '').toLowerCase();
+    const captionType = String(ref.metadata?.caption_type || '').toLowerCase();
+    return (
+      evidenceType === 'table' ||
+      evidenceType === 'visual_table' ||
+      evidenceType === 'table_pack' ||
+      evidenceType === 'table_catalog' ||
+      kind === 'table' ||
+      kind === 'table_crop' ||
+      captionType === 'table_caption'
+    );
+  };
+
   const visualPreviewReferences = (refs?: PaperChatReference[]) => (refs || []).filter(ref => {
     const hasVisualType = Boolean(ref.metadata?.visual_evidence) || String(ref.evidence_type || '').startsWith('visual');
     const asset = ref.metadata?.thumbnail_path || ref.metadata?.asset_path;
-    return hasVisualType && typeof asset === 'string' && asset.length > 0;
+    return hasVisualType && !isTableLikeEvidenceReference(ref) && typeof asset === 'string' && asset.length > 0;
   });
+
+  const referencePanelKey = (msg: PaperChatMessage, idx: number) => {
+    const firstRef = msg.references?.[0];
+    return [
+      idx,
+      msg.role,
+      firstRef?.id || firstRef?.url || firstRef?.arxiv_id || '',
+      String(msg.content || '').slice(0, 48),
+    ].join(':');
+  };
+
+  const toggleReferencePanel = (key: string) => {
+    setExpandedReferencePanels(prev => ({ ...prev, [key]: !prev[key] }));
+  };
 
   const submitPaperQuestion = async (rawQuestion?: string, displayQuestion?: string, quoteOverride?: PaperPdfQuote | null) => {
     const templateMode = typeof rawQuestion === 'string';
@@ -850,6 +880,7 @@ const PaperDetailPage: React.FC = () => {
         try {
           await api.delete(`/papers/${paperId}/chat-history`);
           setChatMsgs([]);
+          setExpandedReferencePanels({});
           message.success('已清空论文问答记录');
         } catch {
           message.error('清空失败');
@@ -1473,72 +1504,97 @@ const PaperDetailPage: React.FC = () => {
                           <Button type="text" size="small" icon={<RedoOutlined />} onClick={()=>{setQuestion('请重新回答');}} style={{fontSize:11,color:'#bbb'}}>重新生成</Button>
                         </div>
                       )}
-                      {((msg.references && msg.references.length > 0) || msg.evidence) && (
-                        <div className="paper-chat-references">
+                      {((msg.references && msg.references.length > 0) || msg.evidence) && (() => {
+                        const referenceKey = referencePanelKey(msg, idx);
+                        const referencesExpanded = !!expandedReferencePanels[referenceKey];
+                        const visualRefs = visualPreviewReferences(msg.references);
+                        return (
+                        <div className={`paper-chat-references ${referencesExpanded ? 'is-expanded' : 'is-collapsed'}`}>
                           {(() => {
                             const confidence = computeEvidenceConfidence(msg);
                             const meta = paperEvidenceConfidenceMeta[confidence.status];
                             return (
                               <div className="paper-answer-evidence-panel">
-                                <Space size={6} wrap>
-                                  <Tag color={meta.color}>{meta.label}</Tag>
-                                  <Tag color="blue">覆盖率 {Math.round(confidence.coverage * 100)}%</Tag>
-                                  <Tag>证据 {confidence.evidenceCount}</Tag>
-                                </Space>
-                                <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 11 }}>
-                                  PaperQA 风格证据检查：优先依据当前论文片段和显式引用判断回答可信度。
-                                </Text>
+                                <div className="paper-chat-reference-summary">
+                                  <div>
+                                    <Space size={6} wrap>
+                                      <Tag color={meta.color}>{meta.label}</Tag>
+                                      <Tag color="blue">覆盖率 {Math.round(confidence.coverage * 100)}%</Tag>
+                                      <Tag>证据 {confidence.evidenceCount}</Tag>
+                                      {!!msg.evidence?.visual_evidence_count && <Tag color="purple">视觉 {msg.evidence.visual_evidence_count}</Tag>}
+                                    </Space>
+                                    <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 11 }}>
+                                      PaperQA 风格证据检查：优先依据当前论文片段和显式引用判断回答可信度。
+                                    </Text>
+                                  </div>
+                                  {(msg.references && msg.references.length > 0) && (
+                                    <Button
+                                      type="text"
+                                      size="small"
+                                      className="paper-chat-reference-toggle"
+                                      icon={referencesExpanded ? <UpOutlined /> : <DownOutlined />}
+                                      onClick={() => toggleReferencePanel(referenceKey)}
+                                    >
+                                      {referencesExpanded ? '收起引用' : `查看引用 ${msg.references?.length || 0}`}
+                                    </Button>
+                                  )}
+                                </div>
                               </div>
                             );
                           })()}
-                          {msg.evidence && (
-                            <div style={{ marginBottom: 6 }}>
-                              <Tag color={msg.evidence.evidence_insufficient ? 'orange' : 'green'} style={{ borderRadius: 8 }}>
-                                {msg.evidence.evidence_insufficient ? '证据不足' : `引用覆盖率 ${Math.round((msg.evidence.evidence_coverage || 0) * 100)}%`}
-                              </Tag>
-                              <Text type="secondary" style={{ fontSize: 11 }}>
-                                当前回答关联 {msg.evidence.evidence_count || 0} 条证据
-                                {msg.evidence.visual_evidence_count ? `，其中 ${msg.evidence.visual_evidence_count} 条视觉证据` : ''}
-                              </Text>
-                            </div>
+                          {referencesExpanded && (
+                            <>
+                              {msg.evidence && (
+                                <div style={{ marginBottom: 6 }}>
+                                  <Tag color={msg.evidence.evidence_insufficient ? 'orange' : 'green'} style={{ borderRadius: 8 }}>
+                                    {msg.evidence.evidence_insufficient ? '证据不足' : `引用覆盖率 ${Math.round((msg.evidence.evidence_coverage || 0) * 100)}%`}
+                                  </Tag>
+                                  <Text type="secondary" style={{ fontSize: 11 }}>
+                                    当前回答关联 {msg.evidence.evidence_count || 0} 条证据
+                                    {msg.evidence.visual_evidence_count ? `，其中 ${msg.evidence.visual_evidence_count} 条视觉证据` : ''}
+                                  </Text>
+                                </div>
+                              )}
+                              {msg.references && msg.references.length > 0 && <Text type="secondary" style={{ fontSize: 11 }}>引用证据：</Text>}
+                              {visualRefs.length > 0 && (
+                                <div className="paper-chat-visual-preview-list">
+                                  {visualRefs.map((ref, ri) => {
+                                    const asset = String(ref.metadata?.thumbnail_path || ref.metadata?.asset_path || '');
+                                    const page = ref.page || ref.page_start;
+                                    const confidence = typeof ref.metadata?.confidence === 'number' ? `${Math.round(ref.metadata.confidence * 100)}%` : '';
+                                    return (
+                                      <button
+                                        key={`${asset}-${ri}`}
+                                        type="button"
+                                        className="paper-chat-visual-preview"
+                                        onClick={() => handleEvidenceReferenceClick(ref)}
+                                        title={referenceTooltip(ref)}
+                                      >
+                                        <img src={asset} alt={String(ref.metadata?.caption || ref.metadata?.kind || 'visual evidence')} />
+                                        <span>
+                                          <strong>{String(ref.metadata?.kind || ref.evidence_type || 'visual')}</strong>
+                                          <small>{[page ? `PDF ${page}` : '', confidence].filter(Boolean).join(' · ')}</small>
+                                          <em>{String(ref.metadata?.caption || ref.snippet || '').slice(0, 80)}</em>
+                                        </span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              <div className="paper-chat-reference-list">
+                                {(msg.references || []).map((ref, ri) => (
+                                  <Tooltip key={`${ref.url || ref.arxiv_id || ref.id || ref.title}-${ri}`} title={referenceTooltip(ref)}>
+                                    <Tag color={referenceColor(ref)} className="paper-chat-reference" onClick={() => handleEvidenceReferenceClick(ref)}>
+                                      [{ri + 1}] {referenceTitle(ref)}
+                                    </Tag>
+                                  </Tooltip>
+                                ))}
+                              </div>
+                            </>
                           )}
-                          {msg.references && msg.references.length > 0 && <Text type="secondary" style={{ fontSize: 11 }}>引用证据：</Text>}
-                          {visualPreviewReferences(msg.references).length > 0 && (
-                            <div className="paper-chat-visual-preview-list">
-                              {visualPreviewReferences(msg.references).map((ref, ri) => {
-                                const asset = String(ref.metadata?.thumbnail_path || ref.metadata?.asset_path || '');
-                                const page = ref.page || ref.page_start;
-                                const confidence = typeof ref.metadata?.confidence === 'number' ? `${Math.round(ref.metadata.confidence * 100)}%` : '';
-                                return (
-                                  <button
-                                    key={`${asset}-${ri}`}
-                                    type="button"
-                                    className="paper-chat-visual-preview"
-                                    onClick={() => handleEvidenceReferenceClick(ref)}
-                                    title={referenceTooltip(ref)}
-                                  >
-                                    <img src={asset} alt={String(ref.metadata?.caption || ref.metadata?.kind || 'visual evidence')} />
-                                    <span>
-                                      <strong>{String(ref.metadata?.kind || ref.evidence_type || 'visual')}</strong>
-                                      <small>{[page ? `PDF ${page}` : '', confidence].filter(Boolean).join(' · ')}</small>
-                                      <em>{String(ref.metadata?.caption || ref.snippet || '').slice(0, 80)}</em>
-                                    </span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
-                          <div className="paper-chat-reference-list">
-                            {(msg.references || []).map((ref, ri) => (
-                              <Tooltip key={`${ref.url || ref.arxiv_id || ref.id || ref.title}-${ri}`} title={referenceTooltip(ref)}>
-                                <Tag color={referenceColor(ref)} className="paper-chat-reference" onClick={() => handleEvidenceReferenceClick(ref)}>
-                                  [{ri + 1}] {referenceTitle(ref)}
-                                </Tag>
-                              </Tooltip>
-                            ))}
-                          </div>
                         </div>
-                      )}
+                        );
+                      })()}
                     </div>
                   </div>
                 ))

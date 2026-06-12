@@ -1226,7 +1226,6 @@ const PapersPage: React.FC = () => {
                 <Button icon={<RedoOutlined />} loading={kbAction === 'bm25'} onClick={() => runKbAction('bm25', '/papers/maintenance/rebuild-bm25')}>重建 BM25</Button>
                 <Button loading={kbAction === 'embeddings'} onClick={() => runKbAction('embeddings', '/papers/maintenance/backfill-embeddings?limit=20')}>补 20 篇向量</Button>
                 <Button loading={kbAction === 'fulltext'} onClick={() => runKbAction('fulltext', '/papers/maintenance/backfill-full-text?limit=5')}>补 5 篇全文</Button>
-                <Button loading={kbAction === 'structured'} onClick={() => runKbAction('structured', '/papers/maintenance/backfill-structured-pdf?limit=5')}>解析 5 篇 PDF</Button>
                 <Button loading={kbAction === 'visual'} onClick={() => runKbAction('visual', '/papers/maintenance/backfill-visual-evidence?limit=5')}>提取 5 篇视觉证据</Button>
               </Space>
             </>

@@ -295,6 +295,24 @@
   background: #fbfffa;
 }
 
+.paper-chat-reference-summary {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.paper-chat-reference-summary > div {
+  min-width: 0;
+}
+
+.paper-chat-reference-toggle {
+  flex-shrink: 0;
+  color: #6f5ab7;
+  font-size: 11px;
+}
+
 .paper-citation-quality-row,
 .writing-file-tree-row {
   display: flex;
