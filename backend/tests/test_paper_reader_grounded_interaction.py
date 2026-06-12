@@ -382,6 +382,71 @@ def test_vision_json_normalization_handles_malformed_and_confidence():
     assert document_visual_evidence.parse_vision_json("not json")["status"] == "invalid"
 
 
+@pytest.mark.asyncio
+async def test_visual_evidence_enrichment_writes_vision_table_markdown(monkeypatch, tmp_path):
+    asset_root = tmp_path / "visual"
+    asset = asset_root / "paper-1" / "table.png"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"png")
+    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_ASSET_DIR", str(asset_root))
+    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_ENABLE_VISION", True)
+    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_MAX_MODEL_CALLS", 2)
+
+    async def fake_analyze(path, prompt=""):
+        assert path == str(asset)
+        assert "GitHub-flavored markdown" in prompt
+        return {
+            "status": "ready",
+            "kind": "table",
+            "markdown": "| Model | Acc |\n| --- | --- |\n| Ours | 91.3 |",
+            "summary": "Main result table.",
+            "key_facts": ["Ours", "91.3"],
+            "confidence": 0.91,
+            "provider": "openai-compatible",
+            "model": "vision-model",
+        }
+
+    monkeypatch.setattr(document_visual_evidence, "analyze_visual_crop_with_model", fake_analyze)
+    item = document_visual_evidence.VisualEvidenceItem(
+        id="ve-table",
+        kind="table",
+        page=4,
+        asset_path=str(asset),
+        markdown="",
+        confidence=0.48,
+    )
+
+    enriched = await document_visual_evidence.enrich_visual_evidence_items_with_vision([item])
+
+    assert enriched[0].markdown == "| Model | Acc |\n| --- | --- |\n| Ours | 91.3 |"
+    assert enriched[0].summary == "Main result table."
+    assert enriched[0].confidence == 0.91
+    assert enriched[0].metadata["vision_ocr_status"] == "ready"
+    assert enriched[0].metadata["vision_model_calls_used"] == 1
+
+
+@pytest.mark.asyncio
+async def test_visual_evidence_enrichment_marks_skipped_when_model_budget_disabled(monkeypatch, tmp_path):
+    asset_root = tmp_path / "visual"
+    asset = asset_root / "paper-1" / "table.png"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"png")
+    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_ASSET_DIR", str(asset_root))
+    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_ENABLE_VISION", True)
+    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_MAX_MODEL_CALLS", 0)
+    item = document_visual_evidence.VisualEvidenceItem(
+        id="ve-table",
+        kind="table",
+        page=4,
+        asset_path=str(asset),
+    )
+
+    enriched = await document_visual_evidence.enrich_visual_evidence_items_with_vision([item])
+
+    assert enriched[0].metadata["vision_ocr_status"] == "skipped"
+    assert "max_model_calls" in enriched[0].metadata["vision_ocr_reason"]
+
+
 def test_section_first_table_question_keeps_structured_table_evidence():
     full_text = "\n\n".join([
         "1 Introduction",

@@ -493,6 +493,7 @@ async def ensure_document_visual_evidence(
         scope = str(getattr(paper, "id", "") or "paper")
         items = await asyncio.to_thread(visual_evidence_items_from_structured_extraction, structured, scope)
         items = await asyncio.to_thread(render_visual_evidence_assets, pdf_path, items, scope)
+        items = await enrich_visual_evidence_items_with_vision(items)
         status = "ready" if items else "empty"
         payload = visual_evidence_payload_from_items(
             source_path=pdf_path,
@@ -604,6 +605,7 @@ async def extract_visual_evidence_from_pdf_bytes(
         scope = f"upload-{hashlib.sha256((filename + str(len(file_bytes))).encode('utf-8')).hexdigest()[:12]}"
         items = visual_evidence_items_from_structured_extraction(extraction, scope)
         items = render_visual_evidence_assets(tmp_path, items, scope)
+        items = await enrich_visual_evidence_items_with_vision(items)
         payload = visual_evidence_payload_from_items(
             source_path=filename,
             parser=extraction.parser,
@@ -688,6 +690,109 @@ async def analyze_visual_crop_with_model(image_path: str, prompt: str = "") -> d
         max_tokens=1200,
     )
     return normalize_vision_adapter_result(parse_vision_json(raw), provider=active.get("provider"), model=active.get("model"))
+
+
+async def enrich_visual_evidence_items_with_vision(items: list[VisualEvidenceItem]) -> list[VisualEvidenceItem]:
+    """Run bounded crop/page OCR for selected visual evidence items when configured."""
+
+    if not items:
+        return items
+    limits = visual_evidence_limits()
+    budget = limits["max_model_calls"]
+    if budget <= 0:
+        return [_mark_vision_skipped(item, "max_model_calls is 0") for item in items]
+    if not bool(getattr(settings, "PDF_VISUAL_EVIDENCE_ENABLE_VISION", False)):
+        return [_mark_vision_skipped(item, "vision model adapter is disabled") for item in items]
+
+    enriched: list[VisualEvidenceItem] = []
+    calls_used = 0
+    for item in items:
+        candidate_path = item.thumbnail_path or item.asset_path
+        if calls_used >= budget or not candidate_path or not _should_vision_analyze_item(item):
+            enriched.append(item)
+            continue
+        result = await analyze_visual_crop_with_model(candidate_path, _vision_prompt_for_item(item))
+        calls_used += 1
+        enriched.append(_apply_vision_result_to_item(item, result))
+    for item in enriched:
+        item.metadata = {**(item.metadata or {}), "vision_model_calls_used": calls_used, "vision_model_call_limit": budget}
+    return enriched
+
+
+def _mark_vision_skipped(item: VisualEvidenceItem, reason: str) -> VisualEvidenceItem:
+    if not _should_vision_analyze_item(item):
+        return item
+    item.metadata = {
+        **(item.metadata or {}),
+        "vision_ocr_status": "skipped",
+        "vision_ocr_reason": reason,
+    }
+    return item
+
+
+def _should_vision_analyze_item(item: VisualEvidenceItem) -> bool:
+    if not item.asset_path and not item.thumbnail_path:
+        return False
+    if item.kind in VISUAL_TABLE_TYPES:
+        return True
+    if item.kind in VISUAL_READY_TYPES or item.kind in {"figure", "chart", "architecture", "image"}:
+        return not (item.summary and item.text)
+    return False
+
+
+def _vision_prompt_for_item(item: VisualEvidenceItem) -> str:
+    caption = item.caption or ""
+    if item.kind in VISUAL_TABLE_TYPES:
+        return (
+            "You are reading a cropped PDF table or the page containing a table. "
+            "Return strict JSON only with keys: status, kind, ocr_text, markdown, summary, key_facts, confidence. "
+            "Set kind to table. Put the extracted table in GitHub-flavored markdown. "
+            "Preserve row/column labels and numeric values exactly as visible. "
+            "If the image does not contain a readable table, set status to empty or failed. "
+            "Do not invent missing values. "
+            f"Known caption/context: {caption}"
+        )
+    return (
+        "You are reading a cropped PDF figure/chart/diagram. "
+        "Return strict JSON only with keys: status, kind, ocr_text, markdown, summary, key_facts, confidence. "
+        "Use markdown only if the image contains a table; otherwise leave markdown empty. "
+        "Summarize only visible content and OCR visible labels. Do not infer hidden details. "
+        f"Known caption/context: {caption}"
+    )
+
+
+def _apply_vision_result_to_item(item: VisualEvidenceItem, result: dict[str, Any]) -> VisualEvidenceItem:
+    status = str(result.get("status") or "").lower()
+    metadata = {
+        **(item.metadata or {}),
+        "vision_ocr_status": status or "unknown",
+        "vision_provider": result.get("provider"),
+        "vision_model": result.get("model"),
+    }
+    if status != "ready":
+        reason = result.get("reason") or result.get("raw_status")
+        if reason:
+            metadata["vision_ocr_reason"] = str(reason)[:500]
+        item.metadata = metadata
+        return item
+
+    markdown = str(result.get("markdown") or "").strip()
+    ocr_text = str(result.get("ocr_text") or "").strip()
+    summary = str(result.get("summary") or "").strip()
+    key_facts = result.get("key_facts") if isinstance(result.get("key_facts"), list) else []
+    confidence = _coerce_confidence(result.get("confidence"), default=item.confidence)
+
+    if markdown:
+        item.markdown = markdown
+    if ocr_text:
+        item.text = ocr_text
+    if summary:
+        item.summary = summary
+    if key_facts:
+        item.key_facts = [str(fact).strip() for fact in key_facts if str(fact).strip()][:12]
+    item.confidence = max(item.confidence, confidence)
+    item.metadata = metadata
+    return item
 
 
 def normalize_vision_adapter_result(payload: dict[str, Any], *, provider: Optional[str] = None, model: Optional[str] = None) -> dict[str, Any]:
