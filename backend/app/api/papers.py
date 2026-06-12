@@ -1890,12 +1890,20 @@ def _paper_evidence_meta(references: list[dict]) -> dict:
     ]
     visual_ready = bool(visual_evidence)
     coverage = min(1.0, len(evidence) / 3)
+    evidence_plan = None
+    for ref in evidence:
+        metadata = ref.get("metadata") if isinstance(ref.get("metadata"), dict) else {}
+        plan = metadata.get("evidence_plan")
+        if isinstance(plan, dict):
+            evidence_plan = plan
+            break
     return {
         "evidence_count": len(evidence),
         "visual_evidence_count": len(visual_evidence),
         "evidence_coverage": round(coverage, 4),
         "evidence_insufficient": len(evidence) == 0,
         "visual_evidence_available": visual_ready,
+        "evidence_plan": evidence_plan,
     }
 
 

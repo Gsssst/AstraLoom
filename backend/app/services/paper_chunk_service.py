@@ -30,6 +30,42 @@ class EvidenceChunk:
         return cleaned[:limit] + ("..." if len(cleaned) > limit else "")
 
 
+@dataclass
+class PaperQuestionEvidencePlan:
+    """Deterministic retrieval plan for a paper-specific user question."""
+
+    intent: str
+    strategy: str
+    requested_sections: Tuple[str, ...] = ()
+    include_all_tables: bool = False
+    include_visual_tables: bool = False
+    include_visual_evidence: bool = False
+    max_evidence_items: int = 4
+    table_budget: int = 0
+    visual_table_budget: int = 0
+    caption_budget: int = 0
+    text_budget: int = 0
+    warnings: Tuple[str, ...] = ()
+
+    def as_metadata(self) -> dict:
+        return {
+            "intent": self.intent,
+            "strategy": self.strategy,
+            "requested_sections": list(self.requested_sections),
+            "include_all_tables": self.include_all_tables,
+            "include_visual_tables": self.include_visual_tables,
+            "include_visual_evidence": self.include_visual_evidence,
+            "max_evidence_items": self.max_evidence_items,
+            "budgets": {
+                "tables": self.table_budget,
+                "visual_tables": self.visual_table_budget,
+                "captions": self.caption_budget,
+                "text": self.text_budget,
+            },
+            "warnings": list(self.warnings),
+        }
+
+
 class PaperChunkService:
     """论文分块检索服务。"""
 
@@ -43,6 +79,13 @@ class PaperChunkService:
     EXPERIMENT_TABLE_PACK_TOP_K = 16
     EXPERIMENT_TEXT_TOP_K = 6
     EXPERIMENT_CONCLUSION_TOP_K = 2
+    EXPERIMENT_COMPLETE_EVIDENCE_TOP_K = 36
+    EXPERIMENT_COMPLETE_TABLE_BUDGET = 24
+    EXPERIMENT_COMPLETE_VISUAL_TABLE_BUDGET = 24
+    EXPERIMENT_COMPLETE_CAPTION_BUDGET = 24
+    EXPERIMENT_COMPLETE_TEXT_BUDGET = 8
+    METHOD_VISUAL_EVIDENCE_TOP_K = 16
+    METHOD_VISUAL_TEXT_BUDGET = 5
     TABLE_PACK_CONTEXT_MAX_CHARS = 900
     SECTION_ALIASES = {
         "abstract": ("abstract", "摘要"),
@@ -63,9 +106,11 @@ class PaperChunkService:
         "all tables", "experimental section", "evaluation section", "results section",
         "complete experiment", "comprehensive experiment", "summarize experiments",
         "summarise experiments", "analyze experiments", "analyse experiments",
+        "analyze experiment", "analyse experiment", "explain experiments", "discuss experiments",
         "整个实验", "整体实验", "全部实验", "所有实验", "所有表格", "全部表格",
         "实验部分", "实验章节", "实验分析", "实验总结", "实验结果总结",
         "整体分析", "全面分析", "综合分析", "完整实验", "实验设置和结果",
+        "分析实验", "说明实验", "讲解实验", "实验结果如何", "实验表现如何",
     )
     EXPERIMENT_CONTEXT_TERMS = (
         "experiment", "experiments", "experimental", "evaluation", "results", "benchmark",
@@ -79,6 +124,12 @@ class PaperChunkService:
         "figure", "fig", "chart", "plot", "graph", "diagram", "architecture", "pipeline",
         "framework", "visualization", "image", "method diagram", "图", "图表", "图片",
         "架构", "结构图", "流程图", "方法图", "可视化", "曲线", "柱状图",
+    )
+    BROAD_ANALYSIS_MARKERS = (
+        "analyze", "analyse", "analysis", "summarize", "summarise", "summary",
+        "overview", "explain", "discuss", "compare", "comparison", "overall",
+        "分析", "总结", "概括", "说明", "讲解", "比较", "对比", "整体", "全面",
+        "综合", "如何", "怎么样",
     )
 
     @staticmethod
@@ -180,9 +231,25 @@ class PaperChunkService:
         return has_experiment_anchor and has_breadth_marker
 
     @classmethod
+    def is_broad_method_query(cls, query: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (query or "").lower())
+        has_method_anchor = any(
+            term in normalized
+            for term in (
+                "method", "methods", "approach", "methodology", "architecture",
+                "framework", "pipeline", "algorithm", "方法", "模型", "架构",
+                "框架", "流程", "算法",
+            )
+        )
+        has_breadth_marker = any(marker in normalized for marker in cls.BROAD_ANALYSIS_MARKERS)
+        return has_method_anchor and has_breadth_marker
+
+    @classmethod
     def detect_evidence_strategy(cls, query: str) -> str:
         if cls.is_broad_experiment_query(query):
             return "experiment"
+        if cls.is_broad_method_query(query):
+            return "method_visual"
         if cls.is_table_like_query(query):
             return "table"
         if cls.is_visual_like_query(query):
@@ -190,10 +257,87 @@ class PaperChunkService:
         return "compact"
 
     @classmethod
+    def plan_evidence(cls, query: str, *, top_k: Optional[int] = None) -> PaperQuestionEvidencePlan:
+        """Plan evidence routing before retrieval."""
+        requested_sections = tuple(cls.detect_requested_sections(query))
+        strategy = cls.detect_evidence_strategy(query)
+        visual_like = cls.is_visual_like_query(query)
+        table_like = cls.is_table_like_query(query)
+
+        if strategy == "experiment":
+            sections = tuple(dict.fromkeys([*requested_sections, "experiments"]))
+            return PaperQuestionEvidencePlan(
+                intent="experiment_analysis",
+                strategy="experiment_complete",
+                requested_sections=sections,
+                include_all_tables=True,
+                include_visual_tables=True,
+                include_visual_evidence=True,
+                max_evidence_items=max(top_k or 0, cls.EXPERIMENT_COMPLETE_EVIDENCE_TOP_K),
+                table_budget=cls.EXPERIMENT_COMPLETE_TABLE_BUDGET,
+                visual_table_budget=cls.EXPERIMENT_COMPLETE_VISUAL_TABLE_BUDGET,
+                caption_budget=cls.EXPERIMENT_COMPLETE_CAPTION_BUDGET,
+                text_budget=cls.EXPERIMENT_COMPLETE_TEXT_BUDGET,
+            )
+        if strategy == "method_visual":
+            sections = tuple(dict.fromkeys([*requested_sections, "method"]))
+            return PaperQuestionEvidencePlan(
+                intent="method_analysis",
+                strategy="method_visual",
+                requested_sections=sections,
+                include_visual_tables=table_like,
+                include_visual_evidence=True,
+                max_evidence_items=max(top_k or 0, cls.METHOD_VISUAL_EVIDENCE_TOP_K),
+                table_budget=cls.TABLE_EVIDENCE_TOP_K if table_like else 0,
+                visual_table_budget=cls.TABLE_EVIDENCE_TOP_K if table_like else 0,
+                caption_budget=cls.TABLE_EVIDENCE_TOP_K,
+                text_budget=cls.METHOD_VISUAL_TEXT_BUDGET,
+            )
+        if strategy == "visual":
+            return PaperQuestionEvidencePlan(
+                intent="visual_lookup",
+                strategy="visual_top_k",
+                requested_sections=requested_sections,
+                include_visual_evidence=True,
+                max_evidence_items=max(top_k or 0, cls.TABLE_EVIDENCE_TOP_K),
+                caption_budget=cls.TABLE_EVIDENCE_TOP_K,
+                text_budget=cls.DEFAULT_EVIDENCE_TOP_K,
+            )
+        if strategy == "table":
+            return PaperQuestionEvidencePlan(
+                intent="table_lookup",
+                strategy="table_top_k",
+                requested_sections=requested_sections,
+                include_visual_tables=visual_like or table_like,
+                max_evidence_items=max(top_k or 0, cls.TABLE_EVIDENCE_TOP_K),
+                table_budget=cls.TABLE_EVIDENCE_TOP_K,
+                visual_table_budget=cls.TABLE_EVIDENCE_TOP_K if visual_like else 0,
+                caption_budget=cls.TABLE_EVIDENCE_TOP_K,
+                text_budget=cls.DEFAULT_EVIDENCE_TOP_K,
+            )
+        if requested_sections:
+            return PaperQuestionEvidencePlan(
+                intent="section_focus",
+                strategy="section_top_k",
+                requested_sections=requested_sections,
+                max_evidence_items=top_k or cls.DEFAULT_EVIDENCE_TOP_K,
+                text_budget=top_k or cls.DEFAULT_EVIDENCE_TOP_K,
+            )
+        return PaperQuestionEvidencePlan(
+            intent="narrow_lookup",
+            strategy="top_k",
+            requested_sections=requested_sections,
+            max_evidence_items=top_k or cls.DEFAULT_EVIDENCE_TOP_K,
+            text_budget=top_k or cls.DEFAULT_EVIDENCE_TOP_K,
+        )
+
+    @classmethod
     def recommended_evidence_top_k(cls, query: str, default: int = DEFAULT_EVIDENCE_TOP_K) -> int:
         strategy = cls.detect_evidence_strategy(query)
         if strategy == "experiment":
-            return cls.EXPERIMENT_EVIDENCE_TOP_K
+            return cls.EXPERIMENT_COMPLETE_EVIDENCE_TOP_K
+        if strategy == "method_visual":
+            return cls.METHOD_VISUAL_EVIDENCE_TOP_K
         if strategy == "visual":
             return max(default, cls.TABLE_EVIDENCE_TOP_K)
         if strategy == "table":
@@ -325,11 +469,30 @@ class PaperChunkService:
         """Return structured evidence snippets, preferring explicitly requested sections."""
         text_candidates = cls._page_evidence_candidates(page_texts) if page_texts else cls._document_evidence_candidates(full_text)
         structured_candidates = cls._structured_evidence_candidates(structured_blocks)
+        plan = cls.plan_evidence(query, top_k=top_k)
         strategy = cls.detect_evidence_strategy(query)
         visual_like_query = strategy == "visual" or cls.is_visual_like_query(query)
         table_like_query = strategy in {"table", "experiment"} or cls.is_table_like_query(query)
         candidates = [*structured_candidates, *text_candidates]
-        requested_sections = set(cls.detect_requested_sections(query))
+        requested_sections = set(plan.requested_sections)
+        if plan.strategy == "experiment_complete":
+            complete_results = cls._experiment_complete_evidence_pack(
+                structured_candidates,
+                text_candidates,
+                query,
+                plan,
+            )
+            if complete_results:
+                return complete_results, "experiment_complete"
+        if plan.strategy == "method_visual":
+            method_results = cls._method_visual_evidence_pack(
+                structured_candidates,
+                text_candidates,
+                query,
+                plan,
+            )
+            if method_results:
+                return method_results, "method_visual"
         if visual_like_query and not table_like_query and structured_candidates:
             visual_results = cls._visual_evidence_lane(structured_candidates, query, top_k=min(top_k, cls.TABLE_EVIDENCE_TOP_K))
             if visual_results:
@@ -402,6 +565,25 @@ class PaperChunkService:
         return cls.search_evidence_chunks(candidates, query, top_k=top_k, requested_sections=requested_sections), scope
 
     @classmethod
+    def retrieve_evidence_with_plan(
+        cls,
+        full_text: str,
+        query: str,
+        top_k: int = 3,
+        page_texts: Optional[List[str]] = None,
+        structured_blocks: Optional[List[dict]] = None,
+    ) -> Tuple[List[EvidenceChunk], str, PaperQuestionEvidencePlan]:
+        plan = cls.plan_evidence(query, top_k=top_k)
+        evidence, scope = cls.retrieve_evidence(
+            full_text,
+            query,
+            top_k=max(top_k, plan.max_evidence_items),
+            page_texts=page_texts,
+            structured_blocks=structured_blocks,
+        )
+        return evidence, scope, plan
+
+    @classmethod
     def _visual_evidence_lane(cls, structured_candidates: List[EvidenceChunk], query: str, top_k: int) -> List[EvidenceChunk]:
         visual_candidates = [
             item for item in structured_candidates
@@ -443,6 +625,194 @@ class PaperChunkService:
         if isinstance(confidence, (int, float)):
             score += min(0.12, max(0.0, float(confidence)) * 0.12)
         return round(max(0.0, min(1.0, score)), 3)
+
+    @classmethod
+    def _experiment_complete_evidence_pack(
+        cls,
+        structured_candidates: List[EvidenceChunk],
+        text_candidates: List[EvidenceChunk],
+        query: str,
+        plan: PaperQuestionEvidencePlan,
+    ) -> List[EvidenceChunk]:
+        table_candidates = [item for item in structured_candidates if item.source_type == "table"]
+        visual_tables = [item for item in structured_candidates if item.source_type == "visual_table"]
+        captions = [
+            item for item in structured_candidates
+            if item.source_type == "caption" and (cls._is_table_caption(item) or cls._is_figure_caption(item))
+        ]
+        experiment_text = cls._experiment_text_lane(text_candidates, query, top_k=plan.text_budget)
+        conclusion_text = cls._conclusion_text_lane(text_candidates, query, top_k=cls.EXPERIMENT_CONCLUSION_TOP_K)
+        text_results = cls._merge_evidence_lanes(experiment_text, conclusion_text, top_k=plan.text_budget)
+
+        selected_tables = table_candidates[:plan.table_budget or len(table_candidates)]
+        selected_visual_tables = visual_tables[:plan.visual_table_budget or len(visual_tables)]
+        selected_captions = cls._experiment_caption_lane(captions, query, top_k=plan.caption_budget)
+        warnings: list[str] = []
+        if len(table_candidates) > len(selected_tables):
+            warnings.append(f"structured_tables_truncated:{len(table_candidates)}>{len(selected_tables)}")
+        if len(visual_tables) > len(selected_visual_tables):
+            warnings.append(f"visual_tables_truncated:{len(visual_tables)}>{len(selected_visual_tables)}")
+        if any(item.source_type == "visual_table" and not cls._has_table_markdown_or_ocr(item) for item in selected_visual_tables):
+            warnings.append("some_visual_tables_missing_ocr_or_markdown")
+        if any(cls._is_low_fidelity_table(item) for item in selected_tables):
+            warnings.append("some_structured_tables_low_fidelity")
+
+        table_catalog = cls._table_catalog_entries(selected_tables, structured_candidates)
+        table_packs = cls._table_evidence_packs(
+            [
+                EvidenceChunk(
+                    text=item.text,
+                    score=max(0.82, cls._experiment_table_score(item, structured_candidates, text_candidates, query)),
+                    section=item.section,
+                    page_start=item.page_start,
+                    page_end=item.page_end,
+                    source_type=item.source_type,
+                    source=item.source,
+                    metadata={**(item.metadata or {}), "mandatory_evidence": True},
+                )
+                for item in selected_tables
+            ],
+            structured_candidates,
+            text_candidates,
+            query,
+        )
+        visual_table_results = [
+            EvidenceChunk(
+                text=item.text,
+                score=max(0.86, cls._visual_evidence_score(item, query)),
+                section=item.section,
+                page_start=item.page_start,
+                page_end=item.page_end,
+                source_type=item.source_type,
+                source=item.source,
+                metadata={**(item.metadata or {}), "mandatory_evidence": True, "evidence_plan_strategy": plan.strategy},
+            )
+            for item in selected_visual_tables
+        ]
+        caption_results = [
+            EvidenceChunk(
+                text=item.text,
+                score=max(0.62, cls._structured_evidence_score(item, query)),
+                section=item.section,
+                page_start=item.page_start,
+                page_end=item.page_end,
+                source_type=item.source_type,
+                source=item.source,
+                metadata={**(item.metadata or {}), "experiment_context": True},
+            )
+            for item in selected_captions
+        ]
+
+        dossier = cls._build_experiment_dossier_evidence(
+            table_catalog,
+            [*table_packs, *visual_table_results],
+            text_results,
+            query,
+            plan=plan,
+            warnings=warnings,
+            visual_table_count=len(selected_visual_tables),
+            caption_count=len(caption_results),
+        )
+        catalog = cls._build_table_catalog_evidence(table_catalog) if table_catalog else None
+        mandatory = [dossier]
+        if catalog:
+            mandatory.append(catalog)
+        mandatory.extend(table_packs)
+        mandatory.extend(visual_table_results)
+        secondary = [*caption_results, *text_results]
+        return cls._merge_complete_evidence_pack(
+            mandatory,
+            secondary,
+            top_k=plan.max_evidence_items,
+        )
+
+    @classmethod
+    def _method_visual_evidence_pack(
+        cls,
+        structured_candidates: List[EvidenceChunk],
+        text_candidates: List[EvidenceChunk],
+        query: str,
+        plan: PaperQuestionEvidencePlan,
+    ) -> List[EvidenceChunk]:
+        method_text_candidates = [
+            item for item in text_candidates
+            if item.section == "method" or re.search(r"method|approach|architecture|framework|pipeline|算法|方法|架构|框架|流程", item.text or "", re.I)
+        ] or text_candidates
+        method_text = cls.search_evidence_chunks(method_text_candidates, query, top_k=plan.text_budget) if method_text_candidates else []
+        visual_candidates = [
+            item for item in structured_candidates
+            if item.source_type in {"visual_evidence", "visual_table", "caption"}
+            and (
+                item.source_type != "caption"
+                or cls._is_figure_caption(item)
+                or re.search(r"architecture|method|framework|pipeline|算法|方法|架构|框架|流程", item.text or "", re.I)
+            )
+        ]
+        visual_results = cls._visual_evidence_lane(visual_candidates, query, top_k=max(1, plan.max_evidence_items - len(method_text)))
+        caption_results = cls.search_evidence_chunks(
+            [item for item in visual_candidates if item.source_type == "caption"],
+            query,
+            top_k=plan.caption_budget,
+        ) if visual_candidates else []
+        return cls._merge_evidence_lanes(
+            visual_results,
+            [*caption_results, *method_text],
+            top_k=plan.max_evidence_items,
+        )
+
+    @classmethod
+    def _experiment_caption_lane(
+        cls,
+        captions: List[EvidenceChunk],
+        query: str,
+        top_k: int,
+    ) -> List[EvidenceChunk]:
+        if not captions or top_k <= 0:
+            return []
+        table_captions = [item for item in captions if cls._is_table_caption(item)]
+        figure_captions = [
+            item for item in captions
+            if cls._is_figure_caption(item) and cls._has_experiment_context(item.text)
+        ]
+        selected = [*table_captions, *figure_captions]
+        if len(selected) <= top_k:
+            return selected
+        scored = cls.search_evidence_chunks(selected, query, top_k=top_k)
+        return scored
+
+    @staticmethod
+    def _has_table_markdown_or_ocr(item: EvidenceChunk) -> bool:
+        text = item.text or ""
+        metadata = item.metadata or {}
+        return "|" in text or bool(metadata.get("markdown") or metadata.get("ocr_text") or metadata.get("has_ocr"))
+
+    @classmethod
+    def _merge_complete_evidence_pack(
+        cls,
+        mandatory: List[EvidenceChunk],
+        secondary: List[EvidenceChunk],
+        *,
+        top_k: int,
+    ) -> List[EvidenceChunk]:
+        merged: List[EvidenceChunk] = []
+        seen: set[tuple[str, Optional[int], str]] = set()
+        for item in mandatory:
+            key = (item.source_type, item.page_start, item.text)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+        for item in secondary:
+            if len(merged) >= top_k:
+                break
+            key = (item.source_type, item.page_start, item.text)
+            if key in seen:
+                continue
+            seen.add(key)
+            if any(cls._chunk_similarity(item.text, chosen.text) >= 0.82 for chosen in merged):
+                continue
+            merged.append(item)
+        return merged
 
     @classmethod
     def retrieve_chunks(cls, full_text: str, query: str, top_k: int = 3) -> Tuple[List[Tuple[str, float]], str]:
@@ -687,6 +1057,11 @@ class PaperChunkService:
         table_packs: List[EvidenceChunk],
         text_results: List[EvidenceChunk],
         query: str,
+        *,
+        plan: Optional[PaperQuestionEvidencePlan] = None,
+        warnings: Optional[List[str]] = None,
+        visual_table_count: int = 0,
+        caption_count: int = 0,
     ) -> EvidenceChunk:
         selected_tables = [
             {
@@ -700,12 +1075,17 @@ class PaperChunkService:
         lines = [
             "[PDF experiment evidence dossier]",
             "### 检索策略",
-            "问题类型: broad_experiment",
-            f"证据预算: {cls.EXPERIMENT_EVIDENCE_TOP_K}（普通问题仍使用紧凑预算）",
+            f"问题类型: {(plan.intent if plan else 'broad_experiment')}",
+            f"证据策略: {(plan.strategy if plan else 'experiment_dossier')}",
+            f"证据预算: {(plan.max_evidence_items if plan else cls.EXPERIMENT_EVIDENCE_TOP_K)}（普通窄问题仍使用紧凑 top-k）",
             f"结构化表格总数: {len(table_catalog)}",
             f"完整表格证据包: {len(table_packs)}",
+            f"视觉表格证据: {visual_table_count}",
+            f"图/表标题证据: {caption_count}",
             f"实验/结论正文片段: {len(text_results)}",
         ]
+        if warnings:
+            lines.extend(["### 证据限制", *[f"- {warning}" for warning in warnings]])
         if selected_tables:
             selected_label = ", ".join(
                 f"page {item['page'] or 'unknown'} table {item['table_index'] or '?'}"
@@ -722,12 +1102,17 @@ class PaperChunkService:
             source_type="experiment_dossier",
             source="current_paper",
             metadata={
-                "strategy": "experiment",
+                "strategy": plan.strategy if plan else "experiment",
+                "intent": plan.intent if plan else "experiment_analysis",
+                "evidence_plan": plan.as_metadata() if plan else None,
                 "query": query,
                 "table_count": len(table_catalog),
                 "selected_table_count": len(table_packs),
+                "visual_table_count": visual_table_count,
+                "caption_count": caption_count,
                 "text_snippet_count": len(text_results),
                 "selected_tables": selected_tables,
+                "warnings": warnings or [],
             },
         )
 

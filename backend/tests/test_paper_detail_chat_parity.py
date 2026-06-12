@@ -84,12 +84,15 @@ def test_paper_chat_metadata_event_preserves_references():
 def test_paper_evidence_meta_reports_coverage_and_insufficient_state():
     assert papers._paper_evidence_meta([]) == {
         "evidence_count": 0,
+        "visual_evidence_count": 0,
         "evidence_coverage": 0.0,
         "evidence_insufficient": True,
+        "visual_evidence_available": False,
+        "evidence_plan": None,
     }
 
     meta = papers._paper_evidence_meta([
-        {"type": "paper_evidence", "id": "E1"},
+        {"type": "paper_evidence", "id": "E1", "metadata": {"evidence_plan": {"intent": "experiment_analysis", "strategy": "experiment_complete"}}},
         {"type": "paper_evidence", "id": "E2"},
         {"title": "Related paper"},
     ])
@@ -97,6 +100,7 @@ def test_paper_evidence_meta_reports_coverage_and_insufficient_state():
     assert meta["evidence_count"] == 2
     assert meta["evidence_coverage"] == 0.6667
     assert meta["evidence_insufficient"] is False
+    assert meta["evidence_plan"]["strategy"] == "experiment_complete"
 
 
 @pytest.mark.asyncio

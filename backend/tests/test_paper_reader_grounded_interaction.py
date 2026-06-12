@@ -324,9 +324,10 @@ def test_experiment_questions_include_ready_visual_table_evidence():
         structured_blocks=structured_blocks,
     )
 
-    assert scope == "section+structured"
+    assert scope == "experiment_complete"
     assert any(item.source_type == "visual_table" for item in evidence)
     assert any("MRAgent | 82.1" in item.text for item in evidence)
+    assert evidence[0].metadata["strategy"] == "experiment_complete"
 
 
 def test_structured_extraction_builds_document_visual_evidence_items():
@@ -697,10 +698,11 @@ def test_broad_experiment_question_uses_dossier_with_table_catalog_and_full_tabl
         structured_blocks=structured_blocks,
     )
 
-    assert scope == "experiment_dossier+structured"
+    assert scope == "experiment_complete"
     assert PaperChunkService.detect_evidence_strategy("请整体分析整个实验和所有表格") == "experiment"
-    assert PaperChunkService.recommended_evidence_top_k("请整体分析整个实验和所有表格") == 24
+    assert PaperChunkService.recommended_evidence_top_k("请整体分析整个实验和所有表格") == 36
     assert evidence[0].source_type == "experiment_dossier"
+    assert evidence[0].metadata["strategy"] == "experiment_complete"
     catalog = next(item for item in evidence if item.source_type == "table_catalog")
     assert catalog.metadata["table_count"] == 3
     assert "Table 1. Main results" in catalog.text
@@ -708,6 +710,47 @@ def test_broad_experiment_question_uses_dossier_with_table_catalog_and_full_tabl
     assert "Table 3. Efficiency" in catalog.text
     assert any(item.source_type == "table_pack" and "Ours-row-31" in item.text for item in evidence)
     assert any(item.source_type == "text" and item.metadata.get("experiment_context") for item in evidence)
+
+
+def test_experiment_complete_strategy_includes_all_visual_tables_within_budget():
+    full_text = (
+        "4 Experiments\n"
+        "We analyze results, baselines, ablations, and efficiency. "
+        + "experiment evidence " * 100
+    )
+    structured_blocks = []
+    for idx in range(1, 6):
+        structured_blocks.append({
+            "type": "visual_table",
+            "page": idx + 1,
+            "source": "document_visual_evidence",
+            "text": (
+                f"[PDF visual table evidence, page {idx + 1}, kind table, asset vt{idx}]\n"
+                f"Caption: Table {idx}. Experiment table {idx}.\n"
+                f"| Model | Score |\n| --- | --- |\n| MRAgent-{idx} | {80 + idx}.1 |"
+            ),
+            "metadata": {
+                "asset_id": f"vt{idx}",
+                "kind": "table",
+                "caption": f"Table {idx}. Experiment table {idx}.",
+                "confidence": 0.8,
+                "visual_evidence": True,
+            },
+        })
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请分析论文的实验结果，所有表格都要考虑",
+        top_k=4,
+        structured_blocks=structured_blocks,
+    )
+
+    visual_tables = [item for item in evidence if item.source_type == "visual_table"]
+    assert scope == "experiment_complete"
+    assert plan.strategy == "experiment_complete"
+    assert len(visual_tables) == 5
+    assert {item.metadata["asset_id"] for item in visual_tables} == {f"vt{idx}" for idx in range(1, 6)}
+    assert all(item.metadata["mandatory_evidence"] for item in visual_tables)
 
 
 def test_table_evidence_lane_demotes_low_fidelity_tables():
@@ -857,6 +900,7 @@ async def test_paper_context_includes_structured_table_and_caption_evidence(monk
     assert any(ref["evidence_type"] == "table_pack" and ref["page"] == 7 for ref in evidence)
     assert "类型: 表格证据包" in context[0]["content"]
     assert "证据类型可能包含正文、表格、视觉证据、视觉表格、图/表标题、OCR 文本或公式" in context[0]["content"]
+    assert "不要把局部缺失扩大成整篇论文内容不足" in context[0]["content"]
 
 
 @pytest.mark.asyncio
@@ -953,8 +997,11 @@ async def test_paper_context_labels_experiment_dossier_evidence(monkeypatch):
 
     assert any(ref["evidence_type"] == "experiment_dossier" for ref in evidence)
     assert any(ref["evidence_type"] == "table_catalog" and ref["metadata"]["table_count"] == 2 for ref in evidence)
+    assert evidence[0]["metadata"]["evidence_plan"]["strategy"] == "experiment_complete"
     assert "类型: 实验证据档案" in context[0]["content"]
     assert "类型: 表格目录" in context[0]["content"]
+    assert "当前证据计划: intent=experiment_analysis, strategy=experiment_complete" in context[0]["content"]
+    assert "不要把局部缺失扩大成整篇论文内容不足" in context[0]["content"]
 
 
 def test_external_parser_payload_normalizes_common_block_shapes():

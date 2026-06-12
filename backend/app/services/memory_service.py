@@ -232,7 +232,8 @@ async def build_paper_context_with_evidence(
         except Exception as exc:
             logger.warning(f"PDF 按页/结构化解析失败，使用全文证据: {exc}")
         evidence_top_k = paper_chunk_service.recommended_evidence_top_k(question)
-        evidence_chunks, retrieval_scope = paper_chunk_service.retrieve_evidence(
+        evidence_plan = paper_chunk_service.plan_evidence(question, top_k=evidence_top_k)
+        evidence_chunks, retrieval_scope, evidence_plan = paper_chunk_service.retrieve_evidence_with_plan(
             paper.full_text,
             question,
             top_k=evidence_top_k,
@@ -276,7 +277,11 @@ async def build_paper_context_with_evidence(
                     "page_end": evidence.page_end,
                     "score": evidence.score,
                     "snippet": evidence.snippet(),
-                    "metadata": evidence.metadata or {},
+                    "metadata": {
+                        **(evidence.metadata or {}),
+                        "evidence_plan": evidence_plan.as_metadata(),
+                        "retrieval_scope": retrieval_scope,
+                    },
                 })
 
             relevant_context = "\n".join(chunk_lines)
@@ -291,10 +296,27 @@ async def build_paper_context_with_evidence(
 
     paper_context = f"{metadata}\n\n{relevant_context}"
     evidence_coverage = min(1.0, len(evidence_refs) / 3) if paper.full_text and len(paper.full_text) >= 500 else 0.0
+    evidence_plan = locals().get("evidence_plan")
+    plan_metadata = evidence_plan.as_metadata() if evidence_plan else {"intent": "unknown", "strategy": "top_k"}
+    plan_instruction = (
+        f"当前证据计划: intent={plan_metadata.get('intent')}, strategy={plan_metadata.get('strategy')}。"
+        "请先判断用户问题需要哪类证据，再基于下方证据作答。"
+    )
+    if plan_metadata.get("strategy") == "experiment_complete":
+        plan_instruction += (
+            "这是完整实验证据包：表格、视觉表格、表格标题和实验正文比普通 top-k 更重要；"
+            "请综合所有表格证据回答实验设置、指标、主结果、消融/对比和局限。"
+        )
+    elif plan_metadata.get("strategy") == "method_visual":
+        plan_instruction += "这是方法/视觉证据包：请优先结合方法章节、架构图/标题和视觉证据解释方法。"
     if not evidence_refs:
         evidence_warning = "当前没有检索到可定位的正文证据。若用户要求 Introduction、Method、Experiments 等章节，请明确说明“当前论文内容不足”，不要仅根据摘要推测。"
     else:
         evidence_warning = f"当前检索到 {len(evidence_refs)} 条正文/结构化证据，引用覆盖率约 {evidence_coverage:.0%}。回答中的关键结论应尽量标注 [E1]、[E2] 这样的证据编号。"
+        if plan_metadata.get("strategy") == "experiment_complete":
+            evidence_warning += " 如果部分表格只有标题、摘要或低置信解析，请说明具体缺少表格单元格/OCR 数值，而不是说整篇论文内容不足。"
+        else:
+            evidence_warning += " 如果证据只缺少某个局部细节，请说明该局部证据不足，同时继续基于已有证据回答。"
     visual_question = False
     try:
         from app.services.paper_chunk_service import paper_chunk_service
@@ -317,8 +339,10 @@ async def build_paper_context_with_evidence(
             "你是这篇论文的专家助手。请严格基于以下论文内容回答用户问题。"
             "回答中的关键结论必须绑定证据编号（例如 [E1]）。"
             "证据类型可能包含正文、表格、视觉证据、视觉表格、图/表标题、OCR 文本或公式；"
-            "如果证据不足以支持用户要求的章节、实验数据或方法细节，请明确说明“当前论文内容不足”，"
-            "不要根据摘要或常识补全不存在的内容。"
+            "只有在没有任何可用论文证据时才使用“当前论文内容不足”。"
+            "如果已有证据能部分回答，但缺少实验数值、表格单元格、视觉 OCR 或某张图的细节，请明确说明具体缺失项，"
+            "不要把局部缺失扩大成整篇论文内容不足。不要根据摘要或常识补全不存在的内容。"
+            f"{plan_instruction}"
             f"{evidence_warning}\n\n"
             f"{paper_context}"
         )

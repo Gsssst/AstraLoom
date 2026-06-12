@@ -181,6 +181,13 @@ interface PaperChatEvidenceMeta {
   evidence_insufficient: boolean;
   visual_evidence_count?: number;
   visual_evidence_available?: boolean;
+  evidence_plan?: {
+    intent?: string;
+    strategy?: string;
+    requested_sections?: string[];
+    warnings?: string[];
+    budgets?: Record<string, number>;
+  } | null;
 }
 
 interface PaperReadingTemplate {
