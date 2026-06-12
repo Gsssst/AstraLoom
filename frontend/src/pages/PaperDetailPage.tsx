@@ -179,6 +179,8 @@ interface PaperChatEvidenceMeta {
   evidence_count: number;
   evidence_coverage: number;
   evidence_insufficient: boolean;
+  visual_evidence_count?: number;
+  visual_evidence_available?: boolean;
 }
 
 interface PaperReadingTemplate {
@@ -1489,6 +1491,7 @@ const PaperDetailPage: React.FC = () => {
                               </Tag>
                               <Text type="secondary" style={{ fontSize: 11 }}>
                                 当前回答关联 {msg.evidence.evidence_count || 0} 条证据
+                                {msg.evidence.visual_evidence_count ? `，其中 ${msg.evidence.visual_evidence_count} 条视觉证据` : ''}
                               </Text>
                             </div>
                           )}

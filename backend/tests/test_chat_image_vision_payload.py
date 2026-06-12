@@ -84,3 +84,51 @@ def test_uploaded_pdf_visual_context_reuses_message_references_without_reparse()
     assert "paper.pdf" not in context
     assert "Table 1. Main results." in context
     assert "| Ours | 91 |" in context
+
+
+def test_uploaded_pdf_visual_context_formats_ready_table_evidence():
+    visual_blocks = [
+        {
+            "type": "visual_table",
+            "page": 4,
+            "text": "[PDF visual table evidence, page 4]\n| Model | Acc |\n| Ours | 91 |",
+            "metadata": {
+                "asset_id": "upload-table-1",
+                "kind": "table",
+                "caption": "Table 1. Main results.",
+                "confidence": 0.88,
+                "visual_evidence": True,
+            },
+        }
+    ]
+
+    context = chat_sessions._format_uploaded_pdf_visual_context("paper.pdf", visual_blocks)
+    refs = chat_sessions._uploaded_pdf_visual_references("paper.pdf", visual_blocks)
+
+    assert "[PDF 视觉/表格证据: paper.pdf]" in context
+    assert "Table 1. Main results." in context
+    assert "| Ours | 91 |" in context
+    assert refs[0]["type"] == "uploaded_pdf_visual_evidence"
+    assert refs[0]["page"] == 4
+    assert refs[0]["metadata"]["asset_id"] == "upload-table-1"
+
+
+def test_uploaded_pdf_text_only_fallback_warns_against_unseen_visual_claims():
+    context = chat_sessions._format_uploaded_pdf_visual_context("scan.pdf", [])
+
+    assert "没有 ready 的图像/表格视觉证据" in context
+    assert "只能基于已提取文本回答" in context
+    assert "不能描述未解析的视觉细节" in context
+
+
+def test_uploaded_pdf_visual_asset_routes_remain_private_to_paper_scope():
+    from app.services import document_visual_evidence
+
+    item = document_visual_evidence.VisualEvidenceItem(
+        id="upload-table",
+        kind="table",
+        asset_path="/private/visual-evidence/upload-scope/table.png",
+        metadata={"document_scope": "upload-scope"},
+    )
+
+    assert document_visual_evidence.visual_asset_route_for_item(item, item.asset_path) is None

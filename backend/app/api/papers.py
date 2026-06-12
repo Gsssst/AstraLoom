@@ -1,5 +1,6 @@
 """论文 API — 搜索、详情、入库、分类管理。"""
 
+import asyncio
 import logging
 import os
 import time
@@ -260,6 +261,11 @@ class MaintenanceJobStatus(BaseModel):
     result: Optional[MaintenanceActionResult] = None
 
 
+class MaintenanceJobEnqueueResponse(BaseModel):
+    job_id: str
+    job: MaintenanceJobStatus
+
+
 class MaintenanceRecommendation(BaseModel):
     id: str
     title: str
@@ -313,6 +319,9 @@ async def _paper_count(db: AsyncSession, *criteria) -> int:
         query = query.where(criterion)
     result = await db.execute(query)
     return int(result.scalar() or 0)
+
+
+_MAINTENANCE_JOBS: dict[str, MaintenanceJobStatus] = {}
 
 
 async def _missing_samples(db: AsyncSession, criterion, limit: int = 5) -> list[MaintenancePaperSample]:
@@ -1329,13 +1338,11 @@ async def backfill_structured_pdf_parse(
     return action
 
 
-@router.post("/maintenance/backfill-visual-evidence", response_model=MaintenanceActionResult)
-async def backfill_visual_evidence(
-    limit: int = Query(default=5, ge=1, le=20),
-    db: AsyncSession = Depends(get_db),
-    user=Depends(require_admin),
-):
-    """Run bounded document visual evidence extraction for papers that need it."""
+async def _run_visual_evidence_backfill(
+    db: AsyncSession,
+    *,
+    limit: int = 5,
+) -> MaintenanceActionResult:
     from app.services.document_visual_evidence import (
         ensure_document_visual_evidence,
         visual_evidence_status_from_paper,
@@ -1345,7 +1352,7 @@ async def backfill_visual_evidence(
         select(Paper)
         .where((Paper.pdf_path.is_not(None)) | (Paper.arxiv_id.is_not(None)))
         .order_by(Paper.created_at.desc())
-        .limit(limit * 4)
+            .limit(limit * 4)
     )
     candidates = result.scalars().all()
     papers = []
@@ -1376,12 +1383,115 @@ async def backfill_visual_evidence(
     return action
 
 
+async def _run_visual_evidence_backfill_job(job_id: str, limit: int) -> None:
+    from app.db.session import AsyncSessionLocal
+    from app.services.document_visual_evidence import (
+        ensure_document_visual_evidence,
+        visual_evidence_status_from_paper,
+    )
+
+    job = _MAINTENANCE_JOBS.get(job_id)
+    if not job:
+        return
+    job.state = "running"
+    job.status = "running"
+    job.message = "正在提取视觉证据"
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(Paper)
+                .where((Paper.pdf_path.is_not(None)) | (Paper.arxiv_id.is_not(None)))
+                .order_by(Paper.created_at.desc())
+                .limit(limit * 4)
+            )
+            candidates = result.scalars().all()
+            papers = []
+            for candidate in candidates:
+                status = visual_evidence_status_from_paper(candidate)
+                if not status.get("ready") or status.get("failed"):
+                    papers.append(candidate)
+                if len(papers) >= limit:
+                    break
+
+            job.total = len(papers)
+            action = MaintenanceActionResult(processed=len(papers))
+            if not papers:
+                job.state = "success"
+                job.status = "success"
+                job.progress_percent = 100
+                job.message = "没有需要提取视觉证据的论文"
+                job.result = action
+                return
+
+            for index, paper in enumerate(papers, 1):
+                job.current_paper = {"id": str(paper.id), "title": paper.title, "year": paper.year}
+                job.processed = index - 1
+                job.progress_percent = int(round(((index - 1) / len(papers)) * 100))
+                try:
+                    payload = await ensure_document_visual_evidence(paper, db, force=True)
+                    status = visual_evidence_status_from_paper(paper)
+                    if status.get("ready"):
+                        action.success += 1
+                    elif payload and payload.get("status") == "empty":
+                        action.skipped += 1
+                        action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": "no visual evidence items"})
+                    else:
+                        action.failed += 1
+                        action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": (status.get("last_error") or {}).get("message") or "visual evidence failed"})
+                except Exception as exc:
+                    action.failed += 1
+                    action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": str(exc)})
+                job.processed = index
+                job.success = action.success
+                job.failed = action.failed
+                job.skipped = action.skipped
+                job.errors = action.errors[-10:]
+                job.progress_percent = int(round((index / len(papers)) * 100))
+            if action.processed:
+                await db.commit()
+            job.result = action
+            job.state = "success" if action.failed == 0 else "failed"
+            job.status = job.state
+            job.message = "视觉证据提取完成" if job.state == "success" else "视觉证据提取部分失败"
+            job.current_paper = None
+            job.progress_percent = 100
+    except Exception as exc:
+        job.state = "failed"
+        job.status = "failed"
+        job.message = str(exc)
+        job.errors = [{"reason": str(exc)}]
+
+
+@router.post("/maintenance/backfill-visual-evidence", response_model=MaintenanceJobEnqueueResponse)
+async def backfill_visual_evidence(
+    limit: int = Query(default=5, ge=1, le=20),
+    user=Depends(require_admin),
+):
+    """Queue bounded document visual evidence extraction for papers that need it."""
+    from uuid import uuid4
+
+    job_id = f"visual-evidence-{uuid4().hex}"
+    job = MaintenanceJobStatus(
+        id=job_id,
+        kind="visual_evidence_backfill",
+        state="queued",
+        status="queued",
+        total=limit,
+        message="视觉证据提取已进入后台任务",
+    )
+    _MAINTENANCE_JOBS[job_id] = job
+    asyncio.create_task(_run_visual_evidence_backfill_job(job_id, limit))
+    return MaintenanceJobEnqueueResponse(job_id=job_id, job=job)
+
+
 @router.get("/maintenance/jobs/{job_id}", response_model=MaintenanceJobStatus)
 async def get_maintenance_job_status(
     job_id: str,
     user=Depends(require_admin),
 ):
     """Return normalized status for a queued maintenance job."""
+    if job_id in _MAINTENANCE_JOBS:
+        return _MAINTENANCE_JOBS[job_id]
     from app.tasks.celery_app import celery_app
 
     async_result = celery_app.AsyncResult(job_id)

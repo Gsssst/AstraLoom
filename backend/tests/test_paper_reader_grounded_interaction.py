@@ -284,6 +284,51 @@ def test_ready_document_visual_evidence_is_retrieved_for_figure_questions():
     assert "temporal grounding head" in evidence[0].text
 
 
+def test_experiment_questions_include_ready_visual_table_evidence():
+    full_text = (
+        "5 Experiments\n"
+        "We compare MRAgent against baselines on LoCoMo and LongMemEval. "
+        + "experiment discussion " * 120
+    )
+    structured_blocks = [
+        {
+            "type": "caption",
+            "page": 7,
+            "source": "pdfplumber",
+            "text": "[PDF caption, page 7] Table 1. Performance across question types on LOCOMO.",
+            "metadata": {"caption_type": "table_caption"},
+        },
+        {
+            "type": "visual_table",
+            "page": 7,
+            "source": "document_visual_evidence",
+            "text": (
+                "[PDF visual table evidence, page 7, kind table, asset ve-table]\n"
+                "Caption: Table 1. Performance across question types on LOCOMO.\n"
+                "| Model | Overall |\n| --- | --- |\n| MRAgent | 82.1 |"
+            ),
+            "metadata": {
+                "asset_id": "ve-table",
+                "kind": "table",
+                "caption": "Table 1. Performance across question types on LOCOMO.",
+                "confidence": 0.86,
+                "visual_evidence": True,
+            },
+        },
+    ]
+
+    evidence, scope = PaperChunkService.retrieve_evidence(
+        full_text,
+        "请结合论文中的实验表格说明MRAgent的实验结果如何？",
+        top_k=8,
+        structured_blocks=structured_blocks,
+    )
+
+    assert scope == "section+structured"
+    assert any(item.source_type == "visual_table" for item in evidence)
+    assert any("MRAgent | 82.1" in item.text for item in evidence)
+
+
 def test_structured_extraction_builds_document_visual_evidence_items():
     extraction = report_service.StructuredPdfExtraction(
         source_path="/tmp/paper.pdf",

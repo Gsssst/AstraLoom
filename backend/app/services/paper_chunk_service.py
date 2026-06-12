@@ -352,6 +352,13 @@ class PaperChunkService:
                 top_k=top_k,
             )
             if dossier_results:
+                visual_results = cls._visual_evidence_lane(
+                    structured_candidates,
+                    query,
+                    top_k=min(3, cls.TABLE_EVIDENCE_TOP_K),
+                )
+                if visual_results:
+                    dossier_results = cls._merge_evidence_lanes(visual_results, dossier_results, top_k=top_k)
                 return dossier_results, "experiment_dossier+structured" if structured_candidates else "experiment_dossier"
         if requested_sections:
             section_candidates = [item for item in candidates if item.section in requested_sections]
@@ -365,6 +372,13 @@ class PaperChunkService:
                 if table_like_query and structured_candidates:
                     table_results = cls._table_evidence_lane(structured_candidates, query, top_k=min(4, top_k))
                     table_results = cls._table_evidence_packs(table_results, structured_candidates, text_candidates, query)
+                    visual_results = cls._visual_evidence_lane(
+                        structured_candidates,
+                        query,
+                        top_k=min(2, cls.TABLE_EVIDENCE_TOP_K),
+                    )
+                    if visual_results:
+                        table_results = cls._merge_evidence_lanes(table_results, visual_results, top_k=min(top_k, len(table_results) + len(visual_results)))
                     return cls._merge_evidence_lanes(table_results, section_results, top_k=top_k), "section+structured"
                 return section_results, "section"
         scope = "structured+document" if structured_candidates else "document"

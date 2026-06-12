@@ -10,7 +10,7 @@ from app.api import papers as papers_api
 from app.api.chat_sessions import _retrieval_status
 from app.core.security import require_admin
 from app.main import app
-from app.services import hybrid_search, report_service
+from app.services import document_visual_evidence, hybrid_search, report_service
 
 
 def _route(path: str, method: str):
@@ -462,6 +462,117 @@ async def test_backfill_structured_pdf_parse_repairs_bounded_candidates(monkeypa
     assert result.success == 1
     assert result.failed == 0
     assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_visual_evidence_backfill_repairs_bounded_and_failed_candidates(monkeypatch):
+    ready_paper = SimpleNamespace(
+        id=uuid4(),
+        title="Already visual",
+        year=2026,
+        arxiv_id=None,
+        pdf_path="/data/ready.pdf",
+        metadata_json={
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "status": "ready",
+                "items": [{"id": "v-ready", "kind": "figure", "status": "ready", "summary": "ready"}],
+            }
+        },
+    )
+    missing_paper = SimpleNamespace(id=uuid4(), title="Needs visual", year=2026, arxiv_id=None, pdf_path="/data/missing.pdf", metadata_json={})
+    failed_paper = SimpleNamespace(
+        id=uuid4(),
+        title="Retry failed visual",
+        year=2026,
+        arxiv_id=None,
+        pdf_path="/data/failed.pdf",
+        metadata_json={
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "status": "failed",
+                "last_error": {"message": "old failure"},
+                "items": [],
+            }
+        },
+    )
+
+    class _Db:
+        commits = 0
+
+        async def execute(self, _statement):
+            return _ScalarListResult([ready_paper, missing_paper, failed_paper])
+
+        async def commit(self):
+            self.commits += 1
+
+    async def fake_ensure(paper, _db, force=False):
+        assert force is True
+        paper.metadata_json = {
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "status": "ready",
+                "items": [{"id": f"v-{paper.id}", "kind": "figure", "status": "ready", "summary": "visual"}],
+            }
+        }
+        return paper.metadata_json[document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY]
+
+    monkeypatch.setattr(document_visual_evidence, "ensure_document_visual_evidence", fake_ensure)
+
+    db = _Db()
+    result = await papers_api._run_visual_evidence_backfill(db, limit=2)
+
+    assert result.processed == 2
+    assert result.success == 2
+    assert result.failed == 0
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_visual_evidence_backfill_enqueue_returns_pollable_job(monkeypatch):
+    created = []
+
+    class _Task:
+        def __init__(self, coro):
+            self.coro = coro
+
+    def fake_create_task(coro):
+        created.append(coro)
+        return _Task(coro)
+
+    monkeypatch.setattr(papers_api.asyncio, "create_task", fake_create_task)
+
+    response = await papers_api.backfill_visual_evidence(limit=3, user=SimpleNamespace(role="admin"))
+
+    assert response.job_id.startswith("visual-evidence-")
+    assert response.job.kind == "visual_evidence_backfill"
+    assert response.job.state == "queued"
+    assert response.job.total == 3
+    assert papers_api._MAINTENANCE_JOBS[response.job_id].id == response.job_id
+    assert created
+    created[0].close()
+
+
+@pytest.mark.asyncio
+async def test_maintenance_job_status_reads_local_visual_job_before_celery():
+    job = papers_api.MaintenanceJobStatus(
+        id="visual-evidence-test",
+        kind="visual_evidence_backfill",
+        state="running",
+        status="running",
+        total=2,
+        processed=1,
+        progress_percent=50,
+    )
+    papers_api._MAINTENANCE_JOBS[job.id] = job
+    try:
+        status = await papers_api.get_maintenance_job_status(job.id, user=SimpleNamespace(role="admin"))
+    finally:
+        papers_api._MAINTENANCE_JOBS.pop(job.id, None)
+
+    assert status.kind == "visual_evidence_backfill"
+    assert status.state == "running"
+    assert status.progress_percent == 50
 
 
 def test_maintenance_job_status_normalizes_progress_payload():

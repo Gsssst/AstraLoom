@@ -900,7 +900,7 @@ const PapersPage: React.FC = () => {
       setPageActionError(null);
       if (response.data?.job_id && response.data?.job) {
         setActiveMaintenanceJob(response.data.job);
-        message.success('表格修复已进入后台任务，可在维护中心查看进度');
+        message.success('维护任务已进入后台，可在维护中心查看进度');
       } else {
         message.success(`维护完成：成功 ${response.data.success || 0}，失败 ${response.data.failed || 0}，跳过 ${response.data.skipped || 0}`);
         await fetchMaintenanceCenter();
@@ -939,13 +939,13 @@ const PapersPage: React.FC = () => {
         if (['success', 'failed', 'cancelled'].includes(nextJob.state)) {
           await fetchMaintenanceCenter();
           if (nextJob.state === 'success') {
-            message.success(`表格修复完成：成功 ${nextJob.success || 0}，失败 ${nextJob.failed || 0}，跳过 ${nextJob.skipped || 0}`);
+            message.success(`维护任务完成：成功 ${nextJob.success || 0}，失败 ${nextJob.failed || 0}，跳过 ${nextJob.skipped || 0}`);
           } else {
-            message.warning(nextJob.message || '表格修复任务未正常完成');
+            message.warning(nextJob.message || '维护任务未正常完成');
           }
         }
       } catch (e: any) {
-        if (!cancelled) showPageError('表格修复任务状态读取失败', e, '表格修复任务状态读取失败');
+        if (!cancelled) showPageError('维护任务状态读取失败', e, '维护任务状态读取失败');
       }
     };
     const timer = window.setInterval(poll, 3000);

@@ -57,10 +57,10 @@ test('paper library does not expose discarded table repair maintenance action', 
   assert.match(papersPageSource, /activeMaintenanceJob/);
   assert.match(papersPageSource, /\/papers\/maintenance\/jobs\/\$\{jobId\}/);
   assert.match(papersPageSource, /progress_percent/);
-  assert.match(papersPageSource, /maintenanceJobRunning/);
+  assert.match(papersPageSource, /维护任务已进入后台/);
   assert.doesNotMatch(papersPageSource, /repair-tables/);
   assert.doesNotMatch(papersPageSource, /tableRepair/);
-  assert.doesNotMatch(papersPageSource, /表格修复正在后台执行/);
+  assert.doesNotMatch(papersPageSource, /表格修复/);
 });
 
 test('paper library makes external search and ingest transparent', () => {

@@ -23,9 +23,9 @@
 ## 4. Async Jobs And Maintenance APIs
 
 - [x] 4.1 Add bounded backend functions/endpoints for extracting visual evidence for one paper and for batch backfill.
-- [ ] 4.2 Add asynchronous job status reporting for queued/running/success/failed visual evidence maintenance work.
+- [x] 4.2 Add asynchronous job status reporting for queued/running/success/failed visual evidence maintenance work.
 - [x] 4.3 Extend maintenance health and processing status responses with visual evidence readiness, failed extraction samples, missing summary/OCR counts, and low-confidence table evidence.
-- [ ] 4.4 Add tests for admin authorization, bounded batch counts, retrying failed visual extraction, and route ordering safety.
+- [x] 4.4 Add tests for admin authorization, bounded batch counts, retrying failed visual extraction, and route ordering safety.
 
 ## 5. Q&A Retrieval And Prompt Guardrails
 
@@ -40,18 +40,18 @@
 - [x] 6.1 Route chat PDF uploads through the shared document visual evidence pipeline after text extraction, using attachment-scoped evidence metadata.
 - [x] 6.2 Include ready uploaded-PDF visual/table evidence in chat context and message references without rerunning extraction on later turns.
 - [x] 6.3 Add degraded instructions when uploaded PDFs only have plain text extraction or visual evidence processing failed.
-- [ ] 6.4 Add tests for PDF upload with table/figure evidence, text-only fallback, and private attachment asset access.
+- [x] 6.4 Add tests for PDF upload with table/figure evidence, text-only fallback, and private attachment asset access.
 
 ## 7. Frontend Evidence Experience
 
 - [x] 7.1 Update paper detail chat references to render preview-ready visual evidence cards when thumbnail or asset metadata is available.
 - [x] 7.2 Preserve existing reference-chip page navigation and include visual kind, confidence, caption, and OCR/summary snippet in tooltips/cards.
 - [x] 7.3 Update maintenance views to show visual evidence readiness and admin-only visual extraction/backfill actions.
-- [ ] 7.4 Add frontend tests or contract tests for visual reference rendering, PDF page navigation, and non-admin maintenance visibility.
+- [x] 7.4 Add frontend tests or contract tests for visual reference rendering, PDF page navigation, and non-admin maintenance visibility.
 
 ## 8. Verification
 
 - [x] 8.1 Run OpenSpec validation for `add-document-visual-evidence-pipeline`.
 - [x] 8.2 Run targeted backend tests for report service, paper chunk retrieval, paper Q&A, chat upload, and maintenance endpoints.
 - [x] 8.3 Run frontend build or targeted frontend tests for paper detail and maintenance UI changes.
-- [ ] 8.4 Manually verify a local paper Q&A flow: visual evidence missing disclosure, visual extraction completion, and answer references using ready visual/table evidence.
+- [x] 8.4 Manually verify a local paper Q&A flow: visual evidence missing disclosure, visual extraction completion, and answer references using ready visual/table evidence.
