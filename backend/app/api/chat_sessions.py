@@ -96,6 +96,103 @@ async def _extract_pdf_text(file_bytes: bytes, filename: str) -> str:
         return ""
 
 
+async def _extract_pdf_text_and_visual_evidence(file_bytes: bytes, filename: str) -> tuple[str, dict | None, list[dict]]:
+    """Extract PDF text plus bounded document visual/table evidence."""
+
+    extracted_text = await _extract_pdf_text(file_bytes, filename)
+    try:
+        from app.services.document_visual_evidence import extract_visual_evidence_from_pdf_bytes
+
+        visual_payload, visual_blocks = await extract_visual_evidence_from_pdf_bytes(file_bytes, filename)
+    except Exception as exc:
+        logger.warning("PDF visual evidence extraction failed for upload %s: %s", filename, exc)
+        visual_payload, visual_blocks = None, []
+    return extracted_text, visual_payload, visual_blocks
+
+
+def _format_uploaded_pdf_visual_context(filename: str, visual_blocks: list[dict]) -> str:
+    if not visual_blocks:
+        return (
+            f"\n\n[PDF 视觉证据状态: {filename}]\n"
+            "当前上传 PDF 没有 ready 的图像/表格视觉证据；如果用户询问图片、架构图、曲线或表格截图，"
+            "请明确说明只能基于已提取文本回答，不能描述未解析的视觉细节。"
+        )
+    from app.services.document_visual_evidence import format_visual_evidence_context
+
+    return (
+        f"\n\n[PDF 视觉/表格证据: {filename}]\n"
+        "以下证据来自同一 PDF 的结构化视觉证据，回答图、表、实验结果时必须引用这些内容：\n"
+        f"{format_visual_evidence_context(visual_blocks)}"
+    )
+
+
+def _uploaded_pdf_visual_references(filename: str, visual_blocks: list[dict]) -> list[dict]:
+    references: list[dict] = []
+    for index, block in enumerate(visual_blocks, 1):
+        metadata = block.get("metadata") if isinstance(block.get("metadata"), dict) else {}
+        references.append({
+            "id": f"PDF-V{index}",
+            "type": "uploaded_pdf_visual_evidence",
+            "source": "uploaded_pdf",
+            "filename": filename,
+            "page": block.get("page"),
+            "evidence_type": block.get("type"),
+            "snippet": str(block.get("text") or "")[:320],
+            "metadata": metadata,
+        })
+    return references
+
+
+def _uploaded_pdf_visual_context_from_messages(messages: list[ChatMessage], *, limit: int = 8) -> tuple[str, list[dict]]:
+    """Reuse ready uploaded-PDF visual/table references without reparsing attachments."""
+
+    references: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for message in messages:
+        for ref in message.references or []:
+            if not isinstance(ref, dict):
+                continue
+            if ref.get("type") != "uploaded_pdf_visual_evidence":
+                continue
+            metadata = ref.get("metadata") if isinstance(ref.get("metadata"), dict) else {}
+            key = (
+                str(ref.get("filename") or ""),
+                str(ref.get("page") or ""),
+                str(metadata.get("asset_id") or ref.get("id") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            references.append(ref)
+            if len(references) >= limit:
+                break
+        if len(references) >= limit:
+            break
+
+    if not references:
+        return "", []
+
+    lines = [
+        "以下是本会话已经上传 PDF 的 ready 视觉/表格证据；后续回答涉及图、表、实验结果或方法架构时应优先引用这些证据，不能重新假设未解析的图片内容。"
+    ]
+    for index, ref in enumerate(references, 1):
+        metadata = ref.get("metadata") if isinstance(ref.get("metadata"), dict) else {}
+        kind = metadata.get("kind") or ref.get("evidence_type") or "visual"
+        page = ref.get("page") or "unknown"
+        caption = metadata.get("caption")
+        summary = metadata.get("summary")
+        confidence = metadata.get("confidence")
+        lines.append(f"\n### [UPDF-V{index}] {kind} page {page} confidence {confidence if confidence is not None else 'unknown'}")
+        if caption:
+            lines.append(f"Caption: {caption}")
+        if summary:
+            lines.append(f"Summary: {summary}")
+        snippet = str(ref.get("snippet") or "").strip()
+        if snippet:
+            lines.append(snippet[:900])
+    return "\n".join(lines).strip(), references
+
+
 class SessionCreate(BaseModel):
     title: str = Field(default="新对话", max_length=300)
     rag_enabled: bool = True
@@ -516,6 +613,9 @@ async def send_message(
         req.content,
         extra_context=req.extra_context or "",
     )
+    upload_visual_context, upload_visual_refs = _uploaded_pdf_visual_context_from_messages(session.messages or [])
+    if upload_visual_context:
+        context.insert(0, {"role": "system", "content": upload_visual_context})
 
     references = await _append_retrieval_context(
         context,
@@ -524,6 +624,7 @@ async def send_message(
         web_search_enabled=bool(req.web_search),
         search_depth=req.search_depth,
     )
+    references.extend(upload_visual_refs)
 
     # 调用 LLM
     try:
@@ -595,6 +696,9 @@ async def send_message_stream(
     from app.services.memory_service import MemoryService
     memory = MemoryService(db)
     context = await memory.build_context(session, req.content, extra_context=req.extra_context or "")
+    upload_visual_context, upload_visual_refs = _uploaded_pdf_visual_context_from_messages(session.messages or [])
+    if upload_visual_context:
+        context.insert(0, {"role": "system", "content": upload_visual_context})
 
     references = await _append_retrieval_context(
         context,
@@ -603,6 +707,7 @@ async def send_message_stream(
         web_search_enabled=bool(req.web_search),
         search_depth=req.search_depth,
     )
+    references.extend(upload_visual_refs)
     retrieval_quality = await _retrieval_quality_snapshot(rag_enabled=rag_enabled)
     llm_context = _build_llm_context_for_request(context, req)
 
@@ -697,7 +802,9 @@ async def extract_file_text(
 
     elif "pdf" in content_type or filename.lower().endswith('.pdf'):
         file_type = "pdf"
-        extracted_text = await _extract_pdf_text(file_bytes, filename)
+        extracted_text, visual_payload, visual_blocks = await _extract_pdf_text_and_visual_evidence(file_bytes, filename)
+        if visual_blocks:
+            extracted_text = f"{extracted_text}\n{_format_uploaded_pdf_visual_context(filename, visual_blocks)}"
 
     else:
         try:
@@ -714,6 +821,7 @@ async def extract_file_text(
         "data_url": data_url if file_type == "image" else None,
         "mime_type": content_type or None,
         "text_length": len(extracted_text),
+        "visual_evidence": visual_payload if file_type == "pdf" else None,
     }
 
 
@@ -761,12 +869,15 @@ async def upload_file(
             logger.info(f"收到图片: {filename} ({len(file_bytes)} bytes)")
 
         elif "pdf" in content_type or filename.lower().endswith('.pdf'):
-            extracted_text = await _extract_pdf_text(file_bytes, filename)
+            extracted_text, visual_payload, visual_blocks = await _extract_pdf_text_and_visual_evidence(file_bytes, filename)
+            visual_context = _format_uploaded_pdf_visual_context(filename, visual_blocks)
             if extracted_text:
-                file_desc = f"[用户上传了 PDF: {filename}，已提取全文 ({len(extracted_text)} 字符)]"
+                extracted_text = f"{extracted_text}\n{visual_context}"
+                ready_visual = len(visual_blocks)
+                file_desc = f"[用户上传了 PDF: {filename}，已提取全文 ({len(extracted_text)} 字符)，视觉证据 {ready_visual} 条]"
             else:
                 file_desc = f"[用户上传了 PDF: {filename}，无法提取文本，可能是扫描图片版]"
-                extracted_text = f"[PDF: {filename}] 内容无法提取，请上传可选中文字的原生 PDF。"
+                extracted_text = f"[PDF: {filename}] 内容无法提取，请上传可选中文字的原生 PDF。{visual_context}"
 
         else:
             # 其他文件：尝试当作文本读取
@@ -786,7 +897,10 @@ async def upload_file(
     user_msg = ChatMessage(
         session_id=sid, role="user",
         content=extracted_text,
-        references=[{"type": "file", "filename": filename, "size": len(file_bytes)}],
+        references=[
+            {"type": "file", "filename": filename, "size": len(file_bytes)},
+            *_uploaded_pdf_visual_references(filename, locals().get("visual_blocks", [])),
+        ],
     )
     db.add(user_msg)
 

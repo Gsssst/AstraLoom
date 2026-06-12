@@ -200,12 +200,18 @@ async def build_paper_context_with_evidence(
         from app.services.paper_chunk_service import paper_chunk_service
         page_texts = []
         structured_blocks = []
+        visual_status = {"ready": False, "status": "missing"}
         try:
             from app.services.report_service import (
                 ensure_structured_pdf_content,
                 extract_pdf_page_texts,
                 resolve_paper_pdf_path,
                 structured_pdf_evidence_blocks_from_paper,
+            )
+            from app.services.document_visual_evidence import (
+                ensure_document_visual_evidence,
+                visual_evidence_blocks_from_paper,
+                visual_evidence_status_from_paper,
             )
             import asyncio
 
@@ -216,6 +222,13 @@ async def build_paper_context_with_evidence(
                 if not structured_blocks:
                     structured_extraction = await ensure_structured_pdf_content(paper)
                     structured_blocks = structured_extraction.to_evidence_blocks() if structured_extraction else []
+                visual_status = visual_evidence_status_from_paper(paper)
+                if not visual_status.get("ready") and visual_status.get("status") in {"missing", "failed"}:
+                    await ensure_document_visual_evidence(paper)
+                    visual_status = visual_evidence_status_from_paper(paper)
+                visual_blocks = visual_evidence_blocks_from_paper(paper)
+                if visual_blocks:
+                    structured_blocks = [*structured_blocks, *visual_blocks]
         except Exception as exc:
             logger.warning(f"PDF 按页/结构化解析失败，使用全文证据: {exc}")
         evidence_top_k = paper_chunk_service.recommended_evidence_top_k(question)
@@ -243,6 +256,8 @@ async def build_paper_context_with_evidence(
                     "caption": "，类型: 图/表标题",
                     "ocr": "，类型: OCR 文本",
                     "formula": "，类型: 公式",
+                    "visual_evidence": "，类型: 视觉证据",
+                    "visual_table": "，类型: 视觉表格",
                 }.get(evidence.source_type, "")
                 evidence_id = f"E{i + 1}"
                 chunk_lines.append(
@@ -280,6 +295,20 @@ async def build_paper_context_with_evidence(
         evidence_warning = "当前没有检索到可定位的正文证据。若用户要求 Introduction、Method、Experiments 等章节，请明确说明“当前论文内容不足”，不要仅根据摘要推测。"
     else:
         evidence_warning = f"当前检索到 {len(evidence_refs)} 条正文/结构化证据，引用覆盖率约 {evidence_coverage:.0%}。回答中的关键结论应尽量标注 [E1]、[E2] 这样的证据编号。"
+    visual_question = False
+    try:
+        from app.services.paper_chunk_service import paper_chunk_service
+        visual_question = paper_chunk_service.is_visual_like_query(question)
+    except Exception:
+        visual_question = False
+    visual_status = locals().get("visual_status", {"ready": False, "status": "missing"})
+    if visual_question:
+        if visual_status.get("ready"):
+            evidence_warning += " 当前有可用视觉证据；涉及图、表、架构、曲线或截图的结论必须优先绑定视觉证据编号。"
+        elif visual_status.get("status") == "failed":
+            evidence_warning += " 当前视觉证据解析失败；涉及图、表、架构或曲线时必须说明视觉证据不可用，只能基于文本/表格证据回答。"
+        else:
+            evidence_warning += " 当前没有 ready 的视觉证据；涉及图、表、架构或曲线时必须说明视觉证据不可用，不要描述未解析图片细节。"
 
     context = []
     context.append({
@@ -287,7 +316,7 @@ async def build_paper_context_with_evidence(
         "content": (
             "你是这篇论文的专家助手。请严格基于以下论文内容回答用户问题。"
             "回答中的关键结论必须绑定证据编号（例如 [E1]）。"
-            "证据类型可能包含正文、表格、图/表标题、OCR 文本或公式；"
+            "证据类型可能包含正文、表格、视觉证据、视觉表格、图/表标题、OCR 文本或公式；"
             "如果证据不足以支持用户要求的章节、实验数据或方法细节，请明确说明“当前论文内容不足”，"
             "不要根据摘要或常识补全不存在的内容。"
             f"{evidence_warning}\n\n"

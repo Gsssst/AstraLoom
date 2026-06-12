@@ -90,6 +90,22 @@ interface ProcessingStatusItem {
     } | null;
     last_error?: { message?: string; parser_backend?: string; failed_at?: string } | null;
   } | null;
+  visual_evidence_status?: {
+    ready: boolean;
+    status?: string;
+    parser?: string | null;
+    item_count?: number;
+    visual_count?: number;
+    table_count?: number;
+    asset_count?: number;
+    summary_count?: number;
+    ocr_count?: number;
+    missing_summary_count?: number;
+    missing_ocr_count?: number;
+    low_confidence_table_count?: number;
+    failed?: boolean;
+    last_error?: { message?: string; failed_at?: string } | null;
+  } | null;
 }
 
 interface PaperCollection {
@@ -130,7 +146,7 @@ type ReadingStatus = 'unread' | 'reading' | 'completed';
 type PaperImportanceLabel = 'important' | 'interesting';
 type SelectedExportFormat = 'bibtex' | 'markdown' | 'json';
 type RecommendationKind = 'classic' | 'recent' | 'gap' | 'related';
-type DiagnosticTab = 'hybrid' | 'bm25' | 'dense';
+type DiagnosticTab = 'hybrid' | 'bm25' | 'dense' | 'visual';
 type PaperResultStateFilter = 'all' | 'local' | 'importable' | 'imported' | 'open_pdf' | 'missing_remote_id';
 type MaintenanceJobState = 'queued' | 'running' | 'success' | 'failed' | 'cancelled' | 'unknown';
 
@@ -1071,6 +1087,7 @@ const PapersPage: React.FC = () => {
             description={<Space size={6} wrap>
               <Tag color={item.has_full_text ? 'green' : 'default'}>{item.has_full_text ? '有全文' : '缺全文'}</Tag>
               <Tag color={item.has_embedding ? 'green' : 'default'}>{item.has_embedding ? '有向量' : '缺向量'}</Tag>
+              {item.has_visual_evidence !== undefined && <Tag color={item.has_visual_evidence ? 'purple' : 'default'}>{item.has_visual_evidence ? '有视觉证据' : '缺视觉证据'}</Tag>}
               {item.match_sources?.map((sourceName: string) => <Tag key={sourceName}>{sourceName}</Tag>)}
             </Space>}
           />
@@ -1107,7 +1124,6 @@ const PapersPage: React.FC = () => {
     if (quality === 'low') return { color: 'orange', label: '表格低' };
     return { color: 'default', label: '表格无' };
   };
-  const maintenanceJobRunning = Boolean(activeMaintenanceJob && ['queued', 'running', 'unknown'].includes(activeMaintenanceJob.state));
   const reportPresetOptions = [
     { value: 'default', label: '默认逐篇' },
     { value: 'compare', label: '横向对比' },
@@ -1193,12 +1209,17 @@ const PapersPage: React.FC = () => {
                 <Col xs={12} md={6}><Card size="small" style={{ borderRadius: 12 }}><Statistic title="论文总数" value={kbHealth.total_papers || 0} /></Card></Col>
                 <Col xs={12} md={6}><Card size="small" style={{ borderRadius: 12 }}><Statistic title="全文覆盖" value={Math.round((kbHealth.full_text_coverage || 0) * 100)} suffix="%" /><Progress percent={Math.round((kbHealth.full_text_coverage || 0) * 100)} size="small" showInfo={false} /></Card></Col>
                 <Col xs={12} md={6}><Card size="small" style={{ borderRadius: 12 }}><Statistic title="向量覆盖" value={Math.round((kbHealth.embedding_coverage || 0) * 100)} suffix="%" /><Progress percent={Math.round((kbHealth.embedding_coverage || 0) * 100)} size="small" showInfo={false} /></Card></Col>
-                <Col xs={12} md={6}><Card size="small" style={{ borderRadius: 12 }}><Statistic title="缺口" value={(kbHealth.missing_full_text || 0) + (kbHealth.missing_embeddings || 0)} suffix="项" /></Card></Col>
+                <Col xs={12} md={6}><Card size="small" style={{ borderRadius: 12 }}><Statistic title="视觉证据" value={Math.round((kbHealth.visual_evidence_coverage || 0) * 100)} suffix="%" /><Progress percent={Math.round((kbHealth.visual_evidence_coverage || 0) * 100)} size="small" showInfo={false} strokeColor="#722ed1" /></Card></Col>
               </Row>
               <Space wrap style={{ marginTop: 12 }}>
                 <Tag color={kbHealth.bm25_index?.ready ? 'green' : 'orange'}>BM25：{kbHealth.bm25_index?.ready ? `已索引 ${kbHealth.bm25_index.indexed_papers} 篇` : '未构建'}</Tag>
                 <Tag>缺全文 {kbHealth.missing_full_text || 0}</Tag>
                 <Tag>缺向量 {kbHealth.missing_embeddings || 0}</Tag>
+                <Tag color={(kbHealth.missing_visual_evidence || 0) ? 'purple' : 'green'}>缺视觉证据 {kbHealth.missing_visual_evidence || 0}</Tag>
+                {!!kbHealth.visual_evidence_failed && <Tag color="red">视觉失败 {kbHealth.visual_evidence_failed}</Tag>}
+                {!!kbHealth.visual_missing_summary && <Tag color="orange">缺视觉摘要 {kbHealth.visual_missing_summary}</Tag>}
+                {!!kbHealth.visual_missing_ocr && <Tag color="orange">缺表格 OCR {kbHealth.visual_missing_ocr}</Tag>}
+                {!!kbHealth.low_confidence_visual_tables && <Tag color="gold">低置信视觉表格 {kbHealth.low_confidence_visual_tables}</Tag>}
                 <Tag>arXiv 论文 {kbHealth.arxiv_papers || 0}</Tag>
               </Space>
               <Space wrap style={{ marginTop: 14 }}>
@@ -1206,6 +1227,7 @@ const PapersPage: React.FC = () => {
                 <Button loading={kbAction === 'embeddings'} onClick={() => runKbAction('embeddings', '/papers/maintenance/backfill-embeddings?limit=20')}>补 20 篇向量</Button>
                 <Button loading={kbAction === 'fulltext'} onClick={() => runKbAction('fulltext', '/papers/maintenance/backfill-full-text?limit=5')}>补 5 篇全文</Button>
                 <Button loading={kbAction === 'structured'} onClick={() => runKbAction('structured', '/papers/maintenance/backfill-structured-pdf?limit=5')}>解析 5 篇 PDF</Button>
+                <Button loading={kbAction === 'visual'} onClick={() => runKbAction('visual', '/papers/maintenance/backfill-visual-evidence?limit=5')}>提取 5 篇视觉证据</Button>
               </Space>
             </>
           ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无维护状态" />}
@@ -1261,7 +1283,7 @@ const PapersPage: React.FC = () => {
               dataSource={processingStatuses}
               renderItem={item => (
                 <List.Item
-                  actions={isAdmin ? item.repair_actions.slice(0, 2).map(action => (
+                  actions={isAdmin ? item.repair_actions.filter(action => ['full_text', 'structured_parse', 'visual_evidence', 'embedding'].includes(action.key)).slice(0, 4).map(action => (
                     <Button key={action.key} size="small" loading={processingLoading} onClick={() => runProcessingAction(item, action)}>
                       {action.label}
                     </Button>
@@ -1291,6 +1313,14 @@ const PapersPage: React.FC = () => {
                           </>
                         );
                       })() : null}
+                      <Tooltip title={item.visual_evidence_status?.last_error?.message || `视觉 ${item.visual_evidence_status?.visual_count || 0}，表格 ${item.visual_evidence_status?.table_count || 0}，资产 ${item.visual_evidence_status?.asset_count || 0}`}>
+                        <Tag color={item.visual_evidence_status?.failed ? 'red' : item.visual_evidence_status?.ready ? 'purple' : 'default'}>
+                          视觉证据 {item.visual_evidence_status?.failed ? '失败' : item.visual_evidence_status?.ready ? `已 ${item.visual_evidence_status?.item_count || 0}` : '缺'}
+                        </Tag>
+                      </Tooltip>
+                      {!!item.visual_evidence_status?.missing_summary_count && <Tag color="orange">缺摘要 {item.visual_evidence_status.missing_summary_count}</Tag>}
+                      {!!item.visual_evidence_status?.missing_ocr_count && <Tag color="orange">缺 OCR {item.visual_evidence_status.missing_ocr_count}</Tag>}
+                      {!!item.visual_evidence_status?.low_confidence_table_count && <Tag color="gold">低置信表格 {item.visual_evidence_status.low_confidence_table_count}</Tag>}
                       {item.imported_by_username && <Tag color="purple">导入：{item.imported_by_username}</Tag>}
                     </Space>}
                   />
@@ -1352,6 +1382,7 @@ const PapersPage: React.FC = () => {
                   { label: `Hybrid (${kbDiagnostics.hybrid?.length || 0})`, value: 'hybrid' },
                   { label: `BM25 (${kbDiagnostics.bm25?.length || 0})`, value: 'bm25' },
                   { label: `Dense (${kbDiagnostics.dense?.length || 0})`, value: 'dense' },
+                  { label: `Visual (${kbDiagnostics.visual?.length || 0})`, value: 'visual' },
                 ]}
               />
               <div style={{ marginTop: 12 }}>{renderMaintenanceHits(kbDiagnostics[kbDiagTab] || [])}</div>

@@ -83,6 +83,28 @@ class StructuredPdfParseStatus(BaseModel):
     last_error: Optional[dict] = None
 
 
+class DocumentVisualEvidenceStatus(BaseModel):
+    ready: bool = False
+    status: str = "missing"
+    parser: Optional[str] = None
+    source_path: Optional[str] = None
+    parsed_at: Optional[str] = None
+    page_count: int = 0
+    item_count: int = 0
+    visual_count: int = 0
+    table_count: int = 0
+    ocr_count: int = 0
+    summary_count: int = 0
+    asset_count: int = 0
+    missing_summary_count: int = 0
+    missing_ocr_count: int = 0
+    low_confidence_table_count: int = 0
+    failed: bool = False
+    last_error: Optional[dict] = None
+    limits: dict = Field(default_factory=dict)
+    parser_health: Optional[dict] = None
+
+
 class PaperDetail(PaperBrief):
     pdf_path: Optional[str]
     full_text_preview: Optional[str] = None
@@ -91,6 +113,7 @@ class PaperDetail(PaperBrief):
     metadata_json: Optional[dict] = None
     similar_papers: list = []
     structured_parse_status: Optional[StructuredPdfParseStatus] = None
+    visual_evidence_status: Optional[DocumentVisualEvidenceStatus] = None
 
 
 class PaperImportanceRequest(BaseModel):
@@ -125,6 +148,7 @@ class PaperProcessingStatus(BaseModel):
     missing: list[str] = []
     repair_actions: list[dict] = []
     structured_parse_status: Optional[StructuredPdfParseStatus] = None
+    visual_evidence_status: Optional[DocumentVisualEvidenceStatus] = None
 
 
 class PaperProcessingStatusResponse(BaseModel):
@@ -198,9 +222,17 @@ class RetrievalMaintenanceHealth(BaseModel):
     arxiv_papers: int
     full_text_coverage: float
     embedding_coverage: float
+    visual_evidence_papers: int = 0
+    missing_visual_evidence: int = 0
+    visual_evidence_coverage: float = 0.0
+    visual_evidence_failed: int = 0
+    visual_missing_summary: int = 0
+    visual_missing_ocr: int = 0
+    low_confidence_visual_tables: int = 0
     bm25_index: dict
     missing_full_text_samples: list[MaintenancePaperSample] = []
     missing_embedding_samples: list[MaintenancePaperSample] = []
+    missing_visual_evidence_samples: list[MaintenancePaperSample] = []
 
 
 class MaintenanceActionResult(BaseModel):
@@ -247,6 +279,7 @@ class RetrievalDiagnosticHit(BaseModel):
     arxiv_id: Optional[str] = None
     has_full_text: bool
     has_embedding: bool
+    has_visual_evidence: bool = False
     match_sources: list[str] = []
 
 
@@ -258,6 +291,7 @@ class RetrievalDiagnosticsResponse(BaseModel):
     bm25: list[RetrievalDiagnosticHit]
     dense: list[RetrievalDiagnosticHit]
     hybrid: list[RetrievalDiagnosticHit]
+    visual: list[RetrievalDiagnosticHit] = []
     branch_explanations: dict[str, list[str]] = {}
     recommended_actions: list[MaintenanceRecommendation] = []
     errors: dict[str, str] = {}
@@ -302,6 +336,7 @@ def _coverage_severity(coverage: float) -> Literal["high", "medium", "low"]:
 async def _maintenance_recommendations(db: AsyncSession, *, include_samples: bool = True) -> list[MaintenanceRecommendation]:
     from app.services.hybrid_search import bm25_index_status
     from app.services.report_service import structured_pdf_parse_status_from_paper
+    from app.services.document_visual_evidence import visual_evidence_status_from_paper
 
     total = await _paper_count(db)
     if total <= 0:
@@ -324,6 +359,11 @@ async def _maintenance_recommendations(db: AsyncSession, *, include_samples: boo
         if not structured_status.get("ready") or structured_status.get("last_error"):
             structured_parse_needed.append(paper)
     missing_structured_parse = len(structured_parse_needed)
+    visual_parse_needed = [
+        paper for paper in structured_candidates
+        if not visual_evidence_status_from_paper(paper).get("ready")
+    ]
+    missing_visual_evidence = len(visual_parse_needed)
     full_text_coverage = full_text_papers / total
     embedding_coverage = embedding_papers / total
     bm25_status = bm25_index_status()
@@ -369,6 +409,18 @@ async def _maintenance_recommendations(db: AsyncSession, *, include_samples: boo
             sample_papers=samples,
         ))
 
+    if missing_visual_evidence:
+        samples = [_maintenance_sample(paper) for paper in visual_parse_needed[:3]] if include_samples else []
+        recommendations.append(MaintenanceRecommendation(
+            id="backfill-visual-evidence",
+            title="提取文档视觉证据",
+            severity="medium",
+            reason=f"当前有 {missing_visual_evidence} 篇论文缺少可用于图、表、架构和实验问答的视觉证据。",
+            action_label="提取 5 篇视觉证据",
+            action_endpoint="/papers/maintenance/backfill-visual-evidence?limit=5",
+            sample_papers=samples,
+        ))
+
     if not bm25_status.get("ready") or int(bm25_status.get("indexed_papers") or 0) < total:
         recommendations.append(MaintenanceRecommendation(
             id="rebuild-bm25",
@@ -406,11 +458,12 @@ def _diagnostic_branch_explanations(
     bm25_hits: list[RetrievalDiagnosticHit],
     dense_hits: list[RetrievalDiagnosticHit],
     hybrid_hits: list[RetrievalDiagnosticHit],
+    visual_hits: Optional[list[RetrievalDiagnosticHit]] = None,
     bm25_status: dict,
     embedding_coverage: float,
     errors: dict[str, str],
 ) -> dict[str, list[str]]:
-    explanations: dict[str, list[str]] = {"bm25": [], "dense": [], "hybrid": []}
+    explanations: dict[str, list[str]] = {"bm25": [], "dense": [], "hybrid": [], "visual": []}
     if not query_terms:
         for branch in explanations:
             explanations[branch].append("查询词过短或无法被标准化，检索器没有可用关键词。")
@@ -441,6 +494,13 @@ def _diagnostic_branch_explanations(
         explanations["hybrid"].append("Hybrid 没有可用候选，通常意味着 BM25 与 Dense 都缺少支持信号。建议先检查关键词、补向量，并确认相关论文已入库。")
     elif embedding_coverage < 0.8:
         explanations["hybrid"].append(f"因为向量覆盖率低于 80%（当前 {embedding_coverage:.0%}），Hybrid 会更依赖 BM25，语义召回能力会下降。")
+
+    if errors.get("visual"):
+        explanations["visual"].append(f"视觉证据分支执行失败：{errors['visual']}")
+    elif not visual_hits:
+        explanations["visual"].append("没有找到 ready 的文档视觉证据命中。图、表、架构或实验图问题需要先执行视觉证据提取。")
+    else:
+        explanations["visual"].append(f"视觉证据分支找到 {len(visual_hits)} 个候选，可用于诊断图、表、架构和实验结果问答覆盖。")
 
     return {branch: notes for branch, notes in explanations.items() if notes}
 
@@ -520,6 +580,7 @@ async def _format_diagnostic_hits(
     scored: list[tuple[str, float]],
 ) -> list[RetrievalDiagnosticHit]:
     from uuid import UUID
+    from app.services.document_visual_evidence import visual_evidence_status_from_paper
 
     ordered_ids = []
     for paper_id, _score in scored:
@@ -547,10 +608,55 @@ async def _format_diagnostic_hits(
                 arxiv_id=paper.arxiv_id,
                 has_full_text=bool(paper.full_text and len(paper.full_text) > 500),
                 has_embedding=paper.embedding is not None,
+                has_visual_evidence=bool(visual_evidence_status_from_paper(paper).get("ready")),
                 match_sources=_query_match_sources(query, paper),
             )
         )
     return hits
+
+
+async def _format_visual_diagnostic_hits(
+    db: AsyncSession,
+    query: str,
+    *,
+    top_k: int,
+) -> list[RetrievalDiagnosticHit]:
+    from app.services.document_visual_evidence import visual_evidence_status_from_paper, visual_evidence_blocks_from_paper
+    from app.services.paper_chunk_service import paper_chunk_service
+
+    result = await db.execute(
+        select(Paper)
+        .where((Paper.pdf_path.is_not(None)) | (Paper.arxiv_id.is_not(None)))
+        .order_by(Paper.created_at.desc())
+        .limit(200)
+    )
+    hits: list[RetrievalDiagnosticHit] = []
+    for paper in result.scalars().all():
+        status = visual_evidence_status_from_paper(paper)
+        if not status.get("ready"):
+            continue
+        blocks = visual_evidence_blocks_from_paper(paper)
+        evidence, _scope = paper_chunk_service.retrieve_evidence(
+            paper.full_text or paper.abstract or paper.title or "",
+            query,
+            top_k=1,
+            structured_blocks=blocks,
+        )
+        score = evidence[0].score if evidence else 0.1
+        hits.append(RetrievalDiagnosticHit(
+            id=str(paper.id),
+            title=paper.title,
+            score=round(float(score), 4),
+            year=paper.year,
+            source=paper.source,
+            arxiv_id=paper.arxiv_id,
+            has_full_text=bool(paper.full_text and len(paper.full_text) > 500),
+            has_embedding=paper.embedding is not None,
+            has_visual_evidence=True,
+            match_sources=["visual_evidence"],
+        ))
+    hits.sort(key=lambda item: item.score, reverse=True)
+    return hits[:top_k]
 
 
 def _paper_brief(paper, *, remote: bool = False) -> PaperBrief:
@@ -637,14 +743,17 @@ def _paper_processing_flags(paper: Paper) -> dict[str, Any]:
 
 def _paper_processing_status(paper: Paper) -> PaperProcessingStatus:
     from app.services.report_service import structured_pdf_parse_status_from_paper
+    from app.services.document_visual_evidence import visual_evidence_status_from_paper
 
     flags = _paper_processing_flags(paper)
     structured_status = structured_pdf_parse_status_from_paper(paper)
+    visual_status = visual_evidence_status_from_paper(paper)
     actions = []
     if not flags["has_full_text"] and paper.arxiv_id:
         actions.append({"key": "full_text", "label": "补全文", "endpoint": f"/papers/{paper.id}/load-full-text"})
     if flags["has_pdf"] or paper.arxiv_id:
         actions.append({"key": "structured_parse", "label": "重解析 PDF", "endpoint": f"/papers/{paper.id}/reparse-structured-pdf"})
+        actions.append({"key": "visual_evidence", "label": "提取视觉证据", "endpoint": f"/papers/{paper.id}/extract-visual-evidence"})
     if not flags["has_embedding"]:
         actions.append({"key": "embedding", "label": "生成向量", "endpoint": f"/papers/{paper.id}/embedding"})
     if not flags["has_tags"]:
@@ -663,7 +772,36 @@ def _paper_processing_status(paper: Paper) -> PaperProcessingStatus:
         missing=flags["missing"],
         repair_actions=actions,
         structured_parse_status=StructuredPdfParseStatus(**structured_status),
+        visual_evidence_status=DocumentVisualEvidenceStatus(**visual_status),
     )
+
+
+def _safe_paper_metadata(metadata: Optional[dict]) -> Optional[dict]:
+    """Return paper metadata without local private visual asset paths."""
+
+    if not isinstance(metadata, dict):
+        return metadata
+    safe = dict(metadata)
+    visual = safe.get("document_visual_evidence")
+    if isinstance(visual, dict):
+        visual_safe = dict(visual)
+        items = []
+        for item in visual_safe.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            cleaned = dict(item)
+            cleaned.pop("asset_path", None)
+            cleaned.pop("thumbnail_path", None)
+            item_metadata = cleaned.get("metadata")
+            if isinstance(item_metadata, dict):
+                item_metadata = dict(item_metadata)
+                for key in ("page_asset_path", "fallback_asset_path", "asset_path", "thumbnail_path", "image_path"):
+                    item_metadata.pop(key, None)
+                cleaned["metadata"] = item_metadata
+            items.append(cleaned)
+        visual_safe["items"] = items
+        safe["document_visual_evidence"] = visual_safe
+    return safe
 
 
 def _parse_bool_filter(value: Optional[str]) -> Optional[bool]:
@@ -1015,6 +1153,7 @@ async def get_retrieval_maintenance_health(
 ):
     """Inspect local paper-library retrieval health."""
     from app.services.hybrid_search import bm25_index_status
+    from app.services.document_visual_evidence import visual_evidence_status_from_paper
 
     total = await _paper_count(db)
     full_text_papers = await _paper_count(db, Paper.full_text.is_not(None), func.length(Paper.full_text) > 500)
@@ -1022,6 +1161,20 @@ async def get_retrieval_maintenance_health(
     arxiv_papers = await _paper_count(db, Paper.arxiv_id.is_not(None))
     missing_full_text = max(total - full_text_papers, 0)
     missing_embeddings = max(total - embedding_papers, 0)
+    visual_candidates_result = await db.execute(
+        select(Paper)
+        .where((Paper.pdf_path.is_not(None)) | (Paper.arxiv_id.is_not(None)))
+        .order_by(Paper.created_at.desc())
+        .limit(200)
+    )
+    visual_candidates = visual_candidates_result.scalars().all()
+    visual_statuses = [(paper, visual_evidence_status_from_paper(paper)) for paper in visual_candidates]
+    visual_ready = [paper for paper, status in visual_statuses if status.get("ready")]
+    missing_visual = [paper for paper, status in visual_statuses if not status.get("ready")]
+    visual_failed = [paper for paper, status in visual_statuses if status.get("failed")]
+    visual_missing_summary = sum(int(status.get("missing_summary_count") or 0) for _, status in visual_statuses)
+    visual_missing_ocr = sum(int(status.get("missing_ocr_count") or 0) for _, status in visual_statuses)
+    low_confidence_visual_tables = sum(int(status.get("low_confidence_table_count") or 0) for _, status in visual_statuses)
 
     return RetrievalMaintenanceHealth(
         total_papers=total,
@@ -1032,12 +1185,20 @@ async def get_retrieval_maintenance_health(
         arxiv_papers=arxiv_papers,
         full_text_coverage=round(full_text_papers / total, 4) if total else 0.0,
         embedding_coverage=round(embedding_papers / total, 4) if total else 0.0,
+        visual_evidence_papers=len(visual_ready),
+        missing_visual_evidence=len(missing_visual),
+        visual_evidence_coverage=round(len(visual_ready) / len(visual_candidates), 4) if visual_candidates else 0.0,
+        visual_evidence_failed=len(visual_failed),
+        visual_missing_summary=visual_missing_summary,
+        visual_missing_ocr=visual_missing_ocr,
+        low_confidence_visual_tables=low_confidence_visual_tables,
         bm25_index=bm25_index_status(),
         missing_full_text_samples=await _missing_samples(
             db,
             (Paper.full_text.is_(None)) | (func.length(Paper.full_text) <= 500),
         ),
         missing_embedding_samples=await _missing_samples(db, Paper.embedding.is_(None)),
+        missing_visual_evidence_samples=[_maintenance_sample(paper) for paper in missing_visual[:5]],
     )
 
 
@@ -1168,6 +1329,53 @@ async def backfill_structured_pdf_parse(
     return action
 
 
+@router.post("/maintenance/backfill-visual-evidence", response_model=MaintenanceActionResult)
+async def backfill_visual_evidence(
+    limit: int = Query(default=5, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Run bounded document visual evidence extraction for papers that need it."""
+    from app.services.document_visual_evidence import (
+        ensure_document_visual_evidence,
+        visual_evidence_status_from_paper,
+    )
+
+    result = await db.execute(
+        select(Paper)
+        .where((Paper.pdf_path.is_not(None)) | (Paper.arxiv_id.is_not(None)))
+        .order_by(Paper.created_at.desc())
+        .limit(limit * 4)
+    )
+    candidates = result.scalars().all()
+    papers = []
+    for candidate in candidates:
+        status = visual_evidence_status_from_paper(candidate)
+        if not status.get("ready") or status.get("failed"):
+            papers.append(candidate)
+        if len(papers) >= limit:
+            break
+    action = MaintenanceActionResult(processed=len(papers))
+    for paper in papers:
+        try:
+            payload = await ensure_document_visual_evidence(paper, db, force=True)
+            status = visual_evidence_status_from_paper(paper)
+            if status.get("ready"):
+                action.success += 1
+            elif payload and payload.get("status") == "empty":
+                action.skipped += 1
+                action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": "no visual evidence items"})
+            else:
+                action.failed += 1
+                action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": (status.get("last_error") or {}).get("message") or "visual evidence failed"})
+        except Exception as exc:
+            action.failed += 1
+            action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": str(exc)})
+    if action.processed:
+        await db.commit()
+    return action
+
+
 @router.get("/maintenance/jobs/{job_id}", response_model=MaintenanceJobStatus)
 async def get_maintenance_job_status(
     job_id: str,
@@ -1239,6 +1447,12 @@ async def diagnose_retrieval_query(
     dense_hits = await run_branch("dense", "dense")
     hybrid_hits = await run_branch("hybrid", "hybrid")
     try:
+        visual_hits = await _format_visual_diagnostic_hits(db, q, top_k=top_k)
+    except Exception as exc:
+        logger.warning("检索诊断 visual 分支失败: %s", exc)
+        errors["visual"] = str(exc)
+        visual_hits = []
+    try:
         embedding_coverage = await service.embedding_coverage()
     except Exception:
         embedding_coverage = 0.0
@@ -1247,6 +1461,7 @@ async def diagnose_retrieval_query(
         bm25_hits=bm25_hits,
         dense_hits=dense_hits,
         hybrid_hits=hybrid_hits,
+        visual_hits=visual_hits,
         bm25_status=bm25_index_status(),
         embedding_coverage=embedding_coverage,
         errors=errors,
@@ -1259,9 +1474,46 @@ async def diagnose_retrieval_query(
         bm25=bm25_hits,
         dense=dense_hits,
         hybrid=hybrid_hits,
+        visual=visual_hits,
         branch_explanations=branch_explanations,
         recommended_actions=await _maintenance_recommendations(db, include_samples=False),
         errors=errors,
+    )
+
+
+@router.get("/visual-evidence-assets/{paper_id}/{asset_token}")
+async def get_visual_evidence_asset(
+    paper_id: str,
+    asset_token: str,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Serve a private visual evidence image only to users allowed to access the paper."""
+    from uuid import UUID
+    from app.services.document_visual_evidence import resolve_visual_asset_path_from_paper
+
+    try:
+        pid = UUID(paper_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid paper_id")
+
+    result = await db.execute(select(Paper).where(Paper.id == pid))
+    paper = result.scalar_one_or_none()
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文未找到")
+    if user.role != "admin" and not _paper_imported_by_user(paper, user):
+        raise HTTPException(status_code=403, detail="无权访问该视觉证据资产")
+
+    path = resolve_visual_asset_path_from_paper(paper, asset_token)
+    if not path:
+        raise HTTPException(status_code=404, detail="视觉证据资产不存在")
+    media_type = "image/jpeg" if path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
+    return FileResponse(
+        path=str(path),
+        media_type=media_type,
+        filename=path.name,
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, max-age=3600"},
     )
 
 
@@ -1327,8 +1579,9 @@ async def get_paper_detail(
             {"id": str(c.id), "name": c.name}
             for c in (paper.categories or [])
         ],
-        metadata_json=paper.metadata_json,
+        metadata_json=_safe_paper_metadata(paper.metadata_json),
         structured_parse_status=StructuredPdfParseStatus(**structured_pdf_parse_status_from_paper(paper)),
+        visual_evidence_status=DocumentVisualEvidenceStatus(**visual_evidence_status_from_paper(paper)),
         created_at=paper.created_at.isoformat() if paper.created_at else "",
         similar_papers=[
             {"id": str(sp.id), "title": sp.title, "year": sp.year, "arxiv_id": sp.arxiv_id, "tags": sp.tags}
@@ -1356,6 +1609,37 @@ async def get_paper_processing_status(
     if not paper:
         raise HTTPException(status_code=404, detail="论文未找到")
     return _paper_processing_status(paper)
+
+
+@router.post("/{paper_id}/extract-visual-evidence", response_model=DocumentVisualEvidenceStatus)
+async def extract_paper_visual_evidence(
+    paper_id: str,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Force document visual evidence extraction and refresh status metadata."""
+    from uuid import UUID
+    try:
+        pid = UUID(paper_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid paper_id")
+
+    result = await db.execute(select(Paper).where(Paper.id == pid))
+    paper = result.scalar_one_or_none()
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文未找到")
+
+    from app.services.document_visual_evidence import (
+        force_document_visual_evidence_reparse,
+        visual_evidence_status_from_paper,
+    )
+    try:
+        await force_document_visual_evidence_reparse(paper, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.commit()
+    await db.refresh(paper)
+    return DocumentVisualEvidenceStatus(**visual_evidence_status_from_paper(paper))
 
 
 def _parse_insight_sections(text: str) -> dict[str, str]:
@@ -1493,13 +1777,14 @@ def _paper_evidence_meta(references: list[dict]) -> dict:
         ref for ref in evidence
         if str(ref.get("evidence_type") or "").startswith("visual") or (ref.get("metadata") or {}).get("visual_evidence")
     ]
+    visual_ready = bool(visual_evidence)
     coverage = min(1.0, len(evidence) / 3)
     return {
         "evidence_count": len(evidence),
         "visual_evidence_count": len(visual_evidence),
         "evidence_coverage": round(coverage, 4),
         "evidence_insufficient": len(evidence) == 0,
-        "visual_evidence_available": bool(visual_evidence),
+        "visual_evidence_available": visual_ready,
     }
 
 

@@ -52,3 +52,35 @@ def test_deepseek_chat_request_uses_text_only_image_fallback(monkeypatch):
     assert result[-1]["role"] == "system"
     assert "不支持视觉图片输入" in result[-1]["content"]
     assert "data:image" not in result[-1]["content"]
+
+
+def test_uploaded_pdf_visual_context_reuses_message_references_without_reparse():
+    from types import SimpleNamespace
+
+    message = SimpleNamespace(
+        references=[
+            {
+                "id": "PDF-V1",
+                "type": "uploaded_pdf_visual_evidence",
+                "source": "uploaded_pdf",
+                "filename": "paper.pdf",
+                "page": 3,
+                "evidence_type": "visual_table",
+                "snippet": "| Model | Acc |\n| Ours | 91 |",
+                "metadata": {
+                    "asset_id": "ve-table",
+                    "kind": "table",
+                    "caption": "Table 1. Main results.",
+                    "confidence": 0.82,
+                    "summary": "Main experimental results table.",
+                },
+            }
+        ]
+    )
+
+    context, refs = chat_sessions._uploaded_pdf_visual_context_from_messages([message])
+
+    assert len(refs) == 1
+    assert "paper.pdf" not in context
+    assert "Table 1. Main results." in context
+    assert "| Ours | 91 |" in context

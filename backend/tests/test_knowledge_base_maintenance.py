@@ -53,11 +53,15 @@ def test_maintenance_routes_are_fixed_paths_and_admin_only():
         ("/api/papers/maintenance/backfill-embeddings", "POST"),
         ("/api/papers/maintenance/backfill-full-text", "POST"),
         ("/api/papers/maintenance/backfill-structured-pdf", "POST"),
+        ("/api/papers/maintenance/backfill-visual-evidence", "POST"),
         ("/api/papers/maintenance/jobs/{job_id}", "GET"),
         ("/api/papers/maintenance/recommendations", "GET"),
         ("/api/papers/maintenance/search-diagnostics", "GET"),
+        ("/api/papers/visual-evidence-assets/{paper_id}/{asset_token}", "GET"),
     ]:
         assert paths.index(path) < paths.index("/api/papers/{paper_id}")
+        if path.startswith("/api/papers/visual-evidence-assets"):
+            continue
         assert require_admin in _dependency_calls(path, method)
 
 
@@ -97,10 +101,12 @@ def test_processing_flags_and_repair_actions_reflect_missing_artifacts():
     assert [action["key"] for action in status.repair_actions] == [
         "full_text",
         "structured_parse",
+        "visual_evidence",
         "embedding",
         "tags",
     ]
     assert status.structured_parse_status.ready is False
+    assert status.visual_evidence_status.ready is False
 
 
 def test_structured_parse_status_reports_cached_counts_and_parser():
@@ -139,6 +145,66 @@ def test_structured_parse_status_reports_cached_counts_and_parser():
     assert status["parser_health"]["configured_backend"]
     assert "table_repair" not in status
     assert "table_command" not in status["parser_health"]["available"]
+
+
+def test_visual_evidence_status_reports_ready_counts():
+    from app.services import document_visual_evidence
+
+    paper = SimpleNamespace(
+        pdf_path="/data/paper.pdf",
+        metadata_json={
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "source_path": "/data/paper.pdf",
+                "parser": "docling",
+                "status": "ready",
+                "parsed_at": "2026-06-12T12:00:00+00:00",
+                "page_count": 6,
+                "items": [
+                    {"id": "v1", "kind": "architecture", "page": 2, "status": "ready", "summary": "method diagram"},
+                    {"id": "t1", "kind": "table", "page": 4, "status": "ready", "markdown": "| A | B |"},
+                ],
+            }
+        },
+    )
+
+    status = document_visual_evidence.visual_evidence_status_from_paper(paper)
+
+    assert status["ready"] is True
+    assert status["item_count"] == 2
+    assert status["visual_count"] == 1
+    assert status["table_count"] == 1
+    assert status["missing_summary_count"] == 0
+    assert status["missing_ocr_count"] == 0
+
+
+def test_safe_paper_metadata_strips_private_visual_asset_paths():
+    metadata = {
+        "document_visual_evidence": {
+            "items": [
+                {
+                    "id": "v1",
+                    "asset_path": "/private/crop.png",
+                    "thumbnail_path": "/private/thumb.png",
+                    "asset_token": "abc",
+                    "metadata": {
+                        "page_asset_path": "/private/page.png",
+                        "fallback_asset_path": "/private/fallback.png",
+                        "page_asset_token": "page-token",
+                    },
+                }
+            ]
+        }
+    }
+
+    safe = papers_api._safe_paper_metadata(metadata)
+
+    item = safe["document_visual_evidence"]["items"][0]
+    assert "asset_path" not in item
+    assert "thumbnail_path" not in item
+    assert item["asset_token"] == "abc"
+    assert "page_asset_path" not in item["metadata"]
+    assert item["metadata"]["page_asset_token"] == "page-token"
 
 
 def test_parser_runtime_health_reports_available_backends(monkeypatch):

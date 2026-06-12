@@ -3,7 +3,7 @@ import sys
 import types
 
 from app.services.paper_chunk_service import PaperChunkService
-from app.services import memory_service, report_service
+from app.services import document_visual_evidence, memory_service, report_service
 
 
 def _paragraph(marker: str) -> str:
@@ -249,6 +249,137 @@ def test_historical_visual_blocks_are_not_used_as_evidence():
     assert evidence
     assert all(item.source_type != "visual_pack" for item in evidence)
     assert all("temporal grounding head" not in item.text for item in evidence)
+
+
+def test_ready_document_visual_evidence_is_retrieved_for_figure_questions():
+    full_text = _paragraph("method-marker")
+    visual_blocks = [{
+        "type": "visual_evidence",
+        "page": 4,
+        "source": "docling",
+        "text": (
+            "[PDF visual evidence, page 4, kind architecture, asset ve1]\n"
+            "Caption: Figure 4. Method architecture diagram.\n"
+            "Visual summary: The diagram shows the visual encoder, temporal grounding head, and language decoder."
+        ),
+        "metadata": {
+            "asset_id": "ve1",
+            "kind": "architecture",
+            "caption": "Figure 4. Method architecture diagram.",
+            "confidence": 0.82,
+            "visual_evidence": True,
+        },
+    }]
+
+    evidence, scope = PaperChunkService.retrieve_evidence(
+        full_text,
+        "请解释图4中的方法架构图",
+        top_k=3,
+        structured_blocks=visual_blocks,
+    )
+
+    assert scope == "visual+structured"
+    assert evidence[0].source_type == "visual_evidence"
+    assert evidence[0].page_start == 4
+    assert "temporal grounding head" in evidence[0].text
+
+
+def test_structured_extraction_builds_document_visual_evidence_items():
+    extraction = report_service.StructuredPdfExtraction(
+        source_path="/tmp/paper.pdf",
+        page_count=4,
+        parser="docling",
+        blocks=[
+            report_service.StructuredPdfBlock(
+                block_type="caption",
+                page=2,
+                source="docling",
+                text="[PDF caption, page 2] Figure 2. Architecture overview.",
+                metadata={"caption_type": "figure_caption", "bbox": [10, 20, 100, 160]},
+            ),
+            report_service.StructuredPdfBlock(
+                block_type="table",
+                page=3,
+                source="docling",
+                text="| Model | Acc |\n| --- | --- |\n| Ours | 91 |",
+                metadata={"table_index": 1, "quality": "high", "caption": "Table 1. Results"},
+            ),
+        ],
+    )
+
+    items = document_visual_evidence.visual_evidence_items_from_structured_extraction(extraction, "paper-1")
+    payload = document_visual_evidence.visual_evidence_payload_from_items(
+        source_path="/tmp/paper.pdf",
+        parser="docling",
+        page_count=4,
+        items=items,
+    )
+
+    assert payload["version"] == document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION
+    assert payload["status"] == "ready"
+    assert len(payload["items"]) == 2
+    assert {item["kind"] for item in payload["items"]} >= {"architecture", "table"}
+    assert payload["items"][0]["bbox"] == [10.0, 20.0, 100.0, 160.0]
+
+
+def test_visual_evidence_private_asset_token_resolves_only_inside_asset_root(monkeypatch, tmp_path):
+    asset_root = tmp_path / "visual"
+    asset_file = asset_root / "paper-1" / "crop.png"
+    asset_file.parent.mkdir(parents=True)
+    asset_file.write_bytes(b"png")
+    outside_file = tmp_path / "outside.png"
+    outside_file.write_bytes(b"png")
+    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_ASSET_DIR", str(asset_root))
+    token = document_visual_evidence.visual_asset_public_token(str(asset_file))
+    outside_token = document_visual_evidence.visual_asset_public_token(str(outside_file))
+    paper = types.SimpleNamespace(
+        pdf_path="/tmp/paper.pdf",
+        metadata_json={
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "source_path": "/tmp/paper.pdf",
+                "status": "ready",
+                "items": [
+                    {"id": "v1", "kind": "figure", "page": 1, "status": "ready", "asset_path": str(asset_file)},
+                    {"id": "v2", "kind": "figure", "page": 1, "status": "ready", "asset_path": str(outside_file)},
+                ],
+            }
+        },
+    )
+
+    assert document_visual_evidence.resolve_visual_asset_path_from_paper(paper, token) == asset_file.resolve()
+    assert document_visual_evidence.resolve_visual_asset_path_from_paper(paper, outside_token) is None
+
+
+def test_visual_asset_route_requires_paper_scope_uuid():
+    item = document_visual_evidence.VisualEvidenceItem(
+        id="v1",
+        kind="figure",
+        asset_path="/private/crop.png",
+        metadata={"document_scope": "550e8400-e29b-41d4-a716-446655440000"},
+    )
+    route = document_visual_evidence.visual_asset_route_for_item(item, item.asset_path)
+
+    assert route.startswith("/api/papers/visual-evidence-assets/550e8400-e29b-41d4-a716-446655440000/")
+    upload_item = document_visual_evidence.VisualEvidenceItem(
+        id="v2",
+        kind="figure",
+        asset_path="/private/upload.png",
+        metadata={"document_scope": "upload-abc"},
+    )
+    assert document_visual_evidence.visual_asset_route_for_item(upload_item, upload_item.asset_path) is None
+
+
+def test_vision_json_normalization_handles_malformed_and_confidence():
+    parsed = document_visual_evidence.parse_vision_json('```json\n{"kind":"table","markdown":"| A | B |","confidence":1.7}\n```')
+    normalized = document_visual_evidence.normalize_vision_adapter_result(parsed, provider="openai-compatible", model="vision")
+
+    assert normalized["status"] == "ready"
+    assert normalized["kind"] == "table"
+    assert normalized["markdown"] == "| A | B |"
+    assert normalized["confidence"] == 1.0
+    assert normalized["provider"] == "openai-compatible"
+    assert document_visual_evidence.parse_vision_json("not json")["status"] == "invalid"
 
 
 def test_section_first_table_question_keeps_structured_table_evidence():
@@ -596,7 +727,7 @@ async def test_paper_context_includes_structured_table_and_caption_evidence(monk
 
     assert any(ref["evidence_type"] == "table_pack" and ref["page"] == 7 for ref in evidence)
     assert "类型: 表格证据包" in context[0]["content"]
-    assert "证据类型可能包含正文、表格、图/表标题、OCR 文本或公式" in context[0]["content"]
+    assert "证据类型可能包含正文、表格、视觉证据、视觉表格、图/表标题、OCR 文本或公式" in context[0]["content"]
 
 
 @pytest.mark.asyncio

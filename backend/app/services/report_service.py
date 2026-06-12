@@ -707,6 +707,41 @@ def _docling_page_from_item(item: Any) -> Optional[int]:
     return None
 
 
+def _docling_bbox_from_item(item: Any) -> Optional[list[float]]:
+    payload = _object_to_plain_dict(item) or {}
+    for key in ("bbox", "box", "bounding_box"):
+        value = payload.get(key) or getattr(item, key, None)
+        bbox = _normalize_bbox_value(value)
+        if bbox:
+            return bbox
+    prov = payload.get("prov") or getattr(item, "prov", None)
+    prov_items = prov if isinstance(prov, list) else [prov] if prov else []
+    for prov_item in prov_items:
+        prov_payload = _object_to_plain_dict(prov_item) or {}
+        for key in ("bbox", "box", "bounding_box"):
+            bbox = _normalize_bbox_value(prov_payload.get(key) or getattr(prov_item, key, None))
+            if bbox:
+                return bbox
+    return None
+
+
+def _normalize_bbox_value(value: Any) -> Optional[list[float]]:
+    payload = _object_to_plain_dict(value)
+    if payload:
+        for keys in (("l", "t", "r", "b"), ("left", "top", "right", "bottom"), ("x0", "y0", "x1", "y1")):
+            if all(key in payload for key in keys):
+                try:
+                    return [round(float(payload[key]), 3) for key in keys]
+                except (TypeError, ValueError):
+                    return None
+    if isinstance(value, (list, tuple)) and len(value) == 4:
+        try:
+            return [round(float(item), 3) for item in value]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _docling_text_from_item(item: Any) -> str:
     payload = _object_to_plain_dict(item) or {}
     for key in ("text", "caption", "content", "markdown", "html"):
@@ -779,16 +814,20 @@ def structured_extraction_from_docling_document(document: Any, *, source_path: s
                 continue
             block_type = _docling_item_type(item, fallback_type)
             page = _docling_page_from_item(item)
+            bbox = _docling_bbox_from_item(item)
             key = (block_type, page, text[:MAX_STRUCTURED_BLOCK_CHARS])
             if key in seen:
                 continue
             seen.add(key)
+            metadata = {"docling_collection": attr}
+            if bbox:
+                metadata["bbox"] = bbox
             blocks.append(StructuredPdfBlock(
                 block_type=block_type,
                 page=page,
                 source="docling",
                 text=text[:structured_block_text_limit(block_type)],
-                metadata={"docling_collection": attr},
+                metadata=metadata,
             ))
             if len(blocks) >= MAX_STRUCTURED_BLOCKS:
                 break

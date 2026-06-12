@@ -68,6 +68,16 @@ interface PaperData {
   importance_label?: PaperImportanceLabel | null;
   importance_note?: string | null;
   structured_parse_status?: StructuredPdfParseStatus | null;
+  visual_evidence_status?: {
+    ready: boolean;
+    status?: string;
+    item_count?: number;
+    visual_count?: number;
+    table_count?: number;
+    asset_count?: number;
+    failed?: boolean;
+    last_error?: { message?: string; failed_at?: string; [key: string]: any } | null;
+  } | null;
   created_at: string;
 }
 
@@ -101,10 +111,18 @@ interface PaperChatReference {
   score?: number;
   snippet?: string;
   evidence_type?: string;
+  parser_source?: string;
   metadata?: {
     kind?: string;
     caption?: string;
     bbox?: number[];
+    confidence?: number;
+    asset_path?: string;
+    thumbnail_path?: string;
+    asset_token?: string;
+    thumbnail_token?: string;
+    visual_evidence?: boolean;
+    summary?: string;
     [key: string]: unknown;
   };
 }
@@ -589,21 +607,31 @@ const PaperDetailPage: React.FC = () => {
     if (ref.type === 'paper_evidence' || ref.source === 'current_paper') {
       const page = ref.page || ref.page_start;
       const section = ref.section ? `${ref.section} · ` : '';
-      return `${ref.id || '证据'} · ${section}${page ? `PDF 第 ${page} 页` : '当前论文片段'}`;
+      const visualKind = ref.metadata?.visual_evidence ? `${ref.metadata.kind || ref.evidence_type} · ` : '';
+      return `${ref.id || '证据'} · ${section}${visualKind}${page ? `PDF 第 ${page} 页` : '当前论文片段'}`;
     }
     return `${ref.source === 'web' ? '网页 · ' : ''}${ref.title?.slice(0, 24)}${ref.title?.length > 24 ? '...' : ''}`;
   };
 
   const referenceTooltip = (ref: PaperChatReference) => {
     const caption = typeof ref.metadata?.caption === 'string' ? ref.metadata.caption : '';
-    return [caption, ref.snippet, ref.title].filter(Boolean).join('\n\n');
+    const summary = typeof ref.metadata?.summary === 'string' ? ref.metadata.summary : '';
+    const confidence = typeof ref.metadata?.confidence === 'number' ? `confidence ${(ref.metadata.confidence * 100).toFixed(0)}%` : '';
+    return [caption, summary, confidence, ref.snippet, ref.title].filter(Boolean).join('\n\n');
   };
 
   const referenceColor = (ref: PaperChatReference) => {
+    if (ref.metadata?.visual_evidence || String(ref.evidence_type || '').startsWith('visual')) return 'purple';
     if (ref.source === 'web') return 'cyan';
     if (ref.source === 'current_paper') return 'gold';
     return 'geekblue';
   };
+
+  const visualPreviewReferences = (refs?: PaperChatReference[]) => (refs || []).filter(ref => {
+    const hasVisualType = Boolean(ref.metadata?.visual_evidence) || String(ref.evidence_type || '').startsWith('visual');
+    const asset = ref.metadata?.thumbnail_path || ref.metadata?.asset_path;
+    return hasVisualType && typeof asset === 'string' && asset.length > 0;
+  });
 
   const submitPaperQuestion = async (rawQuestion?: string, displayQuestion?: string, quoteOverride?: PaperPdfQuote | null) => {
     const templateMode = typeof rawQuestion === 'string';
@@ -1465,6 +1493,31 @@ const PaperDetailPage: React.FC = () => {
                             </div>
                           )}
                           {msg.references && msg.references.length > 0 && <Text type="secondary" style={{ fontSize: 11 }}>引用证据：</Text>}
+                          {visualPreviewReferences(msg.references).length > 0 && (
+                            <div className="paper-chat-visual-preview-list">
+                              {visualPreviewReferences(msg.references).map((ref, ri) => {
+                                const asset = String(ref.metadata?.thumbnail_path || ref.metadata?.asset_path || '');
+                                const page = ref.page || ref.page_start;
+                                const confidence = typeof ref.metadata?.confidence === 'number' ? `${Math.round(ref.metadata.confidence * 100)}%` : '';
+                                return (
+                                  <button
+                                    key={`${asset}-${ri}`}
+                                    type="button"
+                                    className="paper-chat-visual-preview"
+                                    onClick={() => handleEvidenceReferenceClick(ref)}
+                                    title={referenceTooltip(ref)}
+                                  >
+                                    <img src={asset} alt={String(ref.metadata?.caption || ref.metadata?.kind || 'visual evidence')} />
+                                    <span>
+                                      <strong>{String(ref.metadata?.kind || ref.evidence_type || 'visual')}</strong>
+                                      <small>{[page ? `PDF ${page}` : '', confidence].filter(Boolean).join(' · ')}</small>
+                                      <em>{String(ref.metadata?.caption || ref.snippet || '').slice(0, 80)}</em>
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
                           <div className="paper-chat-reference-list">
                             {(msg.references || []).map((ref, ri) => (
                               <Tooltip key={`${ref.url || ref.arxiv_id || ref.id || ref.title}-${ri}`} title={referenceTooltip(ref)}>

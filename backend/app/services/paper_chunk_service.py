@@ -75,6 +75,11 @@ class PaperChunkService:
     )
     TABLE_CAPTION_PATTERN = re.compile(r"(?:^|\b)table\s*\.?\s*\d+|表\s*\d+", re.I)
     FIGURE_CAPTION_PATTERN = re.compile(r"(?:^|\b)(?:fig(?:ure)?\s*\.?\s*\d+|图\s*\d+)", re.I)
+    VISUAL_QUERY_TERMS = (
+        "figure", "fig", "chart", "plot", "graph", "diagram", "architecture", "pipeline",
+        "framework", "visualization", "image", "method diagram", "图", "图表", "图片",
+        "架构", "结构图", "流程图", "方法图", "可视化", "曲线", "柱状图",
+    )
 
     @staticmethod
     def chunk_full_text(full_text: str) -> List[str]:
@@ -180,6 +185,8 @@ class PaperChunkService:
             return "experiment"
         if cls.is_table_like_query(query):
             return "table"
+        if cls.is_visual_like_query(query):
+            return "visual"
         return "compact"
 
     @classmethod
@@ -187,9 +194,16 @@ class PaperChunkService:
         strategy = cls.detect_evidence_strategy(query)
         if strategy == "experiment":
             return cls.EXPERIMENT_EVIDENCE_TOP_K
+        if strategy == "visual":
+            return max(default, cls.TABLE_EVIDENCE_TOP_K)
         if strategy == "table":
             return cls.TABLE_EVIDENCE_TOP_K
         return default
+
+    @classmethod
+    def is_visual_like_query(cls, query: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (query or "").lower())
+        return any(term in normalized for term in cls.VISUAL_QUERY_TERMS)
 
     @classmethod
     def _match_section_heading(cls, line: str) -> Optional[str]:
@@ -284,7 +298,7 @@ class PaperChunkService:
             if not text:
                 continue
             source_type = str(block.get("type") or "structured")
-            if source_type == "visual" or source_type.startswith("visual_"):
+            if source_type == "visual" or source_type == "visual_summary":
                 continue
             page = block.get("page")
             candidates.append(EvidenceChunk(
@@ -312,13 +326,24 @@ class PaperChunkService:
         text_candidates = cls._page_evidence_candidates(page_texts) if page_texts else cls._document_evidence_candidates(full_text)
         structured_candidates = cls._structured_evidence_candidates(structured_blocks)
         strategy = cls.detect_evidence_strategy(query)
+        visual_like_query = strategy == "visual" or cls.is_visual_like_query(query)
         table_like_query = strategy in {"table", "experiment"} or cls.is_table_like_query(query)
+        candidates = [*structured_candidates, *text_candidates]
+        requested_sections = set(cls.detect_requested_sections(query))
+        if visual_like_query and not table_like_query and structured_candidates:
+            visual_results = cls._visual_evidence_lane(structured_candidates, query, top_k=min(top_k, cls.TABLE_EVIDENCE_TOP_K))
+            if visual_results:
+                document_results = cls.search_evidence_chunks(
+                    [candidate for candidate in candidates if candidate.source_type not in {"visual_evidence", "visual_table"}],
+                    query,
+                    top_k=max(1, top_k - len(visual_results)),
+                    requested_sections=requested_sections,
+                )
+                return cls._merge_evidence_lanes(visual_results, document_results, top_k=top_k), "visual+structured"
         if strategy == "experiment":
             top_k = max(top_k, cls.EXPERIMENT_EVIDENCE_TOP_K)
         elif table_like_query:
             top_k = max(top_k, cls.recommended_evidence_top_k(query, default=top_k))
-        candidates = [*structured_candidates, *text_candidates]
-        requested_sections = set(cls.detect_requested_sections(query))
         if strategy == "experiment":
             dossier_results = cls._experiment_evidence_dossier(
                 structured_candidates,
@@ -346,6 +371,13 @@ class PaperChunkService:
         if table_like_query and structured_candidates:
             table_results = cls._table_evidence_lane(structured_candidates, query, top_k=min(4, top_k))
             table_results = cls._table_evidence_packs(table_results, structured_candidates, text_candidates, query)
+            if visual_like_query:
+                visual_results = cls._visual_evidence_lane(
+                    structured_candidates,
+                    query,
+                    top_k=min(2, cls.TABLE_EVIDENCE_TOP_K),
+                )
+                table_results = cls._merge_evidence_lanes(table_results, visual_results, top_k=min(top_k, len(table_results) + len(visual_results)))
             document_results = cls.search_evidence_chunks(
                 candidates,
                 query,
@@ -354,6 +386,49 @@ class PaperChunkService:
             )
             return cls._merge_evidence_lanes(table_results, document_results, top_k=top_k), scope
         return cls.search_evidence_chunks(candidates, query, top_k=top_k, requested_sections=requested_sections), scope
+
+    @classmethod
+    def _visual_evidence_lane(cls, structured_candidates: List[EvidenceChunk], query: str, top_k: int) -> List[EvidenceChunk]:
+        visual_candidates = [
+            item for item in structured_candidates
+            if item.source_type in {"visual_evidence", "visual_table"}
+        ]
+        if not visual_candidates:
+            return []
+        scored = [
+            EvidenceChunk(
+                text=item.text,
+                score=cls._visual_evidence_score(item, query),
+                section=item.section,
+                page_start=item.page_start,
+                page_end=item.page_end,
+                source_type=item.source_type,
+                source=item.source,
+                metadata=item.metadata,
+            )
+            for item in visual_candidates
+        ]
+        scored.sort(key=lambda item: item.score, reverse=True)
+        return cls._suppress_redundant_evidence(scored, top_k=top_k)
+
+    @classmethod
+    def _visual_evidence_score(cls, item: EvidenceChunk, query: str) -> float:
+        text = (item.text or "").lower()
+        metadata = item.metadata or {}
+        kind = str(metadata.get("kind") or "").lower()
+        score = 0.55
+        if item.source_type == "visual_table" and cls.is_table_like_query(query):
+            score += 0.25
+        if kind in {"architecture", "figure", "chart"} and cls.is_visual_like_query(query):
+            score += 0.2
+        query_tokens = cls._chunk_tokens(query)
+        text_tokens = cls._chunk_tokens(text)
+        if query_tokens:
+            score += min(0.2, (len(query_tokens & text_tokens) / len(query_tokens)) * 0.2)
+        confidence = metadata.get("confidence")
+        if isinstance(confidence, (int, float)):
+            score += min(0.12, max(0.0, float(confidence)) * 0.12)
+        return round(max(0.0, min(1.0, score)), 3)
 
     @classmethod
     def retrieve_chunks(cls, full_text: str, query: str, top_k: int = 3) -> Tuple[List[Tuple[str, float]], str]:
