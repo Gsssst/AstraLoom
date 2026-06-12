@@ -57,11 +57,6 @@ class PaperChunkService:
         "c-acc", "etf1", "tiou", "tf1", "gemini", "seed", "qwen", "gpt",
         "表格", "基准", "指标", "结果", "对比", "消融", "奖励", "贡献", "评估",
     )
-    VISUAL_QUERY_TERMS = (
-        "figure", "fig.", "fig ", "chart", "plot", "curve", "diagram", "architecture", "framework",
-        "pipeline", "visualization", "illustration", "image", "graph", "axis", "axes",
-        "图", "图表", "曲线", "架构图", "框架图", "流程图", "示意图", "可视化", "坐标轴", "图片",
-    )
     BROAD_EXPERIMENT_QUERY_TERMS = (
         "whole experiment", "whole experiments", "entire experiment", "entire evaluation",
         "overall experiment", "overall experiments", "overall results", "all experiments",
@@ -159,11 +154,6 @@ class PaperChunkService:
         return any(term in normalized for term in cls.TABLE_QUERY_TERMS)
 
     @classmethod
-    def is_visual_like_query(cls, query: str) -> bool:
-        normalized = re.sub(r"\s+", " ", (query or "").lower())
-        return any(term in normalized for term in cls.VISUAL_QUERY_TERMS)
-
-    @classmethod
     def is_broad_experiment_query(cls, query: str) -> bool:
         normalized = re.sub(r"\s+", " ", (query or "").lower())
         if any(term in normalized for term in cls.BROAD_EXPERIMENT_QUERY_TERMS):
@@ -188,8 +178,6 @@ class PaperChunkService:
     def detect_evidence_strategy(cls, query: str) -> str:
         if cls.is_broad_experiment_query(query):
             return "experiment"
-        if cls.is_visual_like_query(query):
-            return "visual"
         if cls.is_table_like_query(query):
             return "table"
         return "compact"
@@ -295,6 +283,9 @@ class PaperChunkService:
             text = str(block.get("text") or "").strip()
             if not text:
                 continue
+            source_type = str(block.get("type") or "structured")
+            if source_type == "visual" or source_type.startswith("visual_"):
+                continue
             page = block.get("page")
             candidates.append(EvidenceChunk(
                 text=text,
@@ -302,7 +293,7 @@ class PaperChunkService:
                 section=None,
                 page_start=page if isinstance(page, int) else None,
                 page_end=page if isinstance(page, int) else None,
-                source_type=str(block.get("type") or "structured"),
+                source_type=source_type,
                 source=str(block.get("source") or "pdf_structured"),
                 metadata=block.get("metadata") if isinstance(block.get("metadata"), dict) else {},
             ))
@@ -322,16 +313,11 @@ class PaperChunkService:
         structured_candidates = cls._structured_evidence_candidates(structured_blocks)
         strategy = cls.detect_evidence_strategy(query)
         table_like_query = strategy in {"table", "experiment"} or cls.is_table_like_query(query)
-        visual_like_query = strategy in {"visual", "experiment"}
         if strategy == "experiment":
             top_k = max(top_k, cls.EXPERIMENT_EVIDENCE_TOP_K)
         elif table_like_query:
             top_k = max(top_k, cls.recommended_evidence_top_k(query, default=top_k))
         candidates = [*structured_candidates, *text_candidates]
-        visual_candidates = [
-            item for item in structured_candidates
-            if item.source_type in {"visual_asset", "visual_summary", "visual_pack", "visual"}
-        ]
         requested_sections = set(cls.detect_requested_sections(query))
         if strategy == "experiment":
             dossier_results = cls._experiment_evidence_dossier(
@@ -355,29 +341,8 @@ class PaperChunkService:
                     table_results = cls._table_evidence_lane(structured_candidates, query, top_k=min(4, top_k))
                     table_results = cls._table_evidence_packs(table_results, structured_candidates, text_candidates, query)
                     return cls._merge_evidence_lanes(table_results, section_results, top_k=top_k), "section+structured"
-                if visual_like_query and visual_candidates:
-                    visual_results = cls._visual_evidence_lane(visual_candidates, query, top_k=min(4, top_k))
-                    return cls._merge_evidence_lanes(visual_results, section_results, top_k=top_k), "section+visual"
                 return section_results, "section"
         scope = "structured+document" if structured_candidates else "document"
-        if visual_like_query and visual_candidates:
-            visual_results = cls._visual_evidence_lane(visual_candidates, query, top_k=min(6, top_k))
-            table_results: List[EvidenceChunk] = []
-            if table_like_query and structured_candidates:
-                table_results = cls._table_evidence_lane(structured_candidates, query, top_k=min(4, top_k))
-                table_results = cls._table_evidence_packs(table_results, structured_candidates, text_candidates, query)
-            document_results = cls.search_evidence_chunks(
-                candidates,
-                query,
-                top_k=top_k,
-                requested_sections=requested_sections,
-            )
-            merged = cls._merge_evidence_lanes(
-                cls._merge_evidence_lanes(visual_results, table_results, top_k=top_k),
-                document_results,
-                top_k=top_k,
-            )
-            return merged, "visual+structured+document"
         if table_like_query and structured_candidates:
             table_results = cls._table_evidence_lane(structured_candidates, query, top_k=min(4, top_k))
             table_results = cls._table_evidence_packs(table_results, structured_candidates, text_candidates, query)
@@ -389,53 +354,6 @@ class PaperChunkService:
             )
             return cls._merge_evidence_lanes(table_results, document_results, top_k=top_k), scope
         return cls.search_evidence_chunks(candidates, query, top_k=top_k, requested_sections=requested_sections), scope
-
-    @classmethod
-    def _visual_evidence_lane(cls, visual_candidates: List[EvidenceChunk], query: str, top_k: int) -> List[EvidenceChunk]:
-        if not visual_candidates:
-            return []
-        scored: List[EvidenceChunk] = []
-        for item in visual_candidates:
-            score = cls._structured_evidence_score(item, query)
-            metadata = item.metadata or {}
-            kind = str(metadata.get("kind") or item.source_type).lower()
-            caption = str(metadata.get("caption") or "")
-            haystack = f"{item.text}\n{caption}".lower()
-            if item.source_type in {"visual_summary", "visual_pack"}:
-                score += 0.28
-            if kind in {"figure", "table"}:
-                score += 0.14
-            if cls.is_visual_like_query(query):
-                score += 0.22
-            if any(term in haystack for term in ("architecture", "framework", "pipeline", "架构", "框架", "流程")):
-                score += 0.10
-            scored.append(EvidenceChunk(
-                text=cls._visual_pack_text(item),
-                score=round(max(0.0, min(1.0, score)), 3),
-                section=item.section,
-                page_start=item.page_start,
-                page_end=item.page_end,
-                source_type="visual_pack" if item.source_type != "visual" else item.source_type,
-                source=item.source,
-                metadata={**metadata, "visual_evidence": True},
-            ))
-        scored.sort(key=lambda evidence: evidence.score, reverse=True)
-        return cls._suppress_redundant_evidence(scored, top_k=top_k)
-
-    @staticmethod
-    def _visual_pack_text(item: EvidenceChunk) -> str:
-        if item.text.startswith("[PDF visual evidence pack"):
-            return item.text
-        metadata = item.metadata or {}
-        lines = [
-            f"[PDF visual evidence pack, page {item.page_start or 'unknown'}]",
-            item.text,
-        ]
-        if metadata.get("caption"):
-            lines.append(f"Linked caption: {metadata['caption']}")
-        if metadata.get("image_path"):
-            lines.append(f"Image asset: {metadata['image_path']}")
-        return "\n".join(str(line) for line in lines if str(line).strip())
 
     @classmethod
     def retrieve_chunks(cls, full_text: str, query: str, top_k: int = 3) -> Tuple[List[Tuple[str, float]], str]:

@@ -53,13 +53,14 @@ test('paper library exposes a first-class maintenance center', () => {
   assert.match(papersPageSource, /BM25 分支解释|分支解释/);
 });
 
-test('paper library polls asynchronous table repair maintenance jobs', () => {
+test('paper library does not expose discarded table repair maintenance action', () => {
   assert.match(papersPageSource, /activeMaintenanceJob/);
-  assert.match(papersPageSource, /response\.data\?\.job_id/);
   assert.match(papersPageSource, /\/papers\/maintenance\/jobs\/\$\{jobId\}/);
-  assert.match(papersPageSource, /表格修复正在后台执行/);
   assert.match(papersPageSource, /progress_percent/);
   assert.match(papersPageSource, /maintenanceJobRunning/);
+  assert.doesNotMatch(papersPageSource, /repair-tables/);
+  assert.doesNotMatch(papersPageSource, /tableRepair/);
+  assert.doesNotMatch(papersPageSource, /表格修复正在后台执行/);
 });
 
 test('paper library makes external search and ingest transparent', () => {

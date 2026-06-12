@@ -1,5 +1,0 @@
-# Isolated high-fidelity PDF table parser runtime.
-#
-# Keep Marker out of the main backend environment: marker-pdf pins OpenAI 1.x,
-# while litellm in the application environment requires OpenAI 2.x.
-marker-pdf==1.10.2

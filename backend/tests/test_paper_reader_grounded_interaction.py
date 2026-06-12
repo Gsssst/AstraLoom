@@ -1,19 +1,9 @@
 import pytest
 import sys
 import types
-import uuid
 
-from app.db.models.paper import Paper
 from app.services.paper_chunk_service import PaperChunkService
 from app.services import memory_service, report_service
-from app.services.paper_visual_service import (
-    PDF_VISUAL_ASSETS_METADATA_KEY,
-    PDF_VISUAL_ASSETS_VERSION,
-    _caption_region_bbox,
-    ensure_paper_visual_assets,
-    visual_asset_status_from_paper,
-    visual_evidence_blocks_from_paper,
-)
 
 
 def _paragraph(marker: str) -> str:
@@ -229,106 +219,7 @@ def test_structured_table_evidence_is_retrieved_with_page_number():
     assert "91.3" in evidence[0].text
 
 
-def test_visual_asset_metadata_converts_to_evidence_block():
-    paper = Paper(
-        id=uuid.uuid4(),
-        title="Visual RAG Paper",
-        authors=[],
-        source="manual",
-        metadata_json={
-            PDF_VISUAL_ASSETS_METADATA_KEY: {
-                "version": PDF_VISUAL_ASSETS_VERSION,
-                "parser": "fitz_page_render",
-                "assets": [{
-                    "asset_id": "fig3",
-                    "paper_id": "paper-1",
-                    "page": 5,
-                    "kind": "figure",
-                    "image_path": "/tmp/fig3.png",
-                    "thumbnail_path": "/tmp/fig3-thumb.png",
-                    "bbox": [36.0, 48.0, 560.0, 620.0],
-                    "caption": "Figure 3. Architecture of the proposed model.",
-                    "summary": "The figure shows a two-stage multimodal architecture.",
-                    "key_facts": ["two-stage architecture", "visual encoder feeds grounding head"],
-                    "source": "caption+caption_page_region",
-                    "metadata": {"linked_page_asset_id": "page5", "crop_strategy": "caption_page_region"},
-                }],
-            }
-        },
-    )
-
-    status = visual_asset_status_from_paper(paper)
-    blocks = visual_evidence_blocks_from_paper(paper)
-
-    assert status["ready"] is True
-    assert status["figure_asset_count"] == 1
-    assert status["summary_count"] == 1
-    assert blocks[0]["type"] == "visual_summary"
-    assert blocks[0]["page"] == 5
-    assert blocks[0]["metadata"]["asset_id"] == "fig3"
-    assert blocks[0]["metadata"]["thumbnail_path"] == "/tmp/fig3-thumb.png"
-    assert blocks[0]["metadata"]["crop_strategy"] == "caption_page_region"
-    assert blocks[0]["metadata"]["bbox"] == [36.0, 48.0, 560.0, 620.0]
-    assert "two-stage multimodal architecture" in blocks[0]["text"]
-
-
-@pytest.mark.asyncio
-async def test_visual_asset_extraction_renders_real_pdf_page(tmp_path, monkeypatch):
-    try:
-        import fitz
-    except Exception as exc:
-        pytest.fail(f"PyMuPDF/fitz must be installed for visual asset extraction: {exc}")
-
-    pdf_path = tmp_path / "visual-source.pdf"
-    doc = fitz.open()
-    page = doc.new_page(width=320, height=240)
-    page.insert_text((36, 48), "Figure 1. Runtime visual asset smoke test.")
-    page.draw_rect(fitz.Rect(40, 70, 260, 180), color=(0, 0, 1), width=1.5)
-    doc.save(str(pdf_path))
-    doc.close()
-
-    upload_dir = tmp_path / "uploads"
-    monkeypatch.setattr("app.services.paper_visual_service.settings.UPLOAD_DIR", str(upload_dir))
-    monkeypatch.setattr("app.services.paper_visual_service.settings.PDF_VISUAL_ASSET_MAX_PAGES", 1)
-    monkeypatch.setattr("app.services.paper_visual_service.settings.PDF_VISUAL_ASSET_MAX_ASSETS", 2)
-    monkeypatch.setattr("app.services.paper_visual_service.settings.PDF_VISUAL_ASSET_RENDER_SCALE", 1.0)
-
-    paper = Paper(
-        id=uuid.uuid4(),
-        title="Renderable visual paper",
-        authors=[],
-        source="manual",
-        pdf_path=str(pdf_path),
-        metadata_json={},
-    )
-
-    payload = await ensure_paper_visual_assets(paper)
-    assets = payload.get("assets") or []
-
-    assert payload["parser"] == "fitz_page_render"
-    assert payload["asset_count"] >= 1
-    assert assets[0]["kind"] == "page"
-    assert assets[0]["page"] == 1
-    assert assets[0]["image_path"].endswith(".png")
-    assert (upload_dir / "paper-visual-assets" / str(paper.id)).exists()
-    assert assets[0]["image_path"]
-    assert __import__("os").path.exists(assets[0]["image_path"])
-    status = visual_asset_status_from_paper(paper)
-    assert status["ready"] is True
-    assert status["page_asset_count"] == 1
-
-
-def test_caption_region_bbox_prefers_different_figure_and_table_regions():
-    figure_bbox = _caption_region_bbox(600, 800, "figure")
-    table_bbox = _caption_region_bbox(600, 800, "table")
-
-    assert figure_bbox[1] < table_bbox[1]
-    assert figure_bbox[3] < table_bbox[3]
-    assert figure_bbox[0] == table_bbox[0] == 36
-    assert figure_bbox[2] == table_bbox[2] == 564
-
-
-def test_visual_question_routes_to_visual_evidence_pack():
+def test_historical_visual_blocks_are_not_used_as_evidence():
     full_text = _paragraph("method-marker")
     structured_blocks = [{
         "type": "visual_summary",
@@ -354,12 +245,10 @@ def test_visual_question_routes_to_visual_evidence_pack():
         structured_blocks=structured_blocks,
     )
 
-    assert scope == "visual+structured+document"
+    assert scope == "document"
     assert evidence
-    assert evidence[0].source_type == "visual_pack"
-    assert evidence[0].page_start == 4
-    assert evidence[0].metadata["visual_evidence"] is True
-    assert "temporal grounding head" in evidence[0].text
+    assert all(item.source_type != "visual_pack" for item in evidence)
+    assert all("temporal grounding head" not in item.text for item in evidence)
 
 
 def test_section_first_table_question_keeps_structured_table_evidence():
@@ -707,7 +596,7 @@ async def test_paper_context_includes_structured_table_and_caption_evidence(monk
 
     assert any(ref["evidence_type"] == "table_pack" and ref["page"] == 7 for ref in evidence)
     assert "类型: 表格证据包" in context[0]["content"]
-    assert "图片占位只表示" in context[0]["content"]
+    assert "证据类型可能包含正文、表格、图/表标题、OCR 文本或公式" in context[0]["content"]
 
 
 @pytest.mark.asyncio
@@ -828,42 +717,6 @@ def test_external_parser_payload_normalizes_common_block_shapes():
     assert all(block.source == "command" for block in extraction.blocks)
 
 
-def test_high_fidelity_table_payload_normalizes_cells_and_html():
-    extraction = report_service.structured_table_extraction_from_external_payload(
-        {
-            "tables": [
-                {
-                    "page": 3,
-                    "caption": "Table 3. RULER subtask results.",
-                    "confidence": 0.97,
-                    "cells": [
-                        {"row": 0, "col": 0, "text": "Task"},
-                        {"row": 0, "col": 1, "text": "Accuracy"},
-                        {"row": 1, "col": 0, "text": "GSM8K strict"},
-                        {"row": 1, "col": 1, "text": "72.4"},
-                    ],
-                },
-                {
-                    "page": 4,
-                    "html": "<table><tr><th>Model</th><th>PG-19</th></tr><tr><td>Ours</td><td>8.2</td></tr></table>",
-                },
-            ],
-            "page_count": 5,
-        },
-        source_path="/tmp/paper.pdf",
-        parser="marker",
-    )
-
-    assert extraction.page_count == 5
-    assert len(extraction.blocks) == 2
-    assert extraction.blocks[0].metadata["headers"] == ["Task", "Accuracy"]
-    assert extraction.blocks[0].metadata["cells"] == [["GSM8K strict", "72.4"]]
-    assert extraction.blocks[0].metadata["confidence"] == 0.97
-    assert "GSM8K strict" in extraction.blocks[0].text
-    assert extraction.blocks[1].metadata["headers"] == ["Model", "PG-19"]
-    assert "Ours" in extraction.blocks[1].text
-
-
 def test_low_quality_detection_flags_merged_numeric_cells():
     block = report_service.StructuredPdfBlock(
         block_type="table",
@@ -883,19 +736,17 @@ def test_low_quality_detection_flags_merged_numeric_cells():
     assert "merged_numeric_cells" in quality["flags"]
 
 
-def test_repaired_table_metadata_drives_evidence_text():
+def test_table_metadata_drives_evidence_text():
     block = report_service.StructuredPdfBlock(
         block_type="table",
         page=3,
-        source="table_command",
+        source="docling",
         text="bad merged table text",
         metadata={
             "table_index": 3,
             "caption": "Table 3. RULER",
             "headers": ["Task", "Accuracy"],
             "cells": [["GSM8K strict", "72.4"], ["COQA f1", "83.1"]],
-            "repair_source": "marker",
-            "high_fidelity": True,
         },
     )
 
@@ -948,75 +799,6 @@ def test_command_parser_success_normalizes_json(monkeypatch):
     assert captured["env"]["HF_ENDPOINT"] == "https://hf-mirror.com"
     assert extraction.blocks[0].block_type == "ocr"
     assert extraction.blocks[0].page == 2
-
-
-def test_table_parser_command_success_normalizes_json(monkeypatch):
-    captured = {}
-
-    class Completed:
-        returncode = 0
-        stdout = b'{"tables":[{"page":3,"caption":"Table 3","rows":[["Task","Score"],["GSM8K","72.4"]]}]}'
-        stderr = b""
-
-    def fake_run(args, **kwargs):
-        captured["args"] = args
-        captured["env"] = kwargs["env"]
-        captured["timeout"] = kwargs["timeout"]
-        return Completed()
-
-    monkeypatch.setattr(report_service.settings, "PDF_TABLE_PARSER_COMMAND", "table-parser --json {pdf_path}")
-    monkeypatch.setattr(report_service.settings, "PDF_TABLE_PARSER_TIMEOUT_SECONDS", 17)
-    monkeypatch.setattr(report_service.settings, "PDF_TABLE_PARSER_MAX_OUTPUT_BYTES", 4096)
-    monkeypatch.setattr(report_service.settings, "HF_ENDPOINT", "https://hf-mirror.com")
-    monkeypatch.setattr(report_service.subprocess, "run", fake_run)
-
-    extraction = report_service.extract_pdf_tables_with_command("/tmp/paper.pdf")
-
-    assert captured["args"] == ["table-parser", "--json", "/tmp/paper.pdf"]
-    assert captured["timeout"] == 17
-    assert captured["env"]["HF_ENDPOINT"] == "https://hf-mirror.com"
-    assert extraction.blocks[0].source == "table_command"
-    assert extraction.blocks[0].metadata["cells"] == [["GSM8K", "72.4"]]
-
-
-def test_structured_parse_auto_repairs_low_quality_tables(monkeypatch):
-    base = report_service.StructuredPdfExtraction(
-        source_path="/tmp/paper.pdf",
-        page_count=3,
-        parser="test-lightweight",
-        blocks=[
-            report_service.StructuredPdfBlock(
-                block_type="table",
-                page=3,
-                text="| Task | Scores |\n| --- | --- |\n| GSM8K | 72.4 81.5 90.2 |",
-            )
-        ],
-    )
-    repair = report_service.StructuredPdfExtraction(
-        source_path="/tmp/paper.pdf",
-        page_count=3,
-        parser="table_command",
-        blocks=[
-            report_service.StructuredPdfBlock(
-                block_type="table",
-                page=3,
-                source="table_command",
-                text="| Task | Score |\n| --- | --- |\n| GSM8K | 72.4 |",
-                metadata={"high_fidelity": True, "cells": [["GSM8K", "72.4"]]},
-            )
-        ],
-    )
-
-    monkeypatch.setattr(report_service.settings, "PDF_STRUCTURED_PARSER_BACKEND", "lightweight")
-    monkeypatch.setattr(report_service.settings, "PDF_TABLE_PARSER_COMMAND", "fake-table-parser {pdf_path}")
-    monkeypatch.setattr(report_service, "extract_pdf_structured_content_lightweight", lambda _path: base)
-    monkeypatch.setattr(report_service, "extract_pdf_tables_with_command", lambda _path: repair)
-
-    extraction = report_service.extract_pdf_structured_content("/tmp/paper.pdf")
-
-    assert extraction.parser == "test-lightweight+table_command"
-    assert extraction.blocks[0].metadata["repair_status"] == "repaired"
-    assert extraction.blocks[0].metadata["repair_trigger"] == "low_quality_table"
 
 
 def test_command_backend_failure_falls_back_to_lightweight(monkeypatch):

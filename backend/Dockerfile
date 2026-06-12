@@ -31,17 +31,6 @@ RUN pip install --no-cache-dir \
     --timeout 120 \
     -r requirements.txt
 
-# Optional high-fidelity table parser runtime, isolated from app dependencies.
-COPY requirements-marker.txt .
-RUN python -m venv /opt/marker \
-    && /opt/marker/bin/pip install --no-cache-dir \
-      --index-url "${PIP_INDEX_URL}" \
-      --retries 5 \
-      --timeout 120 \
-      -r requirements-marker.txt
-
-ENV MARKER_PARSER_BIN=/opt/marker/bin/marker_single
-
 # 应用代码
 COPY . .
 

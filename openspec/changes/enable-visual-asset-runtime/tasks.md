@@ -1,6 +1,0 @@
-- [x] 1.1 Add PyMuPDF to backend runtime dependencies.
-- [x] 1.2 Install or rebuild the local backend environment so `import fitz` succeeds in the running container.
-- [x] 2.1 Add focused backend coverage that extracts visual assets from a real generated PDF and verifies image metadata/files.
-- [x] 2.2 Verify parser/runtime health reports `fitz: True` after installation.
-- [x] 3.1 Run targeted backend/frontend tests for visual evidence and maintenance.
-- [x] 3.2 Validate the OpenSpec change and commit the scoped updates.
