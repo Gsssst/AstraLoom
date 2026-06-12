@@ -1,6 +1,7 @@
 """论文 API — 搜索、详情、入库、分类管理。"""
 
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Optional, List, Any, AsyncIterator, Literal
@@ -84,6 +85,22 @@ class StructuredPdfParseStatus(BaseModel):
     last_table_repair_error: Optional[dict] = None
 
 
+class PaperVisualAssetStatus(BaseModel):
+    ready: bool = False
+    version: Optional[int] = None
+    parser: Optional[str] = None
+    extracted_at: Optional[str] = None
+    asset_count: int = 0
+    page_asset_count: int = 0
+    figure_asset_count: int = 0
+    table_asset_count: int = 0
+    summary_count: int = 0
+    summary_missing: bool = False
+    enabled: bool = True
+    summary_enabled: bool = False
+    last_error: Optional[dict] = None
+
+
 class PaperDetail(PaperBrief):
     pdf_path: Optional[str]
     full_text_preview: Optional[str] = None
@@ -92,6 +109,7 @@ class PaperDetail(PaperBrief):
     metadata_json: Optional[dict] = None
     similar_papers: list = []
     structured_parse_status: Optional[StructuredPdfParseStatus] = None
+    visual_asset_status: Optional[PaperVisualAssetStatus] = None
 
 
 class PaperImportanceRequest(BaseModel):
@@ -126,6 +144,7 @@ class PaperProcessingStatus(BaseModel):
     missing: list[str] = []
     repair_actions: list[dict] = []
     structured_parse_status: Optional[StructuredPdfParseStatus] = None
+    visual_asset_status: Optional[PaperVisualAssetStatus] = None
 
 
 class PaperProcessingStatusResponse(BaseModel):
@@ -309,6 +328,7 @@ def _coverage_severity(coverage: float) -> Literal["high", "medium", "low"]:
 async def _maintenance_recommendations(db: AsyncSession, *, include_samples: bool = True) -> list[MaintenanceRecommendation]:
     from app.services.hybrid_search import bm25_index_status
     from app.services.report_service import structured_pdf_parse_status_from_paper
+    from app.services.paper_visual_service import visual_asset_status_from_paper
 
     total = await _paper_count(db)
     if total <= 0:
@@ -327,6 +347,8 @@ async def _maintenance_recommendations(db: AsyncSession, *, include_samples: boo
     structured_candidates = structured_candidates_result.scalars().all()
     structured_parse_needed = []
     table_repair_needed = []
+    visual_assets_needed = []
+    visual_summaries_needed = []
     for paper in structured_candidates:
         structured_status = structured_pdf_parse_status_from_paper(paper)
         if not structured_status.get("ready") or structured_status.get("last_error"):
@@ -339,6 +361,11 @@ async def _maintenance_recommendations(db: AsyncSession, *, include_samples: boo
                 and not table_repair.get("has_repaired_tables")
             ):
                 table_repair_needed.append(paper)
+        visual_status = visual_asset_status_from_paper(paper)
+        if not visual_status.get("ready"):
+            visual_assets_needed.append(paper)
+        elif visual_status.get("summary_missing"):
+            visual_summaries_needed.append(paper)
     missing_structured_parse = len(structured_parse_needed)
     low_quality_table_parse = len(table_repair_needed)
     full_text_coverage = full_text_papers / total
@@ -395,6 +422,30 @@ async def _maintenance_recommendations(db: AsyncSession, *, include_samples: boo
             reason=f"当前有 {low_quality_table_parse} 篇论文的表格解析质量偏低。精确数值问答需要先用高精度表格解析器修复 cell 结构。",
             action_label="修复 5 篇表格",
             action_endpoint="/papers/maintenance/repair-tables?limit=5",
+            sample_papers=samples,
+        ))
+
+    if visual_assets_needed:
+        samples = [_maintenance_sample(paper) for paper in visual_assets_needed[:3]] if include_samples else []
+        recommendations.append(MaintenanceRecommendation(
+            id="backfill-visual-assets",
+            title="提取图表视觉资产",
+            severity="medium",
+            reason=f"当前有 {len(visual_assets_needed)} 篇论文缺少页面/图表视觉资产。方法图、实验曲线和架构图问答需要这一步。",
+            action_label="提取 5 篇视觉资产",
+            action_endpoint="/papers/maintenance/backfill-visual-assets?limit=5",
+            sample_papers=samples,
+        ))
+
+    if visual_summaries_needed:
+        samples = [_maintenance_sample(paper) for paper in visual_summaries_needed[:3]] if include_samples else []
+        recommendations.append(MaintenanceRecommendation(
+            id="backfill-visual-summaries",
+            title="生成图表视觉摘要",
+            severity="low",
+            reason=f"当前有 {len(visual_summaries_needed)} 篇论文已有视觉资产但缺视觉摘要。未生成摘要时仍可引用页图，但模型无法稳定解释图中细节。",
+            action_label="摘要 5 篇视觉资产",
+            action_endpoint="/papers/maintenance/backfill-visual-summaries?limit=5",
             sample_papers=samples,
         ))
 
@@ -668,9 +719,11 @@ def _paper_processing_flags(paper: Paper) -> dict[str, Any]:
 
 def _paper_processing_status(paper: Paper) -> PaperProcessingStatus:
     from app.services.report_service import structured_pdf_parse_status_from_paper
+    from app.services.paper_visual_service import visual_asset_status_from_paper
 
     flags = _paper_processing_flags(paper)
     structured_status = structured_pdf_parse_status_from_paper(paper)
+    visual_status = visual_asset_status_from_paper(paper)
     actions = []
     if not flags["has_full_text"] and paper.arxiv_id:
         actions.append({"key": "full_text", "label": "补全文", "endpoint": f"/papers/{paper.id}/load-full-text"})
@@ -680,6 +733,10 @@ def _paper_processing_status(paper: Paper) -> PaperProcessingStatus:
         actions.append({"key": "embedding", "label": "生成向量", "endpoint": f"/papers/{paper.id}/embedding"})
     if not flags["has_tags"]:
         actions.append({"key": "tags", "label": "AI 标签", "endpoint": f"/papers/{paper.id}/auto-tag"})
+    if not visual_status.get("ready"):
+        actions.append({"key": "visual_assets", "label": "提取图表视觉资产", "endpoint": f"/papers/{paper.id}/extract-visual-assets"})
+    elif visual_status.get("summary_missing"):
+        actions.append({"key": "visual_summaries", "label": "生成图表视觉摘要", "endpoint": f"/papers/{paper.id}/summarize-visual-assets"})
     return PaperProcessingStatus(
         id=str(paper.id),
         title=paper.title,
@@ -694,6 +751,7 @@ def _paper_processing_status(paper: Paper) -> PaperProcessingStatus:
         missing=flags["missing"],
         repair_actions=actions,
         structured_parse_status=StructuredPdfParseStatus(**structured_status),
+        visual_asset_status=PaperVisualAssetStatus(**visual_status),
     )
 
 
@@ -1235,6 +1293,76 @@ async def repair_low_quality_tables(
     )
 
 
+@router.post("/maintenance/backfill-visual-assets", response_model=MaintenanceActionResult)
+async def backfill_visual_assets(
+    limit: int = Query(default=5, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Extract bounded PDF visual assets for papers missing visual evidence."""
+    from app.services.paper_visual_service import ensure_paper_visual_assets, visual_asset_status_from_paper
+
+    result = await db.execute(
+        select(Paper)
+        .where((Paper.pdf_path.is_not(None)) | (Paper.arxiv_id.is_not(None)))
+        .order_by(Paper.created_at.desc())
+        .limit(limit * 4)
+    )
+    papers = []
+    for candidate in result.scalars().all():
+        if not visual_asset_status_from_paper(candidate).get("ready"):
+            papers.append(candidate)
+        if len(papers) >= limit:
+            break
+    action = MaintenanceActionResult(processed=len(papers))
+    for paper in papers:
+        try:
+            payload = await ensure_paper_visual_assets(paper, db)
+            if payload.get("assets"):
+                action.success += 1
+            else:
+                action.skipped += 1
+                action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": payload.get("last_error") or "no visual assets"})
+        except Exception as exc:
+            action.failed += 1
+            action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": str(exc)})
+    return action
+
+
+@router.post("/maintenance/backfill-visual-summaries", response_model=MaintenanceActionResult)
+async def backfill_visual_summaries(
+    limit: int = Query(default=5, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Generate bounded visual summaries for papers with assets but missing summaries."""
+    from app.services.paper_visual_service import backfill_visual_summaries, visual_asset_status_from_paper
+
+    result = await db.execute(
+        select(Paper)
+        .where((Paper.pdf_path.is_not(None)) | (Paper.arxiv_id.is_not(None)))
+        .order_by(Paper.created_at.desc())
+        .limit(limit * 4)
+    )
+    papers = []
+    for candidate in result.scalars().all():
+        if visual_asset_status_from_paper(candidate).get("summary_missing"):
+            papers.append(candidate)
+        if len(papers) >= limit:
+            break
+    action = MaintenanceActionResult(processed=len(papers))
+    for paper in papers:
+        try:
+            result_payload = await backfill_visual_summaries(paper, db)
+            action.success += int(result_payload.get("success") or 0)
+            action.failed += int(result_payload.get("failed") or 0)
+            action.skipped += int(result_payload.get("skipped") or 0)
+        except Exception as exc:
+            action.failed += 1
+            action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": str(exc)})
+    return action
+
+
 @router.get("/maintenance/recommendations", response_model=list[MaintenanceRecommendation])
 async def get_retrieval_maintenance_recommendations(
     db: AsyncSession = Depends(get_db),
@@ -1359,6 +1487,7 @@ async def get_paper_detail(
         except Exception:
             pass
     from app.services.report_service import structured_pdf_parse_status_from_paper
+    from app.services.paper_visual_service import visual_asset_status_from_paper
 
     return PaperDetail(
         id=str(paper.id),
@@ -1384,6 +1513,7 @@ async def get_paper_detail(
         ],
         metadata_json=paper.metadata_json,
         structured_parse_status=StructuredPdfParseStatus(**structured_pdf_parse_status_from_paper(paper)),
+        visual_asset_status=PaperVisualAssetStatus(**visual_asset_status_from_paper(paper)),
         created_at=paper.created_at.isoformat() if paper.created_at else "",
         similar_papers=[
             {"id": str(sp.id), "title": sp.title, "year": sp.year, "arxiv_id": sp.arxiv_id, "tags": sp.tags}
@@ -1544,11 +1674,17 @@ async def _build_paper_chat_context(paper, req: AskPaperRequest) -> tuple[list[d
 
 def _paper_evidence_meta(references: list[dict]) -> dict:
     evidence = [ref for ref in references if ref.get("type") == "paper_evidence"]
+    visual_evidence = [
+        ref for ref in evidence
+        if str(ref.get("evidence_type") or "").startswith("visual") or (ref.get("metadata") or {}).get("visual_evidence")
+    ]
     coverage = min(1.0, len(evidence) / 3)
     return {
         "evidence_count": len(evidence),
+        "visual_evidence_count": len(visual_evidence),
         "evidence_coverage": round(coverage, 4),
         "evidence_insufficient": len(evidence) == 0,
+        "visual_evidence_available": bool(visual_evidence),
     }
 
 
@@ -1899,6 +2035,69 @@ async def load_full_text(paper_id: str, db: AsyncSession = Depends(get_db), user
         "success": bool(text),
         "structured_parse_status": structured_pdf_parse_status_from_paper(paper),
     }
+
+
+@router.post("/{paper_id}/extract-visual-assets", response_model=PaperVisualAssetStatus)
+async def extract_visual_assets(paper_id: str, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    """Force bounded PDF visual asset extraction for one paper."""
+    from uuid import UUID
+    try:
+        pid = UUID(paper_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid paper_id")
+
+    result = await db.execute(select(Paper).where(Paper.id == pid))
+    paper = result.scalar_one_or_none()
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文未找到")
+
+    from app.services.paper_visual_service import ensure_paper_visual_assets, visual_asset_status_from_paper
+    await ensure_paper_visual_assets(paper, db, force=True)
+    return PaperVisualAssetStatus(**visual_asset_status_from_paper(paper))
+
+
+@router.post("/{paper_id}/summarize-visual-assets", response_model=PaperVisualAssetStatus)
+async def summarize_visual_assets(paper_id: str, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    """Generate bounded visual summaries for one paper when enabled."""
+    from uuid import UUID
+    try:
+        pid = UUID(paper_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid paper_id")
+
+    result = await db.execute(select(Paper).where(Paper.id == pid))
+    paper = result.scalar_one_or_none()
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文未找到")
+
+    from app.services.paper_visual_service import backfill_visual_summaries, visual_asset_status_from_paper
+    await backfill_visual_summaries(paper, db)
+    return PaperVisualAssetStatus(**visual_asset_status_from_paper(paper))
+
+
+@router.get("/{paper_id}/visual-assets/{asset_id}/image")
+async def get_visual_asset_image(paper_id: str, asset_id: str, db: AsyncSession = Depends(get_db), user=Depends(get_optional_user)):
+    """Serve a cached visual asset image for the paper detail UI."""
+    from uuid import UUID
+    try:
+        pid = UUID(paper_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid paper_id")
+
+    result = await db.execute(select(Paper).where(Paper.id == pid))
+    paper = result.scalar_one_or_none()
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文未找到")
+
+    from app.services.paper_visual_service import visual_assets_from_paper
+    asset = next((item for item in visual_assets_from_paper(paper) if item.asset_id == asset_id), None)
+    if not asset or not asset.image_path:
+        raise HTTPException(status_code=404, detail="视觉资产未找到")
+    if not os.path.exists(asset.image_path):
+        raise HTTPException(status_code=404, detail="视觉资产文件不存在")
+    extension = os.path.splitext(asset.image_path)[1].lower()
+    media_type = "image/jpeg" if extension in {".jpg", ".jpeg"} else "image/png"
+    return FileResponse(asset.image_path, media_type=media_type, filename=os.path.basename(asset.image_path))
 
 
 @router.post("/{paper_id}/reparse-structured-pdf", response_model=StructuredPdfParseStatus)

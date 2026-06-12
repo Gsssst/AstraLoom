@@ -207,6 +207,10 @@ async def build_paper_context_with_evidence(
                 resolve_paper_pdf_path,
                 structured_pdf_evidence_blocks_from_paper,
             )
+            from app.services.paper_visual_service import (
+                ensure_paper_visual_assets,
+                visual_evidence_blocks_from_paper,
+            )
             import asyncio
 
             pdf_path = await resolve_paper_pdf_path(paper)
@@ -216,6 +220,9 @@ async def build_paper_context_with_evidence(
                 if not structured_blocks:
                     structured_extraction = await ensure_structured_pdf_content(paper)
                     structured_blocks = structured_extraction.to_evidence_blocks() if structured_extraction else []
+                if paper_chunk_service.is_visual_like_query(question) or paper_chunk_service.is_broad_experiment_query(question):
+                    await ensure_paper_visual_assets(paper)
+                structured_blocks.extend(visual_evidence_blocks_from_paper(paper))
         except Exception as exc:
             logger.warning(f"PDF 按页/结构化解析失败，使用全文证据: {exc}")
         evidence_top_k = paper_chunk_service.recommended_evidence_top_k(question)
@@ -242,6 +249,9 @@ async def build_paper_context_with_evidence(
                     "table": "，类型: 表格",
                     "caption": "，类型: 图/表标题",
                     "visual": "，类型: 图片占位",
+                    "visual_asset": "，类型: 视觉资产",
+                    "visual_summary": "，类型: 视觉摘要",
+                    "visual_pack": "，类型: 视觉证据包",
                 }.get(evidence.source_type, "")
                 evidence_id = f"E{i + 1}"
                 chunk_lines.append(
@@ -275,11 +285,19 @@ async def build_paper_context_with_evidence(
 
     paper_context = f"{metadata}\n\n{relevant_context}"
     evidence_coverage = min(1.0, len(evidence_refs) / 3) if paper.full_text and len(paper.full_text) >= 500 else 0.0
-    evidence_warning = (
-        "当前没有检索到可定位的正文证据。若用户要求 Introduction、Method、Experiments 等章节，请明确说明“当前论文内容不足”，不要仅根据摘要推测。"
-        if not evidence_refs else
-        f"当前检索到 {len(evidence_refs)} 条正文证据，引用覆盖率约 {evidence_coverage:.0%}。回答中的关键结论应尽量标注 [E1]、[E2] 这样的证据编号。"
-    )
+    visual_question = False
+    try:
+        from app.services.paper_chunk_service import paper_chunk_service
+        visual_question = paper_chunk_service.is_visual_like_query(question) or paper_chunk_service.is_broad_experiment_query(question)
+    except Exception:
+        visual_question = False
+    has_visual_evidence = any((ref.get("evidence_type") or "").startswith("visual") for ref in evidence_refs)
+    if not evidence_refs:
+        evidence_warning = "当前没有检索到可定位的正文证据。若用户要求 Introduction、Method、Experiments 等章节，请明确说明“当前论文内容不足”，不要仅根据摘要推测。"
+    else:
+        evidence_warning = f"当前检索到 {len(evidence_refs)} 条正文/结构化证据，引用覆盖率约 {evidence_coverage:.0%}。回答中的关键结论应尽量标注 [E1]、[E2] 这样的证据编号。"
+    if visual_question and not has_visual_evidence:
+        evidence_warning += " 用户问题可能需要阅读图、图表、曲线或架构图，但当前没有可用视觉证据；请明确说明“当前视觉证据不可用”，不要声称看到了未解析的图表细节。"
 
     context = []
     context.append({
@@ -287,8 +305,9 @@ async def build_paper_context_with_evidence(
         "content": (
             "你是这篇论文的专家助手。请严格基于以下论文内容回答用户问题。"
             "回答中的关键结论必须绑定证据编号（例如 [E1]）。"
-            "证据类型可能包含正文、表格、图/表标题或图片占位；图片占位只表示 PDF 页面中存在嵌入图片，"
-            "不能当作已经完成像素级视觉理解或图表数值读取。"
+            "证据类型可能包含正文、表格、图/表标题、视觉资产或视觉摘要；"
+            "只有视觉资产/视觉摘要/视觉证据包可以作为图表页面证据，普通图片占位不能当作已经完成像素级视觉理解。"
+            "图片占位只表示 PDF 页面中存在嵌入图片，不能当作已经完成像素级视觉理解或图表数值读取。"
             "如果证据不足以支持用户要求的章节、实验数据或方法细节，请明确说明“当前论文内容不足”，"
             "不要根据摘要或常识补全不存在的内容。"
             f"{evidence_warning}\n\n"

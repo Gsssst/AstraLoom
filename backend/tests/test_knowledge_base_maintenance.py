@@ -96,7 +96,14 @@ def test_processing_flags_and_repair_actions_reflect_missing_artifacts():
         "status": "needs_processing",
     }
     assert status.status == "needs_processing"
-    assert [action["key"] for action in status.repair_actions] == ["full_text", "structured_parse", "embedding", "tags"]
+    assert [action["key"] for action in status.repair_actions] == [
+        "full_text",
+        "structured_parse",
+        "embedding",
+        "tags",
+        "visual_assets",
+    ]
+    assert status.visual_asset_status.ready is False
     assert status.structured_parse_status.ready is False
 
 

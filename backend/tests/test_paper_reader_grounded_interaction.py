@@ -1,9 +1,19 @@
 import pytest
 import sys
 import types
+import uuid
 
+from app.db.models.paper import Paper
 from app.services.paper_chunk_service import PaperChunkService
 from app.services import memory_service, report_service
+from app.services.paper_visual_service import (
+    PDF_VISUAL_ASSETS_METADATA_KEY,
+    PDF_VISUAL_ASSETS_VERSION,
+    _caption_region_bbox,
+    ensure_paper_visual_assets,
+    visual_asset_status_from_paper,
+    visual_evidence_blocks_from_paper,
+)
 
 
 def _paragraph(marker: str) -> str:
@@ -217,6 +227,139 @@ def test_structured_table_evidence_is_retrieved_with_page_number():
     assert evidence[0].source_type == "table_pack"
     assert evidence[0].page_start == 7
     assert "91.3" in evidence[0].text
+
+
+def test_visual_asset_metadata_converts_to_evidence_block():
+    paper = Paper(
+        id=uuid.uuid4(),
+        title="Visual RAG Paper",
+        authors=[],
+        source="manual",
+        metadata_json={
+            PDF_VISUAL_ASSETS_METADATA_KEY: {
+                "version": PDF_VISUAL_ASSETS_VERSION,
+                "parser": "fitz_page_render",
+                "assets": [{
+                    "asset_id": "fig3",
+                    "paper_id": "paper-1",
+                    "page": 5,
+                    "kind": "figure",
+                    "image_path": "/tmp/fig3.png",
+                    "thumbnail_path": "/tmp/fig3-thumb.png",
+                    "bbox": [36.0, 48.0, 560.0, 620.0],
+                    "caption": "Figure 3. Architecture of the proposed model.",
+                    "summary": "The figure shows a two-stage multimodal architecture.",
+                    "key_facts": ["two-stage architecture", "visual encoder feeds grounding head"],
+                    "source": "caption+caption_page_region",
+                    "metadata": {"linked_page_asset_id": "page5", "crop_strategy": "caption_page_region"},
+                }],
+            }
+        },
+    )
+
+    status = visual_asset_status_from_paper(paper)
+    blocks = visual_evidence_blocks_from_paper(paper)
+
+    assert status["ready"] is True
+    assert status["figure_asset_count"] == 1
+    assert status["summary_count"] == 1
+    assert blocks[0]["type"] == "visual_summary"
+    assert blocks[0]["page"] == 5
+    assert blocks[0]["metadata"]["asset_id"] == "fig3"
+    assert blocks[0]["metadata"]["thumbnail_path"] == "/tmp/fig3-thumb.png"
+    assert blocks[0]["metadata"]["crop_strategy"] == "caption_page_region"
+    assert blocks[0]["metadata"]["bbox"] == [36.0, 48.0, 560.0, 620.0]
+    assert "two-stage multimodal architecture" in blocks[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_visual_asset_extraction_renders_real_pdf_page(tmp_path, monkeypatch):
+    try:
+        import fitz
+    except Exception as exc:
+        pytest.fail(f"PyMuPDF/fitz must be installed for visual asset extraction: {exc}")
+
+    pdf_path = tmp_path / "visual-source.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=320, height=240)
+    page.insert_text((36, 48), "Figure 1. Runtime visual asset smoke test.")
+    page.draw_rect(fitz.Rect(40, 70, 260, 180), color=(0, 0, 1), width=1.5)
+    doc.save(str(pdf_path))
+    doc.close()
+
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr("app.services.paper_visual_service.settings.UPLOAD_DIR", str(upload_dir))
+    monkeypatch.setattr("app.services.paper_visual_service.settings.PDF_VISUAL_ASSET_MAX_PAGES", 1)
+    monkeypatch.setattr("app.services.paper_visual_service.settings.PDF_VISUAL_ASSET_MAX_ASSETS", 2)
+    monkeypatch.setattr("app.services.paper_visual_service.settings.PDF_VISUAL_ASSET_RENDER_SCALE", 1.0)
+
+    paper = Paper(
+        id=uuid.uuid4(),
+        title="Renderable visual paper",
+        authors=[],
+        source="manual",
+        pdf_path=str(pdf_path),
+        metadata_json={},
+    )
+
+    payload = await ensure_paper_visual_assets(paper)
+    assets = payload.get("assets") or []
+
+    assert payload["parser"] == "fitz_page_render"
+    assert payload["asset_count"] >= 1
+    assert assets[0]["kind"] == "page"
+    assert assets[0]["page"] == 1
+    assert assets[0]["image_path"].endswith(".png")
+    assert (upload_dir / "paper-visual-assets" / str(paper.id)).exists()
+    assert assets[0]["image_path"]
+    assert __import__("os").path.exists(assets[0]["image_path"])
+    status = visual_asset_status_from_paper(paper)
+    assert status["ready"] is True
+    assert status["page_asset_count"] == 1
+
+
+def test_caption_region_bbox_prefers_different_figure_and_table_regions():
+    figure_bbox = _caption_region_bbox(600, 800, "figure")
+    table_bbox = _caption_region_bbox(600, 800, "table")
+
+    assert figure_bbox[1] < table_bbox[1]
+    assert figure_bbox[3] < table_bbox[3]
+    assert figure_bbox[0] == table_bbox[0] == 36
+    assert figure_bbox[2] == table_bbox[2] == 564
+
+
+def test_visual_question_routes_to_visual_evidence_pack():
+    full_text = _paragraph("method-marker")
+    structured_blocks = [{
+        "type": "visual_summary",
+        "page": 4,
+        "source": "caption+page_render",
+        "text": (
+            "[PDF visual asset, page 4, kind figure, asset fig4]\n"
+            "Caption: Figure 4. Method architecture diagram.\n"
+            "Visual summary: The diagram shows the visual encoder, temporal grounding head, and language decoder."
+        ),
+        "metadata": {
+            "asset_id": "fig4",
+            "kind": "figure",
+            "caption": "Figure 4. Method architecture diagram.",
+            "has_visual_summary": True,
+        },
+    }]
+
+    evidence, scope = PaperChunkService.retrieve_evidence(
+        full_text,
+        "请解释图4中的方法架构图",
+        top_k=3,
+        structured_blocks=structured_blocks,
+    )
+
+    assert scope == "visual+structured+document"
+    assert evidence
+    assert evidence[0].source_type == "visual_pack"
+    assert evidence[0].page_start == 4
+    assert evidence[0].metadata["visual_evidence"] is True
+    assert "temporal grounding head" in evidence[0].text
 
 
 def test_section_first_table_question_keeps_structured_table_evidence():

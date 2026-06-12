@@ -100,6 +100,20 @@ interface PaperChatReference {
   page_end?: number | null;
   score?: number;
   snippet?: string;
+  evidence_type?: string;
+  metadata?: {
+    asset_id?: string;
+    kind?: string;
+    caption?: string;
+    image_path?: string;
+    thumbnail_path?: string;
+    bbox?: number[];
+    crop_strategy?: string;
+    fallback_image_path?: string | null;
+    has_visual_summary?: boolean;
+    visual_evidence?: boolean;
+    [key: string]: unknown;
+  };
 }
 
 interface PaperPdfQuote {
@@ -152,8 +166,10 @@ interface PaperChatMessage {
 
 interface PaperChatEvidenceMeta {
   evidence_count: number;
+  visual_evidence_count?: number;
   evidence_coverage: number;
   evidence_insufficient: boolean;
+  visual_evidence_available?: boolean;
 }
 
 interface PaperReadingTemplate {
@@ -582,9 +598,50 @@ const PaperDetailPage: React.FC = () => {
     if (ref.type === 'paper_evidence' || ref.source === 'current_paper') {
       const page = ref.page || ref.page_start;
       const section = ref.section ? `${ref.section} · ` : '';
+      const isVisual = ref.evidence_type?.startsWith('visual') || ref.metadata?.visual_evidence;
+      if (isVisual) {
+        const kind = ref.metadata?.kind === 'table' ? '表格视觉证据' : ref.metadata?.kind === 'figure' ? '图像视觉证据' : '视觉证据';
+        return `${ref.id || '证据'} · ${kind}${page ? ` · PDF 第 ${page} 页` : ''}`;
+      }
       return `${ref.id || '证据'} · ${section}${page ? `PDF 第 ${page} 页` : '当前论文片段'}`;
     }
     return `${ref.source === 'web' ? '网页 · ' : ''}${ref.title?.slice(0, 24)}${ref.title?.length > 24 ? '...' : ''}`;
+  };
+
+  const referenceTooltip = (ref: PaperChatReference) => {
+    const caption = typeof ref.metadata?.caption === 'string' ? ref.metadata.caption : '';
+    const visualHint = ref.evidence_type?.startsWith('visual') || ref.metadata?.visual_evidence
+      ? `${ref.metadata?.has_visual_summary ? '已生成视觉摘要' : '已提取视觉资产，尚未生成视觉摘要'}${caption ? `\n${caption}` : ''}`
+      : '';
+    return [visualHint, ref.snippet, ref.title].filter(Boolean).join('\n\n');
+  };
+
+  const referenceColor = (ref: PaperChatReference) => {
+    if (ref.evidence_type?.startsWith('visual') || ref.metadata?.visual_evidence) return 'purple';
+    if (ref.source === 'web') return 'cyan';
+    if (ref.source === 'current_paper') return 'gold';
+    return 'geekblue';
+  };
+
+  const isVisualReference = (ref: PaperChatReference) => (
+    Boolean(ref.evidence_type?.startsWith('visual') || ref.metadata?.visual_evidence || ref.metadata?.asset_id)
+  );
+
+  const visualReferenceImageUrl = (ref: PaperChatReference) => (
+    paper?.id && ref.metadata?.asset_id
+      ? `/api/papers/${paper.id}/visual-assets/${encodeURIComponent(ref.metadata.asset_id)}/image`
+      : ''
+  );
+
+  const visualReferenceKindLabel = (ref: PaperChatReference) => {
+    if (ref.metadata?.kind === 'table') return '表格证据';
+    if (ref.metadata?.kind === 'figure') return '图像证据';
+    return '视觉证据';
+  };
+
+  const visualReferencePreviewText = (ref: PaperChatReference) => {
+    const caption = typeof ref.metadata?.caption === 'string' ? ref.metadata.caption : '';
+    return (caption || ref.snippet || ref.title || '').trim();
   };
 
   const submitPaperQuestion = async (rawQuestion?: string, displayQuestion?: string, quoteOverride?: PaperPdfQuote | null) => {
@@ -1441,17 +1498,51 @@ const PaperDetailPage: React.FC = () => {
                               <Tag color={msg.evidence.evidence_insufficient ? 'orange' : 'green'} style={{ borderRadius: 8 }}>
                                 {msg.evidence.evidence_insufficient ? '证据不足' : `引用覆盖率 ${Math.round((msg.evidence.evidence_coverage || 0) * 100)}%`}
                               </Tag>
-                              <Text type="secondary" style={{ fontSize: 11 }}>当前回答关联 {msg.evidence.evidence_count || 0} 条正文证据</Text>
+                              <Text type="secondary" style={{ fontSize: 11 }}>
+                                当前回答关联 {msg.evidence.evidence_count || 0} 条证据
+                                {msg.evidence.visual_evidence_count ? `，其中 ${msg.evidence.visual_evidence_count} 条视觉证据` : ''}
+                              </Text>
                             </div>
                           )}
                           {msg.references && msg.references.length > 0 && <Text type="secondary" style={{ fontSize: 11 }}>引用证据：</Text>}
-                          {(msg.references || []).map((ref, ri) => (
-                            <Tooltip key={`${ref.url || ref.arxiv_id || ref.id || ref.title}-${ri}`} title={ref.snippet || ref.title}>
-                              <Tag color={ref.source === 'web' ? 'cyan' : ref.source === 'current_paper' ? 'gold' : 'geekblue'} className="paper-chat-reference" onClick={() => handleEvidenceReferenceClick(ref)}>
-                                [{ri + 1}] {referenceTitle(ref)}
-                              </Tag>
-                            </Tooltip>
-                          ))}
+                          <div className="paper-chat-reference-list">
+                            {(msg.references || []).map((ref, ri) => {
+                              const imageUrl = isVisualReference(ref) ? visualReferenceImageUrl(ref) : '';
+                              const page = ref.page || ref.page_start;
+                              if (imageUrl) {
+                                return (
+                                  <Tooltip key={`${ref.url || ref.arxiv_id || ref.id || ref.title}-${ri}`} title={referenceTooltip(ref)}>
+                                    <button
+                                      type="button"
+                                      className="paper-chat-visual-reference-card"
+                                      onClick={() => handleEvidenceReferenceClick(ref)}
+                                      aria-label={`查看视觉证据 ${ri + 1}`}
+                                    >
+                                      <div className="paper-chat-visual-thumb">
+                                        <img src={imageUrl} alt={referenceTitle(ref)} loading="lazy" />
+                                      </div>
+                                      <div className="paper-chat-visual-body">
+                                        <div className="paper-chat-visual-title">
+                                          <span>[{ri + 1}] {visualReferenceKindLabel(ref)}</span>
+                                          {page && <Tag color="purple">PDF 第 {page} 页</Tag>}
+                                        </div>
+                                        <Text type="secondary" className="paper-chat-visual-caption">
+                                          {visualReferencePreviewText(ref) || '已提取图表视觉区域，可点击跳转 PDF。'}
+                                        </Text>
+                                      </div>
+                                    </button>
+                                  </Tooltip>
+                                );
+                              }
+                              return (
+                                <Tooltip key={`${ref.url || ref.arxiv_id || ref.id || ref.title}-${ri}`} title={referenceTooltip(ref)}>
+                                  <Tag color={referenceColor(ref)} className="paper-chat-reference" onClick={() => handleEvidenceReferenceClick(ref)}>
+                                    [{ri + 1}] {referenceTitle(ref)}
+                                  </Tag>
+                                </Tooltip>
+                              );
+                            })}
+                          </div>
                         </div>
                       )}
                     </div>
