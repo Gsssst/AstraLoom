@@ -1556,6 +1556,7 @@ async def get_paper_detail(
         except Exception:
             pass
     from app.services.report_service import structured_pdf_parse_status_from_paper
+    from app.services.document_visual_evidence import visual_evidence_status_from_paper
 
     return PaperDetail(
         id=str(paper.id),

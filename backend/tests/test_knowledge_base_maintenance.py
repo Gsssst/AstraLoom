@@ -207,6 +207,52 @@ def test_safe_paper_metadata_strips_private_visual_asset_paths():
     assert item["metadata"]["page_asset_token"] == "page-token"
 
 
+@pytest.mark.asyncio
+async def test_paper_detail_includes_visual_status_without_crashing(monkeypatch):
+    paper_id = uuid4()
+    paper = SimpleNamespace(
+        id=paper_id,
+        title="Visual detail paper",
+        authors=["A"],
+        year=2026,
+        abstract="Abstract",
+        arxiv_id="2604.17087v1",
+        doi=None,
+        source="arxiv",
+        source_url="https://arxiv.org/abs/2604.17087v1",
+        pdf_path="/data/paper.pdf",
+        citation_count=0,
+        imported_by_user_id=None,
+        imported_by_username="gst",
+        importance_label=None,
+        importance_note=None,
+        full_text="x" * 800,
+        tags={},
+        categories=[],
+        metadata_json={},
+        created_at=None,
+    )
+
+    class _Enhance:
+        def __init__(self, _db):
+            pass
+
+        async def similar_papers(self, _paper, top_k=3):
+            return []
+
+    monkeypatch.setattr(papers_api, "PaperEnhanceService", _Enhance)
+
+    detail = await papers_api.get_paper_detail(
+        str(paper_id),
+        db=_PaperDb(paper),
+        user=SimpleNamespace(role="admin"),
+    )
+
+    assert detail.id == str(paper_id)
+    assert detail.visual_evidence_status.status == "missing"
+    assert detail.structured_parse_status.ready is False
+
+
 def test_parser_runtime_health_reports_available_backends(monkeypatch):
     monkeypatch.setattr(report_service.settings, "PDF_STRUCTURED_PARSER_BACKEND", "auto")
     monkeypatch.setattr(report_service.settings, "PDF_STRUCTURED_PARSER_COMMAND", "")
