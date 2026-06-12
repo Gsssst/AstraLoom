@@ -141,6 +141,24 @@ type SelectedExportFormat = 'bibtex' | 'markdown' | 'json';
 type RecommendationKind = 'classic' | 'recent' | 'gap' | 'related';
 type DiagnosticTab = 'hybrid' | 'bm25' | 'dense';
 type PaperResultStateFilter = 'all' | 'local' | 'importable' | 'imported' | 'open_pdf' | 'missing_remote_id';
+type MaintenanceJobState = 'queued' | 'running' | 'success' | 'failed' | 'cancelled' | 'unknown';
+
+interface MaintenanceJobStatus {
+  id?: string;
+  kind: string;
+  state: MaintenanceJobState;
+  status: string;
+  total: number;
+  processed: number;
+  success: number;
+  failed: number;
+  skipped: number;
+  progress_percent: number;
+  current_paper?: { id?: string; title?: string; year?: number | null } | null;
+  errors?: { paper_id?: string; title?: string; reason?: string }[];
+  message?: string;
+  result?: { processed: number; success: number; failed: number; skipped: number; errors?: any[] } | null;
+}
 
 const remoteSearchSources = ['scholarly', 'arxiv', 'semantic_scholar', 'openalex', 'google_scholar'];
 const paperSearchSources = ['local', 'mine', 'saved', 'collection', 'reading', 'maintenance', ...remoteSearchSources];
@@ -349,6 +367,7 @@ const PapersPage: React.FC = () => {
   const [kbRecommendations, setKbRecommendations] = useState<any[]>([]);
   const [kbLoading, setKbLoading] = useState(false);
   const [kbAction, setKbAction] = useState<string | null>(null);
+  const [activeMaintenanceJob, setActiveMaintenanceJob] = useState<MaintenanceJobStatus | null>(null);
   const [processingStatuses, setProcessingStatuses] = useState<ProcessingStatusItem[]>([]);
   const [processingLoading, setProcessingLoading] = useState(false);
   const [processingStatusFilter, setProcessingStatusFilter] = useState<'all' | 'ready' | 'needs_processing'>('needs_processing');
@@ -872,8 +891,13 @@ const PapersPage: React.FC = () => {
     try {
       const response = await api.post(endpoint, undefined, { timeout: 300000 });
       setPageActionError(null);
-      message.success(`维护完成：成功 ${response.data.success || 0}，失败 ${response.data.failed || 0}，跳过 ${response.data.skipped || 0}`);
-      await fetchMaintenanceCenter();
+      if (response.data?.job_id && response.data?.job) {
+        setActiveMaintenanceJob(response.data.job);
+        message.success('表格修复已进入后台任务，可在维护中心查看进度');
+      } else {
+        message.success(`维护完成：成功 ${response.data.success || 0}，失败 ${response.data.failed || 0}，跳过 ${response.data.skipped || 0}`);
+        await fetchMaintenanceCenter();
+      }
     } catch (e: any) {
       showPageError('维护操作失败', e, '维护操作失败');
     } finally {
@@ -894,6 +918,36 @@ const PapersPage: React.FC = () => {
       setProcessingLoading(false);
     }
   }, [fetchMaintenanceCenter, showPageError]);
+
+  useEffect(() => {
+    const jobId = activeMaintenanceJob?.id;
+    if (!jobId || !['queued', 'running', 'unknown'].includes(activeMaintenanceJob.state)) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const response = await api.get(`/papers/maintenance/jobs/${jobId}`);
+        if (cancelled) return;
+        const nextJob = response.data as MaintenanceJobStatus;
+        setActiveMaintenanceJob(nextJob);
+        if (['success', 'failed', 'cancelled'].includes(nextJob.state)) {
+          await fetchMaintenanceCenter();
+          if (nextJob.state === 'success') {
+            message.success(`表格修复完成：成功 ${nextJob.success || 0}，失败 ${nextJob.failed || 0}，跳过 ${nextJob.skipped || 0}`);
+          } else {
+            message.warning(nextJob.message || '表格修复任务未正常完成');
+          }
+        }
+      } catch (e: any) {
+        if (!cancelled) showPageError('表格修复任务状态读取失败', e, '表格修复任务状态读取失败');
+      }
+    };
+    const timer = window.setInterval(poll, 3000);
+    poll();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeMaintenanceJob?.id, activeMaintenanceJob?.state, fetchMaintenanceCenter, showPageError]);
 
   const runKbDiagnostics = useCallback(async () => {
     if (!kbQuery.trim()) {
@@ -1062,6 +1116,7 @@ const PapersPage: React.FC = () => {
     if (quality === 'low') return { color: 'orange', label: '表格低' };
     return { color: 'default', label: '表格无' };
   };
+  const maintenanceJobRunning = Boolean(activeMaintenanceJob && ['queued', 'running', 'unknown'].includes(activeMaintenanceJob.state));
   const reportPresetOptions = [
     { value: 'default', label: '默认逐篇' },
     { value: 'compare', label: '横向对比' },
@@ -1108,6 +1163,39 @@ const PapersPage: React.FC = () => {
             message="这里集中维护论文库能否被正确检索和用于问答"
             description="全文覆盖影响论文页章节问答，向量覆盖影响语义召回，BM25 影响关键词召回。分类健康度会影响研究方向 idea 生成质量。"
           />
+          {activeMaintenanceJob && (
+            <Alert
+              type={activeMaintenanceJob.state === 'failed' ? 'error' : activeMaintenanceJob.state === 'success' ? 'success' : 'info'}
+              showIcon
+              style={{ borderRadius: 10, marginBottom: 14 }}
+              message={
+                activeMaintenanceJob.state === 'success'
+                  ? '表格修复任务已完成'
+                  : activeMaintenanceJob.state === 'failed'
+                    ? '表格修复任务失败'
+                    : '表格修复正在后台执行'
+              }
+              description={(
+                <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                  <Progress
+                    percent={activeMaintenanceJob.progress_percent || 0}
+                    status={activeMaintenanceJob.state === 'failed' ? 'exception' : activeMaintenanceJob.state === 'success' ? 'success' : 'active'}
+                  />
+                  <Text type="secondary">
+                    已处理 {activeMaintenanceJob.processed || 0}/{activeMaintenanceJob.total || 0}，成功 {activeMaintenanceJob.success || 0}，失败 {activeMaintenanceJob.failed || 0}，跳过 {activeMaintenanceJob.skipped || 0}
+                  </Text>
+                  {activeMaintenanceJob.current_paper?.title && <Text type="secondary">当前论文：{activeMaintenanceJob.current_paper.title}</Text>}
+                  {activeMaintenanceJob.message && <Text type="secondary">{activeMaintenanceJob.message}</Text>}
+                  {!!activeMaintenanceJob.errors?.length && (
+                    <Text type="secondary">最近错误：{activeMaintenanceJob.errors[0].title || activeMaintenanceJob.errors[0].paper_id || '任务'} - {activeMaintenanceJob.errors[0].reason || '未知错误'}</Text>
+                  )}
+                </Space>
+              )}
+              action={activeMaintenanceJob.state !== 'running' && activeMaintenanceJob.state !== 'queued' ? (
+                <Button size="small" onClick={() => setActiveMaintenanceJob(null)}>关闭</Button>
+              ) : undefined}
+            />
+          )}
           {kbHealth ? (
             <>
               <Row gutter={[12, 12]}>
@@ -1127,7 +1215,7 @@ const PapersPage: React.FC = () => {
                 <Button loading={kbAction === 'embeddings'} onClick={() => runKbAction('embeddings', '/papers/maintenance/backfill-embeddings?limit=20')}>补 20 篇向量</Button>
                 <Button loading={kbAction === 'fulltext'} onClick={() => runKbAction('fulltext', '/papers/maintenance/backfill-full-text?limit=5')}>补 5 篇全文</Button>
                 <Button loading={kbAction === 'structured'} onClick={() => runKbAction('structured', '/papers/maintenance/backfill-structured-pdf?limit=5')}>解析 5 篇 PDF</Button>
-                <Button loading={kbAction === 'tableRepair'} onClick={() => runKbAction('tableRepair', '/papers/maintenance/repair-tables?limit=5')}>修复 5 篇表格</Button>
+                <Button loading={kbAction === 'tableRepair' || maintenanceJobRunning} disabled={maintenanceJobRunning} onClick={() => runKbAction('tableRepair', '/papers/maintenance/repair-tables?limit=5')}>修复 5 篇表格</Button>
               </Space>
             </>
           ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无维护状态" />}
@@ -1143,7 +1231,15 @@ const PapersPage: React.FC = () => {
                       <Space wrap><Tag color={recommendationColor(rec.severity)}>{rec.severity}</Tag><Text strong>{rec.title}</Text></Space>
                       <Text type="secondary" style={{ fontSize: 12 }}>{rec.reason}</Text>
                       {!!rec.sample_papers?.length && <Space wrap>{rec.sample_papers.slice(0, 2).map((paper: any) => <Tag key={paper.id}>{paper.title?.slice(0, 24)}</Tag>)}</Space>}
-                      <Button size="small" type="primary" loading={kbAction === rec.id} onClick={() => runKbAction(rec.id, rec.action_endpoint)}>{rec.action_label}</Button>
+                      <Button
+                        size="small"
+                        type="primary"
+                        loading={kbAction === rec.id || (rec.id === 'repair-low-quality-tables' && maintenanceJobRunning)}
+                        disabled={rec.id === 'repair-low-quality-tables' && maintenanceJobRunning}
+                        onClick={() => runKbAction(rec.id, rec.action_endpoint)}
+                      >
+                        {rec.action_label}
+                      </Button>
                     </Space>
                   </Card>
                 </Col>

@@ -11,6 +11,7 @@ from app.api.chat_sessions import _retrieval_status
 from app.core.security import require_admin
 from app.main import app
 from app.services import hybrid_search, report_service
+from app.services import maintenance_jobs
 
 
 def _route(path: str, method: str):
@@ -54,6 +55,7 @@ def test_maintenance_routes_are_fixed_paths_and_admin_only():
         ("/api/papers/maintenance/backfill-full-text", "POST"),
         ("/api/papers/maintenance/backfill-structured-pdf", "POST"),
         ("/api/papers/maintenance/repair-tables", "POST"),
+        ("/api/papers/maintenance/jobs/{job_id}", "GET"),
         ("/api/papers/maintenance/recommendations", "GET"),
         ("/api/papers/maintenance/search-diagnostics", "GET"),
     ]:
@@ -348,7 +350,7 @@ async def test_backfill_structured_pdf_parse_repairs_bounded_candidates(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_repair_low_quality_tables_endpoint_repairs_candidates(monkeypatch):
+async def test_low_quality_table_repair_job_repairs_candidates(monkeypatch):
     low_quality_metadata = {
         report_service.PDF_STRUCTURED_METADATA_KEY: {
             "version": report_service.PDF_STRUCTURED_METADATA_VERSION,
@@ -394,12 +396,85 @@ async def test_repair_low_quality_tables_endpoint_repairs_candidates(monkeypatch
     monkeypatch.setattr(report_service, "force_table_repair", fake_repair)
 
     db = _Db()
-    result = await papers_api.repair_low_quality_tables(limit=5, db=db, user=SimpleNamespace(role="admin"))
+    progress = []
+    result = await maintenance_jobs.run_low_quality_table_repair(db, limit=5, progress=progress.append)
 
-    assert result.processed == 1
-    assert result.success == 1
-    assert result.failed == 0
+    assert result["result"]["processed"] == 1
+    assert result["result"]["success"] == 1
+    assert result["result"]["failed"] == 0
+    assert result["progress_percent"] == 100
+    assert progress
     assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_repair_low_quality_tables_endpoint_enqueues_job(monkeypatch):
+    class _FakeTask:
+        id = "job-123"
+
+    class _FakeDelay:
+        calls = []
+
+        @classmethod
+        def delay(cls, limit):
+            cls.calls.append(limit)
+            return _FakeTask()
+
+    monkeypatch.setattr("app.tasks.paper_tasks.repair_low_quality_tables_task", _FakeDelay)
+
+    response = await papers_api.repair_low_quality_tables(limit=7, user=SimpleNamespace(role="admin"))
+
+    assert response.job_id == "job-123"
+    assert response.status_endpoint == "/papers/maintenance/jobs/job-123"
+    assert response.job.state == "queued"
+    assert response.job.kind == maintenance_jobs.TABLE_REPAIR_JOB_KIND
+    assert _FakeDelay.calls == [7]
+
+
+def test_maintenance_job_status_normalizes_progress_payload():
+    payload = maintenance_jobs.table_repair_progress_payload(
+        status="running",
+        total=5,
+        processed=2,
+        success=1,
+        failed=0,
+        skipped=1,
+        current_paper={"id": "paper-1", "title": "Current paper"},
+        message="正在修复",
+    )
+    async_result = SimpleNamespace(state="PROGRESS", info=payload, result=None)
+
+    status = papers_api._maintenance_job_status_from_result("job-1", async_result)
+
+    assert status.id == "job-1"
+    assert status.state == "running"
+    assert status.total == 5
+    assert status.processed == 2
+    assert status.progress_percent == 40
+    assert status.current_paper["title"] == "Current paper"
+
+
+def test_maintenance_job_status_normalizes_success_result():
+    async_result = SimpleNamespace(
+        state="SUCCESS",
+        info=None,
+        result={
+            "kind": maintenance_jobs.TABLE_REPAIR_JOB_KIND,
+            "status": "success",
+            "processed": 3,
+            "success": 2,
+            "failed": 1,
+            "skipped": 0,
+            "result": {"processed": 3, "success": 2, "failed": 1, "skipped": 0, "errors": [{"reason": "bad"}]},
+        },
+    )
+
+    status = papers_api._maintenance_job_status_from_result("job-2", async_result)
+
+    assert status.state == "success"
+    assert status.progress_percent == 100
+    assert status.result.success == 2
+    assert status.result.errors[0]["reason"] == "bad"
 
 
 def test_processing_flags_mark_ready_when_full_text_embedding_and_tags_exist():

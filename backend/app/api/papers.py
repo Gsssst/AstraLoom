@@ -212,6 +212,29 @@ class MaintenanceActionResult(BaseModel):
     errors: list[dict] = []
 
 
+class MaintenanceJobStatus(BaseModel):
+    id: Optional[str] = None
+    kind: str
+    state: Literal["queued", "running", "success", "failed", "cancelled", "unknown"] = "queued"
+    status: str = "queued"
+    total: int = 0
+    processed: int = 0
+    success: int = 0
+    failed: int = 0
+    skipped: int = 0
+    progress_percent: int = 0
+    current_paper: Optional[dict] = None
+    errors: list[dict] = []
+    message: str = ""
+    result: Optional[MaintenanceActionResult] = None
+
+
+class MaintenanceJobStartResponse(BaseModel):
+    job_id: str
+    status_endpoint: str
+    job: MaintenanceJobStatus
+
+
 class MaintenanceRecommendation(BaseModel):
     id: str
     title: str
@@ -464,6 +487,62 @@ def _diagnostic_summary(hybrid_hits: list[RetrievalDiagnosticHit], explanations:
     if explanations:
         return "本轮没有找到稳定候选，建议优先查看分支解释和维护建议。"
     return "本轮没有找到候选，也没有检测到明确的系统性维护问题。"
+
+
+def _maintenance_job_status_from_result(job_id: str, async_result) -> MaintenanceJobStatus:
+    from app.services.maintenance_jobs import TABLE_REPAIR_JOB_KIND
+
+    celery_state = str(getattr(async_result, "state", "") or "PENDING").upper()
+    raw_info = getattr(async_result, "info", None)
+    payload = raw_info if isinstance(raw_info, dict) else {}
+    result_payload = getattr(async_result, "result", None) if celery_state == "SUCCESS" else None
+    if isinstance(result_payload, dict):
+        payload = result_payload
+
+    state_map = {
+        "PENDING": "queued",
+        "RECEIVED": "queued",
+        "STARTED": "running",
+        "PROGRESS": "running",
+        "RETRY": "running",
+        "SUCCESS": "success",
+        "FAILURE": "failed",
+        "REVOKED": "cancelled",
+    }
+    state = state_map.get(celery_state, "unknown")
+    errors = payload.get("errors") if isinstance(payload.get("errors"), list) else []
+    message = str(payload.get("message") or "")
+    if celery_state == "FAILURE" and not message:
+        message = str(raw_info or "维护任务执行失败")
+    if celery_state == "FAILURE" and not errors:
+        errors = [{"reason": message}]
+
+    result = payload.get("result")
+    action_result = MaintenanceActionResult(**result) if isinstance(result, dict) else None
+    processed = int(payload.get("processed") or (action_result.processed if action_result else 0) or 0)
+    total = int(payload.get("total") or processed or 0)
+    progress_percent = int(payload.get("progress_percent") or 0)
+    if not progress_percent and total:
+        progress_percent = int(round((processed / total) * 100))
+    if state == "success":
+        progress_percent = 100
+
+    return MaintenanceJobStatus(
+        id=job_id,
+        kind=str(payload.get("kind") or TABLE_REPAIR_JOB_KIND),
+        state=state,
+        status=str(payload.get("status") or state),
+        total=total,
+        processed=processed,
+        success=int(payload.get("success") or (action_result.success if action_result else 0) or 0),
+        failed=int(payload.get("failed") or (action_result.failed if action_result else 0) or 0),
+        skipped=int(payload.get("skipped") or (action_result.skipped if action_result else 0) or 0),
+        progress_percent=max(0, min(progress_percent, 100)),
+        current_paper=payload.get("current_paper") if isinstance(payload.get("current_paper"), dict) else None,
+        errors=errors,
+        message=message,
+        result=action_result,
+    )
 
 
 async def _format_diagnostic_hits(
@@ -1120,55 +1199,40 @@ async def backfill_structured_pdf_parse(
     return action
 
 
-@router.post("/maintenance/repair-tables", response_model=MaintenanceActionResult)
-async def repair_low_quality_tables(
-    limit: int = Query(default=5, ge=1, le=20),
-    db: AsyncSession = Depends(get_db),
+@router.get("/maintenance/jobs/{job_id}", response_model=MaintenanceJobStatus)
+async def get_maintenance_job_status(
+    job_id: str,
     user=Depends(require_admin),
 ):
-    """Run bounded high-fidelity table repair for papers with low-quality parsed tables."""
-    from app.services.report_service import (
-        force_table_repair,
-        structured_pdf_parse_status_from_paper,
-    )
+    """Return normalized status for a queued maintenance job."""
+    from app.tasks.celery_app import celery_app
 
-    result = await db.execute(
-        select(Paper)
-        .where((Paper.pdf_path.is_not(None)) | (Paper.arxiv_id.is_not(None)))
-        .order_by(Paper.created_at.desc())
-        .limit(limit * 8)
-    )
-    candidates = result.scalars().all()
-    papers = []
-    for candidate in candidates:
-        status = structured_pdf_parse_status_from_paper(candidate)
-        table_quality = status.get("table_quality") or {}
-        table_repair = status.get("table_repair") or {}
-        if (
-            status.get("ready")
-            and int(table_quality.get("low_quality_table_count") or 0) > 0
-            and not table_repair.get("has_repaired_tables")
-        ):
-            papers.append(candidate)
-        if len(papers) >= limit:
-            break
+    async_result = celery_app.AsyncResult(job_id)
+    return _maintenance_job_status_from_result(job_id, async_result)
 
-    action = MaintenanceActionResult(processed=len(papers))
-    for paper in papers:
-        try:
-            refreshed = await force_table_repair(paper, db)
-            repair_status = refreshed.get("table_repair") or {}
-            if repair_status.get("has_repaired_tables"):
-                action.success += 1
-            else:
-                action.skipped += 1
-                action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": "no repaired table blocks"})
-        except Exception as exc:
-            action.failed += 1
-            action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": str(exc)})
-    if action.success or action.failed:
-        await db.commit()
-    return action
+
+@router.post("/maintenance/repair-tables", response_model=MaintenanceJobStartResponse)
+async def repair_low_quality_tables(
+    limit: int = Query(default=5, ge=1, le=20),
+    user=Depends(require_admin),
+):
+    """Queue bounded high-fidelity table repair for papers with low-quality parsed tables."""
+    from app.services.maintenance_jobs import TABLE_REPAIR_JOB_KIND
+    from app.tasks.paper_tasks import repair_low_quality_tables_task
+
+    task = repair_low_quality_tables_task.delay(limit)
+    job_id = str(task.id)
+    return MaintenanceJobStartResponse(
+        job_id=job_id,
+        status_endpoint=f"/papers/maintenance/jobs/{job_id}",
+        job=MaintenanceJobStatus(
+            id=job_id,
+            kind=TABLE_REPAIR_JOB_KIND,
+            state="queued",
+            status="queued",
+            message="表格修复任务已进入队列",
+        ),
+    )
 
 
 @router.get("/maintenance/recommendations", response_model=list[MaintenanceRecommendation])

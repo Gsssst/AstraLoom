@@ -53,6 +53,15 @@ test('paper library exposes a first-class maintenance center', () => {
   assert.match(papersPageSource, /BM25 分支解释|分支解释/);
 });
 
+test('paper library polls asynchronous table repair maintenance jobs', () => {
+  assert.match(papersPageSource, /activeMaintenanceJob/);
+  assert.match(papersPageSource, /response\.data\?\.job_id/);
+  assert.match(papersPageSource, /\/papers\/maintenance\/jobs\/\$\{jobId\}/);
+  assert.match(papersPageSource, /表格修复正在后台执行/);
+  assert.match(papersPageSource, /progress_percent/);
+  assert.match(papersPageSource, /maintenanceJobRunning/);
+});
+
 test('paper library makes external search and ingest transparent', () => {
   assert.match(papersPageSource, /providerGuidance/);
   assert.match(papersPageSource, /useLocation/);
