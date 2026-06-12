@@ -315,6 +315,109 @@ def test_table_question_uses_adaptive_evidence_budget_and_packs_page_context():
     assert first_pack.metadata["evidence_pack"] is True
 
 
+def test_broad_experiment_question_uses_dossier_with_table_catalog_and_full_tables():
+    full_text = "\n\n".join([
+        "1 Introduction",
+        _paragraph("intro-marker"),
+        "4 Experiments",
+        "We evaluate all baselines on OMTG Bench and report metrics, ablations, and efficiency. "
+        + "experiment overview " * 80,
+        "5 Conclusion",
+        "The experiments show stronger accuracy with remaining limitations. " + "discussion " * 80,
+    ])
+    page_texts = [
+        "1 Introduction\n" + _paragraph("intro-marker"),
+        "4 Experiments\nWe evaluate all baselines on OMTG Bench and report metrics. " + "experiment overview " * 80,
+        "4 Experiments\nAblation studies compare reward functions and efficiency. " + "ablation context " * 80,
+        "5 Conclusion\nThe experiments show stronger accuracy with remaining limitations. " + "discussion " * 80,
+    ]
+    long_rows = "\n".join(
+        f"| Ours-row-{row} | {80 + row}.1 | {70 + row}.2 | {row * 3}ms |"
+        for row in range(1, 32)
+    )
+    structured_blocks = [
+        {
+            "type": "caption",
+            "page": 2,
+            "source": "pdfplumber",
+            "text": "[PDF caption, page 2] Table 1. Main results on OMTG Bench.",
+            "metadata": {"caption_type": "table_caption"},
+        },
+        {
+            "type": "table",
+            "page": 2,
+            "source": "docling",
+            "text": (
+                "[PDF table]\n"
+                "| Model | C-Acc | EtF1 | Latency |\n"
+                "| --- | --- | --- | --- |\n"
+                f"{long_rows}"
+            ),
+            "metadata": {"table_index": 1, "quality": "high"},
+        },
+        {
+            "type": "caption",
+            "page": 3,
+            "source": "pdfplumber",
+            "text": "[PDF caption, page 3] Table 2. Reward ablation results.",
+            "metadata": {"caption_type": "table_caption"},
+        },
+        {
+            "type": "table",
+            "page": 3,
+            "source": "docling",
+            "text": (
+                "[PDF table]\n"
+                "| Reward Functions | C-Acc | EtF1 |\n"
+                "| --- | --- | --- |\n"
+                "| RtIoU | +4.10 | +2.20 |\n"
+                "| RtIoU + RC-Acc + RCaption | +11.57 | +8.84 |"
+            ),
+            "metadata": {"table_index": 2, "quality": "high"},
+        },
+        {
+            "type": "caption",
+            "page": 4,
+            "source": "pdfplumber",
+            "text": "[PDF caption, page 4] Table 3. Efficiency comparison.",
+            "metadata": {"caption_type": "table_caption"},
+        },
+        {
+            "type": "table",
+            "page": 4,
+            "source": "docling",
+            "text": (
+                "[PDF table]\n"
+                "| Method | Throughput |\n"
+                "| --- | --- |\n"
+                "| Dense | 120 tok/s |\n"
+                "| Twilight | 211 tok/s |"
+            ),
+            "metadata": {"table_index": 3, "quality": "high"},
+        },
+    ]
+
+    evidence, scope = PaperChunkService.retrieve_evidence(
+        full_text,
+        "请整体分析这篇论文的整个实验，所有表格、指标、baseline 和消融都要考虑",
+        top_k=4,
+        page_texts=page_texts,
+        structured_blocks=structured_blocks,
+    )
+
+    assert scope == "experiment_dossier+structured"
+    assert PaperChunkService.detect_evidence_strategy("请整体分析整个实验和所有表格") == "experiment"
+    assert PaperChunkService.recommended_evidence_top_k("请整体分析整个实验和所有表格") == 24
+    assert evidence[0].source_type == "experiment_dossier"
+    catalog = next(item for item in evidence if item.source_type == "table_catalog")
+    assert catalog.metadata["table_count"] == 3
+    assert "Table 1. Main results" in catalog.text
+    assert "Table 2. Reward ablation" in catalog.text
+    assert "Table 3. Efficiency" in catalog.text
+    assert any(item.source_type == "table_pack" and "Ours-row-31" in item.text for item in evidence)
+    assert any(item.source_type == "text" and item.metadata.get("experiment_context") for item in evidence)
+
+
 def test_table_evidence_lane_demotes_low_fidelity_tables():
     candidates = [
         PaperChunkService._structured_evidence_candidates([{
@@ -462,6 +565,104 @@ async def test_paper_context_includes_structured_table_and_caption_evidence(monk
     assert any(ref["evidence_type"] == "table_pack" and ref["page"] == 7 for ref in evidence)
     assert "类型: 表格证据包" in context[0]["content"]
     assert "图片占位只表示" in context[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_paper_context_labels_experiment_dossier_evidence(monkeypatch):
+    from types import SimpleNamespace
+
+    full_text = (
+        "1 Introduction\n" + "intro text " * 80 + "\n\n"
+        "4 Experiments\nWe evaluate all baselines and metrics on the benchmark. " + "experiment text " * 120 + "\n\n"
+        "5 Conclusion\nThe evaluation confirms the main trend. " + "discussion text " * 80
+    )
+    metadata = {
+        report_service.PDF_STRUCTURED_METADATA_KEY: {
+            "version": report_service.PDF_STRUCTURED_METADATA_VERSION,
+            "source_path": "/tmp/paper.pdf",
+            "parser": "test",
+            "page_count": 4,
+            "table_count": 2,
+            "caption_count": 2,
+            "visual_count": 0,
+            "blocks": [
+                {
+                    "type": "caption",
+                    "page": 2,
+                    "source": "pdfplumber",
+                    "text": "[PDF caption, page 2] Table 1. Main benchmark results.",
+                    "metadata": {"caption_type": "table_caption"},
+                },
+                {
+                    "type": "table",
+                    "page": 2,
+                    "source": "docling",
+                    "text": (
+                        "[PDF table]\n"
+                        "| Model | Accuracy | F1 |\n"
+                        "| --- | --- | --- |\n"
+                        "| Baseline | 72.1 | 70.8 |\n"
+                        "| Ours | 81.4 | 80.2 |"
+                    ),
+                    "metadata": {"table_index": 1, "quality": "high"},
+                },
+                {
+                    "type": "caption",
+                    "page": 3,
+                    "source": "pdfplumber",
+                    "text": "[PDF caption, page 3] Table 2. Ablation results.",
+                    "metadata": {"caption_type": "table_caption"},
+                },
+                {
+                    "type": "table",
+                    "page": 3,
+                    "source": "docling",
+                    "text": (
+                        "[PDF table]\n"
+                        "| Variant | Accuracy |\n"
+                        "| --- | --- |\n"
+                        "| w/o rerank | 76.4 |\n"
+                        "| full | 81.4 |"
+                    ),
+                    "metadata": {"table_index": 2, "quality": "high"},
+                },
+            ],
+        }
+    }
+    paper = SimpleNamespace(
+        id="paper-2",
+        title="Experiment paper",
+        authors=["A"],
+        year=2026,
+        abstract="Abstract.",
+        full_text=full_text,
+        arxiv_id="2606.00002",
+        pdf_path="/tmp/paper.pdf",
+        metadata_json=metadata,
+    )
+
+    monkeypatch.setattr(
+        report_service,
+        "extract_pdf_page_texts",
+        lambda _path: [
+            "1 Introduction\n" + "intro text " * 80,
+            "4 Experiments\nWe evaluate all baselines and metrics on the benchmark. " + "experiment text " * 80,
+            "4 Experiments\nAblation results compare variants. " + "ablation text " * 80,
+            "5 Conclusion\nThe evaluation confirms the main trend. " + "discussion text " * 80,
+        ],
+    )
+    monkeypatch.setattr(report_service, "ensure_structured_pdf_content", _identity_ensure_structured_pdf_content)
+
+    context, evidence = await memory_service.build_paper_context_with_evidence(
+        paper,
+        "请整体分析这篇论文的整个实验和所有表格",
+        history=[],
+    )
+
+    assert any(ref["evidence_type"] == "experiment_dossier" for ref in evidence)
+    assert any(ref["evidence_type"] == "table_catalog" and ref["metadata"]["table_count"] == 2 for ref in evidence)
+    assert "类型: 实验证据档案" in context[0]["content"]
+    assert "类型: 表格目录" in context[0]["content"]
 
 
 def test_external_parser_payload_normalizes_common_block_shapes():

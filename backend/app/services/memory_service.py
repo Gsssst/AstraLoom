@@ -236,6 +236,8 @@ async def build_paper_context_with_evidence(
                 page_label = f"，PDF 第 {evidence.page_start} 页" if evidence.page_start else ""
                 section_label = f"，章节: {evidence.section}" if evidence.section else ""
                 type_label = {
+                    "experiment_dossier": "，类型: 实验证据档案",
+                    "table_catalog": "，类型: 表格目录",
                     "table_pack": "，类型: 表格证据包",
                     "table": "，类型: 表格",
                     "caption": "，类型: 图/表标题",

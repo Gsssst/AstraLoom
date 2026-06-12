@@ -39,6 +39,10 @@ class PaperChunkService:
     CHUNK_OVERLAP = 100  # 重叠字符数，保持上下文连贯
     DEFAULT_EVIDENCE_TOP_K = 4
     TABLE_EVIDENCE_TOP_K = 8
+    EXPERIMENT_EVIDENCE_TOP_K = 24
+    EXPERIMENT_TABLE_PACK_TOP_K = 16
+    EXPERIMENT_TEXT_TOP_K = 6
+    EXPERIMENT_CONCLUSION_TOP_K = 2
     TABLE_PACK_CONTEXT_MAX_CHARS = 900
     SECTION_ALIASES = {
         "abstract": ("abstract", "摘要"),
@@ -52,6 +56,22 @@ class PaperChunkService:
         "table", "benchmark", "baseline", "metric", "metrics", "reward", "ablation", "result", "results",
         "c-acc", "etf1", "tiou", "tf1", "gemini", "seed", "qwen", "gpt",
         "表格", "基准", "指标", "结果", "对比", "消融", "奖励", "贡献", "评估",
+    )
+    BROAD_EXPERIMENT_QUERY_TERMS = (
+        "whole experiment", "whole experiments", "entire experiment", "entire evaluation",
+        "overall experiment", "overall experiments", "overall results", "all experiments",
+        "all tables", "experimental section", "evaluation section", "results section",
+        "complete experiment", "comprehensive experiment", "summarize experiments",
+        "summarise experiments", "analyze experiments", "analyse experiments",
+        "整个实验", "整体实验", "全部实验", "所有实验", "所有表格", "全部表格",
+        "实验部分", "实验章节", "实验分析", "实验总结", "实验结果总结",
+        "整体分析", "全面分析", "综合分析", "完整实验", "实验设置和结果",
+    )
+    EXPERIMENT_CONTEXT_TERMS = (
+        "experiment", "experiments", "experimental", "evaluation", "results", "benchmark",
+        "baseline", "baselines", "metric", "metrics", "ablation", "dataset", "performance",
+        "comparison", "efficiency", "实验", "评估", "结果", "基准", "指标", "对比",
+        "消融", "数据集", "性能", "效率",
     )
     TABLE_CAPTION_PATTERN = re.compile(r"(?:^|\b)table\s*\.?\s*\d+|表\s*\d+", re.I)
     FIGURE_CAPTION_PATTERN = re.compile(r"(?:^|\b)(?:fig(?:ure)?\s*\.?\s*\d+|图\s*\d+)", re.I)
@@ -134,8 +154,42 @@ class PaperChunkService:
         return any(term in normalized for term in cls.TABLE_QUERY_TERMS)
 
     @classmethod
+    def is_broad_experiment_query(cls, query: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (query or "").lower())
+        if any(term in normalized for term in cls.BROAD_EXPERIMENT_QUERY_TERMS):
+            return True
+        has_experiment_anchor = any(
+            term in normalized
+            for term in (
+                "experiment", "experiments", "evaluation", "results", "benchmark",
+                "实验", "评估", "结果", "基准",
+            )
+        )
+        has_breadth_marker = any(
+            marker in normalized
+            for marker in (
+                "overall", "entire", "whole", "all", "comprehensive", "summarize",
+                "summarise", "整体", "整个", "全部", "所有", "全面", "综合", "总结",
+            )
+        )
+        return has_experiment_anchor and has_breadth_marker
+
+    @classmethod
+    def detect_evidence_strategy(cls, query: str) -> str:
+        if cls.is_broad_experiment_query(query):
+            return "experiment"
+        if cls.is_table_like_query(query):
+            return "table"
+        return "compact"
+
+    @classmethod
     def recommended_evidence_top_k(cls, query: str, default: int = DEFAULT_EVIDENCE_TOP_K) -> int:
-        return cls.TABLE_EVIDENCE_TOP_K if cls.is_table_like_query(query) else default
+        strategy = cls.detect_evidence_strategy(query)
+        if strategy == "experiment":
+            return cls.EXPERIMENT_EVIDENCE_TOP_K
+        if strategy == "table":
+            return cls.TABLE_EVIDENCE_TOP_K
+        return default
 
     @classmethod
     def _match_section_heading(cls, line: str) -> Optional[str]:
@@ -254,11 +308,23 @@ class PaperChunkService:
         """Return structured evidence snippets, preferring explicitly requested sections."""
         text_candidates = cls._page_evidence_candidates(page_texts) if page_texts else cls._document_evidence_candidates(full_text)
         structured_candidates = cls._structured_evidence_candidates(structured_blocks)
-        table_like_query = cls.is_table_like_query(query)
-        if table_like_query:
+        strategy = cls.detect_evidence_strategy(query)
+        table_like_query = strategy in {"table", "experiment"}
+        if strategy == "experiment":
+            top_k = max(top_k, cls.EXPERIMENT_EVIDENCE_TOP_K)
+        elif table_like_query:
             top_k = max(top_k, cls.recommended_evidence_top_k(query, default=top_k))
         candidates = [*structured_candidates, *text_candidates]
         requested_sections = set(cls.detect_requested_sections(query))
+        if strategy == "experiment":
+            dossier_results = cls._experiment_evidence_dossier(
+                structured_candidates,
+                text_candidates,
+                query,
+                top_k=top_k,
+            )
+            if dossier_results:
+                return dossier_results, "experiment_dossier+structured" if structured_candidates else "experiment_dossier"
         if requested_sections:
             section_candidates = [item for item in candidates if item.section in requested_sections]
             if section_candidates:
@@ -325,6 +391,291 @@ class PaperChunkService:
                 metadata=base.metadata,
             ))
         return cls._suppress_redundant_evidence(results, top_k=top_k)
+
+    @classmethod
+    def _experiment_evidence_dossier(
+        cls,
+        structured_candidates: List[EvidenceChunk],
+        text_candidates: List[EvidenceChunk],
+        query: str,
+        *,
+        top_k: int,
+    ) -> List[EvidenceChunk]:
+        table_candidates = [item for item in structured_candidates if item.source_type == "table"]
+        table_catalog = cls._table_catalog_entries(table_candidates, structured_candidates)
+        text_budget = cls.EXPERIMENT_TEXT_TOP_K + cls.EXPERIMENT_CONCLUSION_TOP_K
+        table_budget = min(
+            cls.EXPERIMENT_TABLE_PACK_TOP_K,
+            max(0, top_k - 2 - text_budget),
+        )
+        ranked_tables = cls._experiment_table_lane(
+            table_candidates,
+            structured_candidates,
+            text_candidates,
+            query,
+            top_k=table_budget,
+        )
+        table_packs = cls._table_evidence_packs(ranked_tables, structured_candidates, text_candidates, query)
+        experiment_text = cls._experiment_text_lane(text_candidates, query, top_k=cls.EXPERIMENT_TEXT_TOP_K)
+        conclusion_text = cls._conclusion_text_lane(text_candidates, query, top_k=cls.EXPERIMENT_CONCLUSION_TOP_K)
+        text_results = cls._merge_evidence_lanes(experiment_text, conclusion_text, top_k=text_budget)
+
+        evidence: List[EvidenceChunk] = [
+            cls._build_experiment_dossier_evidence(table_catalog, table_packs, text_results, query)
+        ]
+        if table_catalog:
+            evidence.append(cls._build_table_catalog_evidence(table_catalog))
+        evidence.extend(table_packs)
+        evidence.extend(text_results)
+        return cls._merge_evidence_lanes([], evidence, top_k=top_k)
+
+    @classmethod
+    def _experiment_table_lane(
+        cls,
+        table_candidates: List[EvidenceChunk],
+        structured_candidates: List[EvidenceChunk],
+        text_candidates: List[EvidenceChunk],
+        query: str,
+        top_k: int,
+    ) -> List[EvidenceChunk]:
+        if not table_candidates or top_k <= 0:
+            return []
+        scored: List[EvidenceChunk] = []
+        for table in table_candidates:
+            score = cls._experiment_table_score(table, structured_candidates, text_candidates, query)
+            scored.append(EvidenceChunk(
+                text=table.text,
+                score=score,
+                section=table.section,
+                page_start=table.page_start,
+                page_end=table.page_end,
+                source_type=table.source_type,
+                source=table.source,
+                metadata=table.metadata,
+            ))
+        scored.sort(key=lambda item: (item.score, 0 if cls._is_low_fidelity_table(item) else 1), reverse=True)
+        return cls._suppress_redundant_evidence(scored, top_k=top_k)
+
+    @classmethod
+    def _experiment_table_score(
+        cls,
+        table: EvidenceChunk,
+        structured_candidates: List[EvidenceChunk],
+        text_candidates: List[EvidenceChunk],
+        query: str,
+    ) -> float:
+        page = table.page_start
+        same_page_bits = [
+            item.text
+            for item in structured_candidates
+            if item.page_start == page and item.source_type == "caption" and cls._is_table_caption(item)
+        ]
+        same_page_bits.extend(
+            item.text
+            for item in text_candidates
+            if item.page_start == page and item.source_type == "text"
+        )
+        context = "\n".join([table.text, *same_page_bits]).lower()
+        score = cls._structured_evidence_score(table, query) + 0.25
+        if not cls._is_low_fidelity_table(table):
+            score += 0.20
+        rows = cls._markdown_table_rows(table.text)
+        if len(rows) >= 3:
+            score += 0.08
+        score += min(0.25, sum(1 for term in cls.EXPERIMENT_CONTEXT_TERMS if term in context) * 0.025)
+        focus_matches = sum(1 for term in cls._table_query_focus_terms(query) if term.lower() in context)
+        score += min(0.20, focus_matches * 0.04)
+        return round(max(0.0, min(1.0, score)), 3)
+
+    @classmethod
+    def _experiment_text_lane(cls, text_candidates: List[EvidenceChunk], query: str, top_k: int) -> List[EvidenceChunk]:
+        experiment_candidates = [
+            item for item in text_candidates
+            if item.section == "experiments" or cls._has_experiment_context(item.text)
+        ]
+        if not experiment_candidates:
+            experiment_candidates = text_candidates
+        results = cls.search_evidence_chunks(experiment_candidates, query, top_k=top_k) if experiment_candidates else []
+        return [
+            EvidenceChunk(
+                text=item.text,
+                score=max(item.score, 0.55 if item.section == "experiments" else item.score),
+                section=item.section,
+                page_start=item.page_start,
+                page_end=item.page_end,
+                source_type=item.source_type,
+                source=item.source,
+                metadata={**(item.metadata or {}), "experiment_context": True},
+            )
+            for item in results
+        ]
+
+    @classmethod
+    def _conclusion_text_lane(cls, text_candidates: List[EvidenceChunk], query: str, top_k: int) -> List[EvidenceChunk]:
+        conclusion_candidates = [
+            item for item in text_candidates
+            if item.section == "conclusion" or re.search(r"limitation|discussion|conclusion|结论|讨论|局限", item.text or "", re.I)
+        ]
+        if not conclusion_candidates:
+            return []
+        results = cls.search_evidence_chunks(conclusion_candidates, query, top_k=top_k)
+        return [
+            EvidenceChunk(
+                text=item.text,
+                score=max(item.score, 0.45),
+                section=item.section or "conclusion",
+                page_start=item.page_start,
+                page_end=item.page_end,
+                source_type=item.source_type,
+                source=item.source,
+                metadata={**(item.metadata or {}), "experiment_context": True, "supplemental": "conclusion"},
+            )
+            for item in results
+        ]
+
+    @classmethod
+    def _has_experiment_context(cls, text: str) -> bool:
+        lower = (text or "").lower()
+        return any(term in lower for term in cls.EXPERIMENT_CONTEXT_TERMS)
+
+    @classmethod
+    def _table_catalog_entries(
+        cls,
+        table_candidates: List[EvidenceChunk],
+        structured_candidates: List[EvidenceChunk],
+    ) -> List[dict]:
+        entries: List[dict] = []
+        for position, table in enumerate(table_candidates, 1):
+            rows = cls._markdown_table_rows(table.text)
+            columns = [cell.strip() for cell in rows[0]] if rows else []
+            metadata = table.metadata or {}
+            caption = cls._nearest_table_caption(table, structured_candidates)
+            entries.append({
+                "catalog_id": f"T{position}",
+                "page": table.page_start,
+                "parser_source": table.source,
+                "table_index": metadata.get("table_index"),
+                "caption": cls._clean_catalog_text(caption.text if caption else ""),
+                "columns": columns,
+                "row_count": max(0, len(rows) - 1) if rows else 0,
+                "quality": metadata.get("quality") or ("low" if cls._is_low_fidelity_table(table) else "usable"),
+                "low_fidelity": cls._is_low_fidelity_table(table),
+            })
+        return entries
+
+    @classmethod
+    def _nearest_table_caption(
+        cls,
+        table: EvidenceChunk,
+        structured_candidates: List[EvidenceChunk],
+    ) -> Optional[EvidenceChunk]:
+        page = table.page_start
+        same_page = [
+            item for item in structured_candidates
+            if item.source_type == "caption" and item.page_start == page and cls._is_table_caption(item)
+        ]
+        if same_page:
+            return same_page[0]
+        nearby = [
+            item for item in structured_candidates
+            if (
+                item.source_type == "caption"
+                and cls._is_table_caption(item)
+                and isinstance(item.page_start, int)
+                and isinstance(page, int)
+                and abs(item.page_start - page) <= 1
+            )
+        ]
+        return nearby[0] if nearby else None
+
+    @classmethod
+    def _build_experiment_dossier_evidence(
+        cls,
+        table_catalog: List[dict],
+        table_packs: List[EvidenceChunk],
+        text_results: List[EvidenceChunk],
+        query: str,
+    ) -> EvidenceChunk:
+        selected_tables = [
+            {
+                "page": pack.page_start,
+                "table_index": (pack.metadata or {}).get("table_index"),
+                "source": pack.source,
+            }
+            for pack in table_packs
+        ]
+        text_pages = [item.page_start for item in text_results if item.page_start]
+        lines = [
+            "[PDF experiment evidence dossier]",
+            "### 检索策略",
+            "问题类型: broad_experiment",
+            f"证据预算: {cls.EXPERIMENT_EVIDENCE_TOP_K}（普通问题仍使用紧凑预算）",
+            f"结构化表格总数: {len(table_catalog)}",
+            f"完整表格证据包: {len(table_packs)}",
+            f"实验/结论正文片段: {len(text_results)}",
+        ]
+        if selected_tables:
+            selected_label = ", ".join(
+                f"page {item['page'] or 'unknown'} table {item['table_index'] or '?'}"
+                for item in selected_tables
+            )
+            lines.extend(["### 已展开完整表格", selected_label])
+        if text_pages:
+            lines.extend(["### 正文证据页", ", ".join(str(page) for page in sorted(set(text_pages)))])
+        if not table_catalog:
+            lines.extend(["### 表格目录", "当前结构化解析没有可用表格。"])
+        return EvidenceChunk(
+            text="\n".join(lines),
+            score=1.0,
+            source_type="experiment_dossier",
+            source="current_paper",
+            metadata={
+                "strategy": "experiment",
+                "query": query,
+                "table_count": len(table_catalog),
+                "selected_table_count": len(table_packs),
+                "text_snippet_count": len(text_results),
+                "selected_tables": selected_tables,
+            },
+        )
+
+    @classmethod
+    def _build_table_catalog_evidence(cls, table_catalog: List[dict]) -> EvidenceChunk:
+        lines = ["[PDF table catalog]", "### 全部表格目录"]
+        for entry in table_catalog:
+            columns = ", ".join(entry.get("columns") or []) or "unknown columns"
+            caption = entry.get("caption") or "no caption detected"
+            page = entry.get("page") or "unknown"
+            table_index = entry.get("table_index") or entry["catalog_id"]
+            quality = entry.get("quality") or "unknown"
+            lines.append(
+                f"- {entry['catalog_id']}: page {page}, table_index {table_index}, "
+                f"parser {entry.get('parser_source') or 'unknown'}, rows {entry.get('row_count', 0)}, "
+                f"quality {quality}, columns [{columns}], caption: {caption}"
+            )
+        pages = [entry.get("page") for entry in table_catalog if entry.get("page")]
+        return EvidenceChunk(
+            text="\n".join(lines),
+            score=0.95,
+            page_start=min(pages) if pages else None,
+            page_end=max(pages) if pages else None,
+            source_type="table_catalog",
+            source="pdf_structured",
+            metadata={
+                "strategy": "experiment",
+                "table_catalog": table_catalog,
+                "table_count": len(table_catalog),
+            },
+        )
+
+    @staticmethod
+    def _clean_catalog_text(text: str, limit: int = 260) -> str:
+        cleaned = re.sub(r"\s+", " ", (text or "")).strip()
+        if cleaned.startswith("[PDF caption"):
+            cleaned = re.sub(r"^\[PDF caption[^\]]*\]\s*", "", cleaned)
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[:limit].rstrip() + "..."
 
     @classmethod
     def _table_evidence_lane(cls, structured_candidates: List[EvidenceChunk], query: str, top_k: int) -> List[EvidenceChunk]:
