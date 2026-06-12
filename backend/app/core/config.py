@@ -98,7 +98,6 @@ class Settings(BaseSettings):
     PDF_VISUAL_EVIDENCE_MAX_CROPS: int = 12
     PDF_VISUAL_EVIDENCE_MAX_MODEL_CALLS: int = 0
     PDF_VISUAL_EVIDENCE_MAX_TEXT_CHARS: int = 4000
-    PDF_VISUAL_EVIDENCE_ENABLE_VISION: bool = False
 
     # --- 飞书 ---
     FEISHU_APP_ID: str = ""

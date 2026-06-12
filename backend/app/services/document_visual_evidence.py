@@ -259,7 +259,6 @@ def visual_evidence_runtime_health() -> dict[str, Any]:
             "fitz": importlib.util.find_spec("fitz") is not None,
             "docling": importlib.util.find_spec("docling") is not None,
             "command": bool(str(getattr(settings, "PDF_STRUCTURED_PARSER_COMMAND", "") or "").strip()),
-            "vision_model": bool(getattr(settings, "PDF_VISUAL_EVIDENCE_ENABLE_VISION", False)),
         },
         "limits": visual_evidence_limits(),
     }
@@ -650,45 +649,39 @@ def format_visual_evidence_context(blocks: list[dict[str, Any]], *, limit: int =
 
 
 async def analyze_visual_crop_with_model(image_path: str, prompt: str = "") -> dict[str, Any]:
-    """Analyze one bounded crop with the configured OpenAI-compatible vision provider."""
+    """Analyze one bounded crop/page asset with the active system model."""
 
-    if not bool(getattr(settings, "PDF_VISUAL_EVIDENCE_ENABLE_VISION", False)):
-        return {
-            "status": "unavailable",
-            "reason": "vision model adapter is disabled",
-            "summary": "",
-            "confidence": 0.0,
-            "key_facts": [],
-        }
     if not _asset_path_is_private(image_path):
         return {"status": "failed", "reason": "crop asset is not in the private visual evidence directory", "confidence": 0.0}
     data_url = data_url_from_asset(image_path)
     if not data_url:
         return {"status": "failed", "reason": "crop asset is unreadable", "confidence": 0.0}
 
-    from app.services.llm import OPENAI_COMPATIBLE_PROVIDER, llm_service
+    from app.services.llm import llm_service
 
     active = llm_service.get_active_option()
-    if active.get("provider") != OPENAI_COMPATIBLE_PROVIDER:
-        return {"status": "unavailable", "reason": "active LLM provider does not support image input", "confidence": 0.0}
-
     instruction = prompt or (
-        "Return strict JSON only with keys: status, kind, ocr_text, markdown, summary, key_facts, confidence. "
-        "Use markdown only for tables. Do not invent numbers that are not visible."
+        "Return strict JSON only. Use keys: status, page, asset_type, elements. "
+        "Each element must include type, label, caption, markdown, ocr_text, summary, key_facts, confidence. "
+        "Use markdown for tables. Do not invent numbers that are not visible."
     )
-    raw = await llm_service.chat(
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": instruction},
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                ],
-            }
-        ],
-        temperature=0.0,
-        max_tokens=1200,
-    )
+    try:
+        raw = await llm_service.chat(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": instruction},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+            temperature=0.0,
+            max_tokens=1800,
+        )
+    except Exception as exc:
+        logger.warning("Visual OCR model call failed for %s: %s", image_path, exc)
+        return {"status": "failed", "reason": str(exc)[:500], "confidence": 0.0}
     return normalize_vision_adapter_result(parse_vision_json(raw), provider=active.get("provider"), model=active.get("model"))
 
 
@@ -700,9 +693,7 @@ async def enrich_visual_evidence_items_with_vision(items: list[VisualEvidenceIte
     limits = visual_evidence_limits()
     budget = limits["max_model_calls"]
     if budget <= 0:
-        return [_mark_vision_skipped(item, "max_model_calls is 0") for item in items]
-    if not bool(getattr(settings, "PDF_VISUAL_EVIDENCE_ENABLE_VISION", False)):
-        return [_mark_vision_skipped(item, "vision model adapter is disabled") for item in items]
+        return items
 
     enriched: list[VisualEvidenceItem] = []
     calls_used = 0
@@ -714,20 +705,7 @@ async def enrich_visual_evidence_items_with_vision(items: list[VisualEvidenceIte
         result = await analyze_visual_crop_with_model(candidate_path, _vision_prompt_for_item(item))
         calls_used += 1
         enriched.append(_apply_vision_result_to_item(item, result))
-    for item in enriched:
-        item.metadata = {**(item.metadata or {}), "vision_model_calls_used": calls_used, "vision_model_call_limit": budget}
     return enriched
-
-
-def _mark_vision_skipped(item: VisualEvidenceItem, reason: str) -> VisualEvidenceItem:
-    if not _should_vision_analyze_item(item):
-        return item
-    item.metadata = {
-        **(item.metadata or {}),
-        "vision_ocr_status": "skipped",
-        "vision_ocr_reason": reason,
-    }
-    return item
 
 
 def _should_vision_analyze_item(item: VisualEvidenceItem) -> bool:
@@ -742,45 +720,55 @@ def _should_vision_analyze_item(item: VisualEvidenceItem) -> bool:
 
 def _vision_prompt_for_item(item: VisualEvidenceItem) -> str:
     caption = item.caption or ""
-    if item.kind in VISUAL_TABLE_TYPES:
-        return (
-            "You are reading a cropped PDF table or the page containing a table. "
-            "Return strict JSON only with keys: status, kind, ocr_text, markdown, summary, key_facts, confidence. "
-            "Set kind to table. Put the extracted table in GitHub-flavored markdown. "
-            "Preserve row/column labels and numeric values exactly as visible. "
-            "If the image does not contain a readable table, set status to empty or failed. "
-            "Do not invent missing values. "
-            f"Known caption/context: {caption}"
-        )
     return (
-        "You are reading a cropped PDF figure/chart/diagram. "
-        "Return strict JSON only with keys: status, kind, ocr_text, markdown, summary, key_facts, confidence. "
-        "Use markdown only if the image contains a table; otherwise leave markdown empty. "
-        "Summarize only visible content and OCR visible labels. Do not infer hidden details. "
+        "You are reading a bounded PDF page or crop that may contain one or more tables, figures, charts, or diagrams. "
+        "Return strict JSON only with this schema: "
+        "{"
+        "\"status\":\"ready|empty|failed\","
+        "\"page\":null,"
+        "\"asset_type\":\"page|crop\","
+        "\"elements\":[{"
+        "\"type\":\"table|figure|chart|diagram|text\","
+        "\"label\":\"Table 1 or Figure 2 when visible\","
+        "\"caption\":\"visible caption or known caption\","
+        "\"markdown\":\"GitHub-flavored markdown table, only for tables\","
+        "\"ocr_text\":\"visible text labels\","
+        "\"summary\":\"concise visual summary\","
+        "\"key_facts\":[\"evidence-grounded fact\"],"
+        "\"uncertain_cells\":[\"row/column/value that is unclear\"],"
+        "\"numeric_precision\":\"exact|estimated|unknown\","
+        "\"confidence\":0.0"
+        "}]"
+        "}. "
+        "If the image contains multiple tables, output one table element per table. "
+        "Preserve row and column labels and numeric values exactly when visible. "
+        "Use uncertain_cells for unreadable values and do not invent missing numbers. "
+        "For charts, summarize axes, legend, visible trend, and obvious values; set numeric_precision to estimated unless exact labels are visible. "
         f"Known caption/context: {caption}"
     )
 
 
 def _apply_vision_result_to_item(item: VisualEvidenceItem, result: dict[str, Any]) -> VisualEvidenceItem:
     status = str(result.get("status") or "").lower()
-    metadata = {
-        **(item.metadata or {}),
-        "vision_ocr_status": status or "unknown",
-        "vision_provider": result.get("provider"),
-        "vision_model": result.get("model"),
-    }
     if status != "ready":
-        reason = result.get("reason") or result.get("raw_status")
-        if reason:
-            metadata["vision_ocr_reason"] = str(reason)[:500]
+        return item
+    metadata = {**(item.metadata or {})}
+    if result.get("elements"):
+        metadata["vision_elements"] = result["elements"]
+    if result.get("provider"):
+        metadata["vision_provider"] = result.get("provider")
+    if result.get("model"):
+        metadata["vision_model"] = result.get("model")
+    element = _best_vision_element_for_item(item, result.get("elements") or [result])
+    if not element:
         item.metadata = metadata
         return item
 
-    markdown = str(result.get("markdown") or "").strip()
-    ocr_text = str(result.get("ocr_text") or "").strip()
-    summary = str(result.get("summary") or "").strip()
-    key_facts = result.get("key_facts") if isinstance(result.get("key_facts"), list) else []
-    confidence = _coerce_confidence(result.get("confidence"), default=item.confidence)
+    markdown = str(element.get("markdown") or "").strip()
+    ocr_text = str(element.get("ocr_text") or element.get("text") or "").strip()
+    summary = str(element.get("summary") or "").strip()
+    key_facts = element.get("key_facts") if isinstance(element.get("key_facts"), list) else []
+    confidence = _coerce_confidence(element.get("confidence"), default=item.confidence)
 
     if markdown:
         item.markdown = markdown
@@ -795,6 +783,26 @@ def _apply_vision_result_to_item(item: VisualEvidenceItem, result: dict[str, Any
     return item
 
 
+def _best_vision_element_for_item(item: VisualEvidenceItem, elements: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    normalized = [element for element in elements if isinstance(element, dict)]
+    if not normalized:
+        return None
+    if item.kind in VISUAL_TABLE_TYPES:
+        table = next((element for element in normalized if _normalize_kind(str(element.get("type") or "")) in VISUAL_TABLE_TYPES), None)
+        return table or normalized[0]
+    if item.kind in {"figure", "chart", "architecture", "image", "visual"}:
+        visual = next(
+            (
+                element for element in normalized
+                if _normalize_kind(str(element.get("type") or "")) in VISUAL_READY_TYPES
+                or _normalize_kind(str(element.get("type") or "")) in {"figure", "chart", "diagram", "architecture", "image"}
+            ),
+            None,
+        )
+        return visual or normalized[0]
+    return normalized[0]
+
+
 def normalize_vision_adapter_result(payload: dict[str, Any], *, provider: Optional[str] = None, model: Optional[str] = None) -> dict[str, Any]:
     """Normalize model JSON into the visual evidence adapter contract."""
 
@@ -803,22 +811,60 @@ def normalize_vision_adapter_result(payload: dict[str, Any], *, provider: Option
     status = str(payload.get("status") or "ready").strip().lower()
     if status not in {"ready", "unavailable", "failed", "invalid", "empty"}:
         status = "ready"
+    elements = _normalize_vision_elements(payload.get("elements") or [])
+    if not elements:
+        elements = [_normalize_vision_element(payload)]
+    primary = elements[0] if elements else {}
+    return {
+        "status": status,
+        "kind": _normalize_kind(str(primary.get("type") or payload.get("kind") or payload.get("type") or "visual")),
+        "ocr_text": str(primary.get("ocr_text") or "")[: visual_evidence_limits()["max_text_chars"]],
+        "markdown": str(primary.get("markdown") or "")[: visual_evidence_limits()["max_text_chars"]],
+        "summary": str(primary.get("summary") or "")[:1000],
+        "key_facts": primary.get("key_facts") or [],
+        "confidence": _coerce_confidence(primary.get("confidence") or payload.get("confidence"), default=0.5),
+        "page": _coerce_positive_int(payload.get("page")),
+        "asset_type": str(payload.get("asset_type") or ""),
+        "elements": elements,
+        "provider": provider,
+        "model": model,
+        "raw_status": payload.get("status"),
+    }
+
+
+def _normalize_vision_elements(raw_elements: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_elements, list):
+        return []
+    return [
+        normalized
+        for element in raw_elements
+        if isinstance(element, dict)
+        for normalized in [_normalize_vision_element(element)]
+    ]
+
+
+def _normalize_vision_element(payload: dict[str, Any]) -> dict[str, Any]:
     key_facts = payload.get("key_facts") or payload.get("facts") or []
     if isinstance(key_facts, str):
         key_facts = [item.strip() for item in re.split(r"[;\n]", key_facts) if item.strip()]
     if not isinstance(key_facts, list):
         key_facts = []
+    uncertain = payload.get("uncertain_cells") or []
+    if isinstance(uncertain, str):
+        uncertain = [item.strip() for item in re.split(r"[;\n]", uncertain) if item.strip()]
+    if not isinstance(uncertain, list):
+        uncertain = []
     return {
-        "status": status,
-        "kind": _normalize_kind(str(payload.get("kind") or payload.get("type") or "visual")),
-        "ocr_text": str(payload.get("ocr_text") or payload.get("text") or "")[: visual_evidence_limits()["max_text_chars"]],
+        "type": _normalize_kind(str(payload.get("type") or payload.get("kind") or "visual")),
+        "label": str(payload.get("label") or "").strip()[:120],
+        "caption": str(payload.get("caption") or "").strip()[:500],
         "markdown": str(payload.get("markdown") or payload.get("table_markdown") or "")[: visual_evidence_limits()["max_text_chars"]],
+        "ocr_text": str(payload.get("ocr_text") or payload.get("text") or "")[: visual_evidence_limits()["max_text_chars"]],
         "summary": str(payload.get("summary") or payload.get("visual_summary") or "")[:1000],
         "key_facts": [str(item).strip() for item in key_facts if str(item).strip()][:12],
+        "uncertain_cells": [str(item).strip() for item in uncertain if str(item).strip()][:24],
+        "numeric_precision": str(payload.get("numeric_precision") or "unknown").strip().lower()[:20],
         "confidence": _coerce_confidence(payload.get("confidence"), default=0.5),
-        "provider": provider,
-        "model": model,
-        "raw_status": payload.get("status"),
     }
 
 

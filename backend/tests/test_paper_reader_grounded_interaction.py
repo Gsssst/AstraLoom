@@ -370,14 +370,24 @@ def test_visual_asset_route_requires_paper_scope_uuid():
     assert document_visual_evidence.visual_asset_route_for_item(upload_item, upload_item.asset_path) is None
 
 
-def test_vision_json_normalization_handles_malformed_and_confidence():
-    parsed = document_visual_evidence.parse_vision_json('```json\n{"kind":"table","markdown":"| A | B |","confidence":1.7}\n```')
+def test_vision_json_normalization_handles_elements_and_confidence():
+    parsed = document_visual_evidence.parse_vision_json(
+        '```json\n'
+        '{"status":"ready","elements":['
+        '{"type":"table","label":"Table 1","markdown":"| A | B |","confidence":1.7},'
+        '{"type":"chart","label":"Figure 2","summary":"rising trend","numeric_precision":"estimated"}'
+        ']}\n'
+        '```'
+    )
     normalized = document_visual_evidence.normalize_vision_adapter_result(parsed, provider="openai-compatible", model="vision")
 
     assert normalized["status"] == "ready"
     assert normalized["kind"] == "table"
     assert normalized["markdown"] == "| A | B |"
     assert normalized["confidence"] == 1.0
+    assert len(normalized["elements"]) == 2
+    assert normalized["elements"][1]["type"] == "chart"
+    assert normalized["elements"][1]["numeric_precision"] == "estimated"
     assert normalized["provider"] == "openai-compatible"
     assert document_visual_evidence.parse_vision_json("not json")["status"] == "invalid"
 
@@ -389,19 +399,30 @@ async def test_visual_evidence_enrichment_writes_vision_table_markdown(monkeypat
     asset.parent.mkdir(parents=True)
     asset.write_bytes(b"png")
     monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_ASSET_DIR", str(asset_root))
-    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_ENABLE_VISION", True)
     monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_MAX_MODEL_CALLS", 2)
 
     async def fake_analyze(path, prompt=""):
         assert path == str(asset)
-        assert "GitHub-flavored markdown" in prompt
+        assert "elements" in prompt
+        assert "multiple tables" in prompt
         return {
             "status": "ready",
-            "kind": "table",
-            "markdown": "| Model | Acc |\n| --- | --- |\n| Ours | 91.3 |",
-            "summary": "Main result table.",
-            "key_facts": ["Ours", "91.3"],
-            "confidence": 0.91,
+            "elements": [
+                {
+                    "type": "table",
+                    "label": "Table 1",
+                    "markdown": "| Model | Acc |\n| --- | --- |\n| Ours | 91.3 |",
+                    "summary": "Main result table.",
+                    "key_facts": ["Ours", "91.3"],
+                    "confidence": 0.91,
+                },
+                {
+                    "type": "table",
+                    "label": "Table 2",
+                    "markdown": "| Model | Runtime |\n| --- | --- |\n| Ours | 586.11 |",
+                    "confidence": 0.82,
+                },
+            ],
             "provider": "openai-compatible",
             "model": "vision-model",
         }
@@ -421,18 +442,17 @@ async def test_visual_evidence_enrichment_writes_vision_table_markdown(monkeypat
     assert enriched[0].markdown == "| Model | Acc |\n| --- | --- |\n| Ours | 91.3 |"
     assert enriched[0].summary == "Main result table."
     assert enriched[0].confidence == 0.91
-    assert enriched[0].metadata["vision_ocr_status"] == "ready"
-    assert enriched[0].metadata["vision_model_calls_used"] == 1
+    assert enriched[0].metadata["vision_provider"] == "openai-compatible"
+    assert len(enriched[0].metadata["vision_elements"]) == 2
 
 
 @pytest.mark.asyncio
-async def test_visual_evidence_enrichment_marks_skipped_when_model_budget_disabled(monkeypatch, tmp_path):
+async def test_visual_evidence_enrichment_leaves_items_unchanged_when_budget_disabled(monkeypatch, tmp_path):
     asset_root = tmp_path / "visual"
     asset = asset_root / "paper-1" / "table.png"
     asset.parent.mkdir(parents=True)
     asset.write_bytes(b"png")
     monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_ASSET_DIR", str(asset_root))
-    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_ENABLE_VISION", True)
     monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_MAX_MODEL_CALLS", 0)
     item = document_visual_evidence.VisualEvidenceItem(
         id="ve-table",
@@ -443,8 +463,7 @@ async def test_visual_evidence_enrichment_marks_skipped_when_model_budget_disabl
 
     enriched = await document_visual_evidence.enrich_visual_evidence_items_with_vision([item])
 
-    assert enriched[0].metadata["vision_ocr_status"] == "skipped"
-    assert "max_model_calls" in enriched[0].metadata["vision_ocr_reason"]
+    assert enriched[0].metadata == {}
 
 
 def test_section_first_table_question_keeps_structured_table_evidence():
