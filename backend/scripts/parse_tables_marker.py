@@ -199,7 +199,11 @@ def load_json_files(output_dir: Path) -> list[Any]:
 
 
 def run_marker(pdf_path: str, *, use_llm: bool = False, timeout: int = 300) -> dict[str, Any]:
-    marker_single = shutil.which("marker_single")
+    marker_single = (
+        os.environ.get("MARKER_PARSER_BIN")
+        or shutil.which("marker_single")
+        or ("/opt/marker/bin/marker_single" if Path("/opt/marker/bin/marker_single").exists() else None)
+    )
     if not marker_single:
         raise RuntimeError(
             "marker_single is not installed. Install Marker in the backend environment, "
