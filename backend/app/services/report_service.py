@@ -1,6 +1,7 @@
 """组会报告生成服务。"""
 
 import asyncio
+import importlib.util
 import json
 import logging
 import re
@@ -14,7 +15,7 @@ from sqlalchemy import select, update
 
 from app.core.config import settings
 from app.services.llm import llm_service
-from app.services.arxiv_pdf_cache import ensure_cached_arxiv_pdf
+from app.services.arxiv_pdf_cache import ArxivPdfCacheError, ensure_cached_arxiv_pdf
 from app.db.models.paper import Paper
 
 logger = logging.getLogger(__name__)
@@ -24,10 +25,13 @@ PDF_STRUCTURED_PARSE_ERROR_KEY = "pdf_structured_parse_error"
 PDF_STRUCTURED_METADATA_VERSION = 1
 MAX_STRUCTURED_BLOCKS = 80
 MAX_STRUCTURED_BLOCK_CHARS = 1800
-MAX_STRUCTURED_TABLE_ROWS = 40
-MAX_STRUCTURED_TABLE_COLS = 12
+MAX_STRUCTURED_TABLE_BLOCK_CHARS = 20000
 SUPPORTED_PDF_STRUCTURED_BACKENDS = {"lightweight", "command", "docling", "auto"}
 GENERIC_TABLE_HEADER_PATTERN = re.compile(r"^column\s+\d+$", re.IGNORECASE)
+
+
+def structured_block_text_limit(block_type: str) -> int:
+    return MAX_STRUCTURED_TABLE_BLOCK_CHARS if block_type == "table" else MAX_STRUCTURED_BLOCK_CHARS
 
 
 @dataclass
@@ -41,11 +45,12 @@ class StructuredPdfBlock:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_metadata(self) -> dict[str, Any]:
+        text_limit = MAX_STRUCTURED_TABLE_BLOCK_CHARS if self.block_type == "table" else MAX_STRUCTURED_BLOCK_CHARS
         return {
             "type": self.block_type,
             "page": self.page,
             "source": self.source,
-            "text": self.text[:MAX_STRUCTURED_BLOCK_CHARS],
+            "text": self.text[:text_limit],
             "metadata": self.metadata,
         }
 
@@ -207,10 +212,10 @@ def _deduplicate_header_names(header: list[str]) -> list[str]:
 
 
 def table_to_markdown(table: list[list[Any]]) -> str:
-    """Convert a pdfplumber table into compact Markdown."""
+    """Convert a pdfplumber table into Markdown without dropping rows or columns."""
     rows = [
-        [_clean_table_cell(cell) for cell in row[:MAX_STRUCTURED_TABLE_COLS]]
-        for row in table[:MAX_STRUCTURED_TABLE_ROWS]
+        [_clean_table_cell(cell) for cell in row]
+        for row in table
         if row and any(_clean_table_cell(cell) for cell in row)
     ]
     if not rows:
@@ -226,8 +231,6 @@ def table_to_markdown(table: list[list[Any]]) -> str:
         "| " + " | ".join(["---"] * max_cols) + " |",
     ]
     lines.extend("| " + " | ".join(row) + " |" for row in body)
-    if len(table) > MAX_STRUCTURED_TABLE_ROWS:
-        lines.append(f"\n_Table truncated to first {MAX_STRUCTURED_TABLE_ROWS} rows._")
     return "\n".join(lines).strip()
 
 
@@ -351,6 +354,26 @@ def parser_subprocess_environment() -> dict[str, str]:
     return env
 
 
+def parser_runtime_health() -> dict[str, Any]:
+    """Return operational health for configured structured PDF parsers."""
+    command = str(settings.PDF_STRUCTURED_PARSER_COMMAND or "").strip()
+    return {
+        "configured_backend": settings.PDF_STRUCTURED_PARSER_BACKEND,
+        "supported_backends": sorted(SUPPORTED_PDF_STRUCTURED_BACKENDS),
+        "available": {
+            "pdfplumber": importlib.util.find_spec("pdfplumber") is not None,
+            "fitz": importlib.util.find_spec("fitz") is not None,
+            "docling": importlib.util.find_spec("docling") is not None,
+            "command": bool(command),
+        },
+        "command_configured": bool(command),
+        "hf_endpoint": settings.HF_ENDPOINT,
+        "hf_home": settings.HF_HOME,
+        "transformers_cache": settings.TRANSFORMERS_CACHE,
+        "sentence_transformers_home": settings.SENTENCE_TRANSFORMERS_HOME,
+    }
+
+
 def _coerce_page_number(value: Any) -> Optional[int]:
     if isinstance(value, int):
         return value if value > 0 else None
@@ -441,12 +464,13 @@ def structured_extraction_from_external_payload(
         if page:
             max_page = max(max_page, page)
         raw_type = item.get("type") or item.get("category") or item.get("kind") or item.get("label")
+        block_type = _normalize_external_block_type(raw_type)
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         blocks.append(StructuredPdfBlock(
-            block_type=_normalize_external_block_type(raw_type),
+            block_type=block_type,
             page=page,
             source=parser,
-            text=text[:MAX_STRUCTURED_BLOCK_CHARS],
+            text=text[:structured_block_text_limit(block_type)],
             metadata={**metadata, "external_index": index},
         ))
         if len(blocks) >= MAX_STRUCTURED_BLOCKS:
@@ -581,7 +605,7 @@ def structured_extraction_from_docling_document(document: Any, *, source_path: s
                 block_type=block_type,
                 page=page,
                 source="docling",
-                text=text[:MAX_STRUCTURED_BLOCK_CHARS],
+                text=text[:structured_block_text_limit(block_type)],
                 metadata={"docling_collection": attr},
             ))
             if len(blocks) >= MAX_STRUCTURED_BLOCKS:
@@ -654,7 +678,7 @@ def extract_pdf_structured_content_lightweight(path: str) -> StructuredPdfExtrac
                         text=(
                             f"[PDF table, page {page_number}, table {table_index}]\n"
                             f"{markdown}"
-                        )[:MAX_STRUCTURED_BLOCK_CHARS],
+                        )[:MAX_STRUCTURED_TABLE_BLOCK_CHARS],
                         metadata={"table_index": table_index},
                     ))
     except Exception as exc:
@@ -844,6 +868,7 @@ def structured_pdf_parse_status_from_paper(paper: Paper) -> dict[str, Any]:
             if isinstance(payload, dict) and isinstance(payload.get("table_quality"), dict)
             else structured_table_quality_from_blocks(parsed_blocks)
         ),
+        "parser_health": parser_runtime_health(),
         "last_error": error if isinstance(error, dict) else None,
     }
 
@@ -870,18 +895,58 @@ async def _persist_structured_pdf_metadata(
         logger.warning("PDF 结构化元数据持久化失败 %s: %s", getattr(paper, "id", ""), exc)
 
 
+async def persist_paper_pdf_path(
+    paper: Paper,
+    pdf_path: str,
+    db: Optional[AsyncSession] = None,
+) -> None:
+    """Persist a recovered local PDF path for future parsing/viewing."""
+    paper.pdf_path = pdf_path
+    if db is not None:
+        await db.execute(update(Paper).where(Paper.id == paper.id).values(pdf_path=pdf_path))
+        return
+
+    try:
+        from app.db.session import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as s:
+            await s.execute(update(Paper).where(Paper.id == paper.id).values(pdf_path=pdf_path))
+            await s.commit()
+    except Exception as exc:
+        logger.warning("PDF 路径持久化失败 %s: %s", getattr(paper, "id", ""), exc)
+
+
+async def resolve_paper_pdf_path(
+    paper: Paper,
+    db: Optional[AsyncSession] = None,
+    *,
+    persist: bool = True,
+) -> Optional[str]:
+    """Return a local PDF path, recovering arXiv cache paths when missing."""
+    existing_path = str(getattr(paper, "pdf_path", None) or "").strip()
+    if existing_path:
+        return existing_path
+
+    arxiv_id = str(getattr(paper, "arxiv_id", None) or "").strip()
+    if not arxiv_id:
+        return None
+
+    cached_pdf = await ensure_cached_arxiv_pdf(arxiv_id)
+    if persist:
+        await persist_paper_pdf_path(paper, cached_pdf.path, db)
+    else:
+        paper.pdf_path = cached_pdf.path
+    logger.info("PDF 路径已恢复: %s -> %s", arxiv_id, cached_pdf.path)
+    return cached_pdf.path
+
+
 async def force_structured_pdf_reparse(paper: Paper, db: Optional[AsyncSession] = None) -> dict[str, Any]:
     """Force structured PDF parsing and persist status or latest failure."""
-    pdf_path = getattr(paper, "pdf_path", None)
-    if not pdf_path:
-        if getattr(paper, "arxiv_id", None):
-            await ensure_full_text(paper)
-            pdf_path = getattr(paper, "pdf_path", None)
-        if not pdf_path:
-            raise ValueError("PDF 不可用，无法重新解析")
-
     metadata = dict(getattr(paper, "metadata_json", None) or {})
     try:
+        pdf_path = await resolve_paper_pdf_path(paper, db)
+        if not pdf_path:
+            raise ValueError("PDF 不可用：当前论文没有本地 PDF 路径，也没有可恢复的 arXiv PDF")
         extraction = await asyncio.to_thread(extract_pdf_structured_content, pdf_path)
         metadata[PDF_STRUCTURED_METADATA_KEY] = extraction.to_metadata()
         metadata.pop(PDF_STRUCTURED_PARSE_ERROR_KEY, None)
@@ -904,7 +969,11 @@ async def ensure_structured_pdf_content(paper: Paper) -> Optional[StructuredPdfE
     if cached:
         return cached
 
-    pdf_path = getattr(paper, "pdf_path", None)
+    try:
+        pdf_path = await resolve_paper_pdf_path(paper)
+    except (ArxivPdfCacheError, ValueError) as exc:
+        logger.warning("PDF 路径恢复失败 %s: %s", getattr(paper, "arxiv_id", ""), exc)
+        return None
     if not pdf_path:
         return None
 

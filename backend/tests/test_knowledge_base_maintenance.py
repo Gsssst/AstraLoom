@@ -130,6 +130,20 @@ def test_structured_parse_status_reports_cached_counts_and_parser():
     assert status["block_count"] == 3
     assert status["table_quality"]["table_count"] == 1
     assert status["table_quality"]["quality"] in {"high", "medium", "low"}
+    assert status["parser_health"]["configured_backend"]
+
+
+def test_parser_runtime_health_reports_available_backends(monkeypatch):
+    monkeypatch.setattr(report_service.settings, "PDF_STRUCTURED_PARSER_BACKEND", "auto")
+    monkeypatch.setattr(report_service.settings, "PDF_STRUCTURED_PARSER_COMMAND", "")
+    monkeypatch.setattr(report_service.settings, "HF_ENDPOINT", "https://hf-mirror.com")
+
+    health = report_service.parser_runtime_health()
+
+    assert health["configured_backend"] == "auto"
+    assert "pdfplumber" in health["available"]
+    assert health["available"]["command"] is False
+    assert health["hf_endpoint"] == "https://hf-mirror.com"
 
 
 class _ScalarOneResult:
@@ -211,6 +225,41 @@ async def test_reparse_structured_pdf_endpoint_refreshes_metadata(monkeypatch):
     assert report_service.PDF_STRUCTURED_PARSE_ERROR_KEY not in paper.metadata_json
     assert db.commits == 1
     assert db.refreshed == [paper]
+
+
+@pytest.mark.asyncio
+async def test_reparse_structured_pdf_recovers_missing_arxiv_pdf_path(monkeypatch):
+    paper_id = uuid4()
+    paper = SimpleNamespace(
+        id=paper_id,
+        title="Twilight",
+        arxiv_id="2502.02770v5",
+        pdf_path=None,
+        full_text="x" * 50000,
+        metadata_json={},
+    )
+    db = _PaperDb(paper)
+
+    async def fake_cached_pdf(_arxiv_id):
+        return SimpleNamespace(path="/cache/2502.02770.pdf")
+
+    def fake_extract(path):
+        assert path == "/cache/2502.02770.pdf"
+        return report_service.StructuredPdfExtraction(
+            source_path=path,
+            page_count=12,
+            parser="test-parser",
+            blocks=[report_service.StructuredPdfBlock(block_type="table", text="| A | B |", page=2)],
+        )
+
+    monkeypatch.setattr(report_service, "ensure_cached_arxiv_pdf", fake_cached_pdf)
+    monkeypatch.setattr(report_service, "extract_pdf_structured_content", fake_extract)
+
+    status = await papers_api.reparse_structured_pdf(str(paper_id), db=db, user=SimpleNamespace(role="admin"))
+
+    assert paper.pdf_path == "/cache/2502.02770.pdf"
+    assert status.ready is True
+    assert status.source_path == "/cache/2502.02770.pdf"
 
 
 @pytest.mark.asyncio

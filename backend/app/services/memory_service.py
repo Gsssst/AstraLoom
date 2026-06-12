@@ -200,26 +200,29 @@ async def build_paper_context_with_evidence(
         from app.services.paper_chunk_service import paper_chunk_service
         page_texts = []
         structured_blocks = []
-        if getattr(paper, "pdf_path", None):
-            try:
-                from app.services.report_service import (
-                    ensure_structured_pdf_content,
-                    extract_pdf_page_texts,
-                    structured_pdf_evidence_blocks_from_paper,
-                )
-                import asyncio
+        try:
+            from app.services.report_service import (
+                ensure_structured_pdf_content,
+                extract_pdf_page_texts,
+                resolve_paper_pdf_path,
+                structured_pdf_evidence_blocks_from_paper,
+            )
+            import asyncio
 
-                page_texts = await asyncio.to_thread(extract_pdf_page_texts, paper.pdf_path)
+            pdf_path = await resolve_paper_pdf_path(paper)
+            if pdf_path:
+                page_texts = await asyncio.to_thread(extract_pdf_page_texts, pdf_path)
                 structured_blocks = structured_pdf_evidence_blocks_from_paper(paper)
                 if not structured_blocks:
                     structured_extraction = await ensure_structured_pdf_content(paper)
                     structured_blocks = structured_extraction.to_evidence_blocks() if structured_extraction else []
-            except Exception as exc:
-                logger.warning(f"PDF 按页/结构化解析失败，使用全文证据: {exc}")
+        except Exception as exc:
+            logger.warning(f"PDF 按页/结构化解析失败，使用全文证据: {exc}")
+        evidence_top_k = paper_chunk_service.recommended_evidence_top_k(question)
         evidence_chunks, retrieval_scope = paper_chunk_service.retrieve_evidence(
             paper.full_text,
             question,
-            top_k=4,
+            top_k=evidence_top_k,
             page_texts=page_texts or None,
             structured_blocks=structured_blocks or None,
         )
@@ -233,6 +236,7 @@ async def build_paper_context_with_evidence(
                 page_label = f"，PDF 第 {evidence.page_start} 页" if evidence.page_start else ""
                 section_label = f"，章节: {evidence.section}" if evidence.section else ""
                 type_label = {
+                    "table_pack": "，类型: 表格证据包",
                     "table": "，类型: 表格",
                     "caption": "，类型: 图/表标题",
                     "visual": "，类型: 图片占位",

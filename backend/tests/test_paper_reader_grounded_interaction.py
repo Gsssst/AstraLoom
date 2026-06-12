@@ -121,6 +121,17 @@ def test_pdf_table_rows_convert_to_markdown():
     assert "| Ours | 81.4 | 80.2 |" in markdown
 
 
+def test_pdf_table_rows_are_not_truncated_before_evidence_packaging():
+    table = [[f"Metric {i}" for i in range(1, 15)]]
+    table.extend([[f"row-{row}-col-{col}" for col in range(1, 15)] for row in range(1, 46)])
+
+    markdown = report_service.table_to_markdown(table)
+
+    assert "Metric 14" in markdown
+    assert "row-45-col-14" in markdown
+    assert "Table truncated" not in markdown
+
+
 def test_structured_table_quality_flags_low_fidelity_tables():
     low = report_service.StructuredPdfBlock(
         block_type="table",
@@ -203,7 +214,7 @@ def test_structured_table_evidence_is_retrieved_with_page_number():
     )
 
     assert scope == "structured+document"
-    assert evidence[0].source_type == "table"
+    assert evidence[0].source_type == "table_pack"
     assert evidence[0].page_start == 7
     assert "91.3" in evidence[0].text
 
@@ -238,8 +249,70 @@ def test_section_first_table_question_keeps_structured_table_evidence():
     )
 
     assert scope == "section+structured"
-    assert any(item.source_type == "table" and item.page_start == 6 for item in evidence)
+    assert any(item.source_type == "table_pack" and item.page_start == 6 for item in evidence)
     assert any("experiment-marker" in item.text for item in evidence)
+
+
+def test_table_question_uses_adaptive_evidence_budget_and_packs_page_context():
+    full_text = "\n\n".join([
+        "1 Introduction",
+        _paragraph("intro-marker"),
+        "5 Experiments",
+        "Table 3 shows the ablation of reward functions on OMTG Bench. " + "experiment context " * 50,
+    ])
+    page_texts = [
+        "1 Introduction\n" + _paragraph("intro-marker"),
+        "5 Experiments\nTable 3 shows the ablation of reward functions on OMTG Bench. " + "experiment context " * 50,
+    ]
+    long_table_rows = "\n".join(
+        f"| RtIoU + RC-Acc + RCaption row {i} | +{i}.10 | +{i}.20 | +{i}.30 |"
+        for i in range(1, 18)
+    )
+    structured_blocks = [
+        {
+            "type": "caption",
+            "page": 2,
+            "source": "pdfplumber",
+            "text": "[PDF caption, page 2] Table 3. Ablation on reward functions on OMTG Bench.",
+            "metadata": {"caption_type": "table_caption"},
+        },
+        {
+            "type": "table",
+            "page": 2,
+            "source": "docling",
+            "text": (
+                "[PDF table]\n"
+                "| Reward Functions | C-Acc | EtF1 | TF1 |\n"
+                "| --- | --- | --- | --- |\n"
+                f"{long_table_rows}"
+            ),
+            "metadata": {"table_index": 3},
+        },
+        {
+            "type": "table",
+            "page": 3,
+            "source": "docling",
+            "text": "[PDF table]\n| Model | C-Acc |\n| --- | --- |\n| Gemini-2.5-Pro | 74.1 |",
+            "metadata": {"table_index": 4},
+        },
+    ]
+
+    evidence, scope = PaperChunkService.retrieve_evidence(
+        full_text,
+        "请基于实验表格说明 Caption reward 的贡献、OMTG Bench 的结果和 baseline 对比",
+        top_k=4,
+        page_texts=page_texts,
+        structured_blocks=structured_blocks,
+    )
+
+    assert scope == "section+structured"
+    assert len(evidence) > 4
+    first_pack = next(item for item in evidence if item.source_type == "table_pack" and item.page_start == 2)
+    assert "### 表格" in first_pack.text
+    assert "row 17" in first_pack.text
+    assert "### 同页表格标题" in first_pack.text
+    assert "### 同页正文说明" in first_pack.text
+    assert first_pack.metadata["evidence_pack"] is True
 
 
 def test_table_evidence_lane_demotes_low_fidelity_tables():
@@ -386,8 +459,8 @@ async def test_paper_context_includes_structured_table_and_caption_evidence(monk
         history=[],
     )
 
-    assert any(ref["evidence_type"] == "table" and ref["page"] == 7 for ref in evidence)
-    assert "类型: 表格" in context[0]["content"]
+    assert any(ref["evidence_type"] == "table_pack" and ref["page"] == 7 for ref in evidence)
+    assert "类型: 表格证据包" in context[0]["content"]
     assert "图片占位只表示" in context[0]["content"]
 
 

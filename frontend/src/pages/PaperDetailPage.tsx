@@ -48,6 +48,12 @@ interface StructuredPdfParseStatus {
   formula_count: number;
   block_count: number;
   block_counts?: Record<string, number>;
+  parser_health?: {
+    configured_backend?: string;
+    available?: Record<string, boolean>;
+    command_configured?: boolean;
+    hf_endpoint?: string;
+  } | null;
   last_error?: { message?: string; parser_backend?: string; failed_at?: string; [key: string]: any } | null;
 }
 
@@ -838,7 +844,8 @@ const PaperDetailPage: React.FC = () => {
         setPaper(current => current ? { ...current, structured_parse_status: status } : current);
       }
       const detail = error.response?.data?.detail;
-      message.error(detail?.message || detail || 'PDF 结构化解析失败');
+      const backendMessage = status?.last_error?.message;
+      message.error(backendMessage || detail?.message || detail || 'PDF 结构化解析失败');
     } finally {
       setParseLoading(false);
     }
@@ -1099,6 +1106,15 @@ const PaperDetailPage: React.FC = () => {
                 <Space size={6} wrap>
                   <Tag color={activeParseStatus.parser ? 'geekblue' : 'default'}>parser: {activeParseStatus.parser || '未记录'}</Tag>
                   <Tag color={activeParseStatus.parsed_at ? 'blue' : 'default'}>解析时间: {formatParseTime(activeParseStatus.parsed_at)}</Tag>
+                  {activeParseStatus.parser_health?.configured_backend && (
+                    <Tag color="blue">后端: {activeParseStatus.parser_health.configured_backend}</Tag>
+                  )}
+                  {activeParseStatus.parser_health?.available && Object.entries(activeParseStatus.parser_health.available).map(([key, value]) => (
+                    <Tag key={key} color={value ? 'green' : 'default'}>{key}: {value ? '可用' : '不可用'}</Tag>
+                  ))}
+                  {activeParseStatus.parser_health?.hf_endpoint && (
+                    <Tag color="cyan">HF: {activeParseStatus.parser_health.hf_endpoint}</Tag>
+                  )}
                 </Space>
                 <div className="paper-parse-count-grid">
                   {structuredCountItems.map(([label, value]) => (

@@ -37,6 +37,9 @@ class PaperChunkService:
     CHUNK_MIN_CHARS = 400
     CHUNK_MAX_CHARS = 1000
     CHUNK_OVERLAP = 100  # 重叠字符数，保持上下文连贯
+    DEFAULT_EVIDENCE_TOP_K = 4
+    TABLE_EVIDENCE_TOP_K = 8
+    TABLE_PACK_CONTEXT_MAX_CHARS = 900
     SECTION_ALIASES = {
         "abstract": ("abstract", "摘要"),
         "introduction": ("introduction", "intro", "引言", "导言"),
@@ -129,6 +132,10 @@ class PaperChunkService:
     def is_table_like_query(cls, query: str) -> bool:
         normalized = re.sub(r"\s+", " ", (query or "").lower())
         return any(term in normalized for term in cls.TABLE_QUERY_TERMS)
+
+    @classmethod
+    def recommended_evidence_top_k(cls, query: str, default: int = DEFAULT_EVIDENCE_TOP_K) -> int:
+        return cls.TABLE_EVIDENCE_TOP_K if cls.is_table_like_query(query) else default
 
     @classmethod
     def _match_section_heading(cls, line: str) -> Optional[str]:
@@ -245,10 +252,12 @@ class PaperChunkService:
         structured_blocks: Optional[List[dict]] = None,
     ) -> Tuple[List[EvidenceChunk], str]:
         """Return structured evidence snippets, preferring explicitly requested sections."""
-        candidates = cls._page_evidence_candidates(page_texts) if page_texts else cls._document_evidence_candidates(full_text)
+        text_candidates = cls._page_evidence_candidates(page_texts) if page_texts else cls._document_evidence_candidates(full_text)
         structured_candidates = cls._structured_evidence_candidates(structured_blocks)
         table_like_query = cls.is_table_like_query(query)
-        candidates = [*structured_candidates, *candidates]
+        if table_like_query:
+            top_k = max(top_k, cls.recommended_evidence_top_k(query, default=top_k))
+        candidates = [*structured_candidates, *text_candidates]
         requested_sections = set(cls.detect_requested_sections(query))
         if requested_sections:
             section_candidates = [item for item in candidates if item.section in requested_sections]
@@ -260,12 +269,14 @@ class PaperChunkService:
                     requested_sections=requested_sections,
                 )
                 if table_like_query and structured_candidates:
-                    table_results = cls._table_evidence_lane(structured_candidates, query, top_k=2)
+                    table_results = cls._table_evidence_lane(structured_candidates, query, top_k=min(4, top_k))
+                    table_results = cls._table_evidence_packs(table_results, structured_candidates, text_candidates, query)
                     return cls._merge_evidence_lanes(table_results, section_results, top_k=top_k), "section+structured"
                 return section_results, "section"
         scope = "structured+document" if structured_candidates else "document"
         if table_like_query and structured_candidates:
-            table_results = cls._table_evidence_lane(structured_candidates, query, top_k=2)
+            table_results = cls._table_evidence_lane(structured_candidates, query, top_k=min(4, top_k))
+            table_results = cls._table_evidence_packs(table_results, structured_candidates, text_candidates, query)
             document_results = cls.search_evidence_chunks(
                 candidates,
                 query,
@@ -345,6 +356,72 @@ class PaperChunkService:
         if not selected:
             selected = reranked
         return cls._suppress_redundant_evidence(selected, top_k=top_k)
+
+    @classmethod
+    def _table_evidence_packs(
+        cls,
+        table_results: List[EvidenceChunk],
+        structured_candidates: List[EvidenceChunk],
+        text_candidates: List[EvidenceChunk],
+        query: str,
+    ) -> List[EvidenceChunk]:
+        packs: List[EvidenceChunk] = []
+        for table in table_results:
+            if table.source_type == "caption":
+                packs.append(table)
+                continue
+            components: list[dict[str, object]] = []
+            parts = [cls._pack_part("表格", table.text)]
+            components.append({"type": table.source_type, "page": table.page_start, "source": table.source})
+
+            page = table.page_start
+            same_page_captions = [
+                item for item in structured_candidates
+                if item.source_type == "caption" and item.page_start == page and cls._is_table_caption(item)
+            ]
+            caption_hits = cls.search_evidence_chunks(same_page_captions, query, top_k=1) if same_page_captions else []
+            for caption in caption_hits:
+                parts.append(cls._pack_part("同页表格标题", caption.text))
+                components.append({"type": "caption", "page": caption.page_start, "source": caption.source})
+
+            same_page_text = [
+                item for item in text_candidates
+                if item.source_type == "text" and item.page_start == page
+            ]
+            text_hits = cls.search_evidence_chunks(same_page_text, query, top_k=1) if same_page_text else []
+            for context in text_hits:
+                parts.append(cls._pack_part("同页正文说明", context.text, cls.TABLE_PACK_CONTEXT_MAX_CHARS))
+                components.append({"type": "text", "page": context.page_start, "source": context.source})
+
+            pack_text = "\n\n".join(part for part in parts if part).strip()
+            packs.append(EvidenceChunk(
+                text=f"[PDF table evidence pack, page {page or 'unknown'}]\n{pack_text}",
+                score=table.score,
+                section=table.section,
+                page_start=table.page_start,
+                page_end=table.page_end,
+                source_type="table_pack",
+                source=table.source,
+                metadata={
+                    **(table.metadata or {}),
+                    "evidence_pack": True,
+                    "primary_type": table.source_type,
+                    "components": components,
+                },
+            ))
+        return packs
+
+    @classmethod
+    def _pack_part(cls, label: str, text: str, limit: Optional[int] = None) -> str:
+        cleaned = cls._truncate_text(text, limit) if limit else (text or "").strip()
+        return f"### {label}\n{cleaned}" if cleaned else ""
+
+    @staticmethod
+    def _truncate_text(text: str, limit: int) -> str:
+        cleaned = (text or "").strip()
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[:limit].rstrip() + "..."
 
     @classmethod
     def _structured_evidence_score(cls, item: EvidenceChunk, query: str) -> float:
