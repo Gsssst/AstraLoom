@@ -89,6 +89,19 @@ interface PaperData {
     detail?: string;
     count?: number;
   }[];
+  processing_timeline?: {
+    key: string;
+    label: string;
+    state: string;
+    ready: boolean;
+    detail?: string;
+    count?: number;
+    timestamp?: string | null;
+    timestamp_label?: string | null;
+    failed_at?: string | null;
+    error?: string | null;
+    next_retry_hint?: string | null;
+  }[];
   processing_status?: string | null;
   created_at: string;
 }
@@ -283,6 +296,8 @@ const paperEvidenceConfidenceMeta = {
   partial: { label: '部分支撑', color: 'gold' },
   weak: { label: '证据不足', color: 'orange' },
 };
+
+type ProcessingTimelineItem = NonNullable<PaperData['processing_timeline']>[number];
 
 const formatParseTime = (value?: string | null) => {
   if (!value) return '未记录';
@@ -1108,6 +1123,9 @@ const PaperDetailPage: React.FC = () => {
     if (state === 'stale') return { color: 'gold', suffix: '待刷新' };
     return { color: 'default', suffix: '待处理' };
   };
+  const processingTimeline: ProcessingTimelineItem[] = (paper.processing_timeline && paper.processing_timeline.length > 0)
+    ? paper.processing_timeline
+    : (paper.processing_labels || []).map(label => ({ ...label }));
   const structuredCountItems = activeParseStatus ? [
     ['页数', activeParseStatus.page_count],
     ['结构块', activeParseStatus.block_count],
@@ -1258,6 +1276,50 @@ const PaperDetailPage: React.FC = () => {
             <Text strong>作者：</Text>
             <Text>{Array.isArray(paper.authors)?paper.authors.join(', '):paper.authors}</Text>
           </div>
+          {processingTimeline.length > 0 && (
+            <Card
+              size="small"
+              className="paper-processing-timeline-card"
+              title={<span><DatabaseOutlined /> 后台处理时间线</span>}
+              extra={paper.processing_status && (
+                <Tag color={paper.processing_status === 'ready' ? 'green' : paper.processing_status === 'failed' ? 'red' : paper.processing_status === 'processing' ? 'processing' : 'orange'}>
+                  {paper.processing_status === 'ready' ? '全部就绪' : paper.processing_status === 'failed' ? '存在失败' : paper.processing_status === 'processing' ? '处理中' : '待补齐'}
+                </Tag>
+              )}
+              style={{ marginTop: 16, borderRadius: 12 }}
+            >
+              <div className="paper-processing-timeline-grid">
+                {processingTimeline.map(item => {
+                  const meta = processingLabelMeta(item.state);
+                  const timestamp = item.timestamp;
+                  const timestampLabel = item.timestamp_label;
+                  const error = item.error;
+                  const retryHint = item.next_retry_hint;
+                  return (
+                    <div className={`paper-processing-timeline-item is-${item.state || 'missing'}`} key={item.key}>
+                      <Space size={6} wrap>
+                        <Tag color={meta.color}>{item.label}{meta.suffix}</Tag>
+                        {typeof item.count === 'number' && <Tag>{item.count}</Tag>}
+                      </Space>
+                      <Text className="paper-processing-timeline-detail" type={error ? 'danger' : 'secondary'}>
+                        {error || item.detail || '暂无详情'}
+                      </Text>
+                      {timestamp && (
+                        <Text type="secondary" className="paper-processing-timeline-time">
+                          {timestampLabel || '时间'}: {formatParseTime(timestamp)}
+                        </Text>
+                      )}
+                      {retryHint && (
+                        <Text type="secondary" className="paper-processing-timeline-hint">
+                          {retryHint}
+                        </Text>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
           <Card
             size="small"
             className="paper-reading-assistant-card"

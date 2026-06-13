@@ -964,6 +964,61 @@
   background: #fff;
 }
 
+.paper-processing-timeline-card {
+  border: 1px solid rgba(54, 99, 166, 0.14);
+  background: #fff;
+}
+
+.paper-processing-timeline-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: 8px;
+}
+
+.paper-processing-timeline-item {
+  display: flex;
+  min-height: 118px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid rgba(54, 99, 166, 0.12);
+  border-radius: 8px;
+  background: rgba(54, 99, 166, 0.04);
+}
+
+.paper-processing-timeline-item.is-ready {
+  border-color: rgba(82, 196, 26, 0.18);
+  background: rgba(82, 196, 26, 0.04);
+}
+
+.paper-processing-timeline-item.is-running,
+.paper-processing-timeline-item.is-pending {
+  border-color: rgba(22, 119, 255, 0.18);
+  background: rgba(22, 119, 255, 0.04);
+}
+
+.paper-processing-timeline-item.is-failed {
+  border-color: rgba(255, 77, 79, 0.22);
+  background: rgba(255, 77, 79, 0.04);
+}
+
+.paper-processing-timeline-item.is-stale {
+  border-color: rgba(250, 173, 20, 0.22);
+  background: rgba(250, 173, 20, 0.05);
+}
+
+.paper-processing-timeline-detail,
+.paper-processing-timeline-time,
+.paper-processing-timeline-hint {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.paper-processing-timeline-detail {
+  min-height: 34px;
+}
+
 .paper-parse-count-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));

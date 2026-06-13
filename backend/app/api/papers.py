@@ -64,6 +64,7 @@ class PaperBrief(BaseModel):
     has_tags: bool = False
     processing_status: Optional[str] = None
     processing_labels: list[dict] = Field(default_factory=list)
+    processing_timeline: list[dict] = Field(default_factory=list)
     processing_automation: Optional[dict] = None
 
     model_config = {"from_attributes": True}
@@ -152,6 +153,7 @@ class PaperProcessingStatus(BaseModel):
     missing: list[str] = []
     failed: list[str] = []
     processing_labels: list[dict] = []
+    processing_timeline: list[dict] = []
     automation: Optional[dict] = None
     repair_actions: list[dict] = []
     structured_parse_status: Optional[StructuredPdfParseStatus] = None
@@ -725,6 +727,7 @@ def _paper_brief(paper, *, remote: bool = False, bm25_status: Optional[dict[str,
         has_tags=bool(processing.get("has_tags", False)),
         processing_status=processing.get("status"),
         processing_labels=processing.get("labels") or [],
+        processing_timeline=processing.get("timeline") or [],
         processing_automation=processing.get("automation"),
     )
 
@@ -763,6 +766,7 @@ def _paper_processing_flags(paper: Paper, *, bm25_status: Optional[dict[str, Any
         "failed": list(snapshot.failed),
         "status": snapshot.status,
         "labels": [label.to_dict() for label in snapshot.labels],
+        "timeline": [item.to_dict() for item in snapshot.timeline],
         "automation": snapshot.automation,
     }
 
@@ -796,6 +800,7 @@ def _paper_processing_status(paper: Paper, *, bm25_status: Optional[dict[str, An
         missing=flags["missing"],
         failed=flags.get("failed", []),
         processing_labels=flags.get("labels") or [],
+        processing_timeline=flags.get("timeline") or [],
         automation=flags.get("automation"),
         repair_actions=actions,
         structured_parse_status=StructuredPdfParseStatus(**structured_status),
@@ -1866,6 +1871,7 @@ async def get_paper_detail(
         has_tags=bool(processing.get("has_tags", False)),
         processing_status=processing.get("status"),
         processing_labels=processing.get("labels") or [],
+        processing_timeline=processing.get("timeline") or [],
         processing_automation=processing.get("automation"),
         full_text_preview=paper.full_text[:5000] if paper.full_text else None,
         tags=paper.tags,

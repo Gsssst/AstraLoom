@@ -93,8 +93,9 @@ def test_processing_flags_and_repair_actions_reflect_missing_artifacts():
         tags=[],
     )
 
-    flags = papers_api._paper_processing_flags(paper)
-    status = papers_api._paper_processing_status(paper)
+    bm25_ready = {"ready": True, "indexed_papers": 1}
+    flags = papers_api._paper_processing_flags(paper, bm25_status=bm25_ready)
+    status = papers_api._paper_processing_status(paper, bm25_status=bm25_ready)
 
     assert flags == {
         "has_pdf": True,
@@ -105,6 +106,7 @@ def test_processing_flags_and_repair_actions_reflect_missing_artifacts():
         "failed": [],
         "status": "needs_processing",
         "labels": flags["labels"],
+        "timeline": flags["timeline"],
         "automation": flags["automation"],
     }
     assert status.status == "needs_processing"
@@ -122,6 +124,15 @@ def test_processing_flags_and_repair_actions_reflect_missing_artifacts():
         "embedding",
         "bm25",
     ]
+    assert [item["key"] for item in status.processing_timeline] == [
+        "pdf",
+        "full_text",
+        "structured_parse",
+        "visual_evidence",
+        "embedding",
+        "bm25",
+    ]
+    assert status.processing_timeline[1]["next_retry_hint"] == "后台巡检会自动补齐该步骤，无需手动维护。"
     assert status.structured_parse_status.ready is False
     assert status.visual_evidence_status.ready is False
 
@@ -491,6 +502,14 @@ async def test_paper_detail_includes_visual_status_without_crashing(monkeypatch)
     assert detail.visual_evidence_status.status == "missing"
     assert detail.structured_parse_status.ready is False
     assert [label["key"] for label in detail.processing_labels] == [
+        "pdf",
+        "full_text",
+        "structured_parse",
+        "visual_evidence",
+        "embedding",
+        "bm25",
+    ]
+    assert [item["key"] for item in detail.processing_timeline] == [
         "pdf",
         "full_text",
         "structured_parse",
@@ -1351,6 +1370,46 @@ def test_processing_running_state_does_not_treat_queued_as_running():
     assert state["active_steps"] == ["full_text", "visual_evidence"]
 
 
+def test_processing_snapshot_timeline_includes_failure_metadata_and_retry_hint():
+    paper = SimpleNamespace(
+        metadata_json={
+            "pdf_url": "https://arxiv.org/pdf/2606.00003",
+            paper_processing_pipeline.PIPELINE_METADATA_KEY: {
+                "failed_steps": {
+                    "visual_evidence": {
+                        "message": "视觉 OCR 图片不可用",
+                        "failed_at": "2026-06-13T01:00:00+00:00",
+                    }
+                },
+                "last_checked_at": "2026-06-13T01:00:00+00:00",
+            },
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "status": "failed",
+                "items": [],
+                "last_error": {"message": "视觉 OCR 图片不可用", "failed_at": "2026-06-13T01:00:00+00:00"},
+            },
+        },
+        pdf_path="/data/paper.pdf",
+        arxiv_id="2606.00003",
+        full_text="x" * 600,
+        embedding=[0.1],
+        tags=[],
+    )
+
+    snapshot = paper_processing_pipeline.paper_processing_snapshot(
+        paper,
+        bm25_status={"ready": True, "indexed_papers": 1},
+    )
+    timeline = {item.key: item.to_dict() for item in snapshot.timeline}
+
+    assert timeline["visual_evidence"]["state"] == "failed"
+    assert timeline["visual_evidence"]["error"] == "视觉 OCR 图片不可用"
+    assert timeline["visual_evidence"]["failed_at"] == "2026-06-13T01:00:00+00:00"
+    assert timeline["visual_evidence"]["timestamp_label"] == "失败时间"
+    assert timeline["visual_evidence"]["next_retry_hint"] == "后台巡检会继续重试；如长期失败可在诊断页手动触发修复。"
+
+
 @pytest.mark.asyncio
 async def test_clear_ready_paper_processing_steps_removes_ready_active_metadata():
     paper = SimpleNamespace(
@@ -1419,10 +1478,15 @@ def test_processing_snapshot_prefers_running_visual_state_over_stale_error():
         bm25_status={"ready": True, "indexed_papers": 1},
     )
     visual = next(label for label in snapshot.labels if label.key == "visual_evidence")
+    visual_timeline = next(item for item in snapshot.timeline if item.key == "visual_evidence")
 
     assert snapshot.status == "processing"
     assert visual.state == "running"
     assert visual.detail == "后台正在补视觉 OCR"
+    assert visual_timeline.state == "running"
+    assert visual_timeline.timestamp == "2026-06-13T00:00:00+00:00"
+    assert visual_timeline.timestamp_label == "开始/检查时间"
+    assert visual_timeline.next_retry_hint == "后台任务正在处理该步骤，完成后会自动更新标签。"
 
 
 def test_processing_snapshot_ignores_stale_visual_failure_after_ready():

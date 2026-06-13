@@ -49,9 +49,52 @@ class ProcessingLabel:
 
 
 @dataclass(frozen=True)
+class ProcessingTimelineItem:
+    key: str
+    label: str
+    state: ArtifactState
+    ready: bool = False
+    detail: str = ""
+    count: Optional[int] = None
+    action: Optional[str] = None
+    timestamp: Optional[str] = None
+    timestamp_label: Optional[str] = None
+    last_checked_at: Optional[str] = None
+    last_completed_at: Optional[str] = None
+    failed_at: Optional[str] = None
+    error: Optional[str] = None
+    next_retry_hint: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "key": self.key,
+            "label": self.label,
+            "state": self.state,
+            "ready": self.ready,
+            "detail": self.detail,
+        }
+        optional_values = {
+            "count": self.count,
+            "action": self.action,
+            "timestamp": self.timestamp,
+            "timestamp_label": self.timestamp_label,
+            "last_checked_at": self.last_checked_at,
+            "last_completed_at": self.last_completed_at,
+            "failed_at": self.failed_at,
+            "error": self.error,
+            "next_retry_hint": self.next_retry_hint,
+        }
+        for key, value in optional_values.items():
+            if value is not None and value != "":
+                payload[key] = value
+        return payload
+
+
+@dataclass(frozen=True)
 class PaperProcessingSnapshot:
     status: Literal["ready", "processing", "needs_processing", "failed"]
     labels: list[ProcessingLabel] = field(default_factory=list)
+    timeline: list[ProcessingTimelineItem] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
     automation: dict[str, Any] = field(default_factory=dict)
@@ -65,6 +108,7 @@ class PaperProcessingSnapshot:
             "status": self.status,
             "ready": self.ready,
             "labels": [label.to_dict() for label in self.labels],
+            "timeline": [item.to_dict() for item in self.timeline],
             "missing": list(self.missing),
             "failed": list(self.failed),
             "automation": dict(self.automation),
@@ -172,6 +216,93 @@ def paper_has_fresh_running_steps(
 
 def _step_names(value: Any) -> set[str]:
     return {str(step) for step in (value or []) if step}
+
+
+def _failure_metadata(failed_steps: Any, step: str) -> dict[str, Any]:
+    if not isinstance(failed_steps, dict):
+        return {}
+    value = failed_steps.get(step)
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        return {"message": value}
+    return {}
+
+
+def _timeline_timestamp(
+    *,
+    label: ProcessingLabel,
+    failed_at: Optional[str],
+    last_checked_at: Optional[str],
+    last_completed_at: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    if failed_at:
+        return failed_at, "失败时间"
+    if label.state == "running" and last_checked_at:
+        return last_checked_at, "开始/检查时间"
+    if label.state in {"pending", "missing", "stale"} and last_checked_at:
+        return last_checked_at, "最近检查"
+    if label.ready and last_completed_at:
+        return last_completed_at, "最近完成"
+    if label.ready and last_checked_at:
+        return last_checked_at, "最近检查"
+    return None, None
+
+
+def _timeline_retry_hint(label: ProcessingLabel, *, failed: bool) -> Optional[str]:
+    if label.key == "pdf":
+        return None if label.ready else "需要可访问的 PDF 来源后才能继续后台处理。"
+    if label.ready:
+        return None
+    if label.state == "running":
+        return "后台任务正在处理该步骤，完成后会自动更新标签。"
+    if failed:
+        return "后台巡检会继续重试；如长期失败可在诊断页手动触发修复。"
+    if label.state == "stale":
+        return "后台巡检会刷新关键词索引缓存。"
+    if label.action:
+        return "后台巡检会自动补齐该步骤，无需手动维护。"
+    return "等待前置条件满足后继续处理。"
+
+
+def _processing_timeline_from_labels(
+    labels: list[ProcessingLabel],
+    *,
+    pipeline: dict[str, Any],
+) -> list[ProcessingTimelineItem]:
+    failed_steps = pipeline.get("failed_steps") if isinstance(pipeline.get("failed_steps"), dict) else {}
+    last_checked_at = pipeline.get("last_checked_at") if isinstance(pipeline.get("last_checked_at"), str) else None
+    last_completed_at = pipeline.get("last_completed_at") if isinstance(pipeline.get("last_completed_at"), str) else None
+    items: list[ProcessingTimelineItem] = []
+    for label in labels:
+        failure = _failure_metadata(failed_steps, label.key)
+        error = failure.get("message") if isinstance(failure.get("message"), str) else None
+        failed_at = failure.get("failed_at") if isinstance(failure.get("failed_at"), str) else None
+        timestamp, timestamp_label = _timeline_timestamp(
+            label=label,
+            failed_at=failed_at,
+            last_checked_at=last_checked_at,
+            last_completed_at=last_completed_at,
+        )
+        items.append(
+            ProcessingTimelineItem(
+                key=label.key,
+                label=label.label,
+                state=label.state,
+                ready=label.ready,
+                detail=label.detail,
+                count=label.count,
+                action=label.action,
+                timestamp=timestamp,
+                timestamp_label=timestamp_label,
+                last_checked_at=last_checked_at,
+                last_completed_at=last_completed_at if label.ready else None,
+                failed_at=failed_at,
+                error=error,
+                next_retry_hint=_timeline_retry_hint(label, failed=bool(failure)),
+            )
+        )
+    return items
 
 
 async def clear_stale_paper_processing_steps(
@@ -349,10 +480,12 @@ def paper_processing_snapshot(paper: Paper, *, bm25_status: Optional[dict[str, A
         status = "needs_processing"
     else:
         status = "ready"
+    timeline = _processing_timeline_from_labels(labels, pipeline=pipeline)
 
     return PaperProcessingSnapshot(
         status=status,
         labels=labels,
+        timeline=timeline,
         missing=missing,
         failed=failed,
         automation={
@@ -381,6 +514,7 @@ def paper_processing_flags(paper: Paper) -> dict[str, Any]:
         "failed": list(snapshot.failed),
         "status": snapshot.status,
         "labels": [label.to_dict() for label in snapshot.labels],
+        "timeline": [item.to_dict() for item in snapshot.timeline],
         "automation": snapshot.automation,
     }
 

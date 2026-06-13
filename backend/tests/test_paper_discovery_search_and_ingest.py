@@ -347,7 +347,14 @@ async def test_zotero_import_enqueues_processing_for_created_papers(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_local_search_applies_readiness_importer_source_and_read_status_filters():
+async def test_local_search_applies_readiness_importer_source_and_read_status_filters(monkeypatch):
+    from app.services.hybrid_search import HybridSearchService
+
+    async def fake_bm25_readiness_status(_self):
+        return {"ready": True, "indexed_papers": 0}
+
+    monkeypatch.setattr(HybridSearchService, "bm25_readiness_status", fake_bm25_readiness_status)
+
     class _CountResult:
         def scalar(self):
             return 0
