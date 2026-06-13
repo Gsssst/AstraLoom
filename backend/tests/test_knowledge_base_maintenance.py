@@ -12,6 +12,7 @@ from app.core.security import require_admin
 from app.main import app
 from app.services import document_visual_evidence, hybrid_search, paper_processing_pipeline, report_service
 from app.tasks.celery_app import celery_app
+from app.tasks import paper_tasks
 
 
 def _route(path: str, method: str):
@@ -979,3 +980,169 @@ def test_retrieval_status_discloses_low_coverage_and_no_local_hits():
     assert "知识库本轮未命中可引用资料" in status
     assert "向量覆盖率约 20%" in status
     assert "知识库维护补索引" in status
+
+
+def test_reconcile_task_skips_when_singleton_lock_is_held(monkeypatch):
+    class _HeldLock:
+        acquired = False
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(paper_tasks, "_RedisTaskLock", _HeldLock)
+
+    result = paper_tasks.reconcile_paper_processing.run(limit=5)
+
+    assert result["status"] == "skipped"
+    assert result["locked"] is True
+    assert result["processed"] == 0
+    assert result["message"] == "paper processing reconciliation already running"
+
+
+def test_reconcile_task_releases_singleton_lock(monkeypatch):
+    events = []
+
+    class _OwnedLock:
+        acquired = True
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            events.append("enter")
+            return self
+
+        def __exit__(self, *_args):
+            events.append("exit")
+            return False
+
+    async def fake_reconcile(self, **_kwargs):
+        return {
+            "processed": 0,
+            "success": 0,
+            "failed": 0,
+            "skipped": 0,
+            "items": [],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(paper_tasks, "_RedisTaskLock", _OwnedLock)
+    monkeypatch.setattr(paper_processing_pipeline.PaperProcessingPipeline, "reconcile_batch", fake_reconcile)
+
+    result = paper_tasks.reconcile_paper_processing.run(limit=5)
+
+    assert result["status"] == "success"
+    assert events == ["enter", "exit"]
+
+
+def test_processing_running_state_classifies_fresh_and_stale():
+    fresh = SimpleNamespace(
+        metadata_json={
+            paper_processing_pipeline.PIPELINE_METADATA_KEY: {
+                "running_steps": ["visual_evidence"],
+                "last_checked_at": "2026-06-13T00:00:00+00:00",
+            }
+        }
+    )
+    stale = SimpleNamespace(
+        metadata_json={
+            paper_processing_pipeline.PIPELINE_METADATA_KEY: {
+                "running_steps": ["visual_evidence"],
+                "last_checked_at": "2026-06-12T20:00:00+00:00",
+            }
+        }
+    )
+    now = paper_processing_pipeline.datetime.fromisoformat("2026-06-13T00:30:00+00:00")
+
+    assert paper_processing_pipeline.paper_processing_running_state(fresh, now=now, ttl_seconds=7200)["fresh"] is True
+    assert paper_processing_pipeline.paper_processing_running_state(stale, now=now, ttl_seconds=7200)["stale"] is True
+
+
+@pytest.mark.asyncio
+async def test_reconcile_batch_skips_fresh_running_and_retries_stale(monkeypatch):
+    fresh = SimpleNamespace(
+        id=uuid4(),
+        title="Fresh running",
+        arxiv_id="2606.00001",
+        pdf_path=None,
+        full_text=None,
+        embedding=None,
+        tags=[],
+        metadata_json={
+            paper_processing_pipeline.PIPELINE_METADATA_KEY: {
+                "running_steps": ["visual_evidence"],
+                "last_checked_at": "2026-06-13T00:00:00+00:00",
+            },
+            "pdf_url": "https://arxiv.org/pdf/2606.00001",
+        },
+    )
+    stale = SimpleNamespace(
+        id=uuid4(),
+        title="Stale running",
+        arxiv_id="2606.00002",
+        pdf_path=None,
+        full_text=None,
+        embedding=None,
+        tags=[],
+        metadata_json={
+            paper_processing_pipeline.PIPELINE_METADATA_KEY: {
+                "running_steps": ["visual_evidence"],
+                "last_checked_at": "2026-06-12T20:00:00+00:00",
+            },
+            "pdf_url": "https://arxiv.org/pdf/2606.00002",
+        },
+    )
+
+    class _Rows:
+        def all(self):
+            return [fresh, stale]
+
+    class _Result:
+        def scalars(self):
+            return _Rows()
+
+    class _Session:
+        async def execute(self, _statement):
+            return _Result()
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, _paper):
+            return None
+
+    async def fake_process(self, paper_id, **_kwargs):
+        return paper_processing_pipeline.PaperProcessingResult(
+            paper_id=str(paper_id),
+            title="Stale running",
+            completed=["full_text"],
+        )
+
+    fixed_now = paper_processing_pipeline.datetime.fromisoformat("2026-06-13T00:30:00+00:00")
+
+    class _FixedDateTime(paper_processing_pipeline.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz else fixed_now.replace(tzinfo=None)
+
+    monkeypatch.setattr(paper_processing_pipeline, "datetime", _FixedDateTime)
+    monkeypatch.setattr(paper_processing_pipeline.PaperProcessingPipeline, "process_paper", fake_process)
+
+    summary = await paper_processing_pipeline.PaperProcessingPipeline(_Session()).reconcile_batch(
+        limit=5,
+        running_ttl_seconds=7200,
+        rebuild_bm25=False,
+    )
+
+    assert summary["processed"] == 1
+    assert summary["success"] == 1
+    assert summary["skipped_running"] == 1
+    assert summary["stale_running_cleared"] == 1
+    assert fresh.metadata_json[paper_processing_pipeline.PIPELINE_METADATA_KEY]["running_steps"] == ["visual_evidence"]
+    assert stale.metadata_json[paper_processing_pipeline.PIPELINE_METADATA_KEY]["running_steps"] == []

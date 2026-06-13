@@ -2,9 +2,88 @@
 
 import asyncio
 import logging
+from uuid import uuid4
+
+from app.core.config import settings
 from app.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+RECONCILE_LOCK_KEY = "paper-processing:reconcile:lock"
+RECONCILE_LOCK_TTL_SECONDS = 90 * 60
+
+
+class _RedisTaskLock:
+    def __init__(self, key: str, *, ttl_seconds: int):
+        self.key = key
+        self.ttl_seconds = ttl_seconds
+        self.token = uuid4().hex
+        self.client = None
+        self.acquired = False
+        self.available = False
+
+    def __enter__(self):
+        try:
+            import redis
+
+            self.client = redis.Redis.from_url(settings.REDIS_URL)
+            self.available = True
+            self.acquired = bool(
+                self.client.set(
+                    self.key,
+                    self.token,
+                    nx=True,
+                    ex=self.ttl_seconds,
+                )
+            )
+        except Exception as exc:
+            self.client = None
+            self.available = False
+            self.acquired = True
+            logger.warning("Redis task lock unavailable for %s; continuing without singleton lock: %s", self.key, exc)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if not self.client or not self.available or not self.acquired:
+            return False
+        try:
+            self.client.eval(
+                """
+                if redis.call("get", KEYS[1]) == ARGV[1] then
+                    return redis.call("del", KEYS[1])
+                end
+                return 0
+                """,
+                1,
+                self.key,
+                self.token,
+            )
+        except Exception as release_exc:
+            logger.warning("Redis task lock release failed for %s: %s", self.key, release_exc)
+        return False
+
+
+def _reconcile_locked_response() -> dict:
+    return {
+        "status": "skipped",
+        "kind": "paper_processing_reconcile",
+        "locked": True,
+        "processed": 0,
+        "success": 0,
+        "failed": 0,
+        "skipped": 1,
+        "errors": [],
+        "result": {
+            "processed": 0,
+            "success": 0,
+            "failed": 0,
+            "skipped": 1,
+            "locked": True,
+            "items": [],
+            "errors": [],
+        },
+        "message": "paper processing reconciliation already running",
+    }
 
 
 @celery_app.task(bind=True, name="download_paper")
@@ -117,7 +196,10 @@ def reconcile_paper_processing(self, limit: int = 5, include_visual: bool = True
             )
 
     try:
-        summary = asyncio.run(_run())
+        with _RedisTaskLock(RECONCILE_LOCK_KEY, ttl_seconds=RECONCILE_LOCK_TTL_SECONDS) as lock:
+            if not lock.acquired:
+                return _reconcile_locked_response()
+            summary = asyncio.run(_run())
         return {
             "status": "success",
             "kind": "paper_processing_reconcile",
@@ -125,6 +207,8 @@ def reconcile_paper_processing(self, limit: int = 5, include_visual: bool = True
             "success": summary.get("success", 0),
             "failed": summary.get("failed", 0),
             "skipped": summary.get("skipped", 0),
+            "skipped_running": summary.get("skipped_running", 0),
+            "stale_running_cleared": summary.get("stale_running_cleared", 0),
             "errors": summary.get("errors", []),
             "result": summary,
             "message": "paper processing reconciliation complete",

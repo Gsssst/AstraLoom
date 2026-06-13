@@ -20,6 +20,7 @@ ArtifactState = Literal["ready", "missing", "pending", "running", "failed", "sta
 PIPELINE_METADATA_KEY = "paper_processing_pipeline"
 AUTOMATION_VERSION = 1
 FULL_TEXT_MIN_CHARS = 500
+RUNNING_STEP_TTL_SECONDS = 2 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,79 @@ def _pipeline_metadata(paper: Paper) -> dict[str, Any]:
     metadata = getattr(paper, "metadata_json", None) or {}
     pipeline = metadata.get(PIPELINE_METADATA_KEY)
     return pipeline if isinstance(pipeline, dict) else {}
+
+
+def _parse_pipeline_datetime(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def paper_processing_running_state(
+    paper: Paper,
+    *,
+    now: Optional[datetime] = None,
+    ttl_seconds: int = RUNNING_STEP_TTL_SECONDS,
+) -> dict[str, Any]:
+    """Classify running metadata as fresh or stale for scheduler decisions."""
+
+    pipeline = _pipeline_metadata(paper)
+    running_steps = [
+        str(step)
+        for step in (pipeline.get("running_steps") or [])
+        if step
+    ]
+    if not running_steps:
+        return {
+            "running": False,
+            "fresh": False,
+            "stale": False,
+            "running_steps": [],
+            "last_checked_at": pipeline.get("last_checked_at"),
+            "age_seconds": None,
+        }
+
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    last_checked = _parse_pipeline_datetime(pipeline.get("last_checked_at"))
+    age_seconds = (current - last_checked).total_seconds() if last_checked else None
+    stale = last_checked is None or age_seconds > ttl_seconds
+    return {
+        "running": True,
+        "fresh": not stale,
+        "stale": stale,
+        "running_steps": running_steps,
+        "last_checked_at": pipeline.get("last_checked_at"),
+        "age_seconds": age_seconds,
+    }
+
+
+def paper_has_fresh_running_steps(
+    paper: Paper,
+    *,
+    now: Optional[datetime] = None,
+    ttl_seconds: int = RUNNING_STEP_TTL_SECONDS,
+) -> bool:
+    return bool(paper_processing_running_state(paper, now=now, ttl_seconds=ttl_seconds).get("fresh"))
+
+
+async def clear_stale_paper_processing_steps(
+    db: AsyncSession,
+    paper: Paper,
+    *,
+    now: Optional[datetime] = None,
+    ttl_seconds: int = RUNNING_STEP_TTL_SECONDS,
+) -> bool:
+    state = paper_processing_running_state(paper, now=now, ttl_seconds=ttl_seconds)
+    if not state.get("stale"):
+        return False
+    await _store_pipeline_metadata(db, paper, clear_running=True)
+    return True
 
 
 def _has_tags(tags: Any) -> bool:
@@ -432,6 +506,7 @@ class PaperProcessingPipeline:
         candidate_multiplier: int = 6,
         include_visual: bool = True,
         rebuild_bm25: bool = True,
+        running_ttl_seconds: int = RUNNING_STEP_TTL_SECONDS,
     ) -> dict[str, Any]:
         result = await self.session.execute(
             select(Paper)
@@ -440,7 +515,33 @@ class PaperProcessingPipeline:
         )
         candidates = result.scalars().all()
         selected: list[Paper] = []
+        skipped_running: list[dict[str, Any]] = []
+        stale_running_cleared = 0
+        now = datetime.now(timezone.utc)
         for paper in candidates:
+            running_state = paper_processing_running_state(
+                paper,
+                now=now,
+                ttl_seconds=running_ttl_seconds,
+            )
+            if running_state.get("fresh"):
+                skipped_running.append(
+                    {
+                        "paper_id": str(paper.id),
+                        "title": paper.title,
+                        "running_steps": running_state.get("running_steps") or [],
+                        "last_checked_at": running_state.get("last_checked_at"),
+                    }
+                )
+                continue
+            if running_state.get("stale"):
+                if await clear_stale_paper_processing_steps(
+                    self.session,
+                    paper,
+                    now=now,
+                    ttl_seconds=running_ttl_seconds,
+                ):
+                    stale_running_cleared += 1
             snapshot = paper_processing_snapshot(paper)
             if snapshot.status != "ready":
                 selected.append(paper)
@@ -452,6 +553,8 @@ class PaperProcessingPipeline:
             "success": 0,
             "failed": 0,
             "skipped": 0,
+            "skipped_running": len(skipped_running),
+            "stale_running_cleared": stale_running_cleared,
             "items": [],
             "errors": [],
         }
