@@ -60,4 +60,10 @@ test('paper attachment UI has scoped compact styles', () => {
   assert.match(responsiveSource, /\.paper-detail-chat-upload/);
   assert.match(responsiveSource, /\.paper-chat-message-attachments/);
   assert.match(responsiveSource, /\.paper-chat-attachments/);
+  assert.match(responsiveSource, /\.paper-chat-attachments \.chat-attachment-chip/);
+  assert.match(responsiveSource, /\.paper-chat-attachments \.chat-attachment-thumb/);
+  assert.match(responsiveSource, /width: 32px/);
+  assert.match(responsiveSource, /height: 32px/);
+  assert.match(responsiveSource, /max-width: 32px/);
+  assert.match(responsiveSource, /max-height: 32px/);
 });

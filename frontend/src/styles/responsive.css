@@ -558,8 +558,20 @@
 }
 
 .paper-chat-attachments {
+  max-width: 100%;
   margin-bottom: 0;
   padding: 6px;
+  overflow-x: auto;
+}
+
+.paper-chat-attachments .chat-attachment-chip {
+  flex: 0 1 230px;
+  width: min(100%, 230px);
+}
+
+.paper-chat-attachments .chat-attachment-thumb,
+.paper-chat-attachments .chat-attachment-file-icon {
+  flex: 0 0 32px;
 }
 
 .paper-selection-menu {
@@ -1430,6 +1442,11 @@
 }
 
 .chat-attachment-thumb {
+  display: block;
+  width: 32px;
+  height: 32px;
+  max-width: 32px;
+  max-height: 32px;
   border-radius: 6px;
   object-fit: cover;
 }
