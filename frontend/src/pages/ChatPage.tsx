@@ -15,6 +15,7 @@ import api from '../services/api';
 import { getApiErrorMessage, getHttpErrorMessage } from '../services/apiError';
 import Markdown from '../components/Markdown';
 import ThinkingPanel from '../components/ThinkingPanel';
+import useChatAutoScroll from '../hooks/useChatAutoScroll';
 
 const { Text } = Typography;
 
@@ -126,7 +127,12 @@ const ChatPage: React.FC = () => {
   const [firstTokenAt, setFirstTokenAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const showThinking = useThemeStore((s) => s.showThinking ?? false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const {
+    scrollContainerRef: chatScrollRef,
+    scrollEndRef: messagesEndRef,
+    scrollToBottomIfFollowing,
+    enableFollowOutput,
+  } = useChatAutoScroll();
   const sendLock = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const cancelRequestedRef = useRef(false);
@@ -160,7 +166,7 @@ const ChatPage: React.FC = () => {
       catch (error) { message.error(getApiErrorMessage(error, { fallback: '对话记录加载失败' })); } finally { setInitLoading(false); }
     })();
   }, [isAuthenticated, initDone]);
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, pendingMsg]);
+  useEffect(() => { scrollToBottomIfFollowing(); }, [messages, pendingMsg, scrollToBottomIfFollowing]);
   useEffect(() => { setDrawerOpen(!isMobile); }, [isMobile, setDrawerOpen]);
   useEffect(() => {
     if (!sending || !sendStartedAt) {
@@ -308,6 +314,7 @@ const ChatPage: React.FC = () => {
     setElapsedMs(0);
     setStreamStatus(webSearch ? '正在检索知识库与网络来源...' : ragEnabled ? '正在检索知识库...' : '正在生成回答...');
     if (!hasOverride) setInput('');
+    enableFollowOutput();
 
     if (attachedFiles.length > 0) {
       const files = [...attachedFiles]; setAttachedFiles([]);
@@ -529,7 +536,7 @@ const ChatPage: React.FC = () => {
             </Dropdown>
           </div>
         </div>
-        <div className="chat-message-list" style={{ flex: 1, overflowY: 'auto', padding: '24px 20px', background: token.colorBgLayout }}>
+        <div ref={chatScrollRef} className="chat-message-list" style={{ flex: 1, overflowY: 'auto', padding: '24px 20px', background: token.colorBgLayout }}>
           {messages.length === 0 && !pendingMsg ? (
             <div className="chat-empty-state">
               <div className="chat-empty-logo">✦</div>

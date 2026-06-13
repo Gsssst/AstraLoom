@@ -25,6 +25,7 @@ import WorkspaceIssueReporter from '../components/WorkspaceIssueReporter';
 import ResearchKnowledgeGraph, { type ResearchGraphEdge, type ResearchGraphNode } from '../components/ResearchKnowledgeGraph';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useThemeStore } from '../stores/useThemeStore';
+import useChatAutoScroll from '../hooks/useChatAutoScroll';
 import {
   buildResearchCitationKey,
   computeEvidenceConfidence,
@@ -385,7 +386,12 @@ const PaperDetailPage: React.FC = () => {
   const [toolRelation, setToolRelation] = useState('used');
   const [toolEvidenceNote, setToolEvidenceNote] = useState('');
   const showThinking = useThemeStore((s) => s.showThinking ?? false);
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const {
+    scrollContainerRef: paperChatScrollRef,
+    scrollEndRef: chatEndRef,
+    scrollToBottomIfFollowing: scrollPaperChatToBottomIfFollowing,
+    enableFollowOutput: enablePaperChatFollowOutput,
+  } = useChatAutoScroll();
   const retrievalStrategy = webSearch && paperRagEnabled
     ? '混合检索'
     : webSearch
@@ -501,7 +507,7 @@ const PaperDetailPage: React.FC = () => {
 
   useEffect(() => { fetchAvailableTools(); }, [isAuthenticated]);
 
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMsgs]);
+  useEffect(() => { scrollPaperChatToBottomIfFollowing(); }, [chatMsgs, scrollPaperChatToBottomIfFollowing]);
 
   const appendStreamingReply = (content: string, references: PaperChatReference[], evidence?: PaperChatEvidenceMeta | null) => {
     setChatMsgs(prev => {
@@ -725,6 +731,7 @@ const PaperDetailPage: React.FC = () => {
     setQuestion('');
     if (!templateMode) setPdfQuote(null);
     if (templateMode && isMobile) setMobilePanel('chat');
+    enablePaperChatFollowOutput();
     setChatMsgs(prev => [...prev, userMessage]);
     setAsking(true);
     setAskStatus(webSearch ? '正在检索当前论文、论文库与网络来源...' : paperRagEnabled ? '正在检索当前论文与相关论文...' : '正在阅读当前论文...');
@@ -1476,7 +1483,7 @@ const PaperDetailPage: React.FC = () => {
               </Tooltip>
               <Select className="chat-depth-select" size="small" value={searchDepth} onChange={setSearchDepth} variant="borderless" style={{ width: 66, fontSize: 12 }} options={[{ value: 'quick', label: '快速' }, { value: 'standard', label: '标准' }, { value: 'deep', label: '深度' }]} />
             </div>
-            <div className="paper-detail-chat-scroll">
+            <div ref={paperChatScrollRef} className="paper-detail-chat-scroll">
               {chatMsgs.length === 0 ? (
                 <div style={{ padding: '24px 16px', textAlign: 'center', height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                   <div style={{
