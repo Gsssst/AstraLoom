@@ -23,6 +23,57 @@ def test_ask_paper_request_validates_retrieval_depth():
         papers.AskPaperRequest(question="question", search_depth="unbounded")
 
 
+def test_ask_paper_request_accepts_image_attachments_for_current_turn():
+    request = papers.AskPaperRequest(
+        question="请分析这张补充实验图",
+        attachments=[
+            chat_sessions.ChatImageAttachment(
+                filename="result.png",
+                mime_type="image/png",
+                data_url="data:image/png;base64,aGVsbG8=",
+            )
+        ],
+    )
+
+    assert request.attachments[0].filename == "result.png"
+    assert request.attachments[0].data_url.startswith("data:image/png;base64,")
+
+
+def test_paper_chat_image_attachments_become_openai_vision_parts(monkeypatch):
+    monkeypatch.setattr(
+        chat_sessions.llm_service,
+        "get_active_option",
+        lambda: {"provider": chat_sessions.OPENAI_COMPATIBLE_PROVIDER},
+    )
+    request = papers.AskPaperRequest(
+        question="请结合当前论文分析这张图",
+        attachments=[
+            chat_sessions.ChatImageAttachment(
+                filename="figure.png",
+                mime_type="image/png",
+                data_url="data:image/png;base64,aGVsbG8=",
+            )
+        ],
+    )
+    context = [
+        {"role": "system", "content": "paper context"},
+        {"role": "user", "content": "请结合当前论文分析这张图"},
+    ]
+
+    result = chat_sessions._build_llm_context_for_request(context, request)
+
+    assert result == [
+        {"role": "system", "content": "paper context"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "请结合当前论文分析这张图"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}},
+            ],
+        },
+    ]
+
+
 @pytest.mark.asyncio
 async def test_paper_chat_keeps_current_paper_and_appends_optional_retrieval(monkeypatch):
     calls = []

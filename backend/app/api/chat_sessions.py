@@ -14,6 +14,7 @@ from app.db.session import get_db
 from app.db.models.chat import ChatSession, ChatMessage
 from app.db.models.user import User
 from app.core.security import get_current_user
+from app.core.config import settings
 from app.services.llm import OPENAI_COMPATIBLE_PROVIDER, llm_service
 from app.services.rag_service import RAGService
 from app.services.web_search import format_web_context, search_web_results
@@ -21,6 +22,8 @@ from app.db.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat-sessions", tags=["对话会话"])
+MAX_CHAT_UPLOAD_BYTES = max(1, int(settings.MAX_UPLOAD_SIZE_MB or 50)) * 1024 * 1024
+MAX_CHAT_IMAGE_DATA_URL_LENGTH = ((MAX_CHAT_UPLOAD_BYTES + 2) // 3) * 4 + 128
 
 
 async def _extract_pdf_text(file_bytes: bytes, filename: str) -> str:
@@ -219,7 +222,7 @@ class MessageResponse(BaseModel):
 class ChatImageAttachment(BaseModel):
     filename: str = Field(default="image")
     mime_type: str = Field(default="image/png")
-    data_url: str = Field(..., max_length=14_000_000)
+    data_url: str = Field(..., max_length=MAX_CHAT_IMAGE_DATA_URL_LENGTH)
 
     @field_validator("data_url")
     @classmethod
@@ -274,26 +277,28 @@ def _image_text_fallback(attachments: list[ChatImageAttachment]) -> str:
 
 def _build_llm_context_for_request(
     context: list[dict[str, Any]],
-    req: SendMessageRequest,
+    req: Any,
 ) -> list[dict[str, Any]]:
     """Attach current-turn images only when the active provider supports vision."""
-    if not req.attachments:
+    attachments = getattr(req, "attachments", None) or []
+    if not attachments:
         return context
 
     active_provider = llm_service.get_active_option().get("provider")
     if active_provider != OPENAI_COMPATIBLE_PROVIDER:
-        fallback = _image_text_fallback(req.attachments)
+        fallback = _image_text_fallback(attachments)
         return [*context, {"role": "system", "content": fallback}] if fallback else context
 
-    text = req.content.strip() or "请分析上传的图片。"
+    request_text = str(getattr(req, "content", None) or getattr(req, "question", "") or "").strip()
+    text = request_text or "请分析上传的图片。"
     content_parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
-    for attachment in req.attachments:
+    for attachment in attachments:
         content_parts.append({
             "type": "image_url",
             "image_url": {"url": attachment.data_url},
         })
     multimodal_message = {"role": "user", "content": content_parts}
-    if context and context[-1].get("role") == "user" and context[-1].get("content") == req.content:
+    if context and context[-1].get("role") == "user" and context[-1].get("content") == request_text:
         return [*context[:-1], multimodal_message]
     return [*context, multimodal_message]
 
@@ -784,8 +789,8 @@ async def extract_file_text(
     filename = file.filename or "file"
     file_bytes = await file.read()
 
-    if len(file_bytes) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="文件不能超过 10MB")
+    if len(file_bytes) > MAX_CHAT_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail=f"文件不能超过 {settings.MAX_UPLOAD_SIZE_MB}MB")
 
     extracted_text = ""
     file_type = "unknown"
@@ -850,8 +855,8 @@ async def upload_file(
     filename = file.filename or "file"
     file_bytes = await file.read()
 
-    if len(file_bytes) > 10 * 1024 * 1024:  # 10MB 限制
-        raise HTTPException(status_code=400, detail="文件不能超过 10MB")
+    if len(file_bytes) > MAX_CHAT_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail=f"文件不能超过 {settings.MAX_UPLOAD_SIZE_MB}MB")
 
     extracted_text = ""
     file_desc = ""

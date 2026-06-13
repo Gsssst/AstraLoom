@@ -29,6 +29,7 @@ from app.services.llm import llm_service
 from app.core.config import settings
 from app.core.security import get_current_user, get_optional_user, require_admin
 from app.core.exceptions import NotFoundException
+from app.api.chat_sessions import ChatImageAttachment
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/papers", tags=["论文"])
@@ -2029,6 +2030,7 @@ async def get_paper_ai_insights(
 class AskPaperRequest(BaseModel):
     question: str = Field(..., description="关于论文的问题")
     history: Optional[list] = None
+    attachments: list[ChatImageAttachment] = Field(default_factory=list, max_length=4)
     rag_enabled: bool = Field(default=True, description="是否额外检索相关论文")
     web_search: bool = Field(default=False, description="是否启用联网增强")
     search_depth: Literal["quick", "standard", "deep"] = Field(default="standard", description="检索深度")
@@ -2193,6 +2195,8 @@ async def ask_about_paper(paper_id: str, req: AskPaperRequest, db: AsyncSession 
         raise HTTPException(status_code=404, detail="论文未找到")
 
     context, references = await _build_paper_chat_context(paper, req)
+    from app.api.chat_sessions import _build_llm_context_for_request
+    context = _build_llm_context_for_request(context, req)
     answer = await llm_service.chat(
         messages=context,
         temperature=0.5,
@@ -2213,6 +2217,8 @@ async def ask_about_paper_stream(paper_id: str, req: AskPaperRequest, db: AsyncS
     if not paper: raise HTTPException(status_code=404, detail="论文未找到")
 
     context, references = await _build_paper_chat_context(paper, req)
+    from app.api.chat_sessions import _build_llm_context_for_request
+    context = _build_llm_context_for_request(context, req)
     max_tokens = llm_service.paper_chat_max_tokens()
     from app.api.chat_sessions import _retrieval_quality_snapshot
     retrieval_quality = await _retrieval_quality_snapshot(rag_enabled=req.rag_enabled)

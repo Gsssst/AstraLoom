@@ -16,6 +16,7 @@ import { getApiErrorMessage, getHttpErrorMessage } from '../services/apiError';
 import Markdown from '../components/Markdown';
 import ThinkingPanel from '../components/ThinkingPanel';
 import useChatAutoScroll from '../hooks/useChatAutoScroll';
+import useChatAttachments from '../hooks/useChatAttachments';
 
 const { Text } = Typography;
 
@@ -33,15 +34,6 @@ const promptShortcuts = [
   { icon: <BulbOutlined />, label: '生成 Idea', text: '基于这些论文，请提出3个创新性的研究想法' },
   { icon: <HighlightOutlined />, label: '润色文本', text: '请将以下文本润色为学术风格：' },
 ];
-
-interface AttachedFile {
-  file: File;
-  text: string;
-  extracting: boolean;
-  id: string;
-  dataUrl?: string;
-  mimeType?: string;
-}
 
 interface ChatModelMetadata {
   provider?: string;
@@ -116,7 +108,16 @@ const ChatPage: React.FC = () => {
   const { sessions, currentSessionId, messages, loading, sending, drawerOpen, loadSessions, createSession, selectSession, deleteSession, toggleRag, setDrawerOpen } = useChatSessionStore();
 
   const [input, setInput] = useState('');
-  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  const {
+    attachedFiles,
+    setAttachedFiles,
+    removeAttachment,
+    openAttachmentPicker,
+    attachedTextContext,
+    imageAttachmentPayloads,
+    hasExtractingAttachments,
+    hasImageAttachment,
+  } = useChatAttachments();
   const [searchDepth, setSearchDepth] = useState<'quick' | 'standard' | 'deep'>('standard');
   const [webSearch, setWebSearch] = useState(false);
   const [convSearch, setConvSearch] = useState('');
@@ -143,7 +144,6 @@ const ChatPage: React.FC = () => {
   const modelDetail = activeModelInfo
     ? `${activeModelInfo.provider || 'provider'} / ${activeModelInfo.model || activeModelInfo.label || 'model'}`
     : '发送消息后显示当前模型';
-  const hasImageAttachment = attachedFiles.some(file => file.file.type.startsWith('image/'));
   const generationElapsedMs = firstTokenAt && sendStartedAt
     ? Math.max(0, elapsedMs - (firstTokenAt - sendStartedAt))
     : 0;
@@ -303,7 +303,7 @@ const ChatPage: React.FC = () => {
     const text = (hasOverride ? overrideContent : input).trim();
     if (sendLock.current || (!text && attachedFiles.length === 0) || sending) return;
     if (!isAuthenticated) { message.warning('请先登录'); return; }
-    if (attachedFiles.some(f => f.extracting)) { message.warning('文件还在解析中...'); return; }
+    if (hasExtractingAttachments) { message.warning('文件还在解析中...'); return; }
     let sid = currentSessionId; if (!sid) { sid = await createSession(); if (!sid) { message.error('创建对话失败：请稍后重试'); return; } }
     sendLock.current = true;
     cancelRequestedRef.current = false;
@@ -319,14 +319,8 @@ const ChatPage: React.FC = () => {
     if (attachedFiles.length > 0) {
       const files = [...attachedFiles]; setAttachedFiles([]);
       const fileNames = files.map(f => f.file.name).join(', ');
-      const allText = files
-        .filter(f => !f.file.type.startsWith('image/'))
-        .map(f => f.text)
-        .filter(Boolean)
-        .join('\n\n---\n\n');
-      const imageAttachments = files
-        .filter(f => f.file.type.startsWith('image/') && f.dataUrl)
-        .map(f => ({ filename: f.file.name, mime_type: f.mimeType || f.file.type || 'image/png', data_url: f.dataUrl }));
+      const allText = attachedTextContext(files);
+      const imageAttachments = imageAttachmentPayloads(files);
       const icons = files.map(f => f.file.type.startsWith('image/') ? '🖼️' : '📄').join('');
       useChatSessionStore.setState(s => ({ messages: [...s.messages, { role: 'user', content: `${icons} ${fileNames}${text ? '\n' + text : ''}`, created_at: new Date().toISOString() }], sending: true }));
       try {
@@ -611,13 +605,13 @@ const ChatPage: React.FC = () => {
                       ? <Image className="chat-attachment-thumb" src={URL.createObjectURL(af.file)} width={32} height={32} preview={false} />
                       : <span className="chat-attachment-file-icon"><FilePdfOutlined /></span>}
                     <span className="chat-attachment-name">{af.extracting ? '解析中' : af.text ? '就绪' : '异常'} · {af.file.name}</span>
-                    <Button className="chat-attachment-remove" type="text" size="small" icon={<CloseOutlined />} onClick={() => setAttachedFiles(prev => prev.filter(f => f.id !== af.id))} />
+                    <Button className="chat-attachment-remove" type="text" size="small" icon={<CloseOutlined />} onClick={() => removeAttachment(af.id)} />
                   </div>
                 ))}
               </div>
             )}
             <div className="chat-editor">
-              <Tooltip title="上传论文或图片"><Button className="chat-upload-button chat-tool-button" type="text" icon={<UploadOutlined />} onClick={() => { const el = document.createElement('input'); el.type = 'file'; el.accept = 'image/*,.pdf'; el.multiple = true; el.onchange = async () => { for (const f of Array.from(el.files || [])) { if (f.size > 10 * 1024 * 1024) { message.warning(`${f.name} 超过10MB`); continue; } const id = Math.random().toString(36).slice(2); setAttachedFiles(prev => [...prev, { file: f, text: '', extracting: true, id }]); const fd = new FormData(); fd.append('file', f); try { const res = await api.post('/chat-sessions/extract-file', fd, { headers: { 'Content-Type': 'multipart/form-data' } }); setAttachedFiles(prev => prev.map(p => p.id === id ? { ...p, text: res.data.extracted_text || '', extracting: false, dataUrl: res.data.data_url || undefined, mimeType: res.data.mime_type || undefined } : p)); } catch (error) { setAttachedFiles(prev => prev.filter(p => p.id !== id)); message.error(getApiErrorMessage(error, { fallback: `${f.name} 解析失败` })); } } }; el.click(); }} /></Tooltip>
+              <Tooltip title="上传论文或图片"><Button className="chat-upload-button chat-tool-button" type="text" icon={<UploadOutlined />} onClick={openAttachmentPicker} /></Tooltip>
               <div className="chat-input-wrap"><Input.TextArea className="chat-input" value={input} onChange={e => setInput(e.target.value)} onPressEnter={e => { if (!e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={ragEnabled ? '输入消息，Enter 发送，Shift+Enter 换行' : '输入消息...'} autoSize={{ minRows: 1, maxRows: 5 }} /></div>
               {sending ? (
                 <Tooltip title="停止生成"><Button className="chat-stop-button chat-tool-button" type="text" icon={<StopOutlined />} onClick={handleStopGeneration} /></Tooltip>

@@ -3,6 +3,11 @@
 from app.api import chat_sessions
 
 
+def test_chat_upload_limit_uses_50mb_configuration_for_files_and_data_urls():
+    assert chat_sessions.MAX_CHAT_UPLOAD_BYTES == 50 * 1024 * 1024
+    assert chat_sessions.MAX_CHAT_IMAGE_DATA_URL_LENGTH >= 69_905_196
+
+
 def _request() -> chat_sessions.SendMessageRequest:
     return chat_sessions.SendMessageRequest(
         content="请读图",

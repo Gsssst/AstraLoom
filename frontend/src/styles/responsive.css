@@ -524,6 +524,10 @@
   align-items: flex-end;
 }
 
+.paper-detail-chat-upload {
+  flex-shrink: 0;
+}
+
 .paper-detail-chat-input {
   padding: 5px 4px !important;
   border: 0 !important;
@@ -543,6 +547,19 @@
   color: rgba(255, 255, 255, 0.88);
   font-size: 11px;
   -webkit-line-clamp: 3;
+}
+
+.paper-chat-message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+  justify-content: flex-end;
+}
+
+.paper-chat-attachments {
+  margin-bottom: 0;
+  padding: 6px;
 }
 
 .paper-selection-menu {
