@@ -93,6 +93,15 @@ test('single paper visual evidence action is queued and pollable', () => {
   assert.match(papersPageSource, /待提取视觉证据/);
 });
 
+test('paper maintenance job helpers are initialized before polling effect', () => {
+  const helperIndex = papersPageSource.indexOf('const formatMaintenanceJobCompletion = useCallback');
+  const pollingIndex = papersPageSource.indexOf("const jobId = activeMaintenanceJob?.id");
+
+  assert.ok(helperIndex > 0);
+  assert.ok(pollingIndex > 0);
+  assert.ok(helperIndex < pollingIndex);
+});
+
 test('non-admin maintenance view hides privileged repair actions', () => {
   assert.match(papersPageSource, /const maintenanceView = !isAdmin \?/);
   assert.match(papersPageSource, /知识库维护需要管理员权限/);

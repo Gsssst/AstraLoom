@@ -931,6 +931,14 @@ const PapersPage: React.FC = () => {
     }
   }, [fetchMaintenanceCenter, showPageError]);
 
+  const formatMaintenanceJobCompletion = useCallback((job: MaintenanceJobStatus) => {
+    const total = (job.success || 0) + (job.failed || 0) + (job.skipped || 0);
+    if (job.message && total === 0) return job.message;
+    if (job.message && job.kind === 'visual_evidence_single_paper') return job.message;
+    return `维护任务完成：成功 ${job.success || 0}，失败 ${job.failed || 0}，跳过 ${job.skipped || 0}`;
+  }, []);
+  const isVisualEvidenceJob = useCallback((job?: MaintenanceJobStatus | null) => Boolean(job && String(job.kind || '').includes('visual_evidence')), []);
+
   useEffect(() => {
     const jobId = activeMaintenanceJob?.id;
     if (!jobId || !['queued', 'running', 'unknown'].includes(activeMaintenanceJob.state)) return;
@@ -1129,13 +1137,6 @@ const PapersPage: React.FC = () => {
     if (quality === 'low') return { color: 'orange', label: '表格低' };
     return { color: 'default', label: '表格无' };
   };
-  const formatMaintenanceJobCompletion = useCallback((job: MaintenanceJobStatus) => {
-    const total = (job.success || 0) + (job.failed || 0) + (job.skipped || 0);
-    if (job.message && total === 0) return job.message;
-    if (job.message && job.kind === 'visual_evidence_single_paper') return job.message;
-    return `维护任务完成：成功 ${job.success || 0}，失败 ${job.failed || 0}，跳过 ${job.skipped || 0}`;
-  }, []);
-  const isVisualEvidenceJob = (job?: MaintenanceJobStatus | null) => Boolean(job && String(job.kind || '').includes('visual_evidence'));
   const reportPresetOptions = [
     { value: 'default', label: '默认逐篇' },
     { value: 'compare', label: '横向对比' },
