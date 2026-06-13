@@ -82,6 +82,13 @@ test('paper maintenance center exposes visual evidence jobs without table-repair
   assert.doesNotMatch(papersPageSource, /backfill-structured-pdf\?limit=5/);
 });
 
+test('single paper visual evidence action is queued and pollable', () => {
+  assert.match(papersPageSource, /action\.key === 'visual_evidence'/);
+  assert.match(papersPageSource, /response\.data\?\.job_id && response\.data\?\.job/);
+  assert.match(papersPageSource, /setActiveMaintenanceJob\(response\.data\.job\)/);
+  assert.match(papersPageSource, /已进入后台：/);
+});
+
 test('non-admin maintenance view hides privileged repair actions', () => {
   assert.match(papersPageSource, /const maintenanceView = !isAdmin \?/);
   assert.match(papersPageSource, /知识库维护需要管理员权限/);

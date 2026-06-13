@@ -65,6 +65,10 @@ def test_maintenance_routes_are_fixed_paths_and_admin_only():
         assert require_admin in _dependency_calls(path, method)
 
 
+def test_single_paper_visual_evidence_route_is_admin_only():
+    assert require_admin in _dependency_calls("/api/papers/{paper_id}/extract-visual-evidence", "POST")
+
+
 def test_processing_status_route_is_fixed_path_before_paper_detail():
     paths = [route.path for route in app.routes]
 
@@ -573,6 +577,92 @@ async def test_maintenance_job_status_reads_local_visual_job_before_celery():
     assert status.kind == "visual_evidence_backfill"
     assert status.state == "running"
     assert status.progress_percent == 50
+
+
+@pytest.mark.asyncio
+async def test_single_paper_visual_evidence_enqueue_returns_pollable_job(monkeypatch):
+    paper_id = uuid4()
+    paper = SimpleNamespace(id=paper_id, title="Needs visual OCR", year=2026, metadata_json={})
+
+    class _Db:
+        async def execute(self, _statement):
+            return _ScalarOneResult(paper)
+
+    created = []
+
+    class _Task:
+        def __init__(self, coro):
+            self.coro = coro
+
+    def fake_create_task(coro):
+        created.append(coro)
+        return _Task(coro)
+
+    async def fail_sync_reparse(*_args, **_kwargs):
+        raise AssertionError("single-paper endpoint should enqueue instead of synchronously reparsing")
+
+    monkeypatch.setattr(papers_api.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(document_visual_evidence, "ensure_document_visual_evidence", fail_sync_reparse)
+
+    response = await papers_api.extract_paper_visual_evidence(
+        str(paper_id),
+        db=_Db(),
+        user=SimpleNamespace(role="admin"),
+    )
+
+    try:
+        assert response.job_id
+        assert response.job is not None
+        assert response.job.kind == "visual_evidence_single_paper"
+        assert response.job.state == "queued"
+        assert response.status == "missing"
+        assert papers_api._MAINTENANCE_JOBS[response.job_id].id == response.job_id
+        assert papers_api._SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER[str(paper_id)] == response.job_id
+        assert created
+    finally:
+        for coro in created:
+            coro.close()
+        papers_api._MAINTENANCE_JOBS.pop(response.job_id or "", None)
+        papers_api._SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER.pop(str(paper_id), None)
+
+
+@pytest.mark.asyncio
+async def test_single_paper_visual_evidence_enqueue_deduplicates_running_job(monkeypatch):
+    paper_id = uuid4()
+    paper = SimpleNamespace(id=paper_id, title="Needs visual OCR", year=2026, metadata_json={})
+    existing = papers_api.MaintenanceJobStatus(
+        id="visual-evidence-paper-existing",
+        kind="visual_evidence_single_paper",
+        state="running",
+        status="running",
+        total=1,
+        current_paper={"id": str(paper_id), "title": paper.title},
+    )
+    papers_api._MAINTENANCE_JOBS[existing.id] = existing
+    papers_api._SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER[str(paper_id)] = existing.id
+
+    class _Db:
+        async def execute(self, _statement):
+            return _ScalarOneResult(paper)
+
+    def fail_create_task(_coro):
+        raise AssertionError("duplicate click should reuse active single-paper job")
+
+    monkeypatch.setattr(papers_api.asyncio, "create_task", fail_create_task)
+
+    try:
+        response = await papers_api.extract_paper_visual_evidence(
+            str(paper_id),
+            db=_Db(),
+            user=SimpleNamespace(role="admin"),
+        )
+    finally:
+        papers_api._MAINTENANCE_JOBS.pop(existing.id, None)
+        papers_api._SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER.pop(str(paper_id), None)
+
+    assert response.job_id == existing.id
+    assert response.job is not None
+    assert response.job.state == "running"
 
 
 def test_maintenance_job_status_normalizes_progress_payload():

@@ -266,6 +266,11 @@ class MaintenanceJobEnqueueResponse(BaseModel):
     job: MaintenanceJobStatus
 
 
+class SinglePaperVisualEvidenceEnqueueResponse(DocumentVisualEvidenceStatus):
+    job_id: Optional[str] = None
+    job: Optional[MaintenanceJobStatus] = None
+
+
 class MaintenanceRecommendation(BaseModel):
     id: str
     title: str
@@ -322,6 +327,7 @@ async def _paper_count(db: AsyncSession, *criteria) -> int:
 
 
 _MAINTENANCE_JOBS: dict[str, MaintenanceJobStatus] = {}
+_SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER: dict[str, str] = {}
 
 
 async def _missing_samples(db: AsyncSession, criterion, limit: int = 5) -> list[MaintenancePaperSample]:
@@ -1462,6 +1468,112 @@ async def _run_visual_evidence_backfill_job(job_id: str, limit: int) -> None:
         job.errors = [{"reason": str(exc)}]
 
 
+async def _run_single_visual_evidence_job(job_id: str, paper_id: str) -> None:
+    from uuid import UUID
+
+    from app.db.session import AsyncSessionLocal
+    from app.services.document_visual_evidence import (
+        ensure_document_visual_evidence,
+        visual_evidence_status_from_paper,
+    )
+
+    job = _MAINTENANCE_JOBS.get(job_id)
+    if not job:
+        return
+    job.state = "running"
+    job.status = "running"
+    job.total = 1
+    job.processed = 0
+    job.progress_percent = 5
+    job.message = "正在提取视觉证据和表格 OCR"
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Paper).where(Paper.id == UUID(paper_id)))
+            paper = result.scalar_one_or_none()
+            if not paper:
+                raise ValueError("论文未找到")
+            job.current_paper = {"id": str(paper.id), "title": paper.title, "year": paper.year}
+            try:
+                payload = await ensure_document_visual_evidence(paper, db, force=True)
+                status = visual_evidence_status_from_paper(paper)
+                if status.get("ready"):
+                    job.success = 1
+                    job.failed = 0
+                    job.skipped = 0
+                    job.message = "视觉证据提取完成"
+                    job.state = "success"
+                elif payload and payload.get("status") == "empty":
+                    job.success = 0
+                    job.failed = 0
+                    job.skipped = 1
+                    job.message = "没有可用视觉证据"
+                    job.state = "success"
+                else:
+                    reason = (status.get("last_error") or {}).get("message") or "visual evidence failed"
+                    job.success = 0
+                    job.failed = 1
+                    job.errors = [{"paper_id": str(paper.id), "title": paper.title, "reason": reason}]
+                    job.message = reason
+                    job.state = "failed"
+                await db.commit()
+            except Exception as exc:
+                job.success = 0
+                job.failed = 1
+                job.errors = [{"paper_id": str(paper.id), "title": paper.title, "reason": str(exc)}]
+                job.message = str(exc)
+                job.state = "failed"
+            job.processed = 1
+            job.progress_percent = 100
+            job.status = job.state
+            job.current_paper = None
+    except Exception as exc:
+        job.state = "failed"
+        job.status = "failed"
+        job.total = 1
+        job.processed = 1
+        job.failed = 1
+        job.progress_percent = 100
+        job.message = str(exc)
+        job.errors = [{"paper_id": paper_id, "reason": str(exc)}]
+    finally:
+        if _SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER.get(paper_id) == job_id:
+            _SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER.pop(paper_id, None)
+
+
+def _active_single_visual_evidence_job(paper_id: str) -> Optional[MaintenanceJobStatus]:
+    job_id = _SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER.get(paper_id)
+    if not job_id:
+        return None
+    job = _MAINTENANCE_JOBS.get(job_id)
+    if not job or job.state not in {"queued", "running", "unknown"}:
+        _SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER.pop(paper_id, None)
+        return None
+    return job
+
+
+def _enqueue_single_visual_evidence_job(paper: Paper) -> MaintenanceJobStatus:
+    from uuid import uuid4
+
+    paper_id = str(paper.id)
+    active_job = _active_single_visual_evidence_job(paper_id)
+    if active_job:
+        return active_job
+    job_id = f"visual-evidence-paper-{paper_id}-{uuid4().hex}"
+    job = MaintenanceJobStatus(
+        id=job_id,
+        kind="visual_evidence_single_paper",
+        state="queued",
+        status="queued",
+        total=1,
+        current_paper={"id": paper_id, "title": paper.title, "year": paper.year},
+        message="视觉证据提取已进入后台任务",
+    )
+    _MAINTENANCE_JOBS[job_id] = job
+    _SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER[paper_id] = job_id
+    asyncio.create_task(_run_single_visual_evidence_job(job_id, paper_id))
+    return job
+
+
 @router.post("/maintenance/backfill-visual-evidence", response_model=MaintenanceJobEnqueueResponse)
 async def backfill_visual_evidence(
     limit: int = Query(default=5, ge=1, le=20),
@@ -1722,7 +1834,7 @@ async def get_paper_processing_status(
     return _paper_processing_status(paper)
 
 
-@router.post("/{paper_id}/extract-visual-evidence", response_model=DocumentVisualEvidenceStatus)
+@router.post("/{paper_id}/extract-visual-evidence", response_model=SinglePaperVisualEvidenceEnqueueResponse)
 async def extract_paper_visual_evidence(
     paper_id: str,
     db: AsyncSession = Depends(get_db),
@@ -1740,17 +1852,15 @@ async def extract_paper_visual_evidence(
     if not paper:
         raise HTTPException(status_code=404, detail="论文未找到")
 
-    from app.services.document_visual_evidence import (
-        force_document_visual_evidence_reparse,
-        visual_evidence_status_from_paper,
+    from app.services.document_visual_evidence import visual_evidence_status_from_paper
+
+    job = _enqueue_single_visual_evidence_job(paper)
+    status = visual_evidence_status_from_paper(paper)
+    return SinglePaperVisualEvidenceEnqueueResponse(
+        **status,
+        job_id=job.id,
+        job=job,
     )
-    try:
-        await force_document_visual_evidence_reparse(paper, db)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    await db.commit()
-    await db.refresh(paper)
-    return DocumentVisualEvidenceStatus(**visual_evidence_status_from_paper(paper))
 
 
 def _parse_insight_sections(text: str) -> dict[str, str]:

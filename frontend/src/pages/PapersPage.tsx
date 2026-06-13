@@ -915,10 +915,15 @@ const PapersPage: React.FC = () => {
   const runProcessingAction = useCallback(async (item: ProcessingStatusItem, action: { key: string; label: string; endpoint: string }) => {
     setProcessingLoading(true);
     try {
-      await api.post(action.endpoint);
+      const response = await api.post(action.endpoint, undefined, action.key === 'visual_evidence' ? { timeout: 30000 } : undefined);
       setPageActionError(null);
-      message.success(`${action.label} 已执行：${item.title.slice(0, 28)}`);
-      await fetchMaintenanceCenter();
+      if (action.key === 'visual_evidence' && response.data?.job_id && response.data?.job) {
+        setActiveMaintenanceJob(response.data.job);
+        message.success(`${action.label} 已进入后台：${item.title.slice(0, 28)}`);
+      } else {
+        message.success(`${action.label} 已执行：${item.title.slice(0, 28)}`);
+        await fetchMaintenanceCenter();
+      }
     } catch (e: any) {
       showPageError(`${action.label}失败`, e, `${action.label}失败`);
     } finally {
