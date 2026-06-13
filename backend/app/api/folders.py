@@ -12,6 +12,13 @@ from app.db.session import get_db
 from app.db.models.paper import Folder, Paper, PaperFolderItem, UserPaper
 from app.core.security import get_current_user
 from app.services.paper_search import PaperResult, create_remote_ingest_token, search_scholarly_papers
+from app.services.paper_library_state import (
+    existing_state_for_preview,
+    local_paper_lookup_for_remote_previews,
+    normalize_title_key,
+    paper_existing_keys,
+    remote_existing_keys,
+)
 
 router = APIRouter(prefix="/folders", tags=["文件夹"])
 
@@ -157,43 +164,6 @@ def _paper_brief(paper: Paper, read_status: str | None = None) -> dict:
     }
 
 
-def _normalize_text_key(value: str | None) -> str:
-    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
-
-
-def _strip_arxiv_version(arxiv_id: str) -> str:
-    return re.sub(r"v\d+$", "", arxiv_id.lower())
-
-
-def _paper_existing_keys(paper: Paper) -> set[str]:
-    keys = set()
-    if paper.arxiv_id:
-        keys.add(f"arxiv:{_strip_arxiv_version(paper.arxiv_id)}")
-    if paper.doi:
-        keys.add(f"doi:{paper.doi.lower().removeprefix('https://doi.org/').removeprefix('http://doi.org/')}")
-    metadata = paper.metadata_json or {}
-    remote_id = metadata.get("remote_id") or metadata.get("external_id")
-    if remote_id:
-        keys.add(f"{paper.source}:{remote_id}")
-    if paper.title:
-        keys.add(f"title:{_normalize_text_key(paper.title)}")
-    return keys
-
-
-def _remote_existing_keys(paper: PaperResult) -> set[str]:
-    keys = set()
-    if paper.arxiv_id:
-        keys.add(f"arxiv:{_strip_arxiv_version(paper.arxiv_id)}")
-    if paper.doi:
-        keys.add(f"doi:{paper.doi.lower().removeprefix('https://doi.org/').removeprefix('http://doi.org/')}")
-    remote_id = (paper.metadata or {}).get("remote_id")
-    if remote_id:
-        keys.add(f"{paper.source}:{remote_id}")
-    if paper.title:
-        keys.add(f"title:{_normalize_text_key(paper.title)}")
-    return keys
-
-
 def _tokenize_topic_text(text: str) -> list[str]:
     return [
         token.lower()
@@ -249,7 +219,7 @@ def _coverage_topics(folder: Folder, rows: list[tuple[Paper, Optional[str]]], to
     seen_queries = set()
     topics = []
     for label, query in candidate_topics:
-        query_key = _normalize_text_key(query)
+        query_key = normalize_title_key(query)
         if query_key in seen_queries:
             continue
         seen_queries.add(query_key)
@@ -302,7 +272,14 @@ def _recommendation_reason(kind: str, query: str) -> str:
     }.get(kind, "基于分类主题词推荐。")
 
 
-def _remote_recommendation_brief(paper: PaperResult, kind: str, reason: str) -> dict:
+def _remote_recommendation_brief(
+    paper: PaperResult,
+    kind: str,
+    reason: str,
+    *,
+    library_state: dict | None = None,
+) -> dict:
+    library_state = library_state or {}
     return {
         "id": "",
         "title": paper.title,
@@ -319,6 +296,9 @@ def _remote_recommendation_brief(paper: PaperResult, kind: str, reason: str) -> 
         "remote_ingest_token": create_remote_ingest_token(paper),
         "pdf_url": paper.pdf_url,
         "source_url": paper.source_url,
+        "in_library": bool(library_state.get("in_library")),
+        "local_paper_id": library_state.get("local_paper_id"),
+        "local_match_key": library_state.get("local_match_key"),
         "recommendation_kind": kind,
         "recommendation_reason": reason,
     }
@@ -436,7 +416,7 @@ async def get_folder_recommendations(
 
     existing_keys = set()
     for paper, _status in rows:
-        existing_keys.update(_paper_existing_keys(paper))
+        existing_keys.update(paper_existing_keys(paper))
 
     candidates = await search_scholarly_papers(
         recommendation_query,
@@ -445,19 +425,27 @@ async def get_folder_recommendations(
         year_from=year_from,
         sort_by=sort_by,
     )
+    local_lookup = await local_paper_lookup_for_remote_previews(db, candidates)
     items: list[dict] = []
     excluded_existing = 0
     seen_remote_keys: set[str] = set()
     for candidate in candidates:
-        candidate_keys = _remote_existing_keys(candidate)
+        candidate_keys = remote_existing_keys(candidate)
         if candidate_keys & existing_keys:
             excluded_existing += 1
             continue
-        dedupe_key = next(iter(candidate_keys), f"title:{_normalize_text_key(candidate.title)}")
+        dedupe_key = next(iter(candidate_keys), f"title:{normalize_title_key(candidate.title)}")
         if dedupe_key in seen_remote_keys:
             continue
         seen_remote_keys.add(dedupe_key)
-        items.append(_remote_recommendation_brief(candidate, kind, reason))
+        items.append(
+            _remote_recommendation_brief(
+                candidate,
+                kind,
+                reason,
+                library_state=existing_state_for_preview(candidate, local_lookup),
+            )
+        )
         if len(items) >= limit:
             break
 

@@ -261,6 +261,16 @@ class DigestService:
             freshness_hours=None if is_test else 72,
         )
         papers = await self.rank_papers(user_id=user_id, keywords=keywords, papers=papers)
+        from app.services.paper_library_state import existing_state_for_preview, local_paper_lookup_for_remote_previews
+
+        local_lookup = await local_paper_lookup_for_remote_previews(self.session, papers)
+        papers = [
+            {
+                **paper,
+                **existing_state_for_preview(paper, local_lookup),
+            }
+            for paper in papers
+        ]
         if not papers and not notify_on_empty:
             return {
                 "delivered": False,
@@ -293,6 +303,9 @@ class DigestService:
                         "remote_id": paper.get("remote_id"),
                         "remote_ingest_token": paper.get("remote_ingest_token"),
                         "canonical_key": paper.get("canonical_key"),
+                        "in_library": bool(paper.get("in_library")),
+                        "local_paper_id": paper.get("local_paper_id"),
+                        "local_match_key": paper.get("local_match_key"),
                         "recommendation_score": paper.get("recommendation_score"),
                         "recommendation_reasons": paper.get("recommendation_reasons", []),
                     }

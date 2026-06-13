@@ -51,6 +51,9 @@ class PaperBrief(BaseModel):
     created_at: str
     remote_id: Optional[str] = None
     remote_ingest_token: Optional[str] = None
+    in_library: bool = False
+    local_paper_id: Optional[str] = None
+    local_match_key: Optional[str] = None
     pdf_url: Optional[str] = None
     source_url: Optional[str] = None
     read_status: Optional[str] = None
@@ -698,9 +701,16 @@ async def _format_visual_diagnostic_hits(
     return hits[:top_k]
 
 
-def _paper_brief(paper, *, remote: bool = False, bm25_status: Optional[dict[str, Any]] = None) -> PaperBrief:
+def _paper_brief(
+    paper,
+    *,
+    remote: bool = False,
+    bm25_status: Optional[dict[str, Any]] = None,
+    library_state: Optional[dict[str, Any]] = None,
+) -> PaperBrief:
     metadata = getattr(paper, "metadata", {}) if remote else getattr(paper, "metadata_json", {})
     processing = _paper_processing_flags(paper, bm25_status=bm25_status) if not remote else {}
+    library_state = library_state or {}
     return PaperBrief(
         id="" if remote else str(paper.id),
         title=paper.title,
@@ -715,6 +725,9 @@ def _paper_brief(paper, *, remote: bool = False, bm25_status: Optional[dict[str,
         created_at="" if remote else paper.created_at.isoformat() if paper.created_at else "",
         remote_id=(getattr(paper, "metadata", {}) or {}).get("remote_id") if remote else None,
         remote_ingest_token=create_remote_ingest_token(paper) if remote else None,
+        in_library=bool(library_state.get("in_library")) if remote else True,
+        local_paper_id=library_state.get("local_paper_id") if remote else str(paper.id),
+        local_match_key=library_state.get("local_match_key") if remote else None,
         pdf_url=getattr(paper, "pdf_url", None) if remote else (metadata or {}).get("pdf_url"),
         source_url=getattr(paper, "source_url", None),
         imported_by_user_id=None if remote else str(getattr(paper, "imported_by_user_id", None)) if getattr(paper, "imported_by_user_id", None) else None,
@@ -1017,8 +1030,17 @@ async def search_papers(
             year_from=year_from,
             year_to=year_to,
         )
+        from app.services.paper_library_state import existing_state_for_preview, local_paper_lookup_for_remote_previews
+
+        local_lookup = await local_paper_lookup_for_remote_previews(db, remote_papers)
         for remote_paper in remote_papers:
-            items.append(_paper_brief(remote_paper, remote=True))
+            items.append(
+                _paper_brief(
+                    remote_paper,
+                    remote=True,
+                    library_state=existing_state_for_preview(remote_paper, local_lookup),
+                )
+            )
         total += len(remote_papers)
 
     return PaperSearchResponse(

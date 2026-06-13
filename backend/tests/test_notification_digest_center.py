@@ -118,7 +118,16 @@ async def test_manual_test_push_creates_visible_notification_even_when_empty(mon
 
 @pytest.mark.asyncio
 async def test_digest_notification_preserves_actionable_paper_metadata(monkeypatch):
-    session = _Session()
+    local_id = uuid4()
+    local_paper = SimpleNamespace(
+        id=local_id,
+        title="Grounded Video Research",
+        arxiv_id="2606.00001v1",
+        doi=None,
+        source="arxiv",
+        metadata_json={},
+    )
+    session = _Session([local_paper])
     service = DigestService(session)
 
     async def one_paper(_keywords, max_per_keyword=3, freshness_hours=None):
@@ -152,6 +161,8 @@ async def test_digest_notification_preserves_actionable_paper_metadata(monkeypat
     assert paper["year"] == 2026
     assert paper["abstract_snippet"] == "A structured digest preview."
     assert paper["canonical_key"] == "arxiv:2606.00001"
+    assert paper["in_library"] is True
+    assert paper["local_paper_id"] == str(local_id)
     assert paper["recommendation_reasons"]
 
 

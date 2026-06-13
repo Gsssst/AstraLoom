@@ -8,6 +8,7 @@ import pytest
 
 from app.api import papers as papers_api
 from app.services import paper_processing_pipeline
+from app.services import paper_library_state
 from app.services.paper_ingestion import PaperIngestionService
 from app.tasks import paper_tasks
 from app.services.paper_search import (
@@ -31,6 +32,21 @@ def _paper(source="openalex", remote_id="W123", **overrides):
     }
     fields.update(overrides)
     return PaperResult(**fields)
+
+
+class _EmptyRows:
+    def all(self):
+        return []
+
+
+class _EmptyResult:
+    def scalars(self):
+        return _EmptyRows()
+
+
+class _EmptyDb:
+    async def execute(self, _statement):
+        return _EmptyResult()
 
 
 def test_scholarly_deduplication_collapses_same_doi():
@@ -125,6 +141,61 @@ def test_remote_paper_brief_preserves_full_abstract_for_detail_modal():
     assert brief.abstract_full == full_abstract
 
 
+def test_remote_paper_brief_exposes_existing_library_state():
+    local_id = str(uuid4())
+
+    brief = papers_api._paper_brief(
+        _paper(),
+        remote=True,
+        library_state={
+            "in_library": True,
+            "local_paper_id": local_id,
+            "local_match_key": "doi:10.1000/video-grounding",
+        },
+    )
+
+    assert brief.in_library is True
+    assert brief.local_paper_id == local_id
+    assert brief.local_match_key == "doi:10.1000/video-grounding"
+
+
+@pytest.mark.asyncio
+async def test_remote_preview_existing_state_matches_local_title():
+    local = SimpleNamespace(
+        id=uuid4(),
+        title="Video Grounding with Evidence",
+        arxiv_id=None,
+        doi=None,
+        source="openalex",
+        metadata_json={},
+    )
+
+    class _Rows:
+        def all(self):
+            return [local]
+
+    class _Result:
+        def scalars(self):
+            return _Rows()
+
+    class _Db:
+        async def execute(self, _statement):
+            return _Result()
+
+    lookup = await paper_library_state.local_paper_lookup_for_remote_previews(
+        _Db(),
+        [_paper(title="Video Grounding with Evidence", doi=None, arxiv_id=None, metadata={"remote_id": "W999"})],
+    )
+    state = paper_library_state.existing_state_for_preview(
+        _paper(title="Video Grounding with Evidence", doi=None, arxiv_id=None, metadata={"remote_id": "W999"}),
+        lookup,
+    )
+
+    assert state["in_library"] is True
+    assert state["local_paper_id"] == str(local.id)
+    assert state["local_match_key"] == "title:videogroundingwithevidence"
+
+
 def test_local_paper_brief_exposes_importer_metadata():
     user_id = uuid4()
     paper = SimpleNamespace(
@@ -146,7 +217,7 @@ def test_local_paper_brief_exposes_importer_metadata():
         importance_note="Shared reason",
     )
 
-    brief = papers_api._paper_brief(paper)
+    brief = papers_api._paper_brief(paper, bm25_status={"ready": True, "indexed_papers": 1})
 
     assert brief.imported_by_user_id == str(user_id)
     assert brief.imported_by_username == "gst"
@@ -176,7 +247,7 @@ def test_local_paper_brief_exposes_processing_readiness():
         tags=["retrieval"],
     )
 
-    brief = papers_api._paper_brief(paper)
+    brief = papers_api._paper_brief(paper, bm25_status={"ready": True, "indexed_papers": 1})
 
     assert brief.has_pdf is True
     assert brief.has_full_text is True
@@ -378,6 +449,18 @@ async def test_local_search_applies_readiness_importer_source_and_read_status_fi
             return _PaperResult()
 
     db = _Db()
+    class _Rows:
+        def all(self):
+            return []
+
+    class _Result:
+        def scalars(self):
+            return _Rows()
+
+    class _Db:
+        async def execute(self, _statement):
+            return _Result()
+
     response = await papers_api.search_papers(
         q="",
         source="local",
@@ -458,7 +541,7 @@ async def test_keyword_local_search_filters_by_importance_label(monkeypatch):
         has_embedding=None,
         read_status=None,
         importance_label="interesting",
-        db=SimpleNamespace(),
+        db=_EmptyDb(),
         user=None,
     )
 
@@ -492,7 +575,7 @@ async def test_remote_paper_api_forwards_page_offset_and_year_filters(monkeypatc
         has_embedding=None,
         read_status=None,
         importance_label=None,
-        db=SimpleNamespace(),
+        db=_EmptyDb(),
     )
 
     assert captured == {

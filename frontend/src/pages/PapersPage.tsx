@@ -38,6 +38,9 @@ interface PaperItem {
   source: string; citation_count: number; created_at: string;
   remote_id?: string | null;
   remote_ingest_token?: string | null;
+  in_library?: boolean;
+  local_paper_id?: string | null;
+  local_match_key?: string | null;
   pdf_url?: string | null;
   source_url?: string | null;
   read_status?: ReadingStatus | null;
@@ -247,7 +250,7 @@ const paperResultStateOptions: { value: PaperResultStateFilter; label: string }[
 const paperRemoteKey = (paper: PaperItem) => paper.remote_id ? `${paper.source}:${paper.remote_id}` : '';
 const paperResultState = (paper: PaperItem, ingestedRemoteIds: Set<string>) => {
   const remoteKey = paperRemoteKey(paper);
-  if (paper.id) return { key: 'local' as const, label: '已在库', color: 'green' };
+  if (paper.id || paper.in_library || paper.local_paper_id) return { key: 'local' as const, label: '已在论文库', color: 'green' };
   if (remoteKey && ingestedRemoteIds.has(remoteKey)) return { key: 'imported' as const, label: '本次已加入', color: 'success' };
   if (paper.remote_id) return { key: 'importable' as const, label: '可入库', color: 'geekblue' };
   return { key: 'missing_remote_id' as const, label: '缺远程 ID', color: 'default' };
@@ -1765,6 +1768,7 @@ const PapersPage: React.FC = () => {
                   <Row gutter={[8, 8]}>
                     {recommendationPapers.map(paper => {
                       const remoteKey = `${paper.source}:${paper.remote_id}`;
+                      const alreadyInLibrary = Boolean(paper.in_library || paper.local_paper_id);
                       return (
                         <Col xs={24} md={12} key={remoteKey || paper.title}>
                           <Card size="small" hoverable onClick={() => setDetailPaper(paper)} style={{ borderRadius: 12 }}>
@@ -1780,7 +1784,9 @@ const PapersPage: React.FC = () => {
                               <Space size={6} wrap>
                                 <Button type="link" size="small" icon={<EyeOutlined />} onClick={e => handleOpenAbstract(e, paper)} style={{ paddingInline: 0 }}>详情</Button>
                                 {paper.pdf_url && <Button type="link" size="small" icon={<FileTextOutlined />} href={paper.pdf_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ paddingInline: 0 }}>PDF</Button>}
-                                {ingestedRemoteIds.has(remoteKey)
+                                {alreadyInLibrary
+                                  ? <Button size="small" disabled icon={<CheckCircleOutlined />} style={{ borderRadius: 8 }}>已在论文库</Button>
+                                  : ingestedRemoteIds.has(remoteKey)
                                   ? <Tag color="green">已加入当前分类</Tag>
                                   : (
                                     <Button
@@ -1918,6 +1924,7 @@ const PapersPage: React.FC = () => {
           <List dataSource={filteredPapers} renderItem={(paper, idx) => {
             const remoteKey = paperRemoteKey(paper);
             const resultState = paperResultState(paper, ingestedRemoteIds);
+            const alreadyInLibrary = Boolean(paper.in_library || paper.local_paper_id);
             const citationKey = buildResearchCitationKey(paper, idx);
             const metadataQuality = computeMetadataQuality(paper);
             const duplicateRisk = duplicateRiskForPaper(paper, duplicateRiskMap);
@@ -1962,8 +1969,10 @@ const PapersPage: React.FC = () => {
                       {paper.source_url && <Button type="link" size="small" icon={<LinkOutlined />} href={paper.source_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ height: 24, paddingInline: 4 }}>来源页</Button>}
                       {source === 'collection' && selectedCollectionId && <Button type="link" danger size="small" onClick={e => handleRemoveFromCollection(e, paper)} style={{ height: 24, paddingInline: 4 }}>移出分类</Button>}
                       {!paper.id && isAuthenticated && paper.remote_id ? (
-                        resultState.key === 'imported'
-                          ? <Tag color="green" style={{ borderRadius: 6 }}>已加入论文库</Tag>
+                        alreadyInLibrary
+                          ? <Button size="small" disabled icon={<CheckCircleOutlined />} style={{ borderRadius: 8, height: 24 }}>已在论文库</Button>
+                          : resultState.key === 'imported'
+                          ? <Tag color="green" style={{ borderRadius: 6 }}>本次已加入</Tag>
                           : <Button size="small" type="primary" ghost icon={<ImportOutlined />} loading={ingestingIds.has(remoteKey)}
                             onClick={e => handleIngestOne(e, paper)} style={{ borderRadius: 8, height: 24 }}>{targetCollectionId ? '入库并加入分类' : '加入论文库'}</Button>
                       ) : null}

@@ -28,6 +28,9 @@ interface DigestPaper {
   remote_id?: string | null;
   remote_ingest_token?: string | null;
   canonical_key?: string | null;
+  in_library?: boolean;
+  local_paper_id?: string | null;
+  local_match_key?: string | null;
   recommendation_score?: number | null;
   recommendation_reasons?: string[];
 }
@@ -112,6 +115,7 @@ const PaperDigestInboxPage: React.FC = () => {
       return null;
     }
     const key = paperKey(paper);
+    if (paper.local_paper_id) return paper.local_paper_id;
     if (localPaperIds[key]) return localPaperIds[key];
     setIngestingIds(previous => new Set(previous).add(key));
     try {
@@ -295,7 +299,8 @@ const PaperDigestInboxPage: React.FC = () => {
                         const arxivId = paper.arxiv_id || '';
                         const cleanArxivId = arxivId.replace(/v\d+$/, '');
                         const key = paperKey(paper);
-                        const ingested = ingestedIds.has(key) || !!localPaperIds[key];
+                        const alreadyInLibrary = Boolean(paper.in_library || paper.local_paper_id);
+                        const ingested = alreadyInLibrary || ingestedIds.has(key) || !!localPaperIds[key];
                         const loopStatus = readingLoopStatus[key];
                         const rawFeedback = metadata.feedback?.[key];
                         const currentFeedback = typeof rawFeedback === 'string' ? rawFeedback : rawFeedback?.action;
@@ -330,7 +335,9 @@ const PaperDigestInboxPage: React.FC = () => {
                                   <Space size={6} wrap style={{ marginTop: 9 }}>
                                     {(paper.source_url || arxivId) && <Button size="small" icon={<LinkOutlined />} href={paper.source_url || `https://arxiv.org/abs/${cleanArxivId}`} target="_blank" rel="noreferrer">查看来源</Button>}
                                     {(paper.pdf_url || arxivId) && <Button size="small" icon={<FilePdfOutlined />} href={paper.pdf_url || `https://arxiv.org/pdf/${cleanArxivId}`} target="_blank" rel="noreferrer">打开 PDF</Button>}
-                                    {ingested ? (
+                                    {alreadyInLibrary ? (
+                                      <Button size="small" disabled icon={<CheckCircleOutlined />}>已在论文库</Button>
+                                    ) : ingested ? (
                                       <Tag icon={<CheckCircleOutlined />} color="green">已加入论文库</Tag>
                                     ) : (
                                       <Button size="small" type="primary" ghost icon={<ImportOutlined />} disabled={!paper.remote_id && !arxivId} loading={ingestingIds.has(key)} onClick={() => handleIngest(paper)}>加入论文库</Button>

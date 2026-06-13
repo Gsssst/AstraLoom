@@ -81,6 +81,9 @@ test('paper library makes external search and ingest transparent', () => {
   assert.match(papersPageSource, /未返回 PDF/);
   assert.match(papersPageSource, /来源页/);
   assert.match(papersPageSource, /可入库/);
+  assert.match(papersPageSource, /in_library/);
+  assert.match(papersPageSource, /local_paper_id/);
+  assert.match(papersPageSource, /已在论文库/);
   assert.match(papersPageSource, /缺远程 ID/);
   assert.match(papersPageSource, /入库目标：论文库/);
   assert.match(papersPageSource, /这次外部检索没有返回论文/);
@@ -94,6 +97,7 @@ test('paper library exposes search result import-readiness filters', () => {
   assert.match(papersPageSource, /paperResultStateOptions/);
   assert.match(papersPageSource, /paperRemoteKey/);
   assert.match(papersPageSource, /paperResultState/);
+  assert.match(papersPageSource, /paper\.in_library \|\| paper\.local_paper_id/);
   assert.match(papersPageSource, /paperResultStateCounts/);
   assert.match(papersPageSource, /resultStateFilter/);
   assert.match(papersPageSource, /setResultStateFilter\('all'\)/);
