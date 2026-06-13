@@ -275,7 +275,7 @@ def visual_evidence_item_to_block(item: VisualEvidenceItem) -> dict[str, Any]:
     return {
         "type": "visual_table" if item.kind in VISUAL_TABLE_TYPES else "visual_evidence",
         "page": item.page,
-        "source": item.parser or "document_visual_evidence",
+        "source": "document_visual_evidence",
         "text": text,
         "metadata": {
             **(item.metadata or {}),
@@ -686,20 +686,19 @@ async def analyze_visual_crop_with_model(image_path: str, prompt: str = "") -> d
 
 
 async def enrich_visual_evidence_items_with_vision(items: list[VisualEvidenceItem]) -> list[VisualEvidenceItem]:
-    """Run bounded crop/page OCR for selected visual evidence items when configured."""
+    """Run crop/page OCR for selected visual evidence items and persist results."""
 
     if not items:
         return items
     limits = visual_evidence_limits()
     budget = limits["max_model_calls"]
-    if budget <= 0:
-        return items
+    unlimited = budget <= 0
 
     enriched: list[VisualEvidenceItem] = []
     calls_used = 0
     for item in items:
         candidate_path = item.thumbnail_path or item.asset_path
-        if calls_used >= budget or not candidate_path or not _should_vision_analyze_item(item):
+        if (not unlimited and calls_used >= budget) or not candidate_path or not _should_vision_analyze_item(item):
             enriched.append(item)
             continue
         result = await analyze_visual_crop_with_model(candidate_path, _vision_prompt_for_item(item))
@@ -712,10 +711,57 @@ def _should_vision_analyze_item(item: VisualEvidenceItem) -> bool:
     if not item.asset_path and not item.thumbnail_path:
         return False
     if item.kind in VISUAL_TABLE_TYPES:
-        return True
+        return _is_weak_visual_table_item(item)
     if item.kind in VISUAL_READY_TYPES or item.kind in {"figure", "chart", "architecture", "image"}:
         return not (item.summary and item.text)
     return False
+
+
+def _is_weak_visual_table_item(item: VisualEvidenceItem) -> bool:
+    """Return True when parser-derived table text is not enough for Q&A."""
+
+    metadata = item.metadata or {}
+    markdown = item.markdown or ""
+    text = item.text or ""
+    if metadata.get("vision_elements") or metadata.get("vision_provider"):
+        return False
+    if not markdown.strip():
+        return True
+    rows = _markdown_table_rows(markdown)
+    if len(rows) < 2:
+        return True
+    cells = [cell.strip() for row in rows for cell in row]
+    if not cells:
+        return True
+    non_empty_cells = sum(1 for cell in cells if cell)
+    empty_ratio = sum(1 for cell in cells if not cell) / len(cells)
+    header = rows[0] if rows else []
+    generic_headers = sum(1 for cell in header if re.match(r"^column\s+\d+$", cell, re.I))
+    generic_ratio = generic_headers / len(header) if header else 1.0
+    merged_numeric = bool(re.search(r"(?:[+-]?\d+(?:\.\d+)?%?\s+){2,}[+-]?\d+(?:\.\d+)?%?", markdown))
+    fallback_strategy = str(metadata.get("crop_strategy") or "").endswith("fallback")
+    caption_only = bool(item.caption and not text.strip() and len(rows) <= 2)
+    return (
+        non_empty_cells <= 4
+        or empty_ratio >= 0.35
+        or generic_ratio >= 0.25
+        or merged_numeric
+        or fallback_strategy
+        or caption_only
+    )
+
+
+def _markdown_table_rows(text: str) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|") or not stripped.endswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if cells and all(re.fullmatch(r"-{3,}:?", cell.replace(" ", "")) for cell in cells):
+            continue
+        rows.append(cells)
+    return rows
 
 
 def _vision_prompt_for_item(item: VisualEvidenceItem) -> str:
@@ -741,6 +787,7 @@ def _vision_prompt_for_item(item: VisualEvidenceItem) -> str:
         "}]"
         "}. "
         "If the image contains multiple tables, output one table element per table. "
+        "When a known caption is provided, prioritize the table that matches that caption; otherwise return the most evidence-relevant experimental table first. "
         "Preserve row and column labels and numeric values exactly when visible. "
         "Use uncertain_cells for unreadable values and do not invent missing numbers. "
         "For charts, summarize axes, legend, visible trend, and obvious values; set numeric_precision to estimated unless exact labels are visible. "
@@ -759,6 +806,9 @@ def _apply_vision_result_to_item(item: VisualEvidenceItem, result: dict[str, Any
         metadata["vision_provider"] = result.get("provider")
     if result.get("model"):
         metadata["vision_model"] = result.get("model")
+    if result.get("asset_type"):
+        metadata["vision_asset_type"] = result.get("asset_type")
+    metadata["vision_status"] = result.get("raw_status") or result.get("status")
     element = _best_vision_element_for_item(item, result.get("elements") or [result])
     if not element:
         item.metadata = metadata
@@ -778,6 +828,12 @@ def _apply_vision_result_to_item(item: VisualEvidenceItem, result: dict[str, Any
         item.summary = summary
     if key_facts:
         item.key_facts = [str(fact).strip() for fact in key_facts if str(fact).strip()][:12]
+    uncertainty = element.get("uncertain_cells") if isinstance(element.get("uncertain_cells"), list) else []
+    if uncertainty:
+        metadata["uncertain_cells"] = [str(cell).strip() for cell in uncertainty if str(cell).strip()][:24]
+    numeric_precision = str(element.get("numeric_precision") or "").strip()
+    if numeric_precision:
+        metadata["numeric_precision"] = numeric_precision
     item.confidence = max(item.confidence, confidence)
     item.metadata = metadata
     return item

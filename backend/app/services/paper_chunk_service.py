@@ -80,8 +80,8 @@ class PaperChunkService:
     EXPERIMENT_TEXT_TOP_K = 6
     EXPERIMENT_CONCLUSION_TOP_K = 2
     EXPERIMENT_COMPLETE_EVIDENCE_TOP_K = 36
-    EXPERIMENT_COMPLETE_TABLE_BUDGET = 24
-    EXPERIMENT_COMPLETE_VISUAL_TABLE_BUDGET = 24
+    EXPERIMENT_COMPLETE_TABLE_BUDGET = 0
+    EXPERIMENT_COMPLETE_VISUAL_TABLE_BUDGET = 0
     EXPERIMENT_COMPLETE_CAPTION_BUDGET = 24
     EXPERIMENT_COMPLETE_TEXT_BUDGET = 8
     METHOD_VISUAL_EVIDENCE_TOP_K = 16
@@ -106,11 +106,15 @@ class PaperChunkService:
         "all tables", "experimental section", "evaluation section", "results section",
         "complete experiment", "comprehensive experiment", "summarize experiments",
         "summarise experiments", "analyze experiments", "analyse experiments",
-        "analyze experiment", "analyse experiment", "explain experiments", "discuss experiments",
+        "analyze experiment", "analyse experiment", "analyze results", "analyse results",
+        "explain experiments", "discuss experiments", "experimental results",
+        "experiment results", "result analysis", "results analysis", "ablation analysis",
         "整个实验", "整体实验", "全部实验", "所有实验", "所有表格", "全部表格",
-        "实验部分", "实验章节", "实验分析", "实验总结", "实验结果总结",
+        "实验部分", "实验章节", "实验分析", "实验结果", "实验结果分析", "实验总结", "实验结果总结",
         "整体分析", "全面分析", "综合分析", "完整实验", "实验设置和结果",
-        "分析实验", "说明实验", "讲解实验", "实验结果如何", "实验表现如何",
+        "分析实验", "分析这篇论文的实验", "分析这篇论文的实验结果", "分析论文的实验结果",
+        "分析实验结果", "结果分析", "说明实验", "讲解实验", "实验结果如何", "实验表现如何",
+        "消融分析",
     )
     EXPERIMENT_CONTEXT_TERMS = (
         "experiment", "experiments", "experimental", "evaluation", "results", "benchmark",
@@ -225,7 +229,8 @@ class PaperChunkService:
             marker in normalized
             for marker in (
                 "overall", "entire", "whole", "all", "comprehensive", "summarize",
-                "summarise", "整体", "整个", "全部", "所有", "全面", "综合", "总结",
+                "summarise", "analyze", "analyse", "analysis",
+                "整体", "整个", "全部", "所有", "全面", "综合", "总结", "分析",
             )
         )
         return has_experiment_anchor and has_breadth_marker
@@ -644,8 +649,12 @@ class PaperChunkService:
         conclusion_text = cls._conclusion_text_lane(text_candidates, query, top_k=cls.EXPERIMENT_CONCLUSION_TOP_K)
         text_results = cls._merge_evidence_lanes(experiment_text, conclusion_text, top_k=plan.text_budget)
 
-        selected_tables = table_candidates[:plan.table_budget or len(table_candidates)]
         selected_visual_tables = visual_tables[:plan.visual_table_budget or len(visual_tables)]
+        preferred_visual_tables = [item for item in selected_visual_tables if cls._has_visual_table_ocr(item)]
+        selected_tables = cls._filter_tables_shadowed_by_visual_ocr(
+            table_candidates[:plan.table_budget or len(table_candidates)],
+            preferred_visual_tables,
+        )
         selected_captions = cls._experiment_caption_lane(captions, query, top_k=plan.caption_budget)
         warnings: list[str] = []
         if len(table_candidates) > len(selected_tables):
@@ -656,6 +665,8 @@ class PaperChunkService:
             warnings.append("some_visual_tables_missing_ocr_or_markdown")
         if any(cls._is_low_fidelity_table(item) for item in selected_tables):
             warnings.append("some_structured_tables_low_fidelity")
+        if len(selected_tables) < min(len(table_candidates), plan.table_budget or len(table_candidates)):
+            warnings.append("low_fidelity_structured_tables_replaced_by_visual_ocr")
 
         table_catalog = cls._table_catalog_entries(selected_tables, structured_candidates)
         table_packs = cls._table_evidence_packs(
@@ -679,7 +690,7 @@ class PaperChunkService:
         visual_table_results = [
             EvidenceChunk(
                 text=item.text,
-                score=max(0.86, cls._visual_evidence_score(item, query)),
+                score=max(0.92 if cls._has_visual_table_ocr(item) else 0.86, cls._visual_evidence_score(item, query)),
                 section=item.section,
                 page_start=item.page_start,
                 page_end=item.page_end,
@@ -785,6 +796,54 @@ class PaperChunkService:
         text = item.text or ""
         metadata = item.metadata or {}
         return "|" in text or bool(metadata.get("markdown") or metadata.get("ocr_text") or metadata.get("has_ocr"))
+
+    @staticmethod
+    def _has_visual_table_ocr(item: EvidenceChunk) -> bool:
+        if item.source_type != "visual_table":
+            return False
+        metadata = item.metadata or {}
+        text = item.text or ""
+        return bool(
+            metadata.get("vision_provider")
+            or metadata.get("vision_elements")
+            or metadata.get("has_ocr")
+            or metadata.get("ocr_text")
+            or (metadata.get("markdown") and "|" in str(metadata.get("markdown")))
+            or ("|" in text and item.source == "document_visual_evidence")
+        )
+
+    @classmethod
+    def _filter_tables_shadowed_by_visual_ocr(
+        cls,
+        tables: List[EvidenceChunk],
+        visual_tables: List[EvidenceChunk],
+    ) -> List[EvidenceChunk]:
+        if not tables or not visual_tables:
+            return tables
+        visual_pages = {item.page_start for item in visual_tables if item.page_start}
+        visual_captions = {
+            cls._normalize_caption_for_match(str((item.metadata or {}).get("caption") or ""))
+            for item in visual_tables
+        }
+        visual_captions.discard("")
+        filtered: List[EvidenceChunk] = []
+        for table in tables:
+            metadata = table.metadata or {}
+            table_caption = cls._normalize_caption_for_match(str(metadata.get("caption") or ""))
+            shadowed = (
+                cls._is_low_fidelity_table(table)
+                and (
+                    (table.page_start in visual_pages if table.page_start else False)
+                    or (bool(table_caption) and table_caption in visual_captions)
+                )
+            )
+            if not shadowed:
+                filtered.append(table)
+        return filtered
+
+    @staticmethod
+    def _normalize_caption_for_match(text: str) -> str:
+        return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", (text or "").lower())[:160]
 
     @classmethod
     def _merge_complete_evidence_pack(

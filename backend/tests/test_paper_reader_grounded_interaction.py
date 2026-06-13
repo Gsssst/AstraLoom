@@ -458,8 +458,11 @@ async def test_visual_evidence_enrichment_writes_vision_table_markdown(monkeypat
                     "type": "table",
                     "label": "Table 1",
                     "markdown": "| Model | Acc |\n| --- | --- |\n| Ours | 91.3 |",
+                    "ocr_text": "Model Acc Ours 91.3",
                     "summary": "Main result table.",
                     "key_facts": ["Ours", "91.3"],
+                    "uncertain_cells": ["row 2 col Acc may be 91.3"],
+                    "numeric_precision": "exact",
                     "confidence": 0.91,
                 },
                 {
@@ -486,30 +489,138 @@ async def test_visual_evidence_enrichment_writes_vision_table_markdown(monkeypat
     enriched = await document_visual_evidence.enrich_visual_evidence_items_with_vision([item])
 
     assert enriched[0].markdown == "| Model | Acc |\n| --- | --- |\n| Ours | 91.3 |"
+    assert enriched[0].text == "Model Acc Ours 91.3"
     assert enriched[0].summary == "Main result table."
     assert enriched[0].confidence == 0.91
     assert enriched[0].metadata["vision_provider"] == "openai-compatible"
     assert len(enriched[0].metadata["vision_elements"]) == 2
+    assert enriched[0].metadata["uncertain_cells"] == ["row 2 col Acc may be 91.3"]
+    assert enriched[0].metadata["numeric_precision"] == "exact"
 
 
 @pytest.mark.asyncio
-async def test_visual_evidence_enrichment_leaves_items_unchanged_when_budget_disabled(monkeypatch, tmp_path):
+async def test_visual_evidence_enrichment_ocr_all_weak_tables_by_default(monkeypatch, tmp_path):
+    asset_root = tmp_path / "visual"
+    assets = []
+    for idx in range(3):
+        asset = asset_root / "paper-1" / f"table-{idx}.png"
+        asset.parent.mkdir(parents=True, exist_ok=True)
+        asset.write_bytes(b"png")
+        assets.append(asset)
+    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_ASSET_DIR", str(asset_root))
+    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_MAX_MODEL_CALLS", 0)
+    calls = []
+
+    async def fake_analyze(path, prompt=""):
+        calls.append(path)
+        idx = len(calls)
+        return {
+            "status": "ready",
+            "elements": [{
+                "type": "table",
+                "markdown": f"| Model | Score |\n| --- | --- |\n| Ours-{idx} | 9{idx}.0 |",
+                "confidence": 0.9,
+            }],
+            "provider": "openai-compatible",
+            "model": "system-model",
+        }
+
+    monkeypatch.setattr(document_visual_evidence, "analyze_visual_crop_with_model", fake_analyze)
+    items = [
+        document_visual_evidence.VisualEvidenceItem(
+            id=f"ve-table-{idx}",
+            kind="table",
+            page=idx + 1,
+            asset_path=str(asset),
+            markdown="| Column 1 | Column 2 |\n| --- | --- |\n|  |  |",
+        )
+        for idx, asset in enumerate(assets)
+    ]
+
+    enriched = await document_visual_evidence.enrich_visual_evidence_items_with_vision(items)
+
+    assert calls == [str(asset) for asset in assets]
+    assert [item.markdown for item in enriched] == [
+        "| Model | Score |\n| --- | --- |\n| Ours-1 | 91.0 |",
+        "| Model | Score |\n| --- | --- |\n| Ours-2 | 92.0 |",
+        "| Model | Score |\n| --- | --- |\n| Ours-3 | 93.0 |",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_visual_evidence_enrichment_positive_budget_caps_weak_table_ocr(monkeypatch, tmp_path):
+    asset_root = tmp_path / "visual"
+    assets = []
+    for idx in range(3):
+        asset = asset_root / "paper-1" / f"table-{idx}.png"
+        asset.parent.mkdir(parents=True, exist_ok=True)
+        asset.write_bytes(b"png")
+        assets.append(asset)
+    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_ASSET_DIR", str(asset_root))
+    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_MAX_MODEL_CALLS", 2)
+    calls = []
+
+    async def fake_analyze(path, prompt=""):
+        calls.append(path)
+        return {
+            "status": "ready",
+            "elements": [{
+                "type": "table",
+                "markdown": "| Model | Score |\n| --- | --- |\n| Ours | 91.0 |",
+                "confidence": 0.9,
+            }],
+        }
+
+    monkeypatch.setattr(document_visual_evidence, "analyze_visual_crop_with_model", fake_analyze)
+    items = [
+        document_visual_evidence.VisualEvidenceItem(
+            id=f"ve-table-{idx}",
+            kind="table",
+            page=idx + 1,
+            asset_path=str(asset),
+            markdown="",
+        )
+        for idx, asset in enumerate(assets)
+    ]
+
+    enriched = await document_visual_evidence.enrich_visual_evidence_items_with_vision(items)
+
+    assert calls == [str(assets[0]), str(assets[1])]
+    assert enriched[0].markdown
+    assert enriched[1].markdown
+    assert not enriched[2].markdown
+
+
+@pytest.mark.asyncio
+async def test_visual_evidence_enrichment_skips_high_quality_table_markdown(monkeypatch, tmp_path):
     asset_root = tmp_path / "visual"
     asset = asset_root / "paper-1" / "table.png"
     asset.parent.mkdir(parents=True)
     asset.write_bytes(b"png")
     monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_ASSET_DIR", str(asset_root))
     monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_MAX_MODEL_CALLS", 0)
+
+    async def fake_analyze(path, prompt=""):
+        raise AssertionError("high-quality table markdown should not trigger OCR")
+
+    monkeypatch.setattr(document_visual_evidence, "analyze_visual_crop_with_model", fake_analyze)
     item = document_visual_evidence.VisualEvidenceItem(
         id="ve-table",
         kind="table",
         page=4,
         asset_path=str(asset),
+        markdown=(
+            "| Model | Accuracy | F1 |\n"
+            "| --- | --- | --- |\n"
+            "| Baseline | 72.1 | 70.8 |\n"
+            "| Ours | 81.4 | 80.2 |"
+        ),
     )
 
     enriched = await document_visual_evidence.enrich_visual_evidence_items_with_vision([item])
 
     assert enriched[0].metadata == {}
+    assert enriched[0].markdown == item.markdown
 
 
 def test_section_first_table_question_keeps_structured_table_evidence():
@@ -712,7 +823,7 @@ def test_broad_experiment_question_uses_dossier_with_table_catalog_and_full_tabl
     assert any(item.source_type == "text" and item.metadata.get("experiment_context") for item in evidence)
 
 
-def test_experiment_complete_strategy_includes_all_visual_tables_within_budget():
+def test_experiment_complete_strategy_includes_all_visual_tables():
     full_text = (
         "4 Experiments\n"
         "We analyze results, baselines, ablations, and efficiency. "
@@ -751,6 +862,99 @@ def test_experiment_complete_strategy_includes_all_visual_tables_within_budget()
     assert len(visual_tables) == 5
     assert {item.metadata["asset_id"] for item in visual_tables} == {f"vt{idx}" for idx in range(1, 6)}
     assert all(item.metadata["mandatory_evidence"] for item in visual_tables)
+
+
+def test_chinese_experiment_result_analysis_routes_to_complete_evidence_plan():
+    full_text = (
+        "4 Experiments\n"
+        "We report experimental results, baselines, ablations, and metrics. "
+        + "experiment evidence " * 100
+    )
+    structured_blocks = [{
+        "type": "table",
+        "page": 6,
+        "source": "docling",
+        "text": (
+            "[PDF table]\n"
+            "| Model | Score |\n"
+            "| --- | --- |\n"
+            "| Baseline | 72.1 |\n"
+            "| Ours | 81.4 |"
+        ),
+        "metadata": {"table_index": 1, "quality": "high"},
+    }]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "分析这篇论文的实验结果",
+        top_k=4,
+        structured_blocks=structured_blocks,
+    )
+
+    assert PaperChunkService.detect_evidence_strategy("分析这篇论文的实验结果") == "experiment"
+    assert scope == "experiment_complete"
+    assert plan.strategy == "experiment_complete"
+    assert plan.table_budget == 0
+    assert plan.visual_table_budget == 0
+    assert evidence[0].source_type == "experiment_dossier"
+    assert any(item.source_type == "table_pack" and "Ours | 81.4" in item.text for item in evidence)
+
+
+def test_experiment_complete_prefers_ocr_visual_table_over_low_fidelity_parser_table():
+    full_text = (
+        "4 Experiments\n"
+        "The experimental results include main comparisons and ablations. "
+        + "result evidence " * 100
+    )
+    structured_blocks = [
+        {
+            "type": "table",
+            "page": 7,
+            "source": "pdfplumber",
+            "text": (
+                "[PDF table, page 7, table 4]\n"
+                "| Column 1 | Column 2 |\n"
+                "| --- | --- |\n"
+                "| Gemini-2.5-Pro | 59.5 50.2 34.4 45.8 |"
+            ),
+            "metadata": {"table_index": 4, "quality": "low", "caption": "Table 4. Main results."},
+        },
+        {
+            "type": "visual_table",
+            "page": 7,
+            "source": "document_visual_evidence",
+            "text": (
+                "[PDF visual table evidence, page 7, kind table, asset vt4]\n"
+                "Caption: Table 4. Main results.\n"
+                "| Model | R@1 | R@5 | mIoU | TF1 |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| Gemini-2.5-Pro | 59.5 | 50.2 | 34.4 | 45.8 |\n"
+                "| OMTG-4B | 62.1 | 54.0 | 37.8 | 48.2 |"
+            ),
+            "metadata": {
+                "asset_id": "vt4",
+                "kind": "table",
+                "caption": "Table 4. Main results.",
+                "confidence": 0.88,
+                "vision_provider": "openai-compatible",
+                "vision_model": "system-model",
+                "numeric_precision": "exact",
+            },
+        },
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请分析这篇论文的实验结果",
+        top_k=4,
+        structured_blocks=structured_blocks,
+    )
+
+    assert scope == "experiment_complete"
+    assert plan.strategy == "experiment_complete"
+    assert any(item.source_type == "visual_table" and "OMTG-4B | 62.1" in item.text for item in evidence)
+    assert not any(item.source_type == "table_pack" and "Column 1" in item.text for item in evidence)
+    assert "low_fidelity_structured_tables_replaced_by_visual_ocr" in evidence[0].metadata["warnings"]
 
 
 def test_table_evidence_lane_demotes_low_fidelity_tables():
