@@ -22,6 +22,8 @@ const responsiveSource = readFileSync(
 test('shared chat attachment workflow enforces a 50MB file limit', () => {
   assert.match(attachmentHookSource, /CHAT_ATTACHMENT_MAX_BYTES = 50 \* 1024 \* 1024/);
   assert.match(attachmentHookSource, /CHAT_ATTACHMENT_MAX_MB = 50/);
+  assert.match(attachmentHookSource, /CHAT_IMAGE_OPTIMIZED_MAX_EDGE = 1600/);
+  assert.match(attachmentHookSource, /CHAT_IMAGE_OPTIMIZED_QUALITY = 0\.82/);
   assert.match(attachmentHookSource, /file\.size > CHAT_ATTACHMENT_MAX_BYTES/);
   assert.match(attachmentHookSource, /超过\$\{CHAT_ATTACHMENT_MAX_MB\}MB/);
   assert.match(attachmentHookSource, /\/chat-sessions\/extract-file/);
@@ -31,12 +33,29 @@ test('shared chat attachment workflow enforces a 50MB file limit', () => {
   assert.match(attachmentHookSource, /imageAttachmentPayloads/);
 });
 
+test('shared chat attachment workflow remembers attachments and optimizes image payloads', () => {
+  assert.match(attachmentHookSource, /rememberedAttachments/);
+  assert.match(attachmentHookSource, /setRememberedAttachments/);
+  assert.match(attachmentHookSource, /rememberAttachments/);
+  assert.match(attachmentHookSource, /removeRememberedAttachment/);
+  assert.match(attachmentHookSource, /mergedReadyAttachments/);
+  assert.match(attachmentHookSource, /optimizeImageDataUrl/);
+  assert.match(attachmentHookSource, /optimizedDataUrl/);
+  assert.match(attachmentHookSource, /optimizationStatus/);
+  assert.match(attachmentHookSource, /canvas\.toDataURL/);
+  assert.match(attachmentHookSource, /file\.optimizedDataUrl \|\| file\.dataUrl/);
+});
+
 test('main chat uses the shared attachment workflow', () => {
   assert.match(chatPageSource, /import useChatAttachments from '\.\.\/hooks\/useChatAttachments'/);
   assert.match(chatPageSource, /useChatAttachments\(\)/);
-  assert.match(chatPageSource, /attachedTextContext\(files\)/);
-  assert.match(chatPageSource, /imageAttachmentPayloads\(files\)/);
+  assert.match(chatPageSource, /rememberedAttachments/);
+  assert.match(chatPageSource, /rememberAttachments\(currentFiles\)/);
+  assert.match(chatPageSource, /mergedReadyAttachments\(\)/);
+  assert.match(chatPageSource, /attachedTextContext\(readyAttachmentContext\)/);
+  assert.match(chatPageSource, /imageAttachmentPayloads\(readyAttachmentContext\)/);
   assert.match(chatPageSource, /onClick=\{openAttachmentPicker\}/);
+  assert.match(chatPageSource, /chat-remembered-attachments/);
   assert.doesNotMatch(chatPageSource, /10 \* 1024 \* 1024/);
   assert.doesNotMatch(chatPageSource, /超过10MB/);
 });
@@ -44,14 +63,18 @@ test('main chat uses the shared attachment workflow', () => {
 test('paper detail chat supports PDF and image attachments', () => {
   assert.match(paperDetailSource, /import useChatAttachments from '\.\.\/hooks\/useChatAttachments'/);
   assert.match(paperDetailSource, /paperChatAttachments/);
+  assert.match(paperDetailSource, /rememberedPaperChatAttachments/);
   assert.match(paperDetailSource, /openPaperChatAttachmentPicker/);
-  assert.match(paperDetailSource, /paperChatAttachmentTextContext\(attachedFiles\)/);
-  assert.match(paperDetailSource, /paperChatImageAttachmentPayloads\(attachedFiles\)/);
+  assert.match(paperDetailSource, /mergedPaperChatReadyAttachments\(\)/);
+  assert.match(paperDetailSource, /rememberPaperChatAttachments\(attachedFiles\)/);
+  assert.match(paperDetailSource, /paperChatAttachmentTextContext\(readyAttachmentContext\)/);
+  assert.match(paperDetailSource, /paperChatImageAttachmentPayloads\(readyAttachmentContext\)/);
   assert.match(paperDetailSource, /用户上传附件提取内容/);
   assert.match(paperDetailSource, /用户上传图片/);
   assert.match(paperDetailSource, /attachments: imageAttachments/);
   assert.match(paperDetailSource, /hasExtractingPaperChatAttachments/);
   assert.match(paperDetailSource, /paper-chat-attachments/);
+  assert.match(paperDetailSource, /chat-remembered-attachments/);
   assert.match(paperDetailSource, /paper-detail-chat-upload/);
   assert.match(paperDetailSource, /attachmentNames/);
 });
@@ -66,4 +89,5 @@ test('paper attachment UI has scoped compact styles', () => {
   assert.match(responsiveSource, /height: 32px/);
   assert.match(responsiveSource, /max-width: 32px/);
   assert.match(responsiveSource, /max-height: 32px/);
+  assert.match(responsiveSource, /\.chat-remembered-attachments/);
 });

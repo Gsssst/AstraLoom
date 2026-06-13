@@ -111,10 +111,15 @@ const ChatPage: React.FC = () => {
   const {
     attachedFiles,
     setAttachedFiles,
+    rememberedAttachments,
     removeAttachment,
+    removeRememberedAttachment,
     openAttachmentPicker,
+    rememberAttachments,
+    mergedReadyAttachments,
     attachedTextContext,
     imageAttachmentPayloads,
+    attachmentStatusLabel,
     hasExtractingAttachments,
     hasImageAttachment,
   } = useChatAttachments();
@@ -301,7 +306,8 @@ const ChatPage: React.FC = () => {
   const handleSend = async (overrideContent?: string) => {
     const hasOverride = typeof overrideContent === 'string';
     const text = (hasOverride ? overrideContent : input).trim();
-    if (sendLock.current || (!text && attachedFiles.length === 0) || sending) return;
+    const readyAttachmentContext = mergedReadyAttachments();
+    if (sendLock.current || (!text && readyAttachmentContext.length === 0) || sending) return;
     if (!isAuthenticated) { message.warning('请先登录'); return; }
     if (hasExtractingAttachments) { message.warning('文件还在解析中...'); return; }
     let sid = currentSessionId; if (!sid) { sid = await createSession(); if (!sid) { message.error('创建对话失败：请稍后重试'); return; } }
@@ -316,20 +322,28 @@ const ChatPage: React.FC = () => {
     if (!hasOverride) setInput('');
     enableFollowOutput();
 
-    if (attachedFiles.length > 0) {
-      const files = [...attachedFiles]; setAttachedFiles([]);
-      const fileNames = files.map(f => f.file.name).join(', ');
-      const allText = attachedTextContext(files);
-      const imageAttachments = imageAttachmentPayloads(files);
-      const icons = files.map(f => f.file.type.startsWith('image/') ? '🖼️' : '📄').join('');
-      useChatSessionStore.setState(s => ({ messages: [...s.messages, { role: 'user', content: `${icons} ${fileNames}${text ? '\n' + text : ''}`, created_at: new Date().toISOString() }], sending: true }));
+    if (readyAttachmentContext.length > 0) {
+      const currentFiles = [...attachedFiles];
+      setAttachedFiles([]);
+      const fileNames = readyAttachmentContext.map(f => f.file.name).join(', ');
+      const allText = attachedTextContext(readyAttachmentContext);
+      const imageAttachments = imageAttachmentPayloads(readyAttachmentContext);
+      const icons = readyAttachmentContext.map(f => f.file.type.startsWith('image/') ? '🖼️' : '📄').join('');
+      const userContent = currentFiles.length > 0
+        ? `${icons} ${fileNames}${text ? '\n' + text : ''}`
+        : text;
+      useChatSessionStore.setState(s => ({ messages: [...s.messages, { role: 'user', content: userContent || `继续基于附件提问: ${fileNames}`, created_at: new Date().toISOString() }], sending: true }));
       try {
         const t = localStorage.getItem('access_token');
         const prompt = text || `请分析文件: ${fileNames}`;
         const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: prompt, rag_enabled: ragEnabled, extra_context: allText || undefined, attachments: imageAttachments, web_search: webSearch, search_depth: searchDepth, show_thinking: showThinking }) });
         if (!r.ok) throw new Error(await parseStreamError(r, '上传发送失败'));
         await consumeChatStream(r);
-      } catch (e: any) { if (!cancelRequestedRef.current && e?.name !== 'AbortError') appendAssistantError(getApiErrorMessage(e, { fallback: '上传发送失败' })); }
+        rememberAttachments(currentFiles);
+      } catch (e: any) {
+        if (currentFiles.length > 0) setAttachedFiles(currentFiles);
+        if (!cancelRequestedRef.current && e?.name !== 'AbortError') appendAssistantError(getApiErrorMessage(e, { fallback: '上传发送失败' }));
+      }
       finally { finishStreamingMessages(); resetStreamProgress(); abortControllerRef.current = null; cancelRequestedRef.current = false; sendLock.current = false; useChatSessionStore.setState({ sending: false }); }
       return;
     }
@@ -604,8 +618,21 @@ const ChatPage: React.FC = () => {
                     {af.file.type.startsWith('image/')
                       ? <Image className="chat-attachment-thumb" src={URL.createObjectURL(af.file)} width={32} height={32} preview={false} />
                       : <span className="chat-attachment-file-icon"><FilePdfOutlined /></span>}
-                    <span className="chat-attachment-name">{af.extracting ? '解析中' : af.text ? '就绪' : '异常'} · {af.file.name}</span>
+                    <span className="chat-attachment-name">{attachmentStatusLabel(af)} · {af.file.name}</span>
                     <Button className="chat-attachment-remove" type="text" size="small" icon={<CloseOutlined />} onClick={() => removeAttachment(af.id)} />
+                  </div>
+                ))}
+              </div>
+            )}
+            {rememberedAttachments.length > 0 && (
+              <div className="chat-attachments chat-remembered-attachments">
+                {rememberedAttachments.map(af => (
+                  <div key={af.id} className="chat-attachment-chip">
+                    {af.file.type.startsWith('image/')
+                      ? <Image className="chat-attachment-thumb" src={af.optimizedDataUrl || af.dataUrl || URL.createObjectURL(af.file)} width={32} height={32} preview={false} />
+                      : <span className="chat-attachment-file-icon"><FilePdfOutlined /></span>}
+                    <span className="chat-attachment-name">{attachmentStatusLabel(af)} · {af.file.name}</span>
+                    <Button className="chat-attachment-remove" type="text" size="small" icon={<CloseOutlined />} onClick={() => removeRememberedAttachment(af.id)} />
                   </div>
                 ))}
               </div>
@@ -616,7 +643,7 @@ const ChatPage: React.FC = () => {
               {sending ? (
                 <Tooltip title="停止生成"><Button className="chat-stop-button chat-tool-button" type="text" icon={<StopOutlined />} onClick={handleStopGeneration} /></Tooltip>
               ) : (
-                <Tooltip title="发送"><Button className="chat-send-button chat-tool-button" type="primary" shape="circle" icon={<SendOutlined />} onClick={() => handleSend()} disabled={!input.trim() && attachedFiles.length === 0} /></Tooltip>
+                <Tooltip title="发送"><Button className="chat-send-button chat-tool-button" type="primary" shape="circle" icon={<SendOutlined />} onClick={() => handleSend()} disabled={!input.trim() && attachedFiles.length === 0 && rememberedAttachments.length === 0} /></Tooltip>
               )}
             </div>
           </div>

@@ -1428,6 +1428,11 @@
   background: #f8fafc;
 }
 
+.chat-remembered-attachments {
+  border-style: dashed;
+  background: #f6f8ff;
+}
+
 .chat-attachment-chip {
   display: inline-grid;
   grid-template-columns: 32px minmax(0, 1fr) 24px;

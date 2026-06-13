@@ -392,10 +392,15 @@ const PaperDetailPage: React.FC = () => {
   const {
     attachedFiles: paperChatAttachments,
     setAttachedFiles: setPaperChatAttachments,
+    rememberedAttachments: rememberedPaperChatAttachments,
     removeAttachment: removePaperChatAttachment,
+    removeRememberedAttachment: removeRememberedPaperChatAttachment,
     openAttachmentPicker: openPaperChatAttachmentPicker,
+    rememberAttachments: rememberPaperChatAttachments,
+    mergedReadyAttachments: mergedPaperChatReadyAttachments,
     attachedTextContext: paperChatAttachmentTextContext,
     imageAttachmentPayloads: paperChatImageAttachmentPayloads,
+    attachmentStatusLabel: paperChatAttachmentStatusLabel,
     hasExtractingAttachments: hasExtractingPaperChatAttachments,
   } = useChatAttachments();
   const {
@@ -730,12 +735,13 @@ const PaperDetailPage: React.FC = () => {
     const templateMode = typeof rawQuestion === 'string';
     const activeQuote = quoteOverride !== undefined ? quoteOverride : templateMode ? null : pdfQuote;
     const visibleQuestion = (displayQuestion || rawQuestion || question.trim() || '请解释这段选中内容。').trim();
-    if ((!visibleQuestion && !activeQuote && paperChatAttachments.length === 0) || asking) return;
+    const readyAttachmentContext = mergedPaperChatReadyAttachments();
+    if ((!visibleQuestion && !activeQuote && readyAttachmentContext.length === 0) || asking) return;
     if (hasExtractingPaperChatAttachments) { message.warning('附件还在解析中...'); return; }
     const attachedFiles = [...paperChatAttachments];
-    const attachmentNames = attachedFiles.map(file => file.file.name);
-    const attachmentText = paperChatAttachmentTextContext(attachedFiles);
-    const imageAttachments = paperChatImageAttachmentPayloads(attachedFiles);
+    const attachmentNames = readyAttachmentContext.map(file => file.file.name);
+    const attachmentText = paperChatAttachmentTextContext(readyAttachmentContext);
+    const imageAttachments = paperChatImageAttachmentPayloads(readyAttachmentContext);
     const attachmentContext = [
       attachmentText ? `用户上传附件提取内容：\n${attachmentText}` : '',
       imageAttachments.length > 0 ? `用户上传图片：${imageAttachments.map(file => file.filename).join('、')}` : '',
@@ -767,6 +773,7 @@ const PaperDetailPage: React.FC = () => {
       });
       if (!response.ok) throw new Error('Stream failed');
       const reply = await consumePaperChatStream(response);
+      rememberPaperChatAttachments(attachedFiles);
       // Save to DB
       const allMsgs = [...chatMsgs, userMessage, { role: 'assistant', content: reply.content, references: reply.references, reasoning: reply.reasoning, evidence: reply.evidence, warning: reply.warning }];
       api.post(`/papers/${paperId}/chat-history`, { messages: allMsgs }).catch(()=>{});
@@ -1692,8 +1699,21 @@ const PaperDetailPage: React.FC = () => {
                       {file.file.type.startsWith('image/')
                         ? <img className="chat-attachment-thumb" src={file.dataUrl || URL.createObjectURL(file.file)} alt="" />
                         : <span className="chat-attachment-file-icon"><FilePdfOutlined /></span>}
-                      <span className="chat-attachment-name">{file.extracting ? '解析中' : file.text || file.dataUrl ? '就绪' : '异常'} · {file.file.name}</span>
+                      <span className="chat-attachment-name">{paperChatAttachmentStatusLabel(file)} · {file.file.name}</span>
                       <Button className="chat-attachment-remove" type="text" size="small" icon={<CloseOutlined />} onClick={() => removePaperChatAttachment(file.id)} />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {rememberedPaperChatAttachments.length > 0 && (
+                <div className="chat-attachments paper-chat-attachments chat-remembered-attachments">
+                  {rememberedPaperChatAttachments.map(file => (
+                    <div key={file.id} className="chat-attachment-chip">
+                      {file.file.type.startsWith('image/')
+                        ? <img className="chat-attachment-thumb" src={file.optimizedDataUrl || file.dataUrl || URL.createObjectURL(file.file)} alt="" />
+                        : <span className="chat-attachment-file-icon"><FilePdfOutlined /></span>}
+                      <span className="chat-attachment-name">{paperChatAttachmentStatusLabel(file)} · {file.file.name}</span>
+                      <Button className="chat-attachment-remove" type="text" size="small" icon={<CloseOutlined />} onClick={() => removeRememberedPaperChatAttachment(file.id)} />
                     </div>
                   ))}
                 </div>
@@ -1704,7 +1724,7 @@ const PaperDetailPage: React.FC = () => {
                 onPressEnter={e=>{if(!e.shiftKey){e.preventDefault();handleAsk();}}}
                 placeholder={pdfQuote ? '围绕引用内容提问，Enter 发送，Shift+Enter 换行' : '基于论文提问，Enter 发送，Shift+Enter 换行'}
                 autoSize={{ minRows: 1, maxRows: 6 }} disabled={asking}/>
-                <Button className="paper-detail-chat-send" type="primary" shape="circle" icon={<SendOutlined/>} loading={asking} disabled={(!question.trim() && !pdfQuote && paperChatAttachments.length === 0) || hasExtractingPaperChatAttachments} onClick={handleAsk}/>
+                <Button className="paper-detail-chat-send" type="primary" shape="circle" icon={<SendOutlined/>} loading={asking} disabled={(!question.trim() && !pdfQuote && paperChatAttachments.length === 0 && rememberedPaperChatAttachments.length === 0) || hasExtractingPaperChatAttachments} onClick={handleAsk}/>
               </div>
             </div>
           </Card>
