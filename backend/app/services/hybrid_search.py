@@ -130,6 +130,41 @@ class HybridSearchService:
         count, latest_update = result.one()
         return int(count or 0), latest_update.isoformat() if latest_update else ""
 
+    async def bm25_readiness_status(self) -> dict:
+        """Return database-backed BM25 readiness plus current process cache state."""
+
+        process_status = bm25_index_status()
+        try:
+            fingerprint = await self._get_index_fingerprint()
+        except Exception as exc:
+            logger.warning(f"BM25 数据库状态读取失败，回退到进程缓存状态: {exc}")
+            return {
+                **process_status,
+                "process_ready": bool(process_status.get("ready")),
+                "process_warm": bool(process_status.get("ready")),
+                "process_indexed_papers": int(process_status.get("indexed_papers") or 0),
+                "process_fingerprint": process_status.get("fingerprint"),
+            }
+        indexed_papers = int(fingerprint[0] or 0)
+        process_fingerprint = process_status.get("fingerprint")
+        if isinstance(process_fingerprint, list):
+            process_fingerprint = tuple(process_fingerprint)
+        process_warm = (
+            bool(process_status.get("ready"))
+            and process_fingerprint == fingerprint
+            and int(process_status.get("indexed_papers") or 0) == indexed_papers
+        )
+        return {
+            "ready": indexed_papers > 0,
+            "indexed_papers": indexed_papers,
+            "corpus_documents": indexed_papers,
+            "fingerprint": list(fingerprint),
+            "process_ready": bool(process_status.get("ready")),
+            "process_warm": process_warm,
+            "process_indexed_papers": int(process_status.get("indexed_papers") or 0),
+            "process_fingerprint": process_status.get("fingerprint"),
+        }
+
     async def _ensure_bm25_index(self):
         """确保 BM25 索引是最新的。"""
         global _bm25_index

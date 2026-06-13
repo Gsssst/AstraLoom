@@ -1747,6 +1747,79 @@ async def test_process_paper_executes_missing_work_when_queued(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_process_paper_attempts_embedding_before_visual_evidence(monkeypatch):
+    paper = SimpleNamespace(
+        id=uuid4(),
+        title="Embedding before visual",
+        arxiv_id="2606.00009",
+        pdf_path="/data/paper.pdf",
+        full_text="x" * 600,
+        embedding=None,
+        tags=[],
+        metadata_json={
+            "pdf_url": "https://arxiv.org/pdf/2606.00009",
+            report_service.PDF_STRUCTURED_METADATA_KEY: {
+                "version": report_service.PDF_STRUCTURED_METADATA_VERSION,
+                "source_path": "/data/paper.pdf",
+                "parser": "pdfplumber",
+                "page_count": 1,
+                "blocks": [{"type": "text", "text": "content", "page": 1}],
+            },
+        },
+    )
+    order = []
+
+    class _ScalarOneResult:
+        def scalar_one_or_none(self):
+            return paper
+
+    class _Session:
+        async def execute(self, _statement):
+            return _ScalarOneResult()
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, _paper):
+            return None
+
+    async def fake_embedding(self, paper_arg):
+        order.append("embedding")
+        paper_arg.embedding = [0.1]
+        return True
+
+    async def fake_rebuild(self):
+        order.append("bm25")
+        return True
+
+    async def fake_visual(paper_arg, _db, force=False):
+        order.append("visual_evidence")
+        metadata = dict(paper_arg.metadata_json or {})
+        metadata[document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY] = {
+            "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+            "source_path": "/data/paper.pdf",
+            "status": "ready",
+            "items": [{"id": "v1", "kind": "figure", "status": "ready", "summary": "figure"}],
+        }
+        paper_arg.metadata_json = metadata
+        return metadata[document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY]
+
+    monkeypatch.setattr("app.services.rag_service.RAGService.generate_embeddings_for_paper", fake_embedding)
+    monkeypatch.setattr("app.services.hybrid_search.HybridSearchService.rebuild_index", fake_rebuild)
+    monkeypatch.setattr(document_visual_evidence, "ensure_document_visual_evidence", fake_visual)
+
+    result = await paper_processing_pipeline.PaperProcessingPipeline(_Session()).process_paper(
+        paper.id,
+        include_visual=True,
+        rebuild_bm25=True,
+    )
+
+    assert result.attempted[0] == "embedding"
+    assert "visual_evidence" in result.attempted
+    assert order.index("embedding") < order.index("visual_evidence")
+
+
+@pytest.mark.asyncio
 async def test_process_paper_marks_incomplete_visual_ocr_as_failed(monkeypatch):
     paper = SimpleNamespace(
         id=uuid4(),

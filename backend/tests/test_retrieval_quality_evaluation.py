@@ -91,6 +91,25 @@ async def test_bm25_index_rebuilds_when_fingerprint_changes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_bm25_readiness_uses_database_fingerprint_when_process_cache_is_cold():
+    session = SimpleNamespace()
+    service = HybridSearchService(session)
+
+    async def fake_fingerprint():
+        return (14, "2026-06-13T08:00:00")
+
+    service._get_index_fingerprint = fake_fingerprint
+    hybrid_search.invalidate_bm25_index()
+
+    status = await service.bm25_readiness_status()
+
+    assert status["ready"] is True
+    assert status["indexed_papers"] == 14
+    assert status["process_ready"] is False
+    assert status["process_warm"] is False
+
+
+@pytest.mark.asyncio
 async def test_search_dispatches_without_calling_unselected_modes(monkeypatch):
     service = HybridSearchService(SimpleNamespace())
     calls = []

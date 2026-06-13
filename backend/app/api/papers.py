@@ -370,7 +370,7 @@ def _visual_evidence_needs_extraction(status: dict[str, Any]) -> bool:
 
 
 async def _maintenance_recommendations(db: AsyncSession, *, include_samples: bool = True) -> list[MaintenanceRecommendation]:
-    from app.services.hybrid_search import bm25_index_status
+    from app.services.hybrid_search import HybridSearchService
     from app.services.report_service import structured_pdf_parse_status_from_paper
     from app.services.document_visual_evidence import visual_evidence_status_from_paper
 
@@ -402,7 +402,7 @@ async def _maintenance_recommendations(db: AsyncSession, *, include_samples: boo
     missing_visual_evidence = len(visual_parse_needed)
     full_text_coverage = full_text_papers / total
     embedding_coverage = embedding_papers / total
-    bm25_status = bm25_index_status()
+    bm25_status = await HybridSearchService(db).bm25_readiness_status()
 
     recommendations: list[MaintenanceRecommendation] = []
     if missing_full_text:
@@ -695,9 +695,9 @@ async def _format_visual_diagnostic_hits(
     return hits[:top_k]
 
 
-def _paper_brief(paper, *, remote: bool = False) -> PaperBrief:
+def _paper_brief(paper, *, remote: bool = False, bm25_status: Optional[dict[str, Any]] = None) -> PaperBrief:
     metadata = getattr(paper, "metadata", {}) if remote else getattr(paper, "metadata_json", {})
-    processing = _paper_processing_flags(paper) if not remote else {}
+    processing = _paper_processing_flags(paper, bm25_status=bm25_status) if not remote else {}
     return PaperBrief(
         id="" if remote else str(paper.id),
         title=paper.title,
@@ -746,17 +746,31 @@ def _has_tags(tags: Any) -> bool:
     return bool(tags)
 
 
-def _paper_processing_flags(paper: Paper) -> dict[str, Any]:
-    from app.services.paper_processing_pipeline import paper_processing_flags
+def _paper_processing_flags(paper: Paper, *, bm25_status: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    from app.services.paper_processing_pipeline import paper_processing_flags, paper_processing_snapshot
 
-    return paper_processing_flags(paper)
+    if bm25_status is None:
+        return paper_processing_flags(paper)
+    snapshot = paper_processing_snapshot(paper, bm25_status=bm25_status)
+    labels = {label.key: label for label in snapshot.labels}
+    return {
+        "has_pdf": bool(labels.get("pdf") and labels["pdf"].ready),
+        "has_full_text": bool(labels.get("full_text") and labels["full_text"].ready),
+        "has_embedding": bool(labels.get("embedding") and labels["embedding"].ready),
+        "has_tags": _has_tags(getattr(paper, "tags", None)),
+        "missing": list(snapshot.missing),
+        "failed": list(snapshot.failed),
+        "status": snapshot.status,
+        "labels": [label.to_dict() for label in snapshot.labels],
+        "automation": snapshot.automation,
+    }
 
 
-def _paper_processing_status(paper: Paper) -> PaperProcessingStatus:
+def _paper_processing_status(paper: Paper, *, bm25_status: Optional[dict[str, Any]] = None) -> PaperProcessingStatus:
     from app.services.report_service import structured_pdf_parse_status_from_paper
     from app.services.document_visual_evidence import visual_evidence_status_from_paper
 
-    flags = _paper_processing_flags(paper)
+    flags = _paper_processing_flags(paper, bm25_status=bm25_status)
     structured_status = structured_pdf_parse_status_from_paper(paper)
     visual_status = visual_evidence_status_from_paper(paper)
     actions = []
@@ -914,8 +928,10 @@ async def search_papers(
 
     # 本地数据库搜索
     if source in ("local", "all"):
+        from app.services.hybrid_search import HybridSearchService
+
+        bm25_status = await HybridSearchService(db).bm25_readiness_status()
         if q:
-            from app.services.hybrid_search import HybridSearchService
             hs = HybridSearchService(db)
             candidate_limit = min(max(page * page_size, 100), 500)
             scored = await hs.search(q, top_k=candidate_limit, mode=search_mode)
@@ -967,7 +983,7 @@ async def search_papers(
                     paper_scores = [(paper, score) for paper, score in paper_scores if paper.id in status_ids]
             total = len(paper_scores)
             for paper, _score in paper_scores[page_size * (page - 1):page_size * page]:
-                items.append(_paper_brief(paper))
+                items.append(_paper_brief(paper, bm25_status=bm25_status))
         else:
             # 无查询：按字段排序浏览论文库
             query = select(Paper)
@@ -977,7 +993,7 @@ async def search_papers(
             total = total_result.scalar() or 0
             query = query.order_by(order_by).offset((page - 1) * page_size).limit(page_size)
             result = await db.execute(query)
-            items.extend(_paper_brief(paper) for paper in result.scalars().all())
+            items.extend(_paper_brief(paper, bm25_status=bm25_status) for paper in result.scalars().all())
 
     # 远程 arXiv 搜索（不存库，仅预览）
     if source in ("arxiv", "all") and not q:
@@ -1164,7 +1180,7 @@ async def get_retrieval_maintenance_health(
     user=Depends(require_admin),
 ):
     """Inspect local paper-library retrieval health."""
-    from app.services.hybrid_search import bm25_index_status
+    from app.services.hybrid_search import HybridSearchService
     from app.services.document_visual_evidence import visual_evidence_status_from_paper
 
     total = await _paper_count(db)
@@ -1204,7 +1220,7 @@ async def get_retrieval_maintenance_health(
         visual_missing_summary=visual_missing_summary,
         visual_missing_ocr=visual_missing_ocr,
         low_confidence_visual_tables=low_confidence_visual_tables,
-        bm25_index=bm25_index_status(),
+        bm25_index=await HybridSearchService(db).bm25_readiness_status(),
         missing_full_text_samples=await _missing_samples(
             db,
             (Paper.full_text.is_(None)) | (func.length(Paper.full_text) <= 500),
@@ -1624,8 +1640,11 @@ async def get_paper_processing_statuses(
     user=Depends(get_optional_user),
 ):
     """Return derived processing readiness for local papers."""
+    from app.services.hybrid_search import HybridSearchService
+
+    bm25_status = await HybridSearchService(db).bm25_readiness_status()
     result = await db.execute(select(Paper).order_by(Paper.created_at.desc()).limit(limit))
-    all_items = [_paper_processing_status(paper) for paper in result.scalars().all()]
+    all_items = [_paper_processing_status(paper, bm25_status=bm25_status) for paper in result.scalars().all()]
     items = all_items
     if status == "ready":
         items = [item for item in all_items if item.status == "ready"]
@@ -1646,10 +1665,12 @@ async def get_paper_processing_automation(
     user=Depends(get_optional_user),
 ):
     """Return compact background processing automation health."""
+    from app.services.hybrid_search import HybridSearchService
     from app.services.paper_processing_pipeline import paper_processing_snapshot
 
+    bm25_status = await HybridSearchService(db).bm25_readiness_status()
     result = await db.execute(select(Paper).order_by(Paper.created_at.desc()).limit(limit))
-    snapshots = [paper_processing_snapshot(paper) for paper in result.scalars().all()]
+    snapshots = [paper_processing_snapshot(paper, bm25_status=bm25_status) for paper in result.scalars().all()]
     total = len(snapshots)
     ready = sum(1 for snapshot in snapshots if snapshot.status == "ready")
     failed = sum(1 for snapshot in snapshots if snapshot.status == "failed")
@@ -1815,7 +1836,12 @@ async def get_paper_detail(
             pass
     from app.services.report_service import structured_pdf_parse_status_from_paper
     from app.services.document_visual_evidence import visual_evidence_status_from_paper
-    processing = _paper_processing_flags(paper)
+    from app.services.hybrid_search import HybridSearchService
+
+    processing = _paper_processing_flags(
+        paper,
+        bm25_status=await HybridSearchService(db).bm25_readiness_status(),
+    )
 
     return PaperDetail(
         id=str(paper.id),
@@ -1865,6 +1891,7 @@ async def get_paper_processing_status(
 ):
     """Return derived processing readiness for one paper."""
     from uuid import UUID
+    from app.services.hybrid_search import HybridSearchService
 
     try:
         pid = UUID(paper_id)
@@ -1875,7 +1902,8 @@ async def get_paper_processing_status(
     paper = result.scalar_one_or_none()
     if not paper:
         raise HTTPException(status_code=404, detail="论文未找到")
-    return _paper_processing_status(paper)
+    bm25_status = await HybridSearchService(db).bm25_readiness_status()
+    return _paper_processing_status(paper, bm25_status=bm25_status)
 
 
 @router.post("/{paper_id}/extract-visual-evidence", response_model=SinglePaperVisualEvidenceEnqueueResponse)

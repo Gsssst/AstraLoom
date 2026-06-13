@@ -546,6 +546,25 @@ class PaperProcessingPipeline:
             await run_step("structured_parse", _structured)
 
         snapshot = paper_processing_snapshot(paper)
+        if "embedding" in snapshot.missing:
+            async def _embedding() -> bool:
+                from app.services.rag_service import RAGService
+
+                return bool(await RAGService(self.session).generate_embeddings_for_paper(paper))
+
+            await run_step("embedding", _embedding)
+
+        snapshot = paper_processing_snapshot(paper)
+        if rebuild_bm25 and "bm25" in snapshot.missing:
+            async def _bm25() -> bool:
+                from app.services.hybrid_search import HybridSearchService
+
+                await HybridSearchService(self.session).rebuild_index()
+                return True
+
+            await run_step("bm25", _bm25)
+
+        snapshot = paper_processing_snapshot(paper)
         if include_visual and ("visual_evidence" in snapshot.missing or "visual_evidence" in snapshot.failed):
             async def _visual() -> bool:
                 from app.services.document_visual_evidence import (
@@ -576,25 +595,6 @@ class PaperProcessingPipeline:
 
             await run_step("visual_evidence", _visual)
 
-        snapshot = paper_processing_snapshot(paper)
-        if "embedding" in snapshot.missing:
-            async def _embedding() -> bool:
-                from app.services.rag_service import RAGService
-
-                return bool(await RAGService(self.session).generate_embeddings_for_paper(paper))
-
-            await run_step("embedding", _embedding)
-
-        snapshot = paper_processing_snapshot(paper)
-        if rebuild_bm25 and "bm25" in snapshot.missing:
-            async def _bm25() -> bool:
-                from app.services.hybrid_search import HybridSearchService
-
-                await HybridSearchService(self.session).rebuild_index()
-                return True
-
-            await run_step("bm25", _bm25)
-
         output.after = paper_processing_snapshot(paper)
         if not output.attempted:
             await _store_pipeline_metadata(self.session, paper)
@@ -621,6 +621,11 @@ class PaperProcessingPipeline:
         stale_running_cleared = 0
         ready_active_cleared = 0
         now = datetime.now(timezone.utc)
+        bm25_status = None
+        if rebuild_bm25:
+            from app.services.hybrid_search import HybridSearchService
+
+            bm25_status = await HybridSearchService(self.session).bm25_readiness_status()
         for paper in candidates:
             if await clear_ready_paper_processing_steps(self.session, paper):
                 ready_active_cleared += 1
@@ -647,7 +652,7 @@ class PaperProcessingPipeline:
                     ttl_seconds=running_ttl_seconds,
                 ):
                     stale_running_cleared += 1
-            snapshot = paper_processing_snapshot(paper)
+            snapshot = paper_processing_snapshot(paper, bm25_status=bm25_status)
             if snapshot.status != "ready":
                 selected.append(paper)
             if len(selected) >= limit:
