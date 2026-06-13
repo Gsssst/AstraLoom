@@ -50,8 +50,20 @@ interface PaperItem {
   has_embedding?: boolean;
   has_tags?: boolean;
   processing_status?: string | null;
+  processing_labels?: ProcessingLabel[];
+  processing_automation?: { last_checked_at?: string; last_completed_at?: string; last_error?: { message?: string } } | null;
   recommendation_kind?: string;
   recommendation_reason?: string;
+}
+
+interface ProcessingLabel {
+  key: string;
+  label: string;
+  state: 'ready' | 'missing' | 'pending' | 'running' | 'failed' | 'stale' | string;
+  ready: boolean;
+  detail?: string;
+  count?: number;
+  action?: string;
 }
 
 interface ProcessingStatusItem {
@@ -66,6 +78,9 @@ interface ProcessingStatusItem {
   has_tags: boolean;
   status: string;
   missing: string[];
+  failed?: string[];
+  processing_labels?: ProcessingLabel[];
+  automation?: { last_checked_at?: string; last_completed_at?: string; last_error?: { message?: string } } | null;
   repair_actions: { key: string; label: string; endpoint: string }[];
   structured_parse_status?: {
     ready: boolean;
@@ -165,6 +180,16 @@ interface MaintenanceJobStatus {
   errors?: { paper_id?: string; title?: string; reason?: string }[];
   message?: string;
   result?: { processed: number; success: number; failed: number; skipped: number; errors?: any[] } | null;
+}
+
+interface ProcessingAutomationHealth {
+  enabled: boolean;
+  cadence_minutes: number;
+  batch_limit: number;
+  pending: number;
+  ready: number;
+  failed: number;
+  labels: { key: string; label: string; ready: number; pending: number; failed: number; ready_ratio?: number }[];
 }
 
 const remoteSearchSources = ['scholarly', 'arxiv', 'semantic_scholar', 'openalex', 'google_scholar'];
@@ -370,6 +395,7 @@ const PapersPage: React.FC = () => {
   const [recommendationPapers, setRecommendationPapers] = useState<PaperItem[]>([]);
   const [recommendationMeta, setRecommendationMeta] = useState<{ query: string; reason: string } | null>(null);
   const [kbHealth, setKbHealth] = useState<any>(null);
+  const [processingAutomation, setProcessingAutomation] = useState<ProcessingAutomationHealth | null>(null);
   const [migrationHealth, setMigrationHealth] = useState<any>(null);
   const [kbRecommendations, setKbRecommendations] = useState<any[]>([]);
   const [kbLoading, setKbLoading] = useState(false);
@@ -871,13 +897,15 @@ const PapersPage: React.FC = () => {
     if (!isAdmin) return;
     setKbLoading(true);
     try {
-      const [healthRes, recommendationsRes, processingRes, migrationRes] = await Promise.all([
+      const [healthRes, automationRes, recommendationsRes, processingRes, migrationRes] = await Promise.all([
         api.get('/papers/maintenance/health'),
+        api.get('/papers/processing-automation'),
         api.get('/papers/maintenance/recommendations'),
         api.get('/papers/processing-status', { params: { status: processingStatusFilter, limit: 30 } }),
         api.get('/health/db').catch(error => ({ data: error.response?.data || { status: 'error', detail: '迁移状态读取失败' } })),
       ]);
       setKbHealth(healthRes.data);
+      setProcessingAutomation(automationRes.data);
       setKbRecommendations(recommendationsRes.data || []);
       setProcessingStatuses(processingRes.data?.items || []);
       setMigrationHealth(migrationRes.data);
@@ -900,7 +928,7 @@ const PapersPage: React.FC = () => {
       setPageActionError(null);
       if (response.data?.job_id && response.data?.job) {
         setActiveMaintenanceJob(response.data.job);
-        message.success('维护任务已进入后台，可在维护中心查看进度');
+        message.success('维护任务已进入后台，可在处理诊断查看进度');
       } else {
         message.success(`维护完成：成功 ${response.data.success || 0}，失败 ${response.data.failed || 0}，跳过 ${response.data.skipped || 0}`);
         await fetchMaintenanceCenter();
@@ -1137,6 +1165,28 @@ const PapersPage: React.FC = () => {
     if (quality === 'low') return { color: 'orange', label: '表格低' };
     return { color: 'default', label: '表格无' };
   };
+  const processingLabelMeta = (state?: string) => {
+    if (state === 'ready') return { color: 'green', suffix: '就绪' };
+    if (state === 'running' || state === 'pending') return { color: 'processing', suffix: '处理中' };
+    if (state === 'failed') return { color: 'red', suffix: '失败' };
+    if (state === 'stale') return { color: 'gold', suffix: '待刷新' };
+    return { color: 'default', suffix: '待处理' };
+  };
+  const renderProcessingLabels = (labels: ProcessingLabel[] = []) => (
+    <>
+      {labels.filter(label => label.key !== 'pdf').slice(0, 5).map(label => {
+        const meta = processingLabelMeta(label.state);
+        const text = `${label.label}${meta.suffix}`;
+        return (
+          <Tooltip key={label.key} title={label.detail || text}>
+            <Tag color={meta.color} style={{ borderRadius: 6 }}>
+              {text}
+            </Tag>
+          </Tooltip>
+        );
+      })}
+    </>
+  );
   const reportPresetOptions = [
     { value: 'default', label: '默认逐篇' },
     { value: 'compare', label: '横向对比' },
@@ -1159,7 +1209,7 @@ const PapersPage: React.FC = () => {
       <Space direction="vertical" size={14} style={{ width: '100%' }}>
         <Card
           style={{ borderRadius: 16, border: '1px solid #efe7ff' }}
-          title={<Space><DatabaseOutlined style={{ color: '#764ba2' }} /><Text strong>知识库维护中心</Text></Space>}
+          title={<Space><DatabaseOutlined style={{ color: '#764ba2' }} /><Text strong>自动处理诊断</Text></Space>}
           extra={<Button size="small" icon={<RedoOutlined />} loading={kbLoading} onClick={fetchMaintenanceCenter}>刷新</Button>}
         >
           {migrationHealth && (
@@ -1180,8 +1230,8 @@ const PapersPage: React.FC = () => {
             type="info"
             showIcon
             style={{ borderRadius: 10, marginBottom: 14 }}
-            message="这里集中维护论文库能否被正确检索和用于问答"
-            description="全文覆盖影响论文页章节问答，向量覆盖影响语义召回，BM25 影响关键词召回。分类健康度会影响研究方向 idea 生成质量。"
+            message="论文入库后会在后台自动补齐全文、结构化解析、视觉证据/OCR、向量和关键词索引"
+            description="这里保留为管理员诊断和兜底入口；日常使用只需要看论文卡片上的处理标签。"
           />
           {activeMaintenanceJob && (
             <Alert
@@ -1218,6 +1268,25 @@ const PapersPage: React.FC = () => {
           )}
           {kbHealth ? (
             <>
+              {processingAutomation && (
+                <Alert
+                  type={processingAutomation.failed ? 'warning' : processingAutomation.pending ? 'info' : 'success'}
+                  showIcon
+                  style={{ borderRadius: 10, marginBottom: 12 }}
+                  message={`后台自动处理：${processingAutomation.ready} 篇就绪，${processingAutomation.pending} 篇待处理`}
+                  description={(
+                    <Space size={6} wrap>
+                      <Tag color="blue">每 {processingAutomation.cadence_minutes} 分钟巡检</Tag>
+                      <Tag color="blue">每批最多 {processingAutomation.batch_limit} 篇</Tag>
+                      {processingAutomation.labels.map(label => (
+                        <Tag key={label.key} color={label.failed ? 'red' : label.pending ? 'orange' : 'green'}>
+                          {label.label} {label.ready}/{label.ready + label.pending + label.failed}
+                        </Tag>
+                      ))}
+                    </Space>
+                  )}
+                />
+              )}
               <Row gutter={[12, 12]}>
                 <Col xs={12} md={6}><Card size="small" style={{ borderRadius: 12 }}><Statistic title="论文总数" value={kbHealth.total_papers || 0} /></Card></Col>
                 <Col xs={12} md={6}><Card size="small" style={{ borderRadius: 12 }}><Statistic title="全文覆盖" value={Math.round((kbHealth.full_text_coverage || 0) * 100)} suffix="%" /><Progress percent={Math.round((kbHealth.full_text_coverage || 0) * 100)} size="small" showInfo={false} /></Card></Col>
@@ -1236,17 +1305,17 @@ const PapersPage: React.FC = () => {
                 <Tag>arXiv 论文 {kbHealth.arxiv_papers || 0}</Tag>
               </Space>
               <Space wrap style={{ marginTop: 14 }}>
-                <Button icon={<RedoOutlined />} loading={kbAction === 'bm25'} onClick={() => runKbAction('bm25', '/papers/maintenance/rebuild-bm25')}>重建 BM25</Button>
-                <Button loading={kbAction === 'embeddings'} onClick={() => runKbAction('embeddings', '/papers/maintenance/backfill-embeddings?limit=20')}>补 20 篇向量</Button>
-                <Button loading={kbAction === 'fulltext'} onClick={() => runKbAction('fulltext', '/papers/maintenance/backfill-full-text?limit=5')}>补 5 篇全文</Button>
-                <Button loading={kbAction === 'visual'} onClick={() => runKbAction('visual', '/papers/maintenance/backfill-visual-evidence?limit=5')}>提取 5 篇视觉证据</Button>
+                <Button icon={<RedoOutlined />} loading={kbAction === 'bm25'} onClick={() => runKbAction('bm25', '/papers/maintenance/rebuild-bm25')}>兜底重建 BM25</Button>
+                <Button loading={kbAction === 'embeddings'} onClick={() => runKbAction('embeddings', '/papers/maintenance/backfill-embeddings?limit=20')}>兜底补向量</Button>
+                <Button loading={kbAction === 'fulltext'} onClick={() => runKbAction('fulltext', '/papers/maintenance/backfill-full-text?limit=5')}>兜底补全文</Button>
+                <Button loading={kbAction === 'visual'} onClick={() => runKbAction('visual', '/papers/maintenance/backfill-visual-evidence?limit=5')}>兜底提取视觉证据</Button>
               </Space>
             </>
           ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无维护状态" />}
         </Card>
 
         {kbRecommendations.length > 0 && (
-          <Card title="系统建议优先维护" style={{ borderRadius: 16 }}>
+          <Card title="自动处理异常建议" style={{ borderRadius: 16 }}>
             <Row gutter={[12, 12]}>
               {kbRecommendations.map((rec: any) => (
                 <Col xs={24} md={8} key={rec.id}>
@@ -1272,7 +1341,7 @@ const PapersPage: React.FC = () => {
         )}
 
         <Card
-          title={<Space><DatabaseOutlined /><Text strong>入库处理状态</Text><Tag color="orange">{processingStatuses.length}</Tag></Space>}
+          title={<Space><DatabaseOutlined /><Text strong>论文处理标签</Text><Tag color="orange">{processingStatuses.length}</Tag></Space>}
           extra={(
             <Segmented
               size="small"
@@ -1311,19 +1380,16 @@ const PapersPage: React.FC = () => {
               dataSource={processingStatuses}
               renderItem={item => (
                 <List.Item
-                  actions={isAdmin ? item.repair_actions.filter(action => ['full_text', 'structured_parse', 'visual_evidence', 'embedding'].includes(action.key)).slice(0, 4).map(action => (
+                  actions={isAdmin && item.status === 'failed' ? item.repair_actions.filter(action => ['full_text', 'structured_parse', 'visual_evidence', 'embedding'].includes(action.key)).slice(0, 2).map(action => (
                     <Button key={action.key} size="small" loading={processingLoading} onClick={() => runProcessingAction(item, action)}>
-                      {action.label}
+                      兜底{action.label}
                     </Button>
                   )) : []}
                 >
                   <List.Item.Meta
-                    title={<Space wrap><Text strong>{item.title}</Text>{item.year && <Tag>{item.year}</Tag>}<Tag color={item.status === 'ready' ? 'green' : 'orange'}>{item.status === 'ready' ? '已就绪' : '待处理'}</Tag></Space>}
+                    title={<Space wrap><Text strong>{item.title}</Text>{item.year && <Tag>{item.year}</Tag>}<Tag color={item.status === 'ready' ? 'green' : item.status === 'failed' ? 'red' : item.status === 'processing' ? 'processing' : 'orange'}>{item.status === 'ready' ? '已就绪' : item.status === 'failed' ? '异常' : item.status === 'processing' ? '处理中' : '待处理'}</Tag></Space>}
                     description={<Space size={4} wrap>
-                      <Tag color={item.has_pdf ? 'green' : 'default'}>PDF {item.has_pdf ? '有' : '缺'}</Tag>
-                      <Tag color={item.has_full_text ? 'green' : 'default'}>全文 {item.has_full_text ? '有' : '缺'}</Tag>
-                      <Tag color={item.has_embedding ? 'green' : 'default'}>向量 {item.has_embedding ? '有' : '缺'}</Tag>
-                      <Tag color={item.has_tags ? 'green' : 'default'}>标签 {item.has_tags ? '有' : '缺'}</Tag>
+                      {renderProcessingLabels(item.processing_labels)}
                       <Tooltip title={item.structured_parse_status?.last_error?.message || item.structured_parse_status?.parser || 'PDF 结构化解析状态'}>
                         <Tag color={item.structured_parse_status?.last_error ? 'red' : item.structured_parse_status?.ready ? 'green' : 'default'}>
                           结构化 {item.structured_parse_status?.last_error ? '失败' : item.structured_parse_status?.ready ? `已 ${item.structured_parse_status?.block_count || 0}` : '缺'}
@@ -1459,9 +1525,9 @@ const PapersPage: React.FC = () => {
             <Button icon={<FileTextOutlined />} disabled={selectedIds.size === 0} onClick={() => setReportModalOpen(true)} style={{ borderRadius: 10 }}>
               组会报告 ({selectedIds.size})
             </Button>
-            <Button icon={<DatabaseOutlined />} onClick={() => updateSource('maintenance')} style={{ borderRadius: 10 }}>
-              维护中心
-            </Button>
+            {isAdmin && <Button icon={<DatabaseOutlined />} onClick={() => updateSource('maintenance')} style={{ borderRadius: 10 }}>
+              处理诊断
+            </Button>}
         </>
       )}
     >
@@ -1484,10 +1550,10 @@ const PapersPage: React.FC = () => {
         steps={[
           {
             key: 'maintenance',
-            title: '检查知识库健康',
-            description: '诊断全文、向量和 BM25 覆盖，避免问答和检索只靠摘要猜测。',
-            actionLabel: '打开维护中心',
-            status: 'recommended',
+            title: '后台自动补齐处理',
+            description: '新论文入库后会自动补全文、结构化解析、视觉证据、向量和索引；这里只查看异常诊断。',
+            actionLabel: '查看处理诊断',
+            status: 'optional',
             icon: <DatabaseOutlined />,
             onClick: () => updateSource('maintenance'),
           },
@@ -1522,7 +1588,7 @@ const PapersPage: React.FC = () => {
               { value: 'saved', label: '⭐ 收藏' },
               { value: 'collection', label: '🗂️ 自定义分类' },
               { value: 'reading', label: '📖 阅读列表' },
-              { value: 'maintenance', label: '🛠️ 维护中心' },
+              { value: 'maintenance', label: '🛠️ 处理诊断' },
               { value: 'scholarly', label: '🔎 综合学术' },
               { value: 'arxiv', label: '📝 arXiv' },
               { value: 'semantic_scholar', label: '🎓 Semantic Scholar' },
@@ -1886,9 +1952,7 @@ const PapersPage: React.FC = () => {
                       {paper.id && <Tag color={metadataQuality.tier === 'ready' ? 'green' : metadataQuality.tier === 'usable' ? 'gold' : 'orange'} style={{ borderRadius: 6 }}>元数据 {metadataQuality.percent}%</Tag>}
                       {duplicateRisk.risk !== 'none' && <Tag color={duplicateRisk.risk === 'strong' ? 'red' : 'orange'} style={{ borderRadius: 6 }}>疑似重复</Tag>}
                       <Tag color={resultState.color} style={{ borderRadius: 6 }}>{resultState.label}</Tag>
-                      {paper.id && <Tag color={paper.has_full_text ? 'green' : 'default'} style={{ borderRadius: 6 }}>全文{paper.has_full_text ? '就绪' : '缺失'}</Tag>}
-                      {paper.id && <Tag color={paper.has_embedding ? 'green' : 'default'} style={{ borderRadius: 6 }}>向量{paper.has_embedding ? '就绪' : '缺失'}</Tag>}
-                      {paper.id && <Tag color={paper.has_tags ? 'green' : 'default'} style={{ borderRadius: 6 }}>标签{paper.has_tags ? '就绪' : '缺失'}</Tag>}
+                      {paper.id && renderProcessingLabels(paper.processing_labels)}
                       {paper.read_status && <Tag color={readingStatusMeta[paper.read_status].color} style={{ borderRadius: 6 }}>{readingStatusMeta[paper.read_status].label}</Tag>}
                       {paper.citation_count > 0 && <Tag icon={<RiseOutlined />} color="orange" style={{ borderRadius: 6 }}>引用 {paper.citation_count}</Tag>}
                       {!paper.id && <Tag color={paper.pdf_url ? 'green' : 'default'} style={{ borderRadius: 6 }}>{paper.pdf_url ? '开放 PDF' : '未返回 PDF'}</Tag>}
@@ -1959,7 +2023,7 @@ const PapersPage: React.FC = () => {
                   <Button onClick={() => updateSource(source === 'scholarly' ? 'openalex' : 'scholarly')} style={{ borderRadius: 10 }}>
                     {source === 'scholarly' ? '切到 OpenAlex' : '切到综合学术'}
                   </Button>
-                  {isAdmin && <Button icon={<DatabaseOutlined />} onClick={() => updateSource('maintenance')} style={{ borderRadius: 10 }}>做检索诊断</Button>}
+                  {isAdmin && <Button icon={<DatabaseOutlined />} onClick={() => updateSource('maintenance')} style={{ borderRadius: 10 }}>处理诊断</Button>}
                 </Space>
                 {remoteGuidance && <Text type="secondary" style={{ fontSize: 12 }}>{remoteGuidance.retry}</Text>}
               </Space>

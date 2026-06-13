@@ -62,6 +62,8 @@ class PaperBrief(BaseModel):
     has_embedding: bool = False
     has_tags: bool = False
     processing_status: Optional[str] = None
+    processing_labels: list[dict] = Field(default_factory=list)
+    processing_automation: Optional[dict] = None
 
     model_config = {"from_attributes": True}
 
@@ -145,8 +147,11 @@ class PaperProcessingStatus(BaseModel):
     has_full_text: bool
     has_embedding: bool
     has_tags: bool
-    status: Literal["ready", "needs_full_text", "needs_embedding", "needs_tags", "needs_processing"]
+    status: Literal["ready", "processing", "needs_processing", "failed"]
     missing: list[str] = []
+    failed: list[str] = []
+    processing_labels: list[dict] = []
+    automation: Optional[dict] = None
     repair_actions: list[dict] = []
     structured_parse_status: Optional[StructuredPdfParseStatus] = None
     visual_evidence_status: Optional[DocumentVisualEvidenceStatus] = None
@@ -157,6 +162,16 @@ class PaperProcessingStatusResponse(BaseModel):
     total: int
     ready: int
     needs_processing: int
+
+
+class PaperProcessingAutomationResponse(BaseModel):
+    enabled: bool = True
+    cadence_minutes: int = 10
+    batch_limit: int = 5
+    pending: int = 0
+    ready: int = 0
+    failed: int = 0
+    labels: list[dict] = []
 
 
 class PaperInsightResponse(BaseModel):
@@ -349,13 +364,9 @@ def _coverage_severity(coverage: float) -> Literal["high", "medium", "low"]:
 
 
 def _visual_evidence_needs_extraction(status: dict[str, Any]) -> bool:
-    return (
-        not status.get("ready")
-        or bool(status.get("failed"))
-        or int(status.get("missing_ocr_count") or 0) > 0
-        or int(status.get("missing_summary_count") or 0) > 0
-        or int(status.get("low_confidence_table_count") or 0) > 0
-    )
+    from app.services.paper_processing_pipeline import _visual_evidence_needs_extraction as needs_extraction
+
+    return needs_extraction(status)
 
 
 async def _maintenance_recommendations(db: AsyncSession, *, include_samples: bool = True) -> list[MaintenanceRecommendation]:
@@ -712,6 +723,8 @@ def _paper_brief(paper, *, remote: bool = False) -> PaperBrief:
         has_embedding=bool(processing.get("has_embedding", False)),
         has_tags=bool(processing.get("has_tags", False)),
         processing_status=processing.get("status"),
+        processing_labels=processing.get("labels") or [],
+        processing_automation=processing.get("automation"),
     )
 
 
@@ -734,36 +747,9 @@ def _has_tags(tags: Any) -> bool:
 
 
 def _paper_processing_flags(paper: Paper) -> dict[str, Any]:
-    metadata = getattr(paper, "metadata_json", None) or {}
-    has_pdf = bool(getattr(paper, "pdf_path", None) or metadata.get("pdf_url"))
-    has_full_text = bool(getattr(paper, "full_text", None) and len(paper.full_text) > 500)
-    has_embedding = getattr(paper, "embedding", None) is not None
-    has_tags = _has_tags(getattr(paper, "tags", None))
-    missing = []
-    if not has_full_text:
-        missing.append("full_text")
-    if not has_embedding:
-        missing.append("embedding")
-    if not has_tags:
-        missing.append("tags")
-    if not missing:
-        status = "ready"
-    elif missing == ["tags"]:
-        status = "needs_tags"
-    elif missing == ["embedding"]:
-        status = "needs_embedding"
-    elif "full_text" in missing and len(missing) == 1:
-        status = "needs_full_text"
-    else:
-        status = "needs_processing"
-    return {
-        "has_pdf": has_pdf,
-        "has_full_text": has_full_text,
-        "has_embedding": has_embedding,
-        "has_tags": has_tags,
-        "missing": missing,
-        "status": status,
-    }
+    from app.services.paper_processing_pipeline import paper_processing_flags
+
+    return paper_processing_flags(paper)
 
 
 def _paper_processing_status(paper: Paper) -> PaperProcessingStatus:
@@ -781,8 +767,6 @@ def _paper_processing_status(paper: Paper) -> PaperProcessingStatus:
         actions.append({"key": "visual_evidence", "label": "提取视觉证据", "endpoint": f"/papers/{paper.id}/extract-visual-evidence"})
     if not flags["has_embedding"]:
         actions.append({"key": "embedding", "label": "生成向量", "endpoint": f"/papers/{paper.id}/embedding"})
-    if not flags["has_tags"]:
-        actions.append({"key": "tags", "label": "AI 标签", "endpoint": f"/papers/{paper.id}/auto-tag"})
     return PaperProcessingStatus(
         id=str(paper.id),
         title=paper.title,
@@ -795,6 +779,9 @@ def _paper_processing_status(paper: Paper) -> PaperProcessingStatus:
         has_tags=flags["has_tags"],
         status=flags["status"],
         missing=flags["missing"],
+        failed=flags.get("failed", []),
+        processing_labels=flags.get("labels") or [],
+        automation=flags.get("automation"),
         repair_actions=actions,
         structured_parse_status=StructuredPdfParseStatus(**structured_status),
         visual_evidence_status=DocumentVisualEvidenceStatus(**visual_status),
@@ -1652,6 +1639,45 @@ async def get_paper_processing_statuses(
     )
 
 
+@router.get("/processing-automation", response_model=PaperProcessingAutomationResponse)
+async def get_paper_processing_automation(
+    limit: int = Query(default=200, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_optional_user),
+):
+    """Return compact background processing automation health."""
+    from app.services.paper_processing_pipeline import paper_processing_snapshot
+
+    result = await db.execute(select(Paper).order_by(Paper.created_at.desc()).limit(limit))
+    snapshots = [paper_processing_snapshot(paper) for paper in result.scalars().all()]
+    total = len(snapshots)
+    ready = sum(1 for snapshot in snapshots if snapshot.status == "ready")
+    failed = sum(1 for snapshot in snapshots if snapshot.status == "failed")
+    pending = sum(1 for snapshot in snapshots if snapshot.status != "ready")
+    label_counts: dict[str, dict[str, Any]] = {}
+    for snapshot in snapshots:
+        for label in snapshot.labels:
+            bucket = label_counts.setdefault(label.key, {"key": label.key, "label": label.label, "ready": 0, "pending": 0, "failed": 0})
+            if label.state == "failed":
+                bucket["failed"] += 1
+            elif label.ready:
+                bucket["ready"] += 1
+            else:
+                bucket["pending"] += 1
+    return PaperProcessingAutomationResponse(
+        pending=pending,
+        ready=ready,
+        failed=failed,
+        labels=[
+            {
+                **bucket,
+                "ready_ratio": round(float(bucket["ready"]) / float(total or 1), 4),
+            }
+            for bucket in label_counts.values()
+        ],
+    )
+
+
 @router.get("/maintenance/search-diagnostics", response_model=RetrievalDiagnosticsResponse)
 async def diagnose_retrieval_query(
     q: str = Query(..., min_length=1, max_length=300),
@@ -1789,6 +1815,7 @@ async def get_paper_detail(
             pass
     from app.services.report_service import structured_pdf_parse_status_from_paper
     from app.services.document_visual_evidence import visual_evidence_status_from_paper
+    processing = _paper_processing_flags(paper)
 
     return PaperDetail(
         id=str(paper.id),
@@ -1806,6 +1833,13 @@ async def get_paper_detail(
         imported_by_username=paper.imported_by_username,
         importance_label=paper.importance_label,
         importance_note=paper.importance_note,
+        has_pdf=bool(processing.get("has_pdf", False)),
+        has_full_text=bool(processing.get("has_full_text", False)),
+        has_embedding=bool(processing.get("has_embedding", False)),
+        has_tags=bool(processing.get("has_tags", False)),
+        processing_status=processing.get("status"),
+        processing_labels=processing.get("labels") or [],
+        processing_automation=processing.get("automation"),
         full_text_preview=paper.full_text[:5000] if paper.full_text else None,
         tags=paper.tags,
         categories=[

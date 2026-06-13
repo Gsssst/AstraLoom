@@ -32,6 +32,12 @@ celery_app.conf.update(
             "schedule": crontab(minute=0),
             "options": {"expires": 3600},
         },
+        "reconcile-paper-processing": {
+            "task": "reconcile_paper_processing",
+            "schedule": crontab(minute="*/10"),
+            "kwargs": {"limit": 5},
+            "options": {"expires": 900},
+        },
     },
 )
 

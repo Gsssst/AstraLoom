@@ -1,5 +1,6 @@
 """论文相关异步任务 — 论文下载、PDF 解析、向量化等耗时操作。"""
 
+import asyncio
 import logging
 from app.tasks.celery_app import celery_app
 
@@ -62,3 +63,77 @@ def generate_embedding(self, text: str, model: str = "text-embedding-3-small"):
     except Exception as e:
         logger.error(f"向量生成失败: {e}")
         return {"status": "error", "error": str(e)}
+
+
+@celery_app.task(bind=True, name="process_paper_pipeline")
+def process_paper_pipeline(self, paper_id: str, include_visual: bool = True):
+    """Run the automatic processing lifecycle for one paper."""
+
+    async def _run():
+        from app.db.session import AsyncSessionLocal
+        from app.services.paper_processing_pipeline import PaperProcessingPipeline
+
+        async with AsyncSessionLocal() as session:
+            result = await PaperProcessingPipeline(session).process_paper(
+                paper_id,
+                include_visual=include_visual,
+                rebuild_bm25=True,
+            )
+            return result.to_dict()
+
+    try:
+        payload = asyncio.run(_run())
+        return {
+            "status": "success",
+            "kind": "paper_processing",
+            "paper_id": paper_id,
+            "result": payload,
+            "message": "paper processing complete",
+        }
+    except Exception as e:
+        logger.exception("论文自动处理失败 %s: %s", paper_id, e)
+        return {
+            "status": "error",
+            "kind": "paper_processing",
+            "paper_id": paper_id,
+            "error": str(e),
+            "message": str(e),
+        }
+
+
+@celery_app.task(bind=True, name="reconcile_paper_processing")
+def reconcile_paper_processing(self, limit: int = 5, include_visual: bool = True):
+    """Periodically reconcile incomplete paper processing artifacts."""
+
+    async def _run():
+        from app.db.session import AsyncSessionLocal
+        from app.services.paper_processing_pipeline import PaperProcessingPipeline
+
+        async with AsyncSessionLocal() as session:
+            return await PaperProcessingPipeline(session).reconcile_batch(
+                limit=max(1, min(int(limit or 5), 20)),
+                include_visual=include_visual,
+                rebuild_bm25=True,
+            )
+
+    try:
+        summary = asyncio.run(_run())
+        return {
+            "status": "success",
+            "kind": "paper_processing_reconcile",
+            "processed": summary.get("processed", 0),
+            "success": summary.get("success", 0),
+            "failed": summary.get("failed", 0),
+            "skipped": summary.get("skipped", 0),
+            "errors": summary.get("errors", []),
+            "result": summary,
+            "message": "paper processing reconciliation complete",
+        }
+    except Exception as e:
+        logger.exception("论文自动处理巡检失败: %s", e)
+        return {
+            "status": "error",
+            "kind": "paper_processing_reconcile",
+            "error": str(e),
+            "message": str(e),
+        }

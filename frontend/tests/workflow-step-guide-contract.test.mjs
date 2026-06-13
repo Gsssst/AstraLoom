@@ -31,11 +31,12 @@ test('workflow step guide supports shared route and local actions', () => {
 test('paper library exposes unified workflow next steps', () => {
   assert.match(papersPageSource, /WorkflowStepGuide/);
   assert.match(papersPageSource, /论文库下一步/);
-  assert.match(papersPageSource, /打开维护中心/);
+  assert.match(papersPageSource, /后台自动补齐处理/);
+  assert.match(papersPageSource, /查看处理诊断/);
   assert.match(papersPageSource, /管理分类/);
   assert.match(papersPageSource, /去研究方向/);
-  assert.match(papersPageSource, /setSource\('maintenance'\)/);
-  assert.match(papersPageSource, /setSource\('collection'\)/);
+  assert.match(papersPageSource, /updateSource\('maintenance'\)/);
+  assert.match(papersPageSource, /updateSource\('collection'\)/);
 });
 
 test('research page exposes unified workflow next steps', () => {

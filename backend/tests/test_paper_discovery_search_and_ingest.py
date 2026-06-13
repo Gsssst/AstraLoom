@@ -7,6 +7,8 @@ import httpx
 import pytest
 
 from app.api import papers as papers_api
+from app.services.paper_ingestion import PaperIngestionService
+from app.tasks import paper_tasks
 from app.services.paper_search import (
     PaperResult,
     create_remote_ingest_token,
@@ -180,6 +182,62 @@ def test_local_paper_brief_exposes_processing_readiness():
     assert brief.has_embedding is True
     assert brief.has_tags is True
     assert brief.processing_status == "ready"
+    assert [label["key"] for label in brief.processing_labels] == [
+        "pdf",
+        "full_text",
+        "structured_parse",
+        "visual_evidence",
+        "embedding",
+        "bm25",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ingest_paper_enqueues_automatic_processing(monkeypatch):
+    paper_id = uuid4()
+    commits = []
+    refreshed = []
+    added = []
+    queued = []
+
+    async def fake_duplicate(_self, _paper):
+        return None
+
+    class _Session:
+        def add(self, item):
+            item.id = paper_id
+            item.created_at = SimpleNamespace(isoformat=lambda: "2026-06-13T00:00:00")
+            added.append(item)
+
+        async def commit(self):
+            commits.append(True)
+
+        async def refresh(self, item):
+            refreshed.append(item)
+
+    class _Task:
+        id = "task-1"
+
+    class _ProcessTask:
+        def delay(self, pid):
+            queued.append(pid)
+            return _Task()
+
+    monkeypatch.setattr(PaperIngestionService, "check_duplicate", fake_duplicate)
+    monkeypatch.setattr(paper_tasks, "process_paper_pipeline", _ProcessTask())
+
+    service = PaperIngestionService(_Session())
+    paper, is_new = await service.ingest_paper(
+        _paper(source="arxiv", remote_id="2606.00001", arxiv_id="2606.00001", pdf_url="https://arxiv.org/pdf/2606.00001"),
+        auto_download=False,
+        imported_by_user=SimpleNamespace(id=uuid4(), username="gst"),
+    )
+
+    assert is_new is True
+    assert paper is added[0]
+    assert commits
+    assert refreshed == [paper]
+    assert queued == [str(paper_id)]
 
 
 def test_paper_imported_by_user_matches_id_and_username_fallback():

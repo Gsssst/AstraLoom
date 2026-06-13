@@ -155,7 +155,7 @@ test('papers page adopts page shell while preserving paper workflows', () => {
   assert.match(papersSource, /title="论文库"/);
   assert.match(papersSource, /maxWidth=\{1100\}/);
   assert.match(papersSource, /论文推送/);
-  assert.match(papersSource, /维护中心/);
+  assert.match(papersSource, /处理诊断/);
   assert.match(papersSource, /<WorkflowStepGuide/);
   assert.match(papersSource, /<Input\.Search/);
   assert.doesNotMatch(papersSource, /heroGradient/);

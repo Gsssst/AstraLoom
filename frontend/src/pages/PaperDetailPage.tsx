@@ -78,6 +78,15 @@ interface PaperData {
     failed?: boolean;
     last_error?: { message?: string; failed_at?: string; [key: string]: any } | null;
   } | null;
+  processing_labels?: {
+    key: string;
+    label: string;
+    state: string;
+    ready: boolean;
+    detail?: string;
+    count?: number;
+  }[];
+  processing_status?: string | null;
   created_at: string;
 }
 
@@ -289,7 +298,6 @@ const PaperDetailPage: React.FC = () => {
   const [annotationSaving, setAnnotationSaving] = useState(false);
   const [deletingAnnotationIds, setDeletingAnnotationIds] = useState<Set<string>>(new Set());
   const [parseStatus, setParseStatus] = useState<StructuredPdfParseStatus | null>(null);
-  const [parseLoading, setParseLoading] = useState(false);
   const [showPdf, setShowPdf] = useState(false);
   const [targetPdfPage, setTargetPdfPage] = useState<number | null>(null);
   const [mobilePanel, setMobilePanel] = useState<'content' | 'pdf' | 'chat'>('content');
@@ -915,28 +923,6 @@ const PaperDetailPage: React.FC = () => {
     }
   };
 
-  const handleReparseStructuredPdf = async () => {
-    if (!paperId || parseLoading) return;
-    setParseLoading(true);
-    try {
-      const response = await api.post(`/papers/${paperId}/reparse-structured-pdf`, {}, { timeout: 300000 });
-      setParseStatus(response.data);
-      setPaper(current => current ? { ...current, structured_parse_status: response.data } : current);
-      message.success('PDF 结构化解析已刷新');
-    } catch (error: any) {
-      const status = error.response?.data?.detail?.status;
-      if (status) {
-        setParseStatus(status);
-        setPaper(current => current ? { ...current, structured_parse_status: status } : current);
-      }
-      const detail = error.response?.data?.detail;
-      const backendMessage = status?.last_error?.message;
-      message.error(backendMessage || detail?.message || detail || 'PDF 结构化解析失败');
-    } finally {
-      setParseLoading(false);
-    }
-  };
-
   const handleLinkTool = async () => {
     if (!paperId || !selectedToolId) {
       message.warning('请选择要关联的工具');
@@ -998,6 +984,13 @@ const PaperDetailPage: React.FC = () => {
   const activeParseStatus = parseStatus || paper.structured_parse_status || null;
   const parseStatusColor = activeParseStatus?.ready ? 'green' : activeParseStatus?.last_error ? 'red' : 'default';
   const parseStatusLabel = activeParseStatus?.ready ? '结构化已就绪' : activeParseStatus?.last_error ? '解析失败' : '结构化未就绪';
+  const processingLabelMeta = (state?: string) => {
+    if (state === 'ready') return { color: 'green', suffix: '就绪' };
+    if (state === 'running' || state === 'pending') return { color: 'processing', suffix: '处理中' };
+    if (state === 'failed') return { color: 'red', suffix: '失败' };
+    if (state === 'stale') return { color: 'gold', suffix: '待刷新' };
+    return { color: 'default', suffix: '待处理' };
+  };
   const structuredCountItems = activeParseStatus ? [
     ['页数', activeParseStatus.page_count],
     ['结构块', activeParseStatus.block_count],
@@ -1118,6 +1111,14 @@ const PaperDetailPage: React.FC = () => {
                 </Tag>
               </Tooltip>
             )}
+            {(paper.processing_labels || []).filter(label => label.key !== 'pdf').slice(0, 5).map(label => {
+              const meta = processingLabelMeta(label.state);
+              return (
+                <Tooltip key={label.key} title={label.detail || `${label.label}${meta.suffix}`}>
+                  <Tag color={meta.color}>{label.label}{meta.suffix}</Tag>
+                </Tooltip>
+              );
+            })}
           </Space>
           <Space size="small" wrap style={{ marginBottom: 12 }}>
             <TagOutlined style={{ color: '#999' }} />
@@ -1165,24 +1166,14 @@ const PaperDetailPage: React.FC = () => {
               ))}
             </Row>
           </Card>
+          {activeParseStatus?.last_error && (
           <Card
             size="small"
             className="paper-parse-status-card"
-            title={<span><FileSearchOutlined /> PDF 结构化解析</span>}
+            title={<span><FileSearchOutlined /> PDF 自动解析状态</span>}
             extra={
               <Space size={6} wrap>
                 <Tag color={parseStatusColor}>{parseStatusLabel}</Tag>
-                {isAdmin && (
-                  <Button
-                    size="small"
-                    icon={<FileSearchOutlined />}
-                    loading={parseLoading}
-                    disabled={!paper.arxiv_id && !paper.pdf_url && !paper.pdf_path && !activeParseStatus?.source_path}
-                    onClick={handleReparseStructuredPdf}
-                  >
-                    重新解析 PDF
-                  </Button>
-                )}
               </Space>
             }
             style={{ marginTop: 16, borderRadius: 12 }}
@@ -1190,17 +1181,7 @@ const PaperDetailPage: React.FC = () => {
             {activeParseStatus ? (
               <Space direction="vertical" size={10} style={{ width: '100%' }}>
                 <Space size={6} wrap>
-                  <Tag color={activeParseStatus.parser ? 'geekblue' : 'default'}>parser: {activeParseStatus.parser || '未记录'}</Tag>
                   <Tag color={activeParseStatus.parsed_at ? 'blue' : 'default'}>解析时间: {formatParseTime(activeParseStatus.parsed_at)}</Tag>
-                  {activeParseStatus.parser_health?.configured_backend && (
-                    <Tag color="blue">后端: {activeParseStatus.parser_health.configured_backend}</Tag>
-                  )}
-                  {activeParseStatus.parser_health?.available && Object.entries(activeParseStatus.parser_health.available).map(([key, value]) => (
-                    <Tag key={key} color={value ? 'green' : 'default'}>{key}: {value ? '可用' : '不可用'}</Tag>
-                  ))}
-                  {activeParseStatus.parser_health?.hf_endpoint && (
-                    <Tag color="cyan">HF: {activeParseStatus.parser_health.hf_endpoint}</Tag>
-                  )}
                 </Space>
                 <div className="paper-parse-count-grid">
                   {structuredCountItems.map(([label, value]) => (
@@ -1230,6 +1211,7 @@ const PaperDetailPage: React.FC = () => {
               <Text type="secondary">尚未检测到 PDF 结构化解析状态。</Text>
             )}
           </Card>
+          )}
           {isAuthenticated && (
             <Card
               size="small"

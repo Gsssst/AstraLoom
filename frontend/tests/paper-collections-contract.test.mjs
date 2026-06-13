@@ -39,15 +39,18 @@ test('paper library exposes user collections as a first-class source', () => {
   assert.match(papersPageSource, /已入库并加入目标分类/);
 });
 
-test('paper library exposes a first-class maintenance center', () => {
-  assert.match(papersPageSource, /维护中心/);
+test('paper library exposes automatic processing diagnostics as admin fallback', () => {
+  assert.match(papersPageSource, /处理诊断/);
+  assert.match(papersPageSource, /\/papers\/processing-automation/);
+  assert.match(papersPageSource, /renderProcessingLabels/);
+  assert.match(papersPageSource, /后台自动处理/);
   assert.match(papersPageSource, /\/papers\/maintenance\/health/);
   assert.match(papersPageSource, /\/papers\/maintenance\/recommendations/);
   assert.match(papersPageSource, /\/papers\/maintenance\/search-diagnostics/);
   assert.match(papersPageSource, /\/papers\/maintenance\/rebuild-bm25/);
   assert.match(papersPageSource, /\/papers\/maintenance\/backfill-embeddings\?limit=20/);
   assert.match(papersPageSource, /\/papers\/maintenance\/backfill-full-text\?limit=5/);
-  assert.match(papersPageSource, /知识库维护中心/);
+  assert.match(papersPageSource, /自动处理诊断/);
   assert.match(papersPageSource, /分类健康度/);
   assert.match(papersPageSource, /需要管理员权限/);
   assert.match(papersPageSource, /BM25 分支解释|分支解释/);
@@ -83,7 +86,7 @@ test('paper library makes external search and ingest transparent', () => {
   assert.match(papersPageSource, /这次外部检索没有返回论文/);
   assert.match(papersPageSource, /放宽年份/);
   assert.match(papersPageSource, /换一批/);
-  assert.match(papersPageSource, /做检索诊断/);
+  assert.match(papersPageSource, /处理诊断/);
 });
 
 test('paper library exposes search result import-readiness filters', () => {

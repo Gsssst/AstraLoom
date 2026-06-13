@@ -72,7 +72,7 @@ test('paper chat evidence meta includes visual evidence counts from backend cont
 
 test('paper maintenance center exposes visual evidence jobs without table-repair wording', () => {
   assert.match(papersPageSource, /\/papers\/maintenance\/backfill-visual-evidence\?limit=5/);
-  assert.match(papersPageSource, /提取 5 篇视觉证据/);
+  assert.match(papersPageSource, /兜底提取视觉证据/);
   assert.match(papersPageSource, /\/papers\/maintenance\/jobs\/\$\{jobId\}/);
   assert.match(papersPageSource, /activeMaintenanceJob/);
   assert.match(papersPageSource, /维护任务已进入后台/);
@@ -106,5 +106,5 @@ test('non-admin maintenance view hides privileged repair actions', () => {
   assert.match(papersPageSource, /const maintenanceView = !isAdmin \?/);
   assert.match(papersPageSource, /知识库维护需要管理员权限/);
   assert.match(papersPageSource, /修复动作只对管理员开放/);
-  assert.match(papersPageSource, /actions=\{isAdmin \?/);
+  assert.match(papersPageSource, /actions=\{isAdmin && item\.status === 'failed' \?/);
 });

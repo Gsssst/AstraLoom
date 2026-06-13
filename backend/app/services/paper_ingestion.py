@@ -122,17 +122,8 @@ class PaperIngestionService:
         if paper.categories:
             await self._assign_categories(new_paper, paper.categories)
 
-        # 提交异步 PDF 下载任务
-        if auto_download and paper.arxiv_id:
-            from app.tasks.paper_tasks import download_paper, parse_pdf
-            import celery
-
-            try:
-                # 链式任务：下载 → 解析 → 存储全文
-                download_task = download_paper.delay(paper.arxiv_id)
-                logger.info(f"PDF 下载任务已提交: {paper.arxiv_id} (task_id={download_task.id})")
-            except Exception as e:
-                logger.warning(f"提交 PDF 下载任务失败: {e}")
+        # 提交入库后自动处理任务：全文、结构化解析、视觉证据/OCR、向量和检索索引。
+        self._enqueue_processing(new_paper)
 
         logger.info(f"新论文入库: {paper.title[:80]}... ({paper.arxiv_id or paper.doi})")
         return new_paper, True
@@ -231,6 +222,15 @@ class PaperIngestionService:
         if not user:
             return None
         return getattr(user, "username", None) or getattr(user, "display_name", None)
+
+    def _enqueue_processing(self, paper: Paper) -> None:
+        try:
+            from app.tasks.paper_tasks import process_paper_pipeline
+
+            task = process_paper_pipeline.delay(str(paper.id))
+            logger.info("论文入库后自动处理任务已提交: %s (task_id=%s)", paper.id, task.id)
+        except Exception as e:
+            logger.warning("提交论文自动处理任务失败 %s: %s", getattr(paper, "id", ""), e)
 
     async def _assign_categories(self, paper: Paper, category_names: List[str]):
         """为论文设置分类标签。"""

@@ -10,7 +10,8 @@ from app.api import papers as papers_api
 from app.api.chat_sessions import _retrieval_status
 from app.core.security import require_admin
 from app.main import app
-from app.services import document_visual_evidence, hybrid_search, report_service
+from app.services import document_visual_evidence, hybrid_search, paper_processing_pipeline, report_service
+from app.tasks.celery_app import celery_app
 
 
 def _route(path: str, method: str):
@@ -73,6 +74,7 @@ def test_processing_status_route_is_fixed_path_before_paper_detail():
     paths = [route.path for route in app.routes]
 
     assert paths.index("/api/papers/processing-status") < paths.index("/api/papers/{paper_id}")
+    assert paths.index("/api/papers/processing-automation") < paths.index("/api/papers/{paper_id}")
 
 
 def test_processing_flags_and_repair_actions_reflect_missing_artifacts():
@@ -98,8 +100,11 @@ def test_processing_flags_and_repair_actions_reflect_missing_artifacts():
         "has_full_text": False,
         "has_embedding": False,
         "has_tags": False,
-        "missing": ["full_text", "embedding", "tags"],
+        "missing": ["full_text", "structured_parse", "visual_evidence", "embedding"],
+        "failed": [],
         "status": "needs_processing",
+        "labels": flags["labels"],
+        "automation": flags["automation"],
     }
     assert status.status == "needs_processing"
     assert [action["key"] for action in status.repair_actions] == [
@@ -107,7 +112,14 @@ def test_processing_flags_and_repair_actions_reflect_missing_artifacts():
         "structured_parse",
         "visual_evidence",
         "embedding",
-        "tags",
+    ]
+    assert [label["key"] for label in status.processing_labels] == [
+        "pdf",
+        "full_text",
+        "structured_parse",
+        "visual_evidence",
+        "embedding",
+        "bm25",
     ]
     assert status.structured_parse_status.ready is False
     assert status.visual_evidence_status.ready is False
@@ -264,6 +276,14 @@ async def test_paper_detail_includes_visual_status_without_crashing(monkeypatch)
     assert detail.id == str(paper_id)
     assert detail.visual_evidence_status.status == "missing"
     assert detail.structured_parse_status.ready is False
+    assert [label["key"] for label in detail.processing_labels] == [
+        "pdf",
+        "full_text",
+        "structured_parse",
+        "visual_evidence",
+        "embedding",
+        "bm25",
+    ]
 
 
 def test_parser_runtime_health_reports_available_backends(monkeypatch):
@@ -770,7 +790,7 @@ def test_maintenance_job_status_normalizes_success_result():
     assert status.result.errors[0]["reason"] == "bad"
 
 
-def test_processing_flags_mark_ready_when_full_text_embedding_and_tags_exist():
+def test_processing_flags_require_pdf_artifacts_when_pdf_is_available():
     paper = SimpleNamespace(
         metadata_json={},
         pdf_path="/data/paper.pdf",
@@ -779,7 +799,76 @@ def test_processing_flags_mark_ready_when_full_text_embedding_and_tags_exist():
         tags={"methods": ["retrieval"]},
     )
 
+    flags = papers_api._paper_processing_flags(paper)
+
+    assert flags["status"] == "needs_processing"
+    assert "structured_parse" in flags["missing"]
+    assert "visual_evidence" in flags["missing"]
+
+
+def test_processing_flags_mark_ready_when_all_automatic_artifacts_exist():
+    hybrid_search._bm25_index = {
+        "corpus": [["ready"]],
+        "model": object(),
+        "paper_ids": [uuid4()],
+        "fingerprint": (1, "2026-06-13T00:00:00"),
+    }
+    paper = SimpleNamespace(
+        metadata_json={
+            report_service.PDF_STRUCTURED_METADATA_KEY: {
+                "version": report_service.PDF_STRUCTURED_METADATA_VERSION,
+                "source_path": "/data/paper.pdf",
+                "parser": "test",
+                "page_count": 1,
+                "blocks": [{"type": "text", "text": "content"}],
+            },
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "source_path": "/data/paper.pdf",
+                "status": "ready",
+                "items": [{"id": "v1", "kind": "figure", "status": "ready", "summary": "figure"}],
+            },
+        },
+        pdf_path="/data/paper.pdf",
+        full_text="x" * 600,
+        embedding=[0.1, 0.2],
+        tags=[],
+    )
+
     assert papers_api._paper_processing_flags(paper)["status"] == "ready"
+
+
+def test_processing_snapshot_does_not_require_tags_or_manual_pdf_for_ready_status():
+    paper = SimpleNamespace(
+        metadata_json={},
+        pdf_path=None,
+        arxiv_id=None,
+        full_text="x" * 600,
+        embedding=[0.1, 0.2],
+        tags=[],
+    )
+
+    snapshot = paper_processing_pipeline.paper_processing_snapshot(
+        paper,
+        bm25_status={"ready": True, "indexed_papers": 1},
+    )
+
+    assert snapshot.status == "ready"
+    assert snapshot.missing == []
+    labels = {label.key: label for label in snapshot.labels}
+    assert labels["structured_parse"].state == "pending"
+    assert labels["visual_evidence"].state == "pending"
+
+
+def test_celery_registers_paper_processing_pipeline_schedule():
+    assert "app.tasks.paper_tasks" in celery_app.conf.include
+    celery_app.loader.import_default_modules()
+
+    assert "process_paper_pipeline" in celery_app.tasks
+    assert "reconcile_paper_processing" in celery_app.tasks
+    schedule = celery_app.conf.beat_schedule["reconcile-paper-processing"]
+    assert schedule["task"] == "reconcile_paper_processing"
+    assert schedule["kwargs"]["limit"] == 5
 
 
 def test_query_match_sources_reports_matching_fields():
