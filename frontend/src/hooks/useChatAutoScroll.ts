@@ -14,6 +14,7 @@ export const useChatAutoScroll = (options: UseChatAutoScrollOptions = {}) => {
   const manualPauseRef = useRef(false);
   const lastScrollTopRef = useRef(0);
   const touchStartYRef = useRef<number | null>(null);
+  const interactionStartScrollTopRef = useRef(0);
 
   const isNearBottom = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -44,10 +45,29 @@ export const useChatAutoScroll = (options: UseChatAutoScrollOptions = {}) => {
     if (manualPauseRef.current) followOutputRef.current = false;
   }, [isNearBottom]);
 
+  const resumeFollowOutput = useCallback(() => {
+    manualPauseRef.current = false;
+    followOutputRef.current = true;
+  }, []);
+
   const pauseFollowOutput = useCallback(() => {
     manualPauseRef.current = true;
     followOutputRef.current = false;
   }, []);
+
+  const settleInteractionIntent = useCallback((startingScrollTop: number) => {
+    window.requestAnimationFrame(() => {
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      const movedUp = container.scrollTop < startingScrollTop;
+      lastScrollTopRef.current = container.scrollTop;
+      if (movedUp || !isNearBottom()) {
+        pauseFollowOutput();
+        return;
+      }
+      resumeFollowOutput();
+    });
+  }, [isNearBottom, pauseFollowOutput, resumeFollowOutput]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -55,41 +75,58 @@ export const useChatAutoScroll = (options: UseChatAutoScrollOptions = {}) => {
     lastScrollTopRef.current = container.scrollTop;
     syncFollowState();
     const handleWheel = (event: WheelEvent) => {
-      if (event.deltaY < 0) pauseFollowOutput();
+      if (!container.contains(event.target as Node | null)) return;
+      const startingScrollTop = container.scrollTop;
+      if (event.deltaY < 0) {
+        pauseFollowOutput();
+        return;
+      }
+      settleInteractionIntent(startingScrollTop);
     };
     const handleTouchStart = (event: TouchEvent) => {
+      if (!container.contains(event.target as Node | null)) return;
       touchStartYRef.current = event.touches[0]?.clientY ?? null;
+      interactionStartScrollTopRef.current = container.scrollTop;
     };
     const handleTouchMove = (event: TouchEvent) => {
+      if (!container.contains(event.target as Node | null)) return;
       const startY = touchStartYRef.current;
       const currentY = event.touches[0]?.clientY;
       if (startY == null || currentY == null) return;
-      if (currentY > startY) pauseFollowOutput();
+      if (currentY > startY) {
+        pauseFollowOutput();
+        return;
+      }
+      settleInteractionIntent(interactionStartScrollTopRef.current);
     };
     container.addEventListener('scroll', syncFollowState, { passive: true });
-    container.addEventListener('wheel', handleWheel, { passive: true });
-    container.addEventListener('touchstart', handleTouchStart, { passive: true });
-    container.addEventListener('touchmove', handleTouchMove, { passive: true });
+    window.addEventListener('wheel', handleWheel, { passive: true, capture: true });
+    window.addEventListener('touchstart', handleTouchStart, { passive: true, capture: true });
+    window.addEventListener('touchmove', handleTouchMove, { passive: true, capture: true });
     return () => {
       container.removeEventListener('scroll', syncFollowState);
-      container.removeEventListener('wheel', handleWheel);
-      container.removeEventListener('touchstart', handleTouchStart);
-      container.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('wheel', handleWheel, { capture: true });
+      window.removeEventListener('touchstart', handleTouchStart, { capture: true });
+      window.removeEventListener('touchmove', handleTouchMove, { capture: true });
     };
-  }, [pauseFollowOutput, syncFollowState]);
+  }, [pauseFollowOutput, settleInteractionIntent, syncFollowState]);
+
+  const scrollToBottom = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+    lastScrollTopRef.current = container.scrollTop;
+  }, []);
 
   const scrollToBottomIfFollowing = useCallback(() => {
     if (!followOutputRef.current) return;
-    scrollEndRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' });
-  }, []);
+    scrollToBottom();
+  }, [scrollToBottom]);
 
   const enableFollowOutput = useCallback(() => {
-    manualPauseRef.current = false;
-    followOutputRef.current = true;
-    scrollEndRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' });
-    const container = scrollContainerRef.current;
-    if (container) lastScrollTopRef.current = container.scrollTop;
-  }, []);
+    resumeFollowOutput();
+    scrollToBottom();
+  }, [resumeFollowOutput, scrollToBottom]);
 
   return {
     scrollContainerRef,

@@ -467,6 +467,7 @@
   min-height: 0;
   margin-bottom: 8px;
   overflow-y: auto;
+  overflow-anchor: none;
   overscroll-behavior: contain;
 }
 
@@ -1233,6 +1234,8 @@
 
 .chat-message-list {
   background: linear-gradient(180deg, #fbf9ff 0%, #f8f5ff 100%) !important;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
 }
 
 .chat-stream-status {

@@ -13,3 +13,4 @@
 - [x] 3.1 Add frontend contract coverage for manual-scroll-aware streaming behavior.
 - [x] 3.2 Run OpenSpec validation and targeted frontend tests.
 - [x] 3.3 Commit the implementation.
+- [x] 3.4 Harden manual scroll detection with captured wheel/touch intent and disabled browser scroll anchoring.

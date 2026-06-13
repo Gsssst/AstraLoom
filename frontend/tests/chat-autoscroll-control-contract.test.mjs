@@ -14,6 +14,10 @@ const paperDetailSource = readFileSync(
   new URL('../src/pages/PaperDetailPage.tsx', import.meta.url),
   'utf8',
 );
+const responsiveSource = readFileSync(
+  new URL('../src/styles/responsive.css', import.meta.url),
+  'utf8',
+);
 
 test('chat auto-scroll hook tracks bottom proximity and user scroll state', () => {
   assert.match(hookSource, /DEFAULT_BOTTOM_THRESHOLD_PX = 48/);
@@ -26,14 +30,17 @@ test('chat auto-scroll hook tracks bottom proximity and user scroll state', () =
   assert.match(hookSource, /if \(userMovedUp\) \{/);
   assert.match(hookSource, /manualPauseRef\.current = true/);
   assert.match(hookSource, /container\.addEventListener\('scroll', syncFollowState, \{ passive: true \}\)/);
-  assert.match(hookSource, /container\.addEventListener\('wheel', handleWheel, \{ passive: true \}\)/);
+  assert.match(hookSource, /window\.addEventListener\('wheel', handleWheel, \{ passive: true, capture: true \}\)/);
+  assert.match(hookSource, /window\.addEventListener\('touchstart', handleTouchStart, \{ passive: true, capture: true \}\)/);
+  assert.match(hookSource, /window\.addEventListener\('touchmove', handleTouchMove, \{ passive: true, capture: true \}\)/);
+  assert.match(hookSource, /container\.contains\(event\.target as Node \| null\)/);
   assert.match(hookSource, /event\.deltaY < 0/);
-  assert.match(hookSource, /container\.addEventListener\('touchstart', handleTouchStart, \{ passive: true \}\)/);
-  assert.match(hookSource, /container\.addEventListener\('touchmove', handleTouchMove, \{ passive: true \}\)/);
   assert.match(hookSource, /currentY > startY/);
+  assert.match(hookSource, /settleInteractionIntent/);
   assert.match(hookSource, /manualPauseRef\.current = false/);
   assert.match(hookSource, /if \(!followOutputRef\.current\) return/);
-  assert.match(hookSource, /behavior: 'auto'/);
+  assert.match(hookSource, /container\.scrollTop = container\.scrollHeight/);
+  assert.doesNotMatch(hookSource, /scrollEndRef\.current\?\.scrollIntoView\(\{ block: 'end', behavior: 'auto' \}\)/);
 });
 
 test('main chat streams only follow bottom while user remains near bottom', () => {
@@ -58,4 +65,11 @@ test('paper detail chat uses the same manual-scroll-aware streaming behavior', (
   assert.match(paperDetailSource, /enablePaperChatFollowOutput\(\);[\s\S]*setChatMsgs\(prev => \[\.\.\.prev, userMessage\]\)/);
   assert.match(paperDetailSource, /<div ref=\{paperChatScrollRef\} className="paper-detail-chat-scroll"/);
   assert.doesNotMatch(paperDetailSource, /chatEndRef\.current\?\.scrollIntoView\(\{ behavior: 'smooth' \}\)/);
+});
+
+test('chat scroll containers disable browser scroll anchoring during streams', () => {
+  assert.match(responsiveSource, /\.chat-message-list \{[\s\S]*overflow-anchor: none;/);
+  assert.match(responsiveSource, /\.chat-message-list \{[\s\S]*overscroll-behavior: contain;/);
+  assert.match(responsiveSource, /\.paper-detail-chat-scroll \{[\s\S]*overflow-anchor: none;/);
+  assert.match(responsiveSource, /\.paper-detail-chat-scroll \{[\s\S]*overscroll-behavior: contain;/);
 });
