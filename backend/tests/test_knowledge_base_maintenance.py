@@ -182,6 +182,15 @@ def test_visual_evidence_status_reports_ready_counts():
     assert status["missing_ocr_count"] == 0
 
 
+def test_visual_evidence_refresh_needed_includes_ready_but_incomplete_status():
+    assert papers_api._visual_evidence_needs_extraction({"ready": False}) is True
+    assert papers_api._visual_evidence_needs_extraction({"ready": True, "failed": True}) is True
+    assert papers_api._visual_evidence_needs_extraction({"ready": True, "missing_ocr_count": 1}) is True
+    assert papers_api._visual_evidence_needs_extraction({"ready": True, "missing_summary_count": 1}) is True
+    assert papers_api._visual_evidence_needs_extraction({"ready": True, "low_confidence_table_count": 1}) is True
+    assert papers_api._visual_evidence_needs_extraction({"ready": True, "missing_ocr_count": 0}) is False
+
+
 def test_safe_paper_metadata_strips_private_visual_asset_paths():
     metadata = {
         "document_visual_evidence": {
@@ -529,6 +538,54 @@ async def test_visual_evidence_backfill_repairs_bounded_and_failed_candidates(mo
     assert result.processed == 2
     assert result.success == 2
     assert result.failed == 0
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_visual_evidence_backfill_repairs_ready_items_missing_ocr(monkeypatch):
+    incomplete_paper = SimpleNamespace(
+        id=uuid4(),
+        title="Ready but missing OCR",
+        year=2026,
+        arxiv_id=None,
+        pdf_path="/data/incomplete.pdf",
+        metadata_json={
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "status": "ready",
+                "items": [{"id": "t1", "kind": "table", "status": "ready", "summary": "table"}],
+            }
+        },
+    )
+
+    class _Db:
+        commits = 0
+
+        async def execute(self, _statement):
+            return _ScalarListResult([incomplete_paper])
+
+        async def commit(self):
+            self.commits += 1
+
+    async def fake_ensure(paper, _db, force=False):
+        assert paper is incomplete_paper
+        assert force is True
+        paper.metadata_json = {
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "status": "ready",
+                "items": [{"id": "t1", "kind": "table", "status": "ready", "markdown": "| A | B |"}],
+            }
+        }
+        return paper.metadata_json[document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY]
+
+    monkeypatch.setattr(document_visual_evidence, "ensure_document_visual_evidence", fake_ensure)
+
+    db = _Db()
+    result = await papers_api._run_visual_evidence_backfill(db, limit=1)
+
+    assert result.processed == 1
+    assert result.success == 1
     assert db.commits == 1
 
 

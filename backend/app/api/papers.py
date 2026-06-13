@@ -348,6 +348,16 @@ def _coverage_severity(coverage: float) -> Literal["high", "medium", "low"]:
     return "low"
 
 
+def _visual_evidence_needs_extraction(status: dict[str, Any]) -> bool:
+    return (
+        not status.get("ready")
+        or bool(status.get("failed"))
+        or int(status.get("missing_ocr_count") or 0) > 0
+        or int(status.get("missing_summary_count") or 0) > 0
+        or int(status.get("low_confidence_table_count") or 0) > 0
+    )
+
+
 async def _maintenance_recommendations(db: AsyncSession, *, include_samples: bool = True) -> list[MaintenanceRecommendation]:
     from app.services.hybrid_search import bm25_index_status
     from app.services.report_service import structured_pdf_parse_status_from_paper
@@ -376,7 +386,7 @@ async def _maintenance_recommendations(db: AsyncSession, *, include_samples: boo
     missing_structured_parse = len(structured_parse_needed)
     visual_parse_needed = [
         paper for paper in structured_candidates
-        if not visual_evidence_status_from_paper(paper).get("ready")
+        if _visual_evidence_needs_extraction(visual_evidence_status_from_paper(paper))
     ]
     missing_visual_evidence = len(visual_parse_needed)
     full_text_coverage = full_text_papers / total
@@ -430,7 +440,7 @@ async def _maintenance_recommendations(db: AsyncSession, *, include_samples: boo
             id="backfill-visual-evidence",
             title="提取文档视觉证据",
             severity="medium",
-            reason=f"当前有 {missing_visual_evidence} 篇论文缺少可用于图、表、架构和实验问答的视觉证据。",
+            reason=f"当前有 {missing_visual_evidence} 篇论文缺少视觉证据，或存在缺 OCR / 低置信视觉表格，需要重新提取。",
             action_label="提取 5 篇视觉证据",
             action_endpoint="/papers/maintenance/backfill-visual-evidence?limit=5",
             sample_papers=samples,
@@ -1185,7 +1195,7 @@ async def get_retrieval_maintenance_health(
     visual_candidates = visual_candidates_result.scalars().all()
     visual_statuses = [(paper, visual_evidence_status_from_paper(paper)) for paper in visual_candidates]
     visual_ready = [paper for paper, status in visual_statuses if status.get("ready")]
-    missing_visual = [paper for paper, status in visual_statuses if not status.get("ready")]
+    missing_visual = [paper for paper, status in visual_statuses if _visual_evidence_needs_extraction(status)]
     visual_failed = [paper for paper, status in visual_statuses if status.get("failed")]
     visual_missing_summary = sum(int(status.get("missing_summary_count") or 0) for _, status in visual_statuses)
     visual_missing_ocr = sum(int(status.get("missing_ocr_count") or 0) for _, status in visual_statuses)
@@ -1364,7 +1374,7 @@ async def _run_visual_evidence_backfill(
     papers = []
     for candidate in candidates:
         status = visual_evidence_status_from_paper(candidate)
-        if not status.get("ready") or status.get("failed"):
+        if _visual_evidence_needs_extraction(status):
             papers.append(candidate)
         if len(papers) >= limit:
             break
@@ -1414,7 +1424,7 @@ async def _run_visual_evidence_backfill_job(job_id: str, limit: int) -> None:
             papers = []
             for candidate in candidates:
                 status = visual_evidence_status_from_paper(candidate)
-                if not status.get("ready") or status.get("failed"):
+                if _visual_evidence_needs_extraction(status):
                     papers.append(candidate)
                 if len(papers) >= limit:
                     break

@@ -944,7 +944,7 @@ const PapersPage: React.FC = () => {
         if (['success', 'failed', 'cancelled'].includes(nextJob.state)) {
           await fetchMaintenanceCenter();
           if (nextJob.state === 'success') {
-            message.success(`维护任务完成：成功 ${nextJob.success || 0}，失败 ${nextJob.failed || 0}，跳过 ${nextJob.skipped || 0}`);
+            message.success(formatMaintenanceJobCompletion(nextJob));
           } else {
             message.warning(nextJob.message || '维护任务未正常完成');
           }
@@ -959,7 +959,7 @@ const PapersPage: React.FC = () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeMaintenanceJob?.id, activeMaintenanceJob?.state, fetchMaintenanceCenter, showPageError]);
+  }, [activeMaintenanceJob?.id, activeMaintenanceJob?.state, fetchMaintenanceCenter, formatMaintenanceJobCompletion, showPageError]);
 
   const runKbDiagnostics = useCallback(async () => {
     if (!kbQuery.trim()) {
@@ -1129,6 +1129,13 @@ const PapersPage: React.FC = () => {
     if (quality === 'low') return { color: 'orange', label: '表格低' };
     return { color: 'default', label: '表格无' };
   };
+  const formatMaintenanceJobCompletion = useCallback((job: MaintenanceJobStatus) => {
+    const total = (job.success || 0) + (job.failed || 0) + (job.skipped || 0);
+    if (job.message && total === 0) return job.message;
+    if (job.message && job.kind === 'visual_evidence_single_paper') return job.message;
+    return `维护任务完成：成功 ${job.success || 0}，失败 ${job.failed || 0}，跳过 ${job.skipped || 0}`;
+  }, []);
+  const isVisualEvidenceJob = (job?: MaintenanceJobStatus | null) => Boolean(job && String(job.kind || '').includes('visual_evidence'));
   const reportPresetOptions = [
     { value: 'default', label: '默认逐篇' },
     { value: 'compare', label: '横向对比' },
@@ -1220,7 +1227,7 @@ const PapersPage: React.FC = () => {
                 <Tag color={kbHealth.bm25_index?.ready ? 'green' : 'orange'}>BM25：{kbHealth.bm25_index?.ready ? `已索引 ${kbHealth.bm25_index.indexed_papers} 篇` : '未构建'}</Tag>
                 <Tag>缺全文 {kbHealth.missing_full_text || 0}</Tag>
                 <Tag>缺向量 {kbHealth.missing_embeddings || 0}</Tag>
-                <Tag color={(kbHealth.missing_visual_evidence || 0) ? 'purple' : 'green'}>缺视觉证据 {kbHealth.missing_visual_evidence || 0}</Tag>
+                <Tag color={(kbHealth.missing_visual_evidence || 0) ? 'purple' : 'green'}>待提取视觉证据 {kbHealth.missing_visual_evidence || 0}</Tag>
                 {!!kbHealth.visual_evidence_failed && <Tag color="red">视觉失败 {kbHealth.visual_evidence_failed}</Tag>}
                 {!!kbHealth.visual_missing_summary && <Tag color="orange">缺视觉摘要 {kbHealth.visual_missing_summary}</Tag>}
                 {!!kbHealth.visual_missing_ocr && <Tag color="orange">缺表格 OCR {kbHealth.visual_missing_ocr}</Tag>}
@@ -1279,6 +1286,22 @@ const PapersPage: React.FC = () => {
           )}
           style={{ borderRadius: 16 }}
         >
+          {isVisualEvidenceJob(activeMaintenanceJob) && ['queued', 'running', 'unknown'].includes(activeMaintenanceJob?.state || '') && (
+            <Alert
+              type="info"
+              showIcon
+              style={{ borderRadius: 10, marginBottom: 12 }}
+              message="视觉证据正在后台提取"
+              description={(
+                <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                  <Progress percent={activeMaintenanceJob?.progress_percent || 0} size="small" status="active" />
+                  {activeMaintenanceJob?.current_paper?.title && <Text type="secondary">当前论文：{activeMaintenanceJob.current_paper.title}</Text>}
+                  {activeMaintenanceJob?.message && <Text type="secondary">{activeMaintenanceJob.message}</Text>}
+                  <Text type="secondary">已处理 {activeMaintenanceJob?.processed || 0}/{activeMaintenanceJob?.total || 0}</Text>
+                </Space>
+              )}
+            />
+          )}
           {processingStatuses.length === 0 ? (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无符合条件的论文处理状态" />
           ) : (

@@ -87,6 +87,10 @@ test('single paper visual evidence action is queued and pollable', () => {
   assert.match(papersPageSource, /response\.data\?\.job_id && response\.data\?\.job/);
   assert.match(papersPageSource, /setActiveMaintenanceJob\(response\.data\.job\)/);
   assert.match(papersPageSource, /已进入后台：/);
+  assert.match(papersPageSource, /formatMaintenanceJobCompletion/);
+  assert.match(papersPageSource, /job\.message && total === 0/);
+  assert.match(papersPageSource, /视觉证据正在后台提取/);
+  assert.match(papersPageSource, /待提取视觉证据/);
 });
 
 test('non-admin maintenance view hides privileged repair actions', () => {
