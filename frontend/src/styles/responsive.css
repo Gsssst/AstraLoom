@@ -313,6 +313,11 @@
   font-size: 11px;
 }
 
+.paper-chat-reference-drawer-hint {
+  display: grid;
+  gap: 5px;
+}
+
 .paper-citation-quality-row,
 .writing-file-tree-row {
   display: flex;
@@ -803,6 +808,83 @@
   color: #7b6f8f;
   font-size: 11px;
   font-style: normal;
+}
+
+.paper-evidence-drawer .ant-drawer-body {
+  padding: 14px;
+}
+
+.paper-evidence-drawer-body {
+  display: grid;
+  gap: 14px;
+}
+
+.paper-evidence-drawer-summary {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid rgba(82, 196, 26, 0.16);
+  border-radius: 8px;
+  background: #fbfffa;
+}
+
+.paper-evidence-drawer-copy {
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.paper-evidence-drawer-section {
+  display: grid;
+  gap: 8px;
+}
+
+.paper-evidence-drawer-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.paper-evidence-drawer-list {
+  display: grid;
+  gap: 8px;
+}
+
+.paper-evidence-drawer-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.paper-evidence-drawer-item:hover {
+  border-color: rgba(117, 96, 196, 0.28);
+  background: #faf9ff;
+}
+
+.paper-evidence-drawer-item span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.paper-evidence-drawer-item strong {
+  color: #30323a;
+  font-size: 12px;
+}
+
+.paper-evidence-drawer-item small,
+.paper-evidence-drawer-item em {
+  color: #7b8190;
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.45;
 }
 
 .paper-chat-turn-warning {

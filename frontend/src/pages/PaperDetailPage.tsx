@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Button, Tag, Typography, Space, Spin, message,
-  Empty, Row, Col, Divider, Input, Avatar, Grid, Select, Tooltip, Modal,
+  Empty, Row, Col, Divider, Input, Avatar, Grid, Select, Tooltip, Modal, Drawer, Badge,
 } from 'antd';
 import {
   ArrowLeftOutlined, StarFilled, TagOutlined, SendOutlined,
@@ -203,6 +203,15 @@ interface PaperChatEvidenceMeta {
   } | null;
 }
 
+type PaperEvidenceCategory = 'paper_text' | 'table' | 'visual' | 'web' | 'related' | 'other';
+
+interface PaperEvidenceDrawerState {
+  open: boolean;
+  message?: PaperChatMessage;
+  index?: number;
+  referenceKey?: string;
+}
+
 interface PaperReadingTemplate {
   key: string;
   title: string;
@@ -381,6 +390,7 @@ const PaperDetailPage: React.FC = () => {
   const [webSearch, setWebSearch] = useState(false);
   const [searchDepth, setSearchDepth] = useState<'quick' | 'standard' | 'deep'>('standard');
   const [expandedReferencePanels, setExpandedReferencePanels] = useState<Record<string, boolean>>({});
+  const [evidenceDrawer, setEvidenceDrawer] = useState<PaperEvidenceDrawerState>({ open: false });
   const [tagging, setTagging] = useState(false);
   const [paperTools, setPaperTools] = useState<ToolboxTool[]>([]);
   const [availableTools, setAvailableTools] = useState<ToolboxTool[]>([]);
@@ -689,13 +699,6 @@ const PaperDetailPage: React.FC = () => {
     return [caption, summary, confidence, ref.snippet, ref.title].filter(Boolean).join('\n\n');
   };
 
-  const referenceColor = (ref: PaperChatReference) => {
-    if (ref.metadata?.visual_evidence || String(ref.evidence_type || '').startsWith('visual')) return 'purple';
-    if (ref.source === 'web') return 'cyan';
-    if (ref.source === 'current_paper') return 'gold';
-    return 'geekblue';
-  };
-
   const isTableLikeEvidenceReference = (ref: PaperChatReference) => {
     const evidenceType = String(ref.evidence_type || '').toLowerCase();
     const kind = String(ref.metadata?.kind || '').toLowerCase();
@@ -711,8 +714,47 @@ const PaperDetailPage: React.FC = () => {
     );
   };
 
+  const isVisualLikeEvidenceReference = (ref: PaperChatReference) => (
+    Boolean(ref.metadata?.visual_evidence) ||
+    String(ref.evidence_type || '').toLowerCase().startsWith('visual') ||
+    ['figure', 'image', 'ocr', 'formula'].includes(String(ref.metadata?.kind || '').toLowerCase())
+  );
+
+  const paperEvidenceCategoryMeta: Record<PaperEvidenceCategory, { label: string; color: string }> = {
+    paper_text: { label: '正文证据', color: 'gold' },
+    table: { label: '表格证据', color: 'blue' },
+    visual: { label: '视觉/OCR', color: 'purple' },
+    web: { label: '网页来源', color: 'cyan' },
+    related: { label: '相关论文', color: 'geekblue' },
+    other: { label: '其他来源', color: 'default' },
+  };
+
+  const evidenceCategoryForReference = (ref: PaperChatReference): PaperEvidenceCategory => {
+    if (ref.source === 'web' || ref.url) return 'web';
+    if (isTableLikeEvidenceReference(ref)) return 'table';
+    if (isVisualLikeEvidenceReference(ref)) return 'visual';
+    if (ref.type === 'paper_evidence' || ref.source === 'current_paper') return 'paper_text';
+    if (ref.arxiv_id || ref.source === 'local' || ref.source === 'library') return 'related';
+    return 'other';
+  };
+
+  const groupedEvidenceReferences = (refs?: PaperChatReference[]) => {
+    const groups: Record<PaperEvidenceCategory, PaperChatReference[]> = {
+      paper_text: [],
+      table: [],
+      visual: [],
+      web: [],
+      related: [],
+      other: [],
+    };
+    (refs || []).forEach(ref => {
+      groups[evidenceCategoryForReference(ref)].push(ref);
+    });
+    return groups;
+  };
+
   const visualPreviewReferences = (refs?: PaperChatReference[]) => (refs || []).filter(ref => {
-    const hasVisualType = Boolean(ref.metadata?.visual_evidence) || String(ref.evidence_type || '').startsWith('visual');
+    const hasVisualType = isVisualLikeEvidenceReference(ref);
     const asset = ref.metadata?.thumbnail_path || ref.metadata?.asset_path;
     return hasVisualType && !isTableLikeEvidenceReference(ref) && typeof asset === 'string' && asset.length > 0;
   });
@@ -727,8 +769,16 @@ const PaperDetailPage: React.FC = () => {
     ].join(':');
   };
 
-  const toggleReferencePanel = (key: string) => {
-    setExpandedReferencePanels(prev => ({ ...prev, [key]: !prev[key] }));
+  const openEvidenceDrawer = (messageItem: PaperChatMessage, index: number, referenceKey: string) => {
+    setExpandedReferencePanels(prev => ({ ...prev, [referenceKey]: true }));
+    setEvidenceDrawer({ open: true, message: messageItem, index, referenceKey });
+  };
+
+  const closeEvidenceDrawer = () => {
+    if (evidenceDrawer.referenceKey) {
+      setExpandedReferencePanels(prev => ({ ...prev, [evidenceDrawer.referenceKey!]: false }));
+    }
+    setEvidenceDrawer({ open: false });
   };
 
   const submitPaperQuestion = async (rawQuestion?: string, displayQuestion?: string, quoteOverride?: PaperPdfQuote | null) => {
@@ -1584,6 +1634,9 @@ const PaperDetailPage: React.FC = () => {
                       {((msg.references && msg.references.length > 0) || msg.evidence) && (() => {
                         const referenceKey = referencePanelKey(msg, idx);
                         const referencesExpanded = !!expandedReferencePanels[referenceKey];
+                        const referenceGroups = groupedEvidenceReferences(msg.references);
+                        const activeGroupEntries = (Object.keys(paperEvidenceCategoryMeta) as PaperEvidenceCategory[])
+                          .filter(category => referenceGroups[category].length > 0);
                         const visualRefs = visualPreviewReferences(msg.references);
                         return (
                         <div className={`paper-chat-references ${referencesExpanded ? 'is-expanded' : 'is-collapsed'}`}>
@@ -1599,18 +1652,23 @@ const PaperDetailPage: React.FC = () => {
                                       <Tag color="blue">覆盖率 {Math.round(confidence.coverage * 100)}%</Tag>
                                       <Tag>证据 {confidence.evidenceCount}</Tag>
                                       {!!msg.evidence?.visual_evidence_count && <Tag color="purple">视觉 {msg.evidence.visual_evidence_count}</Tag>}
+                                      {activeGroupEntries.map(category => (
+                                        <Tag key={category} color={paperEvidenceCategoryMeta[category].color}>
+                                          {paperEvidenceCategoryMeta[category].label} {referenceGroups[category].length}
+                                        </Tag>
+                                      ))}
                                     </Space>
                                     <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 11 }}>
                                       PaperQA 风格证据检查：优先依据当前论文片段和显式引用判断回答可信度。
                                     </Text>
                                   </div>
-                                  {(msg.references && msg.references.length > 0) && (
+                                  {((msg.references && msg.references.length > 0) || msg.evidence) && (
                                     <Button
                                       type="text"
                                       size="small"
                                       className="paper-chat-reference-toggle"
                                       icon={referencesExpanded ? <UpOutlined /> : <DownOutlined />}
-                                      onClick={() => toggleReferencePanel(referenceKey)}
+                                      onClick={() => referencesExpanded ? closeEvidenceDrawer() : openEvidenceDrawer(msg, idx, referenceKey)}
                                     >
                                       {referencesExpanded ? '收起引用' : `查看引用 ${msg.references?.length || 0}`}
                                     </Button>
@@ -1620,9 +1678,9 @@ const PaperDetailPage: React.FC = () => {
                             );
                           })()}
                           {referencesExpanded && (
-                            <>
+                            <div className="paper-chat-reference-drawer-hint">
                               {msg.evidence && (
-                                <div style={{ marginBottom: 6 }}>
+                                <div>
                                   <Tag color={msg.evidence.evidence_insufficient ? 'orange' : 'green'} style={{ borderRadius: 8 }}>
                                     {msg.evidence.evidence_insufficient ? '证据不足' : `引用覆盖率 ${Math.round((msg.evidence.evidence_coverage || 0) * 100)}%`}
                                   </Tag>
@@ -1632,42 +1690,10 @@ const PaperDetailPage: React.FC = () => {
                                   </Text>
                                 </div>
                               )}
-                              {msg.references && msg.references.length > 0 && <Text type="secondary" style={{ fontSize: 11 }}>引用证据：</Text>}
-                              {visualRefs.length > 0 && (
-                                <div className="paper-chat-visual-preview-list">
-                                  {visualRefs.map((ref, ri) => {
-                                    const asset = String(ref.metadata?.thumbnail_path || ref.metadata?.asset_path || '');
-                                    const page = ref.page || ref.page_start;
-                                    const confidence = typeof ref.metadata?.confidence === 'number' ? `${Math.round(ref.metadata.confidence * 100)}%` : '';
-                                    return (
-                                      <button
-                                        key={`${asset}-${ri}`}
-                                        type="button"
-                                        className="paper-chat-visual-preview"
-                                        onClick={() => handleEvidenceReferenceClick(ref)}
-                                        title={referenceTooltip(ref)}
-                                      >
-                                        <img src={asset} alt={String(ref.metadata?.caption || ref.metadata?.kind || 'visual evidence')} />
-                                        <span>
-                                          <strong>{String(ref.metadata?.kind || ref.evidence_type || 'visual')}</strong>
-                                          <small>{[page ? `PDF ${page}` : '', confidence].filter(Boolean).join(' · ')}</small>
-                                          <em>{String(ref.metadata?.caption || ref.snippet || '').slice(0, 80)}</em>
-                                        </span>
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                              <div className="paper-chat-reference-list">
-                                {(msg.references || []).map((ref, ri) => (
-                                  <Tooltip key={`${ref.url || ref.arxiv_id || ref.id || ref.title}-${ri}`} title={referenceTooltip(ref)}>
-                                    <Tag color={referenceColor(ref)} className="paper-chat-reference" onClick={() => handleEvidenceReferenceClick(ref)}>
-                                      [{ri + 1}] {referenceTitle(ref)}
-                                    </Tag>
-                                  </Tooltip>
-                                ))}
-                              </div>
-                            </>
+                              <Text type="secondary" style={{ fontSize: 11 }}>
+                                {visualRefs.length > 0 ? `含 ${visualRefs.length} 条可预览视觉证据。` : '详细引用已移到证据抽屉。'}
+                              </Text>
+                            </div>
                           )}
                         </div>
                         );
@@ -1730,6 +1756,87 @@ const PaperDetailPage: React.FC = () => {
           </Card>
         </div>}
       </div>
+      <Drawer
+        title={<Space><FileSearchOutlined />回答证据</Space>}
+        placement="right"
+        width={isMobile ? '92vw' : 520}
+        open={evidenceDrawer.open}
+        onClose={closeEvidenceDrawer}
+        className="paper-evidence-drawer"
+      >
+        {evidenceDrawer.message ? (() => {
+          const drawerMessage = evidenceDrawer.message;
+          const groups = groupedEvidenceReferences(drawerMessage.references);
+          const confidence = computeEvidenceConfidence(drawerMessage);
+          const confidenceMeta = paperEvidenceConfidenceMeta[confidence.status];
+          const groupKeys = (Object.keys(paperEvidenceCategoryMeta) as PaperEvidenceCategory[])
+            .filter(category => groups[category].length > 0);
+          return (
+            <div className="paper-evidence-drawer-body">
+              <div className="paper-evidence-drawer-summary">
+                <Space size={6} wrap>
+                  <Tag color={confidenceMeta.color}>{confidenceMeta.label}</Tag>
+                  <Tag color="blue">覆盖率 {Math.round(confidence.coverage * 100)}%</Tag>
+                  <Tag>证据 {confidence.evidenceCount}</Tag>
+                  {!!drawerMessage.evidence?.visual_evidence_count && <Tag color="purple">视觉 {drawerMessage.evidence.visual_evidence_count}</Tag>}
+                </Space>
+                {drawerMessage.evidence && (
+                  <Text type="secondary" className="paper-evidence-drawer-copy">
+                    当前回答关联 {drawerMessage.evidence.evidence_count || 0} 条证据
+                    {drawerMessage.evidence.evidence_insufficient ? '，证据覆盖不足' : ''}
+                    {drawerMessage.evidence.visual_evidence_count ? `，其中 ${drawerMessage.evidence.visual_evidence_count} 条视觉证据` : ''}
+                  </Text>
+                )}
+              </div>
+              {groupKeys.length === 0 ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前回答没有可展开的引用证据" />
+              ) : (
+                groupKeys.map(category => (
+                  <div key={category} className="paper-evidence-drawer-section">
+                    <div className="paper-evidence-drawer-section-title">
+                      <Space>
+                        <Badge color={paperEvidenceCategoryMeta[category].color === 'default' ? '#8c8c8c' : undefined} />
+                        <Text strong>{paperEvidenceCategoryMeta[category].label}</Text>
+                        <Tag>{groups[category].length}</Tag>
+                      </Space>
+                    </div>
+                    <div className={`paper-evidence-drawer-list ${category === 'visual' ? 'paper-chat-visual-preview-list' : ''}`}>
+                      {groups[category].map((ref, ri) => {
+                        const asset = String(ref.metadata?.thumbnail_path || ref.metadata?.asset_path || '');
+                        const showVisualPreview = category === 'visual' && asset && !isTableLikeEvidenceReference(ref);
+                        const page = ref.page || ref.page_start;
+                        const confidenceLabel = typeof ref.metadata?.confidence === 'number'
+                          ? `${Math.round(ref.metadata.confidence * 100)}%`
+                          : '';
+                        return (
+                          <button
+                            type="button"
+                            key={`${category}-${ref.url || ref.arxiv_id || ref.id || ref.title}-${ri}`}
+                            className={`paper-evidence-drawer-item ${showVisualPreview ? 'paper-chat-visual-preview' : ''}`}
+                            onClick={() => handleEvidenceReferenceClick(ref)}
+                            title={referenceTooltip(ref)}
+                          >
+                            {showVisualPreview && <img src={asset} alt={String(ref.metadata?.caption || ref.metadata?.kind || 'visual evidence')} />}
+                            <span>
+                              <strong>[{ri + 1}] {referenceTitle(ref)}</strong>
+                              <small>
+                                {[page ? `PDF 第 ${page} 页` : '', ref.section || ref.provider || ref.source || '', confidenceLabel].filter(Boolean).join(' · ')}
+                              </small>
+                              <em>{String(ref.metadata?.caption || ref.metadata?.summary || ref.snippet || ref.title || '').slice(0, 240)}</em>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          );
+        })() : (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未选择回答" />
+        )}
+      </Drawer>
       {selectionMenu && (
         <div
           className={`paper-selection-menu ${selectionMenu.source === 'pdf' ? 'is-pdf-selection' : 'is-content-selection'}`}

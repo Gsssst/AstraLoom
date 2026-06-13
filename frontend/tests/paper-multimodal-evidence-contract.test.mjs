@@ -25,8 +25,8 @@ test('paper chat references preserve preview-ready visual evidence metadata', ()
 
 test('paper chat renders and routes visual evidence references distinctly', () => {
   assert.match(paperDetailSource, /metadata\?\.visual_evidence/);
-  assert.match(paperDetailSource, /String\(ref\.evidence_type \|\| ''\)\.startsWith\('visual'\)/);
-  assert.match(paperDetailSource, /return 'purple'/);
+  assert.match(paperDetailSource, /String\(ref\.evidence_type \|\| ''\)\.toLowerCase\(\)\.startsWith\('visual'\)/);
+  assert.match(paperDetailSource, /visual: \{ label: '视觉\/OCR', color: 'purple' \}/);
   assert.match(paperDetailSource, /referenceTooltip\(ref\)/);
   assert.match(paperDetailSource, /setTargetPdfPage\(page\)/);
   assert.match(paperDetailSource, /message\.info\(`已跳转到 PDF 第 \$\{page\} 页`\)/);
@@ -40,7 +40,7 @@ test('paper chat renders preview cards only for non-table visual evidence assets
   assert.match(paperDetailSource, /ref\.metadata\?\.thumbnail_path \|\| ref\.metadata\?\.asset_path/);
   assert.match(paperDetailSource, /!isTableLikeEvidenceReference\(ref\)/);
   assert.match(paperDetailSource, /<img src=\{asset\}/);
-  assert.match(paperDetailSource, /PDF \$\{page\}/);
+  assert.match(paperDetailSource, /PDF 第 \$\{page\} 页/);
   assert.match(paperDetailSource, /handleEvidenceReferenceClick\(ref\)/);
 });
 
@@ -49,13 +49,12 @@ test('paper chat keeps table evidence as chip-only references', () => {
   assert.match(paperDetailSource, /evidenceType === 'table_pack'/);
   assert.match(paperDetailSource, /evidenceType === 'table_catalog'/);
   assert.match(paperDetailSource, /kind === 'table'/);
-  assert.match(paperDetailSource, /<Tag color=\{referenceColor\(ref\)\} className="paper-chat-reference"/);
+  assert.match(paperDetailSource, /category === 'visual' && asset && !isTableLikeEvidenceReference\(ref\)/);
 });
 
 test('paper chat collapses evidence references by default', () => {
   assert.match(paperDetailSource, /expandedReferencePanels/);
   assert.match(paperDetailSource, /referencePanelKey/);
-  assert.match(paperDetailSource, /toggleReferencePanel/);
   assert.match(paperDetailSource, /paper-chat-reference-summary/);
   assert.match(paperDetailSource, /paper-chat-reference-toggle/);
   assert.match(paperDetailSource, /查看引用/);
@@ -63,6 +62,30 @@ test('paper chat collapses evidence references by default', () => {
   assert.match(paperDetailSource, /referencesExpanded &&/);
   assert.match(paperDetailSource, /msg\.evidence &&/);
   assert.match(paperDetailSource, /visualRefs = visualPreviewReferences\(msg\.references\)/);
+});
+
+test('paper chat evidence drawer groups references by source type', () => {
+  assert.match(paperDetailSource, /type PaperEvidenceCategory = 'paper_text' \| 'table' \| 'visual' \| 'web' \| 'related' \| 'other'/);
+  assert.match(paperDetailSource, /paperEvidenceCategoryMeta/);
+  assert.match(paperDetailSource, /evidenceCategoryForReference/);
+  assert.match(paperDetailSource, /groupedEvidenceReferences/);
+  assert.match(paperDetailSource, /paper_text: \{ label: '正文证据'/);
+  assert.match(paperDetailSource, /table: \{ label: '表格证据'/);
+  assert.match(paperDetailSource, /visual: \{ label: '视觉\/OCR'/);
+  assert.match(paperDetailSource, /web: \{ label: '网页来源'/);
+  assert.match(paperDetailSource, /related: \{ label: '相关论文'/);
+  assert.match(paperDetailSource, /isVisualLikeEvidenceReference/);
+});
+
+test('paper chat evidence drawer renders grouped details with existing navigation', () => {
+  assert.match(paperDetailSource, /evidenceDrawer/);
+  assert.match(paperDetailSource, /openEvidenceDrawer\(msg, idx, referenceKey\)/);
+  assert.match(paperDetailSource, /<Drawer[\s\S]*回答证据/);
+  assert.match(paperDetailSource, /paper-evidence-drawer-section/);
+  assert.match(paperDetailSource, /paper-evidence-drawer-item/);
+  assert.match(paperDetailSource, /handleEvidenceReferenceClick\(ref\)/);
+  assert.match(paperDetailSource, /category === 'visual' && asset && !isTableLikeEvidenceReference\(ref\)/);
+  assert.match(paperDetailSource, /computeEvidenceConfidence\(drawerMessage\)/);
 });
 
 test('paper chat evidence meta includes visual evidence counts from backend contract', () => {
