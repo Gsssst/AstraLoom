@@ -499,6 +499,53 @@ async def test_visual_evidence_enrichment_writes_vision_table_markdown(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_visual_evidence_enrichment_records_corrected_non_table_kind(monkeypatch, tmp_path):
+    asset_root = tmp_path / "visual"
+    asset = asset_root / "paper-1" / "page-14.png"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"png")
+    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_ASSET_DIR", str(asset_root))
+    monkeypatch.setattr(document_visual_evidence.settings, "PDF_VISUAL_EVIDENCE_MAX_MODEL_CALLS", 0)
+
+    async def fake_analyze(path, prompt=""):
+        assert path == str(asset)
+        return {
+            "status": "ready",
+            "elements": [
+                {
+                    "type": "figure",
+                    "label": "Figure 8",
+                    "ocr_text": "Algorithm 1 Active Memory Reconstruction",
+                    "summary": "A two-panel algorithm figure.",
+                    "key_facts": ["The image is Figure 8, not a table."],
+                    "confidence": 0.92,
+                }
+            ],
+            "provider": "openai-compatible",
+            "model": "system-model",
+        }
+
+    monkeypatch.setattr(document_visual_evidence, "analyze_visual_crop_with_model", fake_analyze)
+    item = document_visual_evidence.VisualEvidenceItem(
+        id="ve-misclassified-table",
+        kind="table",
+        page=14,
+        asset_path=str(asset),
+        markdown="",
+        confidence=0.5,
+    )
+
+    enriched = await document_visual_evidence.enrich_visual_evidence_items_with_vision([item])
+
+    assert enriched[0].markdown == ""
+    assert enriched[0].text == "Algorithm 1 Active Memory Reconstruction"
+    assert enriched[0].summary == "A two-panel algorithm figure."
+    assert enriched[0].metadata["parser_kind"] == "table"
+    assert enriched[0].metadata["vision_corrected_kind"] == "figure"
+    assert document_visual_evidence.visual_evidence_effective_kind(enriched[0]) == "figure"
+
+
+@pytest.mark.asyncio
 async def test_visual_evidence_enrichment_ocr_all_weak_tables_by_default(monkeypatch, tmp_path):
     asset_root = tmp_path / "visual"
     assets = []

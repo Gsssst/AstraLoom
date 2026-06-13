@@ -217,14 +217,15 @@ def visual_evidence_status_from_paper(paper: Paper) -> dict[str, Any]:
         }
 
     items = visual_evidence_items_from_payload(payload)
-    visual_count = sum(1 for item in items if item.kind in VISUAL_READY_TYPES or item.kind not in VISUAL_TABLE_TYPES)
-    table_count = sum(1 for item in items if item.kind in VISUAL_TABLE_TYPES)
+    effective_kinds = {item.id: visual_evidence_effective_kind(item) for item in items}
+    visual_count = sum(1 for item in items if effective_kinds[item.id] in VISUAL_READY_TYPES or effective_kinds[item.id] not in VISUAL_TABLE_TYPES)
+    table_count = sum(1 for item in items if effective_kinds[item.id] in VISUAL_TABLE_TYPES)
     ocr_count = sum(1 for item in items if item.text or item.markdown)
     summary_count = sum(1 for item in items if item.summary)
     asset_count = sum(1 for item in items if item.asset_path or item.thumbnail_path)
-    missing_summary_count = sum(1 for item in items if item.kind not in VISUAL_TABLE_TYPES and not (item.summary or item.text))
-    missing_ocr_count = sum(1 for item in items if item.kind in VISUAL_TABLE_TYPES and not item.markdown)
-    low_confidence_table_count = sum(1 for item in items if item.kind in VISUAL_TABLE_TYPES and item.confidence < 0.6)
+    missing_summary_count = sum(1 for item in items if effective_kinds[item.id] not in VISUAL_TABLE_TYPES and not (item.summary or item.text))
+    missing_ocr_count = sum(1 for item in items if effective_kinds[item.id] in VISUAL_TABLE_TYPES and not item.markdown)
+    low_confidence_table_count = sum(1 for item in items if effective_kinds[item.id] in VISUAL_TABLE_TYPES and item.confidence < 0.6)
     status = str(payload.get("status") or ("ready" if items else "empty"))
     blocking_error = _visual_evidence_blocking_error(items)
     return {
@@ -252,7 +253,7 @@ def visual_evidence_status_from_paper(paper: Paper) -> dict[str, Any]:
 
 def _visual_evidence_blocking_error(items: list[VisualEvidenceItem]) -> Optional[dict[str, Any]]:
     for item in items:
-        if item.kind not in VISUAL_TABLE_TYPES or item.markdown:
+        if visual_evidence_effective_kind(item) not in VISUAL_TABLE_TYPES or item.markdown:
             continue
         metadata = item.metadata or {}
         asset_error = str(metadata.get("asset_error") or "").strip()
@@ -267,6 +268,23 @@ def _visual_evidence_blocking_error(items: list[VisualEvidenceItem]) -> Optional
                 "kind": "visual_ocr_asset_missing",
             }
     return None
+
+
+def visual_evidence_effective_kind(item: VisualEvidenceItem) -> str:
+    """Return the OCR-corrected kind used for readiness checks and Q&A blocks."""
+
+    metadata = item.metadata or {}
+    corrected = str(metadata.get("vision_corrected_kind") or "").strip()
+    if corrected:
+        return _normalize_kind(corrected)
+    elements = metadata.get("vision_elements")
+    if isinstance(elements, list):
+        element = _best_vision_element_for_item(item, [entry for entry in elements if isinstance(entry, dict)])
+        if element:
+            kind = _normalize_kind(str(element.get("type") or ""))
+            if kind:
+                return kind
+    return _normalize_kind(item.kind)
 
 
 def visual_evidence_runtime_health() -> dict[str, Any]:
@@ -292,15 +310,18 @@ def visual_evidence_item_to_block(item: VisualEvidenceItem) -> dict[str, Any]:
     text = visual_evidence_text(item)
     asset_path = visual_asset_route_for_item(item, item.asset_path)
     thumbnail_path = visual_asset_route_for_item(item, item.thumbnail_path)
+    effective_kind = visual_evidence_effective_kind(item)
+    parser_kind = str((item.metadata or {}).get("parser_kind") or item.kind or "").strip() or effective_kind
     return {
-        "type": "visual_table" if item.kind in VISUAL_TABLE_TYPES else "visual_evidence",
+        "type": "visual_table" if effective_kind in VISUAL_TABLE_TYPES else "visual_evidence",
         "page": item.page,
         "source": "document_visual_evidence",
         "text": text,
         "metadata": {
             **(item.metadata or {}),
             "asset_id": item.id,
-            "kind": item.kind,
+            "kind": effective_kind,
+            "parser_kind": parser_kind,
             "caption": item.caption,
             "bbox": item.bbox,
             "asset_token": visual_asset_public_token(item.asset_path) if item.asset_path else None,
@@ -316,8 +337,9 @@ def visual_evidence_item_to_block(item: VisualEvidenceItem) -> dict[str, Any]:
 
 
 def visual_evidence_text(item: VisualEvidenceItem) -> str:
-    label = "PDF visual table evidence" if item.kind in VISUAL_TABLE_TYPES else "PDF visual evidence"
-    lines = [f"[{label}, page {item.page or 'unknown'}, kind {item.kind}, asset {item.id}]"]
+    effective_kind = visual_evidence_effective_kind(item)
+    label = "PDF visual table evidence" if effective_kind in VISUAL_TABLE_TYPES else "PDF visual evidence"
+    lines = [f"[{label}, page {item.page or 'unknown'}, kind {effective_kind}, asset {item.id}]"]
     if item.caption:
         lines.append(f"Caption: {item.caption}")
     if item.markdown:
@@ -833,6 +855,12 @@ def _apply_vision_result_to_item(item: VisualEvidenceItem, result: dict[str, Any
     if not element:
         item.metadata = metadata
         return item
+
+    element_kind = _normalize_kind(str(element.get("type") or ""))
+    parser_kind = _normalize_kind(item.kind)
+    if element_kind and element_kind != parser_kind:
+        metadata["parser_kind"] = parser_kind
+        metadata["vision_corrected_kind"] = element_kind
 
     markdown = str(element.get("markdown") or "").strip()
     ocr_text = str(element.get("ocr_text") or element.get("text") or "").strip()

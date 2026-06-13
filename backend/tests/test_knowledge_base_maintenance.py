@@ -195,6 +195,65 @@ def test_visual_evidence_status_reports_ready_counts():
     assert status["missing_ocr_count"] == 0
 
 
+def test_visual_evidence_status_uses_vision_corrected_non_table_kind():
+    paper = SimpleNamespace(
+        pdf_path="/data/paper.pdf",
+        metadata_json={
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "source_path": "/data/paper.pdf",
+                "parser": "pdfplumber",
+                "status": "ready",
+                "items": [
+                    {
+                        "id": "misclassified-figure",
+                        "kind": "table",
+                        "page": 14,
+                        "status": "ready",
+                        "text": "Algorithm 1 Active Memory Reconstruction",
+                        "summary": "A two-panel algorithm figure.",
+                        "metadata": {
+                            "vision_status": "ready",
+                            "vision_provider": "openai-compatible",
+                            "vision_elements": [
+                                {
+                                    "type": "figure",
+                                    "ocr_text": "Algorithm 1 Active Memory Reconstruction",
+                                    "summary": "A two-panel algorithm figure.",
+                                    "confidence": 0.92,
+                                }
+                            ],
+                        },
+                    },
+                    {
+                        "id": "actual-table",
+                        "kind": "table",
+                        "page": 7,
+                        "status": "ready",
+                        "markdown": "| Model | F1 |\n| --- | --- |\n| Ours | 82.0 |",
+                        "metadata": {
+                            "vision_status": "ready",
+                            "vision_elements": [{"type": "table", "markdown": "| Model | F1 |"}],
+                        },
+                    },
+                ],
+            }
+        },
+    )
+
+    status = document_visual_evidence.visual_evidence_status_from_paper(paper)
+    blocks = document_visual_evidence.visual_evidence_blocks_from_paper(paper)
+
+    assert status["ready"] is True
+    assert status["failed"] is False
+    assert status["visual_count"] == 1
+    assert status["table_count"] == 1
+    assert status["missing_ocr_count"] == 0
+    assert blocks[0]["type"] == "visual_evidence"
+    assert blocks[0]["metadata"]["kind"] == "figure"
+    assert "PDF visual evidence" in blocks[0]["text"]
+
+
 def test_visual_evidence_refresh_needed_includes_ready_but_incomplete_status():
     assert papers_api._visual_evidence_needs_extraction({"ready": False}) is True
     assert papers_api._visual_evidence_needs_extraction({"ready": True, "failed": True}) is True
@@ -237,6 +296,125 @@ def test_visual_evidence_status_reports_blocking_asset_error_for_missing_ocr():
     assert status["missing_ocr_count"] == 1
     assert status["last_error"]["kind"] == "visual_ocr_asset_unavailable"
     assert "fitz unavailable" in status["last_error"]["message"]
+
+
+def test_visual_evidence_status_keeps_actual_tables_strict_after_vision():
+    paper = SimpleNamespace(
+        pdf_path="/data/paper.pdf",
+        metadata_json={
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "source_path": "/data/paper.pdf",
+                "parser": "pdfplumber",
+                "status": "ready",
+                "items": [
+                    {
+                        "id": "t1",
+                        "kind": "table",
+                        "page": 5,
+                        "status": "ready",
+                        "text": "Model score text only",
+                        "summary": "A real table without markdown.",
+                        "metadata": {
+                            "vision_status": "ready",
+                            "vision_elements": [
+                                {
+                                    "type": "table",
+                                    "ocr_text": "Model score text only",
+                                    "summary": "A real table without markdown.",
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+    )
+
+    status = document_visual_evidence.visual_evidence_status_from_paper(paper)
+
+    assert status["table_count"] == 1
+    assert status["missing_ocr_count"] == 1
+    assert status["failed"] is True
+    assert status["last_error"]["kind"] == "visual_ocr_asset_missing"
+
+
+@pytest.mark.asyncio
+async def test_force_visual_evidence_reparse_replaces_stale_asset_error(monkeypatch):
+    paper = SimpleNamespace(
+        id=uuid4(),
+        pdf_path="/data/paper.pdf",
+        metadata_json={
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "source_path": "/data/paper.pdf",
+                "parser": "pdfplumber",
+                "status": "ready",
+                "items": [
+                    {
+                        "id": "old-table",
+                        "kind": "table",
+                        "page": 5,
+                        "status": "ready",
+                        "metadata": {
+                            "asset_status": "unavailable",
+                            "asset_error": "fitz unavailable: No module named 'fitz'",
+                        },
+                    }
+                ],
+            }
+        },
+    )
+    extraction = report_service.StructuredPdfExtraction(
+        source_path="/data/paper.pdf",
+        page_count=5,
+        parser="pdfplumber",
+        blocks=[
+            report_service.StructuredPdfBlock(
+                block_type="table",
+                page=5,
+                text="| A | B |\n| --- | --- |\n| 1 | 2 |",
+                source="pdfplumber",
+            )
+        ],
+    )
+
+    class _Db:
+        async def execute(self, _statement):
+            return None
+
+    async def fake_resolve_pdf(paper_arg, _db=None):
+        assert paper_arg is paper
+        return "/data/paper.pdf"
+
+    async def fake_ensure_structured(paper_arg):
+        assert paper_arg is paper
+        return extraction
+
+    def fake_render(pdf_path, items, scope):
+        assert pdf_path == "/data/paper.pdf"
+        assert scope == str(paper.id)
+        items[0].asset_path = f"/tmp/visual/{scope}/page-5.png"
+        items[0].metadata = {**items[0].metadata, "page_asset_path": items[0].asset_path}
+        return items
+
+    async def fake_enrich(items):
+        return items
+
+    monkeypatch.setattr(report_service, "resolve_paper_pdf_path", fake_resolve_pdf)
+    monkeypatch.setattr(report_service, "ensure_structured_pdf_content", fake_ensure_structured)
+    monkeypatch.setattr(document_visual_evidence, "render_visual_evidence_assets", fake_render)
+    monkeypatch.setattr(document_visual_evidence, "enrich_visual_evidence_items_with_vision", fake_enrich)
+
+    payload = await document_visual_evidence.ensure_document_visual_evidence(paper, _Db(), force=True)
+    status = document_visual_evidence.visual_evidence_status_from_paper(paper)
+    new_item = payload["items"][0]
+
+    assert status["failed"] is False
+    assert status["missing_ocr_count"] == 0
+    assert status["last_error"] is None
+    assert "asset_error" not in new_item["metadata"]
+    assert new_item["asset_path"].endswith("/page-5.png")
 
 
 def test_safe_paper_metadata_strips_private_visual_asset_paths():
@@ -630,7 +808,7 @@ async def test_visual_evidence_backfill_repairs_ready_items_missing_ocr(monkeypa
             document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
                 "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
                 "status": "ready",
-                "items": [{"id": "t1", "kind": "table", "status": "ready", "markdown": "| A | B |"}],
+                "items": [{"id": "t1", "kind": "table", "status": "ready", "markdown": "| A | B |", "confidence": 0.9}],
             }
         }
         return paper.metadata_json[document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY]
@@ -1191,6 +1369,60 @@ def test_processing_snapshot_prefers_running_visual_state_over_stale_error():
     assert snapshot.status == "processing"
     assert visual.state == "running"
     assert visual.detail == "后台正在补视觉 OCR"
+
+
+def test_processing_snapshot_ignores_stale_visual_failure_after_ready():
+    paper = SimpleNamespace(
+        metadata_json={
+            "pdf_url": "https://arxiv.org/pdf/2606.00005",
+            paper_processing_pipeline.PIPELINE_METADATA_KEY: {
+                "failed_steps": {
+                    "visual_evidence": {
+                        "message": "视觉证据未完成：2 个表格缺 OCR",
+                        "failed_at": "2026-06-13T00:00:00+00:00",
+                    }
+                },
+            },
+            report_service.PDF_STRUCTURED_METADATA_KEY: {
+                "version": report_service.PDF_STRUCTURED_METADATA_VERSION,
+                "source_path": "/data/paper.pdf",
+                "parser": "pdfplumber",
+                "page_count": 1,
+                "blocks": [{"type": "caption", "text": "Figure 1. Corrected figure", "page": 1}],
+            },
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "source_path": "/data/paper.pdf",
+                "status": "ready",
+                "items": [
+                    {
+                        "id": "corrected-figure",
+                        "kind": "table",
+                        "status": "ready",
+                        "text": "Algorithm text",
+                        "summary": "Corrected figure",
+                        "metadata": {"vision_elements": [{"type": "figure"}]},
+                    }
+                ],
+            },
+        },
+        pdf_path="/data/paper.pdf",
+        arxiv_id="2606.00005",
+        full_text="x" * 600,
+        embedding=[0.1],
+        tags=[],
+    )
+
+    snapshot = paper_processing_pipeline.paper_processing_snapshot(
+        paper,
+        bm25_status={"ready": True, "indexed_papers": 1},
+    )
+    visual = next(label for label in snapshot.labels if label.key == "visual_evidence")
+
+    assert snapshot.status == "ready"
+    assert snapshot.failed == []
+    assert visual.state == "ready"
+    assert visual.detail == "项目 1"
 
 
 @pytest.mark.asyncio

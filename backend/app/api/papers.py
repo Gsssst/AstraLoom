@@ -1181,7 +1181,7 @@ async def get_retrieval_maintenance_health(
     )
     visual_candidates = visual_candidates_result.scalars().all()
     visual_statuses = [(paper, visual_evidence_status_from_paper(paper)) for paper in visual_candidates]
-    visual_ready = [paper for paper, status in visual_statuses if status.get("ready")]
+    visual_ready = [paper for paper, status in visual_statuses if status.get("ready") and not _visual_evidence_needs_extraction(status)]
     missing_visual = [paper for paper, status in visual_statuses if _visual_evidence_needs_extraction(status)]
     visual_failed = [paper for paper, status in visual_statuses if status.get("failed")]
     visual_missing_summary = sum(int(status.get("missing_summary_count") or 0) for _, status in visual_statuses)
@@ -1370,7 +1370,7 @@ async def _run_visual_evidence_backfill(
         try:
             payload = await ensure_document_visual_evidence(paper, db, force=True)
             status = visual_evidence_status_from_paper(paper)
-            if status.get("ready"):
+            if status.get("ready") and not _visual_evidence_needs_extraction(status):
                 action.success += 1
             elif payload and payload.get("status") == "empty":
                 action.skipped += 1
@@ -1433,7 +1433,7 @@ async def _run_visual_evidence_backfill_job(job_id: str, limit: int) -> None:
                 try:
                     payload = await ensure_document_visual_evidence(paper, db, force=True)
                     status = visual_evidence_status_from_paper(paper)
-                    if status.get("ready"):
+                    if status.get("ready") and not _visual_evidence_needs_extraction(status):
                         action.success += 1
                     elif payload and payload.get("status") == "empty":
                         action.skipped += 1
@@ -1493,7 +1493,7 @@ async def _run_single_visual_evidence_job(job_id: str, paper_id: str) -> None:
             try:
                 payload = await ensure_document_visual_evidence(paper, db, force=True)
                 status = visual_evidence_status_from_paper(paper)
-                if status.get("ready"):
+                if status.get("ready") and not _visual_evidence_needs_extraction(status):
                     job.success = 1
                     job.failed = 0
                     job.skipped = 0

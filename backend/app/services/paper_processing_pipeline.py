@@ -228,7 +228,12 @@ def paper_processing_snapshot(paper: Paper, *, bm25_status: Optional[dict[str, A
     active_steps = running_steps | queued_steps
     failed_steps = pipeline.get("failed_steps") if isinstance(pipeline.get("failed_steps"), dict) else {}
     visual_step_error = failed_steps.get("visual_evidence") if isinstance(failed_steps.get("visual_evidence"), dict) else {}
-    visual_error_message = (visual.get("last_error") or {}).get("message") or visual_step_error.get("message")
+    visual_needs_extraction = _visual_evidence_needs_extraction(visual)
+    visual_error_message = (
+        ((visual.get("last_error") or {}).get("message") or visual_step_error.get("message"))
+        if visual_needs_extraction
+        else None
+    )
     visual_is_active = "visual_evidence" in active_steps
 
     labels: list[ProcessingLabel] = [
@@ -271,7 +276,7 @@ def paper_processing_snapshot(paper: Paper, *, bm25_status: Optional[dict[str, A
             label="视觉证据",
             state=(
                 "ready"
-                if visual.get("ready") and not _visual_evidence_needs_extraction(visual)
+                if visual.get("ready") and not visual_needs_extraction
                 else "running"
                 if visual_is_active
                 else "failed"
@@ -280,7 +285,7 @@ def paper_processing_snapshot(paper: Paper, *, bm25_status: Optional[dict[str, A
                 if can_process_pdf
                 else "pending"
             ),
-            ready=bool(visual.get("ready") and not _visual_evidence_needs_extraction(visual)),
+            ready=bool(visual.get("ready") and not visual_needs_extraction),
             detail=(
                 "后台正在补视觉 OCR"
                 if visual_is_active
