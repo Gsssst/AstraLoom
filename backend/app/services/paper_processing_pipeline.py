@@ -127,12 +127,20 @@ def paper_processing_running_state(
         for step in (pipeline.get("running_steps") or [])
         if step
     ]
-    if not running_steps:
+    queued_steps = [
+        str(step)
+        for step in (pipeline.get("queued_steps") or [])
+        if step
+    ]
+    active_steps = sorted({*running_steps, *queued_steps})
+    if not active_steps:
         return {
             "running": False,
             "fresh": False,
             "stale": False,
             "running_steps": [],
+            "queued_steps": [],
+            "active_steps": [],
             "last_checked_at": pipeline.get("last_checked_at"),
             "age_seconds": None,
         }
@@ -146,6 +154,8 @@ def paper_processing_running_state(
         "fresh": not stale,
         "stale": stale,
         "running_steps": running_steps,
+        "queued_steps": queued_steps,
+        "active_steps": active_steps,
         "last_checked_at": pipeline.get("last_checked_at"),
         "age_seconds": age_seconds,
     }
@@ -214,7 +224,12 @@ def paper_processing_snapshot(paper: Paper, *, bm25_status: Optional[dict[str, A
     bm25 = bm25_status if bm25_status is not None else bm25_index_status()
     pipeline = _pipeline_metadata(paper)
     running_steps = set(pipeline.get("running_steps") or [])
+    queued_steps = set(pipeline.get("queued_steps") or [])
+    active_steps = running_steps | queued_steps
     failed_steps = pipeline.get("failed_steps") if isinstance(pipeline.get("failed_steps"), dict) else {}
+    visual_step_error = failed_steps.get("visual_evidence") if isinstance(failed_steps.get("visual_evidence"), dict) else {}
+    visual_error_message = (visual.get("last_error") or {}).get("message") or visual_step_error.get("message")
+    visual_is_active = "visual_evidence" in active_steps
 
     labels: list[ProcessingLabel] = [
         ProcessingLabel(
@@ -227,7 +242,7 @@ def paper_processing_snapshot(paper: Paper, *, bm25_status: Optional[dict[str, A
         ProcessingLabel(
             key="full_text",
             label="全文",
-            state="ready" if has_full_text else ("running" if "full_text" in running_steps else "missing"),
+            state="ready" if has_full_text else ("running" if "full_text" in active_steps else "missing"),
             ready=has_full_text,
             detail=f"{len(paper.full_text or '')} 字符" if has_full_text else ("等待后台提取" if can_load_full_text else "无可自动下载的 PDF"),
             action="load_full_text" if can_load_full_text else None,
@@ -241,7 +256,7 @@ def paper_processing_snapshot(paper: Paper, *, bm25_status: Optional[dict[str, A
                 else "failed"
                 if structured.get("last_error") and can_process_pdf
                 else "running"
-                if "structured_parse" in running_steps
+                if "structured_parse" in active_steps
                 else "missing"
                 if can_process_pdf
                 else "pending"
@@ -257,23 +272,27 @@ def paper_processing_snapshot(paper: Paper, *, bm25_status: Optional[dict[str, A
             state=(
                 "ready"
                 if visual.get("ready") and not _visual_evidence_needs_extraction(visual)
-                else "failed"
-                if visual.get("failed") and can_process_pdf
                 else "running"
-                if "visual_evidence" in running_steps
+                if visual_is_active
+                else "failed"
+                if (visual.get("failed") or visual_step_error) and can_process_pdf
                 else "missing"
                 if can_process_pdf
                 else "pending"
             ),
             ready=bool(visual.get("ready") and not _visual_evidence_needs_extraction(visual)),
-            detail=(visual.get("last_error") or {}).get("message") or (f"项目 {int(visual.get('item_count') or 0)}" if can_process_pdf else "无可自动解析的本地 PDF"),
+            detail=(
+                "后台正在补视觉 OCR"
+                if visual_is_active
+                else visual_error_message or (f"项目 {int(visual.get('item_count') or 0)}" if can_process_pdf else "无可自动解析的本地 PDF")
+            ),
             count=int(visual.get("item_count") or 0),
             action="visual_evidence" if can_process_pdf else None,
         ),
         ProcessingLabel(
             key="embedding",
             label="向量",
-            state="ready" if has_embedding else ("running" if "embedding" in running_steps else "missing"),
+            state="ready" if has_embedding else ("running" if "embedding" in active_steps else "missing"),
             ready=has_embedding,
             detail="可语义检索" if has_embedding else "等待后台生成",
             action="embedding",
@@ -314,6 +333,7 @@ def paper_processing_snapshot(paper: Paper, *, bm25_status: Optional[dict[str, A
             "last_checked_at": pipeline.get("last_checked_at"),
             "last_completed_at": pipeline.get("last_completed_at"),
             "last_error": pipeline.get("last_error"),
+            "queued_steps": list(queued_steps),
             "running_steps": list(running_steps),
             "failed_steps": failed_steps,
         },
@@ -342,6 +362,7 @@ async def _store_pipeline_metadata(
     db: AsyncSession,
     paper: Paper,
     *,
+    queued_steps: Optional[list[str]] = None,
     running_steps: Optional[list[str]] = None,
     completed_step: Optional[str] = None,
     failed_step: Optional[str] = None,
@@ -351,14 +372,21 @@ async def _store_pipeline_metadata(
     metadata = dict(getattr(paper, "metadata_json", None) or {})
     pipeline = dict(metadata.get(PIPELINE_METADATA_KEY) or {})
     now = datetime.now(timezone.utc).isoformat()
+    queued = set(pipeline.get("queued_steps") or [])
     running = set(pipeline.get("running_steps") or [])
+    if queued_steps is not None:
+        queued.update(queued_steps)
     if running_steps is not None:
         running.update(running_steps)
+        queued.difference_update(running_steps)
     if completed_step:
+        queued.discard(completed_step)
         running.discard(completed_step)
     if failed_step:
+        queued.discard(failed_step)
         running.discard(failed_step)
     if clear_running:
+        queued.clear()
         running.clear()
 
     failed_steps = pipeline.get("failed_steps") if isinstance(pipeline.get("failed_steps"), dict) else {}
@@ -371,6 +399,7 @@ async def _store_pipeline_metadata(
         {
             "version": AUTOMATION_VERSION,
             "last_checked_at": now,
+            "queued_steps": sorted(queued),
             "running_steps": sorted(running),
             "failed_steps": failed_steps,
         }
@@ -384,6 +413,21 @@ async def _store_pipeline_metadata(
     metadata[PIPELINE_METADATA_KEY] = pipeline
     paper.metadata_json = metadata
     await db.commit()
+
+
+async def mark_paper_processing_queued(
+    db: AsyncSession,
+    paper: Paper,
+    *,
+    steps: Optional[list[str]] = None,
+) -> None:
+    """Record that backend processing has been submitted for this paper."""
+
+    await _store_pipeline_metadata(
+        db,
+        paper,
+        queued_steps=steps or ["full_text", "structured_parse", "visual_evidence", "embedding", "bm25"],
+    )
 
 
 class PaperProcessingPipeline:
@@ -470,7 +514,24 @@ class PaperProcessingPipeline:
 
                 await ensure_document_visual_evidence(paper, self.session, force=True)
                 await self.session.commit()
-                return bool(visual_evidence_status_from_paper(paper).get("ready"))
+                status = visual_evidence_status_from_paper(paper)
+                if status.get("ready") and not _visual_evidence_needs_extraction(status):
+                    return True
+                missing_ocr = int(status.get("missing_ocr_count") or 0)
+                missing_summary = int(status.get("missing_summary_count") or 0)
+                low_confidence = int(status.get("low_confidence_table_count") or 0)
+                last_error = status.get("last_error") if isinstance(status.get("last_error"), dict) else {}
+                reason = last_error.get("message") if isinstance(last_error, dict) else None
+                if not reason:
+                    parts = []
+                    if missing_ocr:
+                        parts.append(f"{missing_ocr} 个表格缺 OCR")
+                    if missing_summary:
+                        parts.append(f"{missing_summary} 个图片缺摘要")
+                    if low_confidence:
+                        parts.append(f"{low_confidence} 个表格置信度低")
+                    reason = "、".join(parts) or "视觉证据未达到可回答状态"
+                raise RuntimeError(f"视觉证据未完成：{reason}")
 
             await run_step("visual_evidence", _visual)
 
@@ -529,7 +590,7 @@ class PaperProcessingPipeline:
                     {
                         "paper_id": str(paper.id),
                         "title": paper.title,
-                        "running_steps": running_state.get("running_steps") or [],
+                        "running_steps": running_state.get("active_steps") or [],
                         "last_checked_at": running_state.get("last_checked_at"),
                     }
                 )
@@ -559,6 +620,8 @@ class PaperProcessingPipeline:
             "errors": [],
         }
         for paper in selected:
+            paper_id = str(paper.id)
+            paper_title = paper.title
             try:
                 processed = await self.process_paper(
                     paper.id,
@@ -574,8 +637,9 @@ class PaperProcessingPipeline:
                 else:
                     summary["skipped"] += 1
             except Exception as exc:
+                await self.session.rollback()
                 summary["failed"] += 1
-                summary["errors"].append({"paper_id": str(paper.id), "title": paper.title, "reason": str(exc)})
+                summary["errors"].append({"paper_id": paper_id, "title": paper_title, "reason": str(exc)})
         return summary
 
 

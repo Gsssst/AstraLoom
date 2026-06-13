@@ -86,6 +86,14 @@ def _reconcile_locked_response() -> dict:
     }
 
 
+async def _dispose_async_db_engine() -> None:
+    """Release asyncpg connections before Celery reuses this worker process."""
+
+    from app.db.session import engine
+
+    await engine.dispose()
+
+
 @celery_app.task(bind=True, name="download_paper")
 def download_paper(self, arxiv_id: str, download_dir: str | None = None):
     """异步缓存 arXiv 论文 PDF。"""
@@ -152,13 +160,16 @@ def process_paper_pipeline(self, paper_id: str, include_visual: bool = True):
         from app.db.session import AsyncSessionLocal
         from app.services.paper_processing_pipeline import PaperProcessingPipeline
 
-        async with AsyncSessionLocal() as session:
-            result = await PaperProcessingPipeline(session).process_paper(
-                paper_id,
-                include_visual=include_visual,
-                rebuild_bm25=True,
-            )
-            return result.to_dict()
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await PaperProcessingPipeline(session).process_paper(
+                    paper_id,
+                    include_visual=include_visual,
+                    rebuild_bm25=True,
+                )
+                return result.to_dict()
+        finally:
+            await _dispose_async_db_engine()
 
     try:
         payload = asyncio.run(_run())
@@ -188,12 +199,15 @@ def reconcile_paper_processing(self, limit: int = 5, include_visual: bool = True
         from app.db.session import AsyncSessionLocal
         from app.services.paper_processing_pipeline import PaperProcessingPipeline
 
-        async with AsyncSessionLocal() as session:
-            return await PaperProcessingPipeline(session).reconcile_batch(
-                limit=max(1, min(int(limit or 5), 20)),
-                include_visual=include_visual,
-                rebuild_bm25=True,
-            )
+        try:
+            async with AsyncSessionLocal() as session:
+                return await PaperProcessingPipeline(session).reconcile_batch(
+                    limit=max(1, min(int(limit or 5), 20)),
+                    include_visual=include_visual,
+                    rebuild_bm25=True,
+                )
+        finally:
+            await _dispose_async_db_engine()
 
     try:
         with _RedisTaskLock(RECONCILE_LOCK_KEY, ttl_seconds=RECONCILE_LOCK_TTL_SECONDS) as lock:

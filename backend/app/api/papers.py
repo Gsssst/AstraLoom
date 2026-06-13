@@ -2794,6 +2794,7 @@ async def import_bibtex(file: UploadFile = File(...), db: AsyncSession = Depends
     content = (await file.read()).decode("utf-8", errors="ignore")
     entries = re.findall(r'@\w+\{([^,]+),((?:[^@{]|{[^}]*})*)', content, re.DOTALL)
     imported = 0; skipped = 0
+    created_papers = []
     for cite_key, fields in entries:
         try:
             title = re.search(r'title\s*=\s*\{([^}]+)\}', fields, re.IGNORECASE)
@@ -2806,12 +2807,16 @@ async def import_bibtex(file: UploadFile = File(...), db: AsyncSession = Depends
             p = Paper(title=title.group(1).strip(), authors=author.group(1).split(' and ') if author else [],
                        year=int(year.group(1)) if year else None, arxiv_id=arxiv.group(1) if arxiv else None, source="bibtex_import",
                        imported_by_user_id=user.id, imported_by_username=user.username)
-            db.add(p); imported += 1
+            db.add(p); imported += 1; created_papers.append(p)
         except: skipped += 1
     await db.commit()
     if imported:
         from app.services.hybrid_search import invalidate_bm25_index
         invalidate_bm25_index()
+        service = PaperIngestionService(db)
+        for paper in created_papers:
+            await db.refresh(paper)
+            await service.enqueue_processing(paper)
     return {"imported": imported, "skipped": skipped}
 
 @router.post("/import-zotero")
@@ -2821,6 +2826,7 @@ async def import_zotero_csv(file: UploadFile = File(...), db: AsyncSession = Dep
     content = (await file.read()).decode("utf-8-sig", errors="ignore")
     reader = csv.DictReader(io.StringIO(content))
     imported = 0; skipped = 0
+    created_papers = []
     for row in reader:
         try:
             title = row.get("Title", "").strip()
@@ -2832,10 +2838,14 @@ async def import_zotero_csv(file: UploadFile = File(...), db: AsyncSession = Dep
             doi = row.get("DOI","").strip() or None
             p = Paper(title=title, authors=authors, year=year, doi=doi, abstract=row.get("Abstract Note","")[:500] or None, source="zotero_import",
                       imported_by_user_id=user.id, imported_by_username=user.username)
-            db.add(p); imported += 1
+            db.add(p); imported += 1; created_papers.append(p)
         except: skipped += 1
     await db.commit()
     if imported:
         from app.services.hybrid_search import invalidate_bm25_index
         invalidate_bm25_index()
+        service = PaperIngestionService(db)
+        for paper in created_papers:
+            await db.refresh(paper)
+            await service.enqueue_processing(paper)
     return {"imported": imported, "skipped": skipped}

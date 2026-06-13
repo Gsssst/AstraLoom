@@ -423,6 +423,10 @@
   background: #7560c4;
 }
 
+.paper-detail-content-chat-resize-handle {
+  background: linear-gradient(90deg, #ffffff 0%, #f4f5f8 50%, #ffffff 100%);
+}
+
 .paper-detail-chat-rail {
   display: flex;
   width: 58px;

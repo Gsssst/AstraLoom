@@ -226,6 +226,7 @@ def visual_evidence_status_from_paper(paper: Paper) -> dict[str, Any]:
     missing_ocr_count = sum(1 for item in items if item.kind in VISUAL_TABLE_TYPES and not item.markdown)
     low_confidence_table_count = sum(1 for item in items if item.kind in VISUAL_TABLE_TYPES and item.confidence < 0.6)
     status = str(payload.get("status") or ("ready" if items else "empty"))
+    blocking_error = _visual_evidence_blocking_error(items)
     return {
         "ready": bool(items) and status == "ready",
         "status": status,
@@ -242,11 +243,30 @@ def visual_evidence_status_from_paper(paper: Paper) -> dict[str, Any]:
         "missing_summary_count": missing_summary_count,
         "missing_ocr_count": missing_ocr_count,
         "low_confidence_table_count": low_confidence_table_count,
-        "failed": status == "failed" or bool(error),
-        "last_error": payload.get("last_error") or (error if isinstance(error, dict) else None),
+        "failed": status == "failed" or bool(error) or bool(blocking_error),
+        "last_error": payload.get("last_error") or (error if isinstance(error, dict) else None) or blocking_error,
         "limits": payload.get("limits") if isinstance(payload.get("limits"), dict) else visual_evidence_limits(),
         "parser_health": visual_evidence_runtime_health(),
     }
+
+
+def _visual_evidence_blocking_error(items: list[VisualEvidenceItem]) -> Optional[dict[str, Any]]:
+    for item in items:
+        if item.kind not in VISUAL_TABLE_TYPES or item.markdown:
+            continue
+        metadata = item.metadata or {}
+        asset_error = str(metadata.get("asset_error") or "").strip()
+        if asset_error:
+            return {
+                "message": f"视觉 OCR 图片不可用：{asset_error}"[:1000],
+                "kind": "visual_ocr_asset_unavailable",
+            }
+        if not (item.asset_path or item.thumbnail_path):
+            return {
+                "message": "视觉 OCR 图片不可用：未生成表格页图或裁剪图",
+                "kind": "visual_ocr_asset_missing",
+            }
+    return None
 
 
 def visual_evidence_runtime_health() -> dict[str, Any]:

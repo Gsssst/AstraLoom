@@ -123,7 +123,7 @@ class PaperIngestionService:
             await self._assign_categories(new_paper, paper.categories)
 
         # 提交入库后自动处理任务：全文、结构化解析、视觉证据/OCR、向量和检索索引。
-        self._enqueue_processing(new_paper)
+        await self.enqueue_processing(new_paper)
 
         logger.info(f"新论文入库: {paper.title[:80]}... ({paper.arxiv_id or paper.doi})")
         return new_paper, True
@@ -223,8 +223,11 @@ class PaperIngestionService:
             return None
         return getattr(user, "username", None) or getattr(user, "display_name", None)
 
-    def _enqueue_processing(self, paper: Paper) -> None:
+    async def enqueue_processing(self, paper: Paper) -> None:
+        from app.services.paper_processing_pipeline import mark_paper_processing_queued
+
         try:
+            await mark_paper_processing_queued(self.session, paper)
             from app.tasks.paper_tasks import process_paper_pipeline
 
             task = process_paper_pipeline.delay(str(paper.id))

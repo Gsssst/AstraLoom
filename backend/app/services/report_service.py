@@ -32,6 +32,23 @@ GENERIC_TABLE_HEADER_PATTERN = re.compile(r"^column\s+\d+$", re.IGNORECASE)
 MERGED_NUMERIC_CELL_PATTERN = re.compile(r"(?:[+-]?\d+(?:\.\d+)?%?\s+){2,}[+-]?\d+(?:\.\d+)?%?")
 
 
+def sanitize_pdf_storage_value(value: Any) -> Any:
+    """Remove invalid PostgreSQL text/json characters from parser output."""
+
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, list):
+        return [sanitize_pdf_storage_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [sanitize_pdf_storage_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(sanitize_pdf_storage_value(key)): sanitize_pdf_storage_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
 def structured_block_text_limit(block_type: str) -> int:
     return MAX_STRUCTURED_TABLE_BLOCK_CHARS if block_type == "table" else MAX_STRUCTURED_BLOCK_CHARS
 
@@ -48,13 +65,13 @@ class StructuredPdfBlock:
 
     def to_metadata(self) -> dict[str, Any]:
         text_limit = MAX_STRUCTURED_TABLE_BLOCK_CHARS if self.block_type == "table" else MAX_STRUCTURED_BLOCK_CHARS
-        return {
+        return sanitize_pdf_storage_value({
             "type": self.block_type,
             "page": self.page,
             "source": self.source,
             "text": self.text[:text_limit],
             "metadata": self.metadata,
-        }
+        })
 
     @classmethod
     def from_metadata(cls, payload: dict[str, Any]) -> "StructuredPdfBlock":
@@ -95,7 +112,7 @@ class StructuredPdfExtraction:
 
     def to_metadata(self) -> dict[str, Any]:
         bounded_blocks = self.blocks[:MAX_STRUCTURED_BLOCKS]
-        return {
+        return sanitize_pdf_storage_value({
             "version": self.version,
             "source_path": self.source_path,
             "parser": self.parser,
@@ -106,7 +123,7 @@ class StructuredPdfExtraction:
             "visual_count": self.visual_count,
             "table_quality": structured_table_quality_from_blocks(bounded_blocks),
             "blocks": [block.to_metadata() for block in bounded_blocks],
-        }
+        })
 
     def to_evidence_blocks(self) -> list[dict[str, Any]]:
         return [
@@ -1104,6 +1121,7 @@ async def _persist_structured_pdf_metadata(
     metadata: dict[str, Any],
     db: Optional[AsyncSession] = None,
 ) -> None:
+    metadata = sanitize_pdf_storage_value(metadata)
     paper.metadata_json = metadata
     if db is not None:
         await db.execute(update(Paper).where(Paper.id == paper.id).values(metadata_json=metadata))
@@ -1213,7 +1231,7 @@ async def ensure_structured_pdf_content(paper: Paper) -> Optional[StructuredPdfE
         return extraction
 
     metadata = dict(getattr(paper, "metadata_json", None) or {})
-    metadata[PDF_STRUCTURED_METADATA_KEY] = extraction.to_metadata()
+    metadata[PDF_STRUCTURED_METADATA_KEY] = sanitize_pdf_storage_value(extraction.to_metadata())
     paper.metadata_json = metadata
     try:
         from app.db.session import AsyncSessionLocal
@@ -1261,7 +1279,7 @@ async def _download_and_parse_full_text(paper: Paper) -> str:
         logger.info("PDF 缓存可用: %s (%s)", clean_id, cached_pdf.path)
 
         # PDF 解析放到线程池，避免阻塞 asyncio 事件循环。
-        full_text = (await asyncio.to_thread(_extract_pdf_text, cached_pdf.path))[:50000]
+        full_text = sanitize_pdf_storage_value((await asyncio.to_thread(_extract_pdf_text, cached_pdf.path))[:50000])
         if len(full_text.strip()) < 200:
             logger.warning(f"PDF 未提取到有效正文: {clean_id}")
             return paper.abstract or ""
@@ -1269,7 +1287,8 @@ async def _download_and_parse_full_text(paper: Paper) -> str:
         structured_extraction = await asyncio.to_thread(extract_pdf_structured_content, cached_pdf.path)
         metadata = dict(getattr(paper, "metadata_json", None) or {})
         if structured_extraction.blocks:
-            metadata[PDF_STRUCTURED_METADATA_KEY] = structured_extraction.to_metadata()
+            metadata[PDF_STRUCTURED_METADATA_KEY] = sanitize_pdf_storage_value(structured_extraction.to_metadata())
+        metadata = sanitize_pdf_storage_value(metadata)
 
         # 保存到数据库（持久化，避免下次请求重新下载）
         paper.full_text = full_text

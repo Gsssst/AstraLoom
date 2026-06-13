@@ -281,6 +281,9 @@ const PDF_PANEL_MIN_PERCENT = 42;
 const PDF_PANEL_MAX_PERCENT = 82;
 const CHAT_COLLAPSE_THRESHOLD_PERCENT = 84;
 const CHAT_REOPEN_WIDTH_PERCENT = 65;
+const CONTENT_PANEL_MIN_PERCENT = 45;
+const CONTENT_PANEL_MAX_PERCENT = 78;
+const CONTENT_PANEL_DEFAULT_PERCENT = 65;
 
 const PaperDetailPage: React.FC = () => {
   const { paperId } = useParams<{ paperId: string }>();
@@ -302,6 +305,7 @@ const PaperDetailPage: React.FC = () => {
   const [targetPdfPage, setTargetPdfPage] = useState<number | null>(null);
   const [mobilePanel, setMobilePanel] = useState<'content' | 'pdf' | 'chat'>('content');
   const [pdfPanelWidth, setPdfPanelWidth] = useState(CHAT_REOPEN_WIDTH_PERCENT);
+  const [contentPanelWidth, setContentPanelWidth] = useState(CONTENT_PANEL_DEFAULT_PERCENT);
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const paperBodyRef = useRef<HTMLDivElement>(null);
   const screens = Grid.useBreakpoint();
@@ -407,6 +411,30 @@ const PaperDetailPage: React.FC = () => {
       }
       setChatCollapsed(false);
       setPdfPanelWidth(Math.min(Math.max(rawPercent, PDF_PANEL_MIN_PERCENT), PDF_PANEL_MAX_PERCENT));
+    };
+
+    const handlePointerUp = () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+  };
+
+  const handleContentChatResizePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (isMobile || showPdf) return;
+    event.preventDefault();
+    const container = paperBodyRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    event.currentTarget.setPointerCapture(event.pointerId);
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const rawPercent = ((moveEvent.clientX - rect.left) / rect.width) * 100;
+      setContentPanelWidth(Math.min(Math.max(rawPercent, CONTENT_PANEL_MIN_PERCENT), CONTENT_PANEL_MAX_PERCENT));
     };
 
     const handlePointerUp = () => {
@@ -1097,7 +1125,16 @@ const PaperDetailPage: React.FC = () => {
 
         {/* 中间内容 — 显示 PDF 时自动隐藏 */}
         {(isMobile ? mobilePanel === 'content' : !showPdf) && (
-        <div className="paper-detail-content-panel" style={{ flex: 1, overflowY: 'auto', padding: 16, borderRight: '1px solid #f0f0f0' }}>
+        <div
+          className="paper-detail-content-panel"
+          style={{
+            width: !isMobile && !showPdf ? `${contentPanelWidth}%` : undefined,
+            flex: !isMobile && !showPdf ? '0 0 auto' : 1,
+            overflowY: 'auto',
+            padding: 16,
+            borderRight: '1px solid #f0f0f0',
+          }}
+        >
           <Title level={4} style={{ marginTop: 0 }}>{paper.title}</Title>
           <Space size="small" wrap style={{ marginBottom: 12 }}>
             <Tag color="blue">{paper.year || 'N/A'}</Tag>
@@ -1394,6 +1431,16 @@ const PaperDetailPage: React.FC = () => {
         </div>
         )}
 
+        {!isMobile && !showPdf && (
+          <div
+            className="paper-detail-resize-handle paper-detail-content-chat-resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整正文和 AI 问答宽度"
+            onPointerDown={handleContentChatResizePointerDown}
+          />
+        )}
+
         {/* AI 问答面板 */}
         {(!isMobile || mobilePanel === 'chat') && chatCollapsed && showPdf ? (
           <div className="paper-detail-chat-rail">
@@ -1405,7 +1452,11 @@ const PaperDetailPage: React.FC = () => {
         ) : (!isMobile || mobilePanel === 'chat') && <div
           className="paper-detail-chat-panel"
           style={{
-            width: !isMobile && showPdf ? `calc(${100 - pdfPanelWidth}% - 10px)` : undefined,
+            width: !isMobile
+              ? showPdf
+                ? `calc(${100 - pdfPanelWidth}% - 10px)`
+                : `calc(${100 - contentPanelWidth}% - 10px)`
+              : undefined,
             display: 'flex',
             flexDirection: 'column',
             height: '100%',

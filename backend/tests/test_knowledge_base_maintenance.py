@@ -204,6 +204,41 @@ def test_visual_evidence_refresh_needed_includes_ready_but_incomplete_status():
     assert papers_api._visual_evidence_needs_extraction({"ready": True, "missing_ocr_count": 0}) is False
 
 
+def test_visual_evidence_status_reports_blocking_asset_error_for_missing_ocr():
+    paper = SimpleNamespace(
+        pdf_path="/data/paper.pdf",
+        metadata_json={
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "source_path": "/data/paper.pdf",
+                "parser": "pdfplumber",
+                "status": "ready",
+                "items": [
+                    {
+                        "id": "t1",
+                        "kind": "table",
+                        "page": 5,
+                        "status": "ready",
+                        "summary": "table",
+                        "metadata": {
+                            "asset_status": "unavailable",
+                            "asset_error": "fitz unavailable: No module named 'fitz'",
+                        },
+                    }
+                ],
+            }
+        },
+    )
+
+    status = document_visual_evidence.visual_evidence_status_from_paper(paper)
+
+    assert status["ready"] is True
+    assert status["failed"] is True
+    assert status["missing_ocr_count"] == 1
+    assert status["last_error"]["kind"] == "visual_ocr_asset_unavailable"
+    assert "fitz unavailable" in status["last_error"]["message"]
+
+
 def test_safe_paper_metadata_strips_private_visual_asset_paths():
     metadata = {
         "document_visual_evidence": {
@@ -982,6 +1017,22 @@ def test_retrieval_status_discloses_low_coverage_and_no_local_hits():
     assert "知识库维护补索引" in status
 
 
+def test_pdf_storage_sanitizer_removes_nul_bytes_recursively():
+    payload = {
+        "text": "abc\x00def",
+        "items": [{"caption": "x\x00y"}, ("a\x00", "b")],
+        "nested\x00key": {"value": "\x00z"},
+    }
+
+    cleaned = report_service.sanitize_pdf_storage_value(payload)
+
+    assert cleaned == {
+        "text": "abcdef",
+        "items": [{"caption": "xy"}, ["a", "b"]],
+        "nestedkey": {"value": "z"},
+    }
+
+
 def test_reconcile_task_skips_when_singleton_lock_is_held(monkeypatch):
     class _HeldLock:
         acquired = False
@@ -1041,6 +1092,44 @@ def test_reconcile_task_releases_singleton_lock(monkeypatch):
     assert events == ["enter", "exit"]
 
 
+def test_reconcile_task_disposes_async_db_engine(monkeypatch):
+    disposed = []
+
+    class _OwnedLock:
+        acquired = True
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    async def fake_reconcile(self, **_kwargs):
+        return {
+            "processed": 0,
+            "success": 0,
+            "failed": 0,
+            "skipped": 0,
+            "items": [],
+            "errors": [],
+        }
+
+    async def fake_dispose():
+        disposed.append(True)
+
+    monkeypatch.setattr(paper_tasks, "_RedisTaskLock", _OwnedLock)
+    monkeypatch.setattr(paper_tasks, "_dispose_async_db_engine", fake_dispose)
+    monkeypatch.setattr(paper_processing_pipeline.PaperProcessingPipeline, "reconcile_batch", fake_reconcile)
+
+    result = paper_tasks.reconcile_paper_processing.run(limit=5)
+
+    assert result["status"] == "success"
+    assert disposed == [True]
+
+
 def test_processing_running_state_classifies_fresh_and_stale():
     fresh = SimpleNamespace(
         metadata_json={
@@ -1062,6 +1151,46 @@ def test_processing_running_state_classifies_fresh_and_stale():
 
     assert paper_processing_pipeline.paper_processing_running_state(fresh, now=now, ttl_seconds=7200)["fresh"] is True
     assert paper_processing_pipeline.paper_processing_running_state(stale, now=now, ttl_seconds=7200)["stale"] is True
+
+
+def test_processing_snapshot_prefers_running_visual_state_over_stale_error():
+    paper = SimpleNamespace(
+        metadata_json={
+            "pdf_url": "https://arxiv.org/pdf/2606.00004",
+            paper_processing_pipeline.PIPELINE_METADATA_KEY: {
+                "running_steps": ["visual_evidence"],
+                "last_checked_at": "2026-06-13T00:00:00+00:00",
+            },
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "source_path": "/data/paper.pdf",
+                "status": "ready",
+                "items": [
+                    {
+                        "id": "t1",
+                        "kind": "table",
+                        "status": "ready",
+                        "metadata": {"asset_error": "fitz unavailable: No module named 'fitz'"},
+                    }
+                ],
+            },
+        },
+        pdf_path="/data/paper.pdf",
+        arxiv_id="2606.00004",
+        full_text="x" * 600,
+        embedding=[0.1],
+        tags=[],
+    )
+
+    snapshot = paper_processing_pipeline.paper_processing_snapshot(
+        paper,
+        bm25_status={"ready": True, "indexed_papers": 1},
+    )
+    visual = next(label for label in snapshot.labels if label.key == "visual_evidence")
+
+    assert snapshot.status == "processing"
+    assert visual.state == "running"
+    assert visual.detail == "后台正在补视觉 OCR"
 
 
 @pytest.mark.asyncio
@@ -1146,3 +1275,137 @@ async def test_reconcile_batch_skips_fresh_running_and_retries_stale(monkeypatch
     assert summary["stale_running_cleared"] == 1
     assert fresh.metadata_json[paper_processing_pipeline.PIPELINE_METADATA_KEY]["running_steps"] == ["visual_evidence"]
     assert stale.metadata_json[paper_processing_pipeline.PIPELINE_METADATA_KEY]["running_steps"] == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_batch_rolls_back_after_single_paper_failure(monkeypatch):
+    first = SimpleNamespace(
+        id=uuid4(),
+        title="Bad PDF",
+        arxiv_id="2606.00001",
+        pdf_path=None,
+        full_text=None,
+        embedding=None,
+        tags=[],
+        metadata_json={"pdf_url": "https://arxiv.org/pdf/2606.00001"},
+    )
+    second = SimpleNamespace(
+        id=uuid4(),
+        title="Good PDF",
+        arxiv_id="2606.00002",
+        pdf_path=None,
+        full_text=None,
+        embedding=None,
+        tags=[],
+        metadata_json={"pdf_url": "https://arxiv.org/pdf/2606.00002"},
+    )
+    rollbacks = []
+    calls = []
+
+    class _Rows:
+        def all(self):
+            return [first, second]
+
+    class _Result:
+        def scalars(self):
+            return _Rows()
+
+    class _Session:
+        async def execute(self, _statement):
+            return _Result()
+
+        async def commit(self):
+            return None
+
+        async def rollback(self):
+            rollbacks.append(True)
+
+    async def fake_process(self, paper_id, **_kwargs):
+        calls.append(str(paper_id))
+        if str(paper_id) == str(first.id):
+            raise RuntimeError("bad pdf")
+        return paper_processing_pipeline.PaperProcessingResult(
+            paper_id=str(paper_id),
+            title="Good PDF",
+            completed=["full_text"],
+        )
+
+    monkeypatch.setattr(paper_processing_pipeline.PaperProcessingPipeline, "process_paper", fake_process)
+
+    summary = await paper_processing_pipeline.PaperProcessingPipeline(_Session()).reconcile_batch(
+        limit=5,
+        rebuild_bm25=False,
+    )
+
+    assert calls == [str(first.id), str(second.id)]
+    assert rollbacks == [True]
+    assert summary["failed"] == 1
+    assert summary["success"] == 1
+    assert summary["errors"][0]["paper_id"] == str(first.id)
+
+
+@pytest.mark.asyncio
+async def test_process_paper_marks_incomplete_visual_ocr_as_failed(monkeypatch):
+    paper = SimpleNamespace(
+        id=uuid4(),
+        title="Incomplete visual OCR",
+        arxiv_id="2606.00003",
+        pdf_path="/data/paper.pdf",
+        full_text="x" * 600,
+        embedding=[0.1],
+        tags=[],
+        metadata_json={
+            "pdf_url": "https://arxiv.org/pdf/2606.00003",
+            report_service.PDF_STRUCTURED_METADATA_KEY: {
+                "version": report_service.PDF_STRUCTURED_METADATA_VERSION,
+                "source_path": "/data/paper.pdf",
+                "parser": "pdfplumber",
+                "page_count": 1,
+                "blocks": [{"type": "table", "text": "| A | B |", "page": 1}],
+            },
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "source_path": "/data/paper.pdf",
+                "parser": "pdfplumber",
+                "status": "ready",
+                "items": [{"id": "t1", "kind": "table", "status": "ready", "summary": "table"}],
+            },
+        },
+    )
+
+    class _ScalarOneResult:
+        def scalar_one_or_none(self):
+            return paper
+
+    class _Session:
+        async def execute(self, _statement):
+            return _ScalarOneResult()
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, _paper):
+            return None
+
+    async def fake_ensure(paper_arg, _db, force=False):
+        assert paper_arg is paper
+        assert force is True
+        return paper.metadata_json[document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY]
+
+    monkeypatch.setattr(document_visual_evidence, "ensure_document_visual_evidence", fake_ensure)
+
+    result = await paper_processing_pipeline.PaperProcessingPipeline(_Session()).process_paper(
+        paper.id,
+        include_visual=True,
+        rebuild_bm25=False,
+    )
+
+    assert result.completed == []
+    assert result.failed[0]["step"] == "visual_evidence"
+    assert "视觉 OCR 图片不可用" in result.failed[0]["reason"]
+    snapshot = paper_processing_pipeline.paper_processing_snapshot(
+        paper,
+        bm25_status={"ready": True, "indexed_papers": 1},
+    )
+    assert snapshot.status == "failed"
+    assert snapshot.failed == ["visual_evidence"]

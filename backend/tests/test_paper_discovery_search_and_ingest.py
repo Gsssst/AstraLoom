@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from app.api import papers as papers_api
+from app.services import paper_processing_pipeline
 from app.services.paper_ingestion import PaperIngestionService
 from app.tasks import paper_tasks
 from app.services.paper_search import (
@@ -238,6 +239,9 @@ async def test_ingest_paper_enqueues_automatic_processing(monkeypatch):
     assert commits
     assert refreshed == [paper]
     assert queued == [str(paper_id)]
+    pipeline = paper.metadata_json[paper_processing_pipeline.PIPELINE_METADATA_KEY]
+    assert "full_text" in pipeline["queued_steps"]
+    assert "visual_evidence" in pipeline["queued_steps"]
 
 
 def test_paper_imported_by_user_matches_id_and_username_fallback():
@@ -256,6 +260,90 @@ def test_paper_imported_by_user_matches_id_and_username_fallback():
         SimpleNamespace(imported_by_user_id=None, imported_by_username="other"),
         user,
     )
+
+
+@pytest.mark.asyncio
+async def test_bibtex_import_enqueues_processing_for_created_papers(monkeypatch):
+    added = []
+    commits = []
+    refreshed = []
+    enqueued = []
+
+    class _Upload:
+        async def read(self):
+            return b"@article{numpro,title={Number it},author={A and B},year={2024},eprint={2411.10332v3}}"
+
+    class _Rows:
+        def scalar_one_or_none(self):
+            return None
+
+    class _Session:
+        async def execute(self, _statement):
+            return _Rows()
+
+        def add(self, paper):
+            paper.id = uuid4()
+            paper.metadata_json = paper.metadata_json or {}
+            added.append(paper)
+
+        async def commit(self):
+            commits.append(True)
+
+        async def refresh(self, paper):
+            refreshed.append(paper)
+
+    async def fake_enqueue(_self, paper):
+        enqueued.append(str(paper.id))
+
+    monkeypatch.setattr(papers_api.PaperIngestionService, "enqueue_processing", fake_enqueue)
+
+    result = await papers_api.import_bibtex(_Upload(), db=_Session(), user=SimpleNamespace(id=uuid4(), username="gst"))
+
+    assert result == {"imported": 1, "skipped": 0}
+    assert len(added) == 1
+    assert commits
+    assert refreshed == added
+    assert enqueued == [str(added[0].id)]
+
+
+@pytest.mark.asyncio
+async def test_zotero_import_enqueues_processing_for_created_papers(monkeypatch):
+    added = []
+    enqueued = []
+
+    class _Upload:
+        async def read(self):
+            return b"Title,Author,Publication Year,DOI,Abstract Note\nTemporal Grounding,Alice; Bob,2024,10.1/test,Abstract"
+
+    class _Rows:
+        def scalar_one_or_none(self):
+            return None
+
+    class _Session:
+        async def execute(self, _statement):
+            return _Rows()
+
+        def add(self, paper):
+            paper.id = uuid4()
+            paper.metadata_json = paper.metadata_json or {}
+            added.append(paper)
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, paper):
+            return None
+
+    async def fake_enqueue(_self, paper):
+        enqueued.append(str(paper.id))
+
+    monkeypatch.setattr(papers_api.PaperIngestionService, "enqueue_processing", fake_enqueue)
+
+    result = await papers_api.import_zotero_csv(_Upload(), db=_Session(), user=SimpleNamespace(id=uuid4(), username="gst"))
+
+    assert result == {"imported": 1, "skipped": 0}
+    assert len(added) == 1
+    assert enqueued == [str(added[0].id)]
 
 
 @pytest.mark.asyncio

@@ -70,6 +70,16 @@ test('paper chat evidence meta includes visual evidence counts from backend cont
   assert.match(paperDetailSource, /visual_evidence_available\?: boolean/);
 });
 
+test('paper detail chat can resize against content when PDF is hidden', () => {
+  assert.match(paperDetailSource, /CONTENT_PANEL_DEFAULT_PERCENT/);
+  assert.match(paperDetailSource, /contentPanelWidth/);
+  assert.match(paperDetailSource, /handleContentChatResizePointerDown/);
+  assert.match(paperDetailSource, /paper-detail-content-chat-resize-handle/);
+  assert.match(paperDetailSource, /调整正文和 AI 问答宽度/);
+  assert.match(paperDetailSource, /100 - contentPanelWidth/);
+  assert.match(paperDetailSource, /showPdf\)\s*return/);
+});
+
 test('paper maintenance center exposes visual evidence jobs without table-repair wording', () => {
   assert.match(papersPageSource, /\/papers\/maintenance\/backfill-visual-evidence\?limit=5/);
   assert.match(papersPageSource, /兜底提取视觉证据/);
