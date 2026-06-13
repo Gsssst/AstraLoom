@@ -133,14 +133,14 @@ def paper_processing_running_state(
         if step
     ]
     active_steps = sorted({*running_steps, *queued_steps})
-    if not active_steps:
+    if not running_steps:
         return {
             "running": False,
             "fresh": False,
             "stale": False,
             "running_steps": [],
-            "queued_steps": [],
-            "active_steps": [],
+            "queued_steps": queued_steps,
+            "active_steps": active_steps,
             "last_checked_at": pipeline.get("last_checked_at"),
             "age_seconds": None,
         }
@@ -170,6 +170,10 @@ def paper_has_fresh_running_steps(
     return bool(paper_processing_running_state(paper, now=now, ttl_seconds=ttl_seconds).get("fresh"))
 
 
+def _step_names(value: Any) -> set[str]:
+    return {str(step) for step in (value or []) if step}
+
+
 async def clear_stale_paper_processing_steps(
     db: AsyncSession,
     paper: Paper,
@@ -181,6 +185,24 @@ async def clear_stale_paper_processing_steps(
     if not state.get("stale"):
         return False
     await _store_pipeline_metadata(db, paper, clear_running=True)
+    return True
+
+
+async def clear_ready_paper_processing_steps(db: AsyncSession, paper: Paper) -> bool:
+    """Clear queued/running metadata for steps whose artifacts are already ready."""
+
+    pipeline = _pipeline_metadata(paper)
+    active_steps = _step_names(pipeline.get("queued_steps")) | _step_names(pipeline.get("running_steps"))
+    if not active_steps:
+        return False
+
+    snapshot = paper_processing_snapshot(paper)
+    ready_steps = {label.key for label in snapshot.labels if label.ready}
+    clear_steps = sorted(active_steps & ready_steps)
+    if not clear_steps:
+        return False
+
+    await _store_pipeline_metadata(db, paper, clear_steps=clear_steps)
     return True
 
 
@@ -372,6 +394,8 @@ async def _store_pipeline_metadata(
     completed_step: Optional[str] = None,
     failed_step: Optional[str] = None,
     error: Optional[str] = None,
+    clear_steps: Optional[list[str]] = None,
+    clear_queued: bool = False,
     clear_running: bool = False,
 ) -> None:
     metadata = dict(getattr(paper, "metadata_json", None) or {})
@@ -390,6 +414,12 @@ async def _store_pipeline_metadata(
     if failed_step:
         queued.discard(failed_step)
         running.discard(failed_step)
+    if clear_steps:
+        steps_to_clear = set(clear_steps)
+        queued.difference_update(steps_to_clear)
+        running.difference_update(steps_to_clear)
+    if clear_queued:
+        queued.clear()
     if clear_running:
         queued.clear()
         running.clear()
@@ -397,6 +427,9 @@ async def _store_pipeline_metadata(
     failed_steps = pipeline.get("failed_steps") if isinstance(pipeline.get("failed_steps"), dict) else {}
     if completed_step:
         failed_steps.pop(completed_step, None)
+    if clear_steps:
+        for step in clear_steps:
+            failed_steps.pop(step, None)
     if failed_step:
         failed_steps[failed_step] = {"message": (error or "")[:1000], "failed_at": now}
 
@@ -461,6 +494,9 @@ class PaperProcessingPipeline:
         output = PaperProcessingResult(paper_id=str(paper.id), title=paper.title)
         output.before = paper_processing_snapshot(paper)
         steps_run = 0
+        await clear_ready_paper_processing_steps(self.session, paper)
+        await _store_pipeline_metadata(self.session, paper, clear_queued=True)
+        await self.session.refresh(paper)
 
         async def run_step(step: str, fn) -> None:
             nonlocal steps_run
@@ -583,8 +619,11 @@ class PaperProcessingPipeline:
         selected: list[Paper] = []
         skipped_running: list[dict[str, Any]] = []
         stale_running_cleared = 0
+        ready_active_cleared = 0
         now = datetime.now(timezone.utc)
         for paper in candidates:
+            if await clear_ready_paper_processing_steps(self.session, paper):
+                ready_active_cleared += 1
             running_state = paper_processing_running_state(
                 paper,
                 now=now,
@@ -621,6 +660,7 @@ class PaperProcessingPipeline:
             "skipped": 0,
             "skipped_running": len(skipped_running),
             "stale_running_cleared": stale_running_cleared,
+            "ready_active_cleared": ready_active_cleared,
             "items": [],
             "errors": [],
         }

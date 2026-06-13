@@ -1331,6 +1331,60 @@ def test_processing_running_state_classifies_fresh_and_stale():
     assert paper_processing_pipeline.paper_processing_running_state(stale, now=now, ttl_seconds=7200)["stale"] is True
 
 
+def test_processing_running_state_does_not_treat_queued_as_running():
+    queued = SimpleNamespace(
+        metadata_json={
+            paper_processing_pipeline.PIPELINE_METADATA_KEY: {
+                "queued_steps": ["full_text", "visual_evidence"],
+                "running_steps": [],
+                "last_checked_at": "2026-06-13T00:00:00+00:00",
+            }
+        }
+    )
+    now = paper_processing_pipeline.datetime.fromisoformat("2026-06-13T00:30:00+00:00")
+
+    state = paper_processing_pipeline.paper_processing_running_state(queued, now=now, ttl_seconds=7200)
+
+    assert state["running"] is False
+    assert state["fresh"] is False
+    assert state["queued_steps"] == ["full_text", "visual_evidence"]
+    assert state["active_steps"] == ["full_text", "visual_evidence"]
+
+
+@pytest.mark.asyncio
+async def test_clear_ready_paper_processing_steps_removes_ready_active_metadata():
+    paper = SimpleNamespace(
+        id=uuid4(),
+        title="Ready full text with stale marker",
+        arxiv_id="2606.00006",
+        pdf_path="/data/paper.pdf",
+        full_text="x" * 600,
+        embedding=None,
+        tags=[],
+        metadata_json={
+            paper_processing_pipeline.PIPELINE_METADATA_KEY: {
+                "queued_steps": ["embedding"],
+                "running_steps": ["full_text"],
+                "last_checked_at": "2026-06-13T00:00:00+00:00",
+            },
+            "pdf_url": "https://arxiv.org/pdf/2606.00006",
+        },
+    )
+    commits = []
+
+    class _Session:
+        async def commit(self):
+            commits.append(True)
+
+    changed = await paper_processing_pipeline.clear_ready_paper_processing_steps(_Session(), paper)
+
+    pipeline = paper.metadata_json[paper_processing_pipeline.PIPELINE_METADATA_KEY]
+    assert changed is True
+    assert commits
+    assert pipeline["running_steps"] == []
+    assert pipeline["queued_steps"] == ["embedding"]
+
+
 def test_processing_snapshot_prefers_running_visual_state_over_stale_error():
     paper = SimpleNamespace(
         metadata_json={
@@ -1510,6 +1564,63 @@ async def test_reconcile_batch_skips_fresh_running_and_retries_stale(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_reconcile_batch_selects_queued_only_papers(monkeypatch):
+    queued = SimpleNamespace(
+        id=uuid4(),
+        title="Queued only",
+        arxiv_id="2606.00007",
+        pdf_path=None,
+        full_text=None,
+        embedding=None,
+        tags=[],
+        metadata_json={
+            paper_processing_pipeline.PIPELINE_METADATA_KEY: {
+                "queued_steps": ["full_text", "visual_evidence"],
+                "running_steps": [],
+                "last_checked_at": "2026-06-13T00:00:00+00:00",
+            },
+            "pdf_url": "https://arxiv.org/pdf/2606.00007",
+        },
+    )
+    calls = []
+
+    class _Rows:
+        def all(self):
+            return [queued]
+
+    class _Result:
+        def scalars(self):
+            return _Rows()
+
+    class _Session:
+        async def execute(self, _statement):
+            return _Result()
+
+        async def commit(self):
+            return None
+
+    async def fake_process(self, paper_id, **_kwargs):
+        calls.append(str(paper_id))
+        return paper_processing_pipeline.PaperProcessingResult(
+            paper_id=str(paper_id),
+            title="Queued only",
+            completed=["full_text"],
+        )
+
+    monkeypatch.setattr(paper_processing_pipeline.PaperProcessingPipeline, "process_paper", fake_process)
+
+    summary = await paper_processing_pipeline.PaperProcessingPipeline(_Session()).reconcile_batch(
+        limit=5,
+        rebuild_bm25=False,
+    )
+
+    assert calls == [str(queued.id)]
+    assert summary["processed"] == 1
+    assert summary["success"] == 1
+    assert summary["skipped_running"] == 0
+
+
+@pytest.mark.asyncio
 async def test_reconcile_batch_rolls_back_after_single_paper_failure(monkeypatch):
     first = SimpleNamespace(
         id=uuid4(),
@@ -1574,6 +1685,65 @@ async def test_reconcile_batch_rolls_back_after_single_paper_failure(monkeypatch
     assert summary["failed"] == 1
     assert summary["success"] == 1
     assert summary["errors"][0]["paper_id"] == str(first.id)
+
+
+@pytest.mark.asyncio
+async def test_process_paper_executes_missing_work_when_queued(monkeypatch):
+    paper = SimpleNamespace(
+        id=uuid4(),
+        title="Queued full text",
+        arxiv_id="2606.00008",
+        pdf_path=None,
+        full_text=None,
+        embedding=[0.1],
+        tags=[],
+        metadata_json={
+            paper_processing_pipeline.PIPELINE_METADATA_KEY: {
+                "queued_steps": ["full_text"],
+                "running_steps": [],
+                "last_checked_at": "2026-06-13T00:00:00+00:00",
+            },
+            "pdf_url": "https://arxiv.org/pdf/2606.00008",
+        },
+    )
+    commits = []
+    refreshes = []
+
+    class _ScalarOneResult:
+        def scalar_one_or_none(self):
+            return paper
+
+    class _Session:
+        async def execute(self, _statement):
+            return _ScalarOneResult()
+
+        async def commit(self):
+            commits.append(True)
+
+        async def refresh(self, _paper):
+            refreshes.append(_paper.id)
+
+    async def fake_ensure_full_text(paper_arg):
+        assert paper_arg is paper
+        paper.full_text = "x" * 700
+        return paper.full_text
+
+    monkeypatch.setattr(report_service, "ensure_full_text", fake_ensure_full_text)
+
+    result = await paper_processing_pipeline.PaperProcessingPipeline(_Session()).process_paper(
+        paper.id,
+        max_steps=1,
+        include_visual=False,
+        rebuild_bm25=False,
+    )
+
+    pipeline = paper.metadata_json[paper_processing_pipeline.PIPELINE_METADATA_KEY]
+    assert result.attempted == ["full_text"]
+    assert result.completed == ["full_text"]
+    assert pipeline["queued_steps"] == []
+    assert pipeline["running_steps"] == []
+    assert commits
+    assert refreshes
 
 
 @pytest.mark.asyncio
