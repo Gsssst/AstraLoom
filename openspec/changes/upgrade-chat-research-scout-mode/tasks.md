@@ -26,9 +26,10 @@
 - [x] 5.1 Constrain message reading width and make assistant answers feel like work artifacts.
 - [x] 5.2 Restyle references, stream status, and candidate cards to sit inside the answer flow.
 - [x] 5.3 Keep the existing session list, controls, uploads, thinking, and streaming behavior intact.
+- [x] 5.4 Replace the legacy prompt shortcut row with a Codex-like single composer surface.
 
 ## 6. Follow-Up Iterations
 
-- [ ] 6.1 Add "加入分类" directly from Research Scout cards.
-- [ ] 6.2 Add "加入研究方向素材池" directly from Research Scout cards.
-- [ ] 6.3 Promote repeated Research Scout actions into a broader tool/agent mode.
+- [x] 6.1 Add "加入分类" directly from Research Scout cards.
+- [x] 6.2 Add "加入研究方向素材池" directly from Research Scout cards.
+- [x] 6.3 Promote repeated Research Scout actions into a broader tool/agent mode.

@@ -251,6 +251,11 @@ RETRIEVAL_DEPTH_LIMITS = {
     "deep": {"rag_papers": 5, "web_results": 8, "web_queries": 5},
 }
 RESEARCH_SCOUT_LIMITS = {"quick": 5, "standard": 8, "deep": 12}
+RESEARCH_SCOUT_INTENT_YEAR_RE = re.compile(r"\b(20\d{2}|19\d{2})\b")
+RESEARCH_SCOUT_RECENT_HINTS = {"recent", "latest", "new", "newest", "sota", "2024", "2025", "2026", "近", "最新", "近期", "近年"}
+RESEARCH_SCOUT_REPRO_HINTS = {"reproducible", "replication", "code", "github", "可复现", "复现", "代码"}
+RESEARCH_SCOUT_CITATION_HINTS = {"high citation", "highly cited", "经典", "高引用", "seminal", "survey"}
+RESEARCH_SCOUT_NOVEL_HINTS = {"interesting", "novel", "新颖", "有趣", "idea", "inspiration"}
 
 EMPTY_STREAM_FALLBACK = "⚠️ 模型本轮未返回可展示内容，请重新发送问题或稍后重试。"
 INTERRUPTED_STREAM_FALLBACK = "\n\n> ⚠️ 回答生成中途出现异常，以上内容可能不完整，请重试。"
@@ -376,6 +381,50 @@ def _research_scout_rationale(paper: PaperResult, query: str, rank: int) -> dict
         "why_interesting": f"候选 #{rank} 在题名/摘要中呈现与当前问题相关的线索，{signals[0]}。",
         "why_useful": "适合先作为快速阅读对象，用来判断该方向的方法、任务或实验设置是否值得纳入后续研究。",
         "caveat": "推荐理由基于标题、摘要和元数据，关键结论仍需要阅读全文和实验表格确认。",
+        "library_relation": "可先作为外部候选补充到论文库，再根据阅读结果归入分类或研究方向素材池。",
+    }
+
+
+def _research_scout_intent(query: str, search_depth: str) -> dict[str, Any]:
+    lowered = (query or "").lower()
+    tokens = [
+        token
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}", lowered)
+        if token not in {"find", "some", "paper", "papers", "about", "with", "from", "into", "that"}
+    ]
+    years = sorted({int(item) for item in RESEARCH_SCOUT_INTENT_YEAR_RE.findall(query or "")})
+    methods = [
+        term for term in tokens
+        if term in {"transformer", "diffusion", "rag", "llm", "vlm", "contrastive", "alignment", "retrieval", "grounding"}
+    ]
+    datasets = [
+        term.upper() for term in tokens
+        if term in {"charades", "activitynet", "tacos", "didemo", "ego4d", "anet"}
+    ]
+    tasks = []
+    if "grounding" in lowered:
+        tasks.append("grounding")
+    if "retrieval" in lowered or "moment" in lowered:
+        tasks.append("moment retrieval")
+    if "video" in lowered:
+        tasks.append("video understanding")
+    preferences = []
+    if any(hint in lowered for hint in RESEARCH_SCOUT_NOVEL_HINTS):
+        preferences.append("novel_or_interesting")
+    if any(hint in lowered for hint in RESEARCH_SCOUT_REPRO_HINTS):
+        preferences.append("reproducible")
+    if any(hint in lowered for hint in RESEARCH_SCOUT_CITATION_HINTS):
+        preferences.append("high_citation")
+    if any(hint in lowered for hint in RESEARCH_SCOUT_RECENT_HINTS):
+        preferences.append("recent")
+    return {
+        "topic": " ".join(tokens[:8]) or query,
+        "years": years,
+        "methods": sorted(set(methods)),
+        "datasets": sorted(set(datasets)),
+        "tasks": sorted(set(tasks)),
+        "preferences": preferences or ["relevance"],
+        "search_depth": search_depth,
     }
 
 
@@ -464,6 +513,7 @@ async def _build_research_scout_context(query: str, search_depth: str) -> tuple[
             "content": (
                 "当前处于 Research Scout 论文猎手模式。你不是普通聊天助手，而是科研论文发现助手。"
                 "请基于以下候选论文，推荐最值得用户优先阅读的论文。必须区分：为什么有趣、为什么对用户有用、风险/局限、下一步检索方向。"
+                "回答末尾必须给出“优先阅读 Top 3”，每项用 [PAPER-N] 编号并说明先读原因。"
                 "引用候选时使用 [PAPER-N] 编号，不要编造候选列表之外的论文。\n\n"
                 f"{_format_research_scout_context(candidates)}"
             ),
@@ -764,7 +814,9 @@ async def send_message(
     )
     references.extend(upload_visual_refs)
     scout_candidates: list[dict[str, Any]] = []
+    scout_intent: dict[str, Any] | None = None
     if req.assistant_mode == "research_scout":
+        scout_intent = _research_scout_intent(req.content, req.search_depth)
         scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, req.search_depth)
         context = [*scout_context, *context]
         references.extend(scout_refs)
@@ -856,7 +908,9 @@ async def send_message_stream(
     )
     references.extend(upload_visual_refs)
     scout_candidates: list[dict[str, Any]] = []
+    scout_intent: dict[str, Any] | None = None
     if req.assistant_mode == "research_scout":
+        scout_intent = _research_scout_intent(req.content, req.search_depth)
         scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, req.search_depth)
         context = [*scout_context, *context]
         references.extend(scout_refs)
@@ -890,6 +944,7 @@ async def send_message_stream(
                 "research_scout": {
                     "enabled": req.assistant_mode == "research_scout",
                     "query": req.content,
+                    "intent": scout_intent,
                     "candidates": scout_candidates,
                     "candidate_count": len(scout_candidates),
                 } if req.assistant_mode == "research_scout" else None,

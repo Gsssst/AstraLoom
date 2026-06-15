@@ -17,6 +17,11 @@ const backendChatSource = readFileSync(
   'utf8',
 );
 
+const backendResearchSource = readFileSync(
+  new URL('../../backend/app/api/research.py', import.meta.url),
+  'utf8',
+);
+
 test('chat page exposes Research Scout mode and sends assistant_mode', () => {
   assert.match(chatPageSource, /type ChatAssistantMode = 'general' \| 'research_scout'/);
   assert.match(chatPageSource, /chat-assistant-mode-select/);
@@ -40,6 +45,7 @@ test('chat page renders Research Scout candidate cards', () => {
 
 test('Research Scout cards support ingestion and follow-up search loops', () => {
   assert.match(chatPageSource, /handleResearchScoutIngest/);
+  assert.match(chatPageSource, /ensureResearchScoutIngested/);
   assert.match(chatPageSource, /\/papers\/ingest-personal/);
   assert.match(chatPageSource, /remote_ingest_token: paper\.ingest_token/);
   assert.match(chatPageSource, /加入论文库/);
@@ -47,11 +53,44 @@ test('Research Scout cards support ingestion and follow-up search loops', () => 
   assert.match(chatPageSource, /continueScoutSearch/);
 });
 
+test('Research Scout cards can route candidates into collections and research projects', () => {
+  assert.match(chatPageSource, /ResearchScoutIntent/);
+  assert.match(chatPageSource, /renderResearchScoutIntent/);
+  assert.match(chatPageSource, /检索意图拆解/);
+  assert.match(chatPageSource, /paper\.caveat/);
+  assert.match(chatPageSource, /paper\.library_relation/);
+  assert.match(chatPageSource, /handleAddScoutToCollection/);
+  assert.match(chatPageSource, /\/folders\/\$\{selectedCollectionId\}\/papers/);
+  assert.match(chatPageSource, /handleAddScoutToProject/);
+  assert.match(chatPageSource, /\/research\/projects\/\$\{selectedProjectId\}\/papers/);
+  assert.match(chatPageSource, /加入研究方向素材池/);
+});
+
+test('chat sidebar collapses to a hover rail and send button uses a compact arrow control', () => {
+  assert.match(chatPageSource, /sidebarHoverOpen/);
+  assert.match(chatPageSource, /chat-session-rail/);
+  assert.match(chatPageSource, /desktopSidebarOpen \? 272 : 52/);
+  assert.match(chatPageSource, /ArrowUpOutlined/);
+  assert.match(responsiveSource, /\.chat-session-rail/);
+  assert.match(responsiveSource, /\.chat-session-sidebar\.is-open \.chat-session-panel/);
+});
+
+test('chat composer uses a Codex-like single input surface without legacy shortcut chips', () => {
+  assert.doesNotMatch(chatPageSource, /promptShortcuts/);
+  assert.doesNotMatch(chatPageSource, /chat-prompt-shortcuts/);
+  assert.doesNotMatch(chatPageSource, /润色文本/);
+  assert.match(chatPageSource, /chat-editor-footer/);
+  assert.match(chatPageSource, /chat-composer-mode/);
+  assert.match(chatPageSource, /chat-plus-button/);
+});
+
 test('Research Scout styles are scoped', () => {
   assert.match(responsiveSource, /\.chat-assistant-mode-select/);
   assert.match(responsiveSource, /\.research-scout-cards/);
   assert.match(responsiveSource, /\.research-scout-grid/);
   assert.match(responsiveSource, /\.research-scout-card/);
+  assert.match(responsiveSource, /\.research-scout-intent/);
+  assert.match(responsiveSource, /\.research-scout-risk/);
   assert.match(responsiveSource, /\.research-scout-refine-button/);
   assert.match(responsiveSource, /\.chat-message-row/);
   assert.match(responsiveSource, /\.chat-message-bubble/);
@@ -64,6 +103,16 @@ test('backend streams Research Scout metadata from scholarly discovery', () => {
   assert.match(backendChatSource, /search_scholarly_papers\(/);
   assert.match(backendChatSource, /source="scholarly"/);
   assert.match(backendChatSource, /_build_research_scout_context/);
+  assert.match(backendChatSource, /_research_scout_intent/);
+  assert.match(backendChatSource, /library_relation/);
+  assert.match(backendChatSource, /优先阅读 Top 3/);
+  assert.match(backendChatSource, /"intent": scout_intent/);
   assert.match(backendChatSource, /"research_scout": \{/);
   assert.match(backendChatSource, /论文猎手已整理/);
+});
+
+test('backend exposes research project paper append endpoint for scout actions', () => {
+  assert.match(backendResearchSource, /class ProjectPaperAddRequest/);
+  assert.match(backendResearchSource, /@router\.post\("\/projects\/\{project_id\}\/papers"\)/);
+  assert.match(backendResearchSource, /project\.paper_ids = current_ids/);
 });

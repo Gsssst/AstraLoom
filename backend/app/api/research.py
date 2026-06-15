@@ -16,7 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
 from app.db.models.research import ResearchProject, ResearchIdea, ResearchIdeaRun
-from app.db.models.paper import Folder, PaperFolderItem
+from app.db.models.paper import Folder, Paper, PaperFolderItem
 from app.services.research_service import ResearchPipelineService
 from app.services.research_idea_workbench import ResearchIdeaWorkbenchService
 from app.services.writing_project_service import WritingProjectService
@@ -122,6 +122,10 @@ class ProjectCreate(BaseModel):
     keywords: Optional[List[str]] = None
     paper_ids: Optional[List[str]] = None
     collection_ids: Optional[List[str]] = None
+
+
+class ProjectPaperAddRequest(BaseModel):
+    paper_ids: List[str] = Field(..., min_length=1, max_length=50)
 
 
 class IdeaBrief(BaseModel):
@@ -739,6 +743,36 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_db), curre
         ],
         created_at=project.created_at.isoformat() if project.created_at else "",
     )
+
+
+@router.post("/projects/{project_id}/papers")
+async def add_project_papers(
+    project_id: str,
+    req: ProjectPaperAddRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Append local papers to a research direction evidence pool."""
+    project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
+    paper_ids = [_parse_uuid(value, "paper_id") for value in req.paper_ids]
+    existing_result = await db.execute(select(Paper.id).where(Paper.id.in_(paper_ids)))
+    existing = set(existing_result.scalars().all())
+    missing = [str(pid) for pid in paper_ids if pid not in existing]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"论文不存在: {', '.join(missing[:3])}")
+
+    current_ids = [str(value) for value in (project.paper_ids or [])]
+    current_set = set(current_ids)
+    added = 0
+    for pid in paper_ids:
+        raw = str(pid)
+        if raw not in current_set:
+            current_ids.append(raw)
+            current_set.add(raw)
+            added += 1
+    project.paper_ids = current_ids
+    await db.commit()
+    return {"project_id": str(project.id), "added": added, "skipped": len(paper_ids) - added, "paper_ids": current_ids}
 
 
 @router.delete("/projects/{project_id}")

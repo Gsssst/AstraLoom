@@ -1,13 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Input, Button, Tag, Typography, Space, Empty, message, List, Popconfirm, Avatar, Tooltip, theme, Image, Select, Skeleton, Dropdown, Drawer, Grid, Modal, Popover } from 'antd';
 import {
-  SendOutlined, PlusOutlined, DeleteOutlined, UserOutlined, RobotOutlined,
-  MenuOutlined, UploadOutlined, FilePdfOutlined, CloseOutlined,
+  PlusOutlined, DeleteOutlined, UserOutlined, RobotOutlined,
+  MenuOutlined, FilePdfOutlined, CloseOutlined,
   CopyOutlined, RedoOutlined, EditOutlined, SearchOutlined, MoreOutlined,
   DatabaseOutlined, GlobalOutlined, ExportOutlined, MessageOutlined,
-  BulbOutlined, FileTextOutlined, ExperimentOutlined, SwapOutlined,
-  HighlightOutlined, EyeOutlined, ClockCircleOutlined, StopOutlined,
+  BulbOutlined, FileTextOutlined, ExperimentOutlined,
+  EyeOutlined, ClockCircleOutlined, StopOutlined,
   InfoCircleOutlined, CloudDownloadOutlined, CheckCircleOutlined,
+  FolderOutlined, NodeIndexOutlined, WarningOutlined, ArrowUpOutlined,
 } from '@ant-design/icons';
 import { useChatSessionStore } from '../stores/useChatSessionStore';
 import { useThemeStore } from '../stores/useThemeStore';
@@ -27,14 +28,6 @@ const emptySuggestions = [
   { icon: <BulbOutlined />, label: '脑暴灵感', text: '请基于当前研究方向提出三个值得验证的新想法' },
 ];
 
-const promptShortcuts = [
-  { icon: <FileTextOutlined />, label: '总结论文', text: '请总结这篇论文的核心贡献、方法和实验结果' },
-  { icon: <ExperimentOutlined />, label: '找研究 Gap', text: '基于以上论文，请分析当前研究存在哪些未解决的问题和研究空白' },
-  { icon: <SwapOutlined />, label: '对比方法', text: '请对比分析以下论文的方法、数据集和实验结果' },
-  { icon: <BulbOutlined />, label: '生成 Idea', text: '基于这些论文，请提出3个创新性的研究想法' },
-  { icon: <HighlightOutlined />, label: '润色文本', text: '请将以下文本润色为学术风格：' },
-];
-
 interface ChatModelMetadata {
   provider?: string;
   label?: string;
@@ -51,6 +44,16 @@ interface ChatModelMetadata {
 }
 
 type ChatAssistantMode = 'general' | 'research_scout';
+
+interface ResearchScoutIntent {
+  topic?: string;
+  years?: number[];
+  methods?: string[];
+  datasets?: string[];
+  tasks?: string[];
+  preferences?: string[];
+  search_depth?: string;
+}
 
 interface ResearchScoutCandidate {
   rank: number;
@@ -69,13 +72,29 @@ interface ResearchScoutCandidate {
   why_interesting?: string;
   why_useful?: string;
   caveat?: string;
+  library_relation?: string;
 }
 
 interface ResearchScoutPayload {
   enabled?: boolean;
   query?: string;
+  intent?: ResearchScoutIntent;
   candidate_count?: number;
   candidates?: ResearchScoutCandidate[];
+}
+
+interface PaperCollectionOption {
+  id: string;
+  name: string;
+  paper_count?: number;
+  children?: PaperCollectionOption[];
+}
+
+interface ResearchProjectOption {
+  id: string;
+  name: string;
+  description?: string | null;
+  ideas_count?: number;
 }
 
 interface StreamMetaContent {
@@ -168,6 +187,15 @@ const ChatPage: React.FC = () => {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [ingestingScoutKeys, setIngestingScoutKeys] = useState<Set<string>>(new Set());
   const [ingestedScoutKeys, setIngestedScoutKeys] = useState<Set<string>>(new Set());
+  const [scoutLocalPaperIds, setScoutLocalPaperIds] = useState<Record<string, string>>({});
+  const [collections, setCollections] = useState<PaperCollectionOption[]>([]);
+  const [researchProjects, setResearchProjects] = useState<ResearchProjectOption[]>([]);
+  const [collectionTargetPaper, setCollectionTargetPaper] = useState<ResearchScoutCandidate | null>(null);
+  const [projectTargetPaper, setProjectTargetPaper] = useState<ResearchScoutCandidate | null>(null);
+  const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [linkingScoutTarget, setLinkingScoutTarget] = useState(false);
+  const [sidebarHoverOpen, setSidebarHoverOpen] = useState(false);
   const showThinking = useThemeStore((s) => s.showThinking ?? false);
   const {
     scrollContainerRef: chatScrollRef,
@@ -181,6 +209,7 @@ const ChatPage: React.FC = () => {
   const isAuthenticated = !!localStorage.getItem('access_token');
   const currentSession = sessions.find(s => s.id === currentSessionId);
   const ragEnabled = currentSession?.rag_enabled ?? true;
+  const desktopSidebarOpen = !isMobile && (drawerOpen || sidebarHoverOpen);
   const modelDisplay = activeModelInfo?.label || activeModelInfo?.model || '当前模型';
   const modelDetail = activeModelInfo
     ? `${activeModelInfo.provider || 'provider'} / ${activeModelInfo.model || activeModelInfo.label || 'model'}`
@@ -208,7 +237,19 @@ const ChatPage: React.FC = () => {
     })();
   }, [isAuthenticated, initDone]);
   useEffect(() => { scrollToBottomIfFollowing(); }, [messages, pendingMsg, scrollToBottomIfFollowing]);
-  useEffect(() => { setDrawerOpen(!isMobile); }, [isMobile, setDrawerOpen]);
+  useEffect(() => { setDrawerOpen(false); setSidebarHoverOpen(false); }, [isMobile, setDrawerOpen]);
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const loadScoutTargets = async () => {
+      const [folderResult, projectResult] = await Promise.allSettled([
+        api.get('/folders/'),
+        api.get('/research/projects'),
+      ]);
+      if (folderResult.status === 'fulfilled') setCollections(folderResult.value.data || []);
+      if (projectResult.status === 'fulfilled') setResearchProjects(projectResult.value.data || []);
+    };
+    loadScoutTargets();
+  }, [isAuthenticated]);
   useEffect(() => {
     if (!sending || !sendStartedAt) {
       setElapsedMs(0);
@@ -472,15 +513,16 @@ const ChatPage: React.FC = () => {
   const researchScoutAutoWeb = assistantMode === 'research_scout';
   const effectiveWebSearchActive = researchScoutAutoWeb || webSearch;
   const scoutCandidateKey = (paper: ResearchScoutCandidate) => `${paper.source || 'unknown'}:${paper.remote_id || paper.arxiv_id || paper.doi || paper.title}`;
-  const handleResearchScoutIngest = async (paper: ResearchScoutCandidate) => {
+  const ensureResearchScoutIngested = async (paper: ResearchScoutCandidate) => {
+    const key = scoutCandidateKey(paper);
+    if (scoutLocalPaperIds[key]) return scoutLocalPaperIds[key];
     const source = paper.source;
     const remoteId = paper.remote_id || paper.arxiv_id || paper.doi || paper.source_url || paper.title;
     const supportedSources = new Set(['arxiv', 'semantic_scholar', 'openalex', 'google_scholar']);
     if (!source || !remoteId || !supportedSources.has(source)) {
       message.warning('这条候选缺少可安全入库的学术源标识，请先打开来源确认');
-      return;
+      return null;
     }
-    const key = scoutCandidateKey(paper);
     setIngestingScoutKeys(prev => new Set(prev).add(key));
     try {
       const response = await api.post('/papers/ingest-personal', {
@@ -489,13 +531,56 @@ const ChatPage: React.FC = () => {
         remote_ingest_token: paper.ingest_token,
         auto_download: false,
       });
+      const localPaperId = response.data?.paper_ids?.[0] || response.data?.paper_id || response.data?.local_paper_id || response.data?.id;
+      if (localPaperId) {
+        setScoutLocalPaperIds(prev => ({ ...prev, [key]: localPaperId }));
+      }
       setIngestedScoutKeys(prev => new Set(prev).add(key));
-      const skipped = Number(response.data?.skipped || 0);
-      message.success(skipped ? '这篇论文已在库中，已为你保存到个人论文库' : '已加入你的论文库');
+      return localPaperId || null;
     } catch (error) {
       message.error(getApiErrorMessage(error, { fallback: '加入论文库失败' }));
+      return null;
     } finally {
       setIngestingScoutKeys(prev => { const next = new Set(prev); next.delete(key); return next; });
+    }
+  };
+  const handleResearchScoutIngest = async (paper: ResearchScoutCandidate) => {
+    const existed = ingestedScoutKeys.has(scoutCandidateKey(paper));
+    const paperId = await ensureResearchScoutIngested(paper);
+    if (paperId) message.success(existed ? '这篇论文已在库中' : '已加入你的论文库');
+  };
+  const handleAddScoutToCollection = async () => {
+    if (!collectionTargetPaper || !selectedCollectionId) return;
+    setLinkingScoutTarget(true);
+    try {
+      const paperId = await ensureResearchScoutIngested(collectionTargetPaper);
+      if (!paperId) return;
+      await api.post(`/folders/${selectedCollectionId}/papers`, { paper_ids: [paperId] });
+      const folder = collections.flatMap(item => [item, ...(item.children || [])]).find(item => item.id === selectedCollectionId);
+      message.success(`已加入分类${folder ? `「${folder.name}」` : ''}`);
+      setCollectionTargetPaper(null);
+      setSelectedCollectionId(null);
+    } catch (error) {
+      message.error(getApiErrorMessage(error, { fallback: '加入分类失败' }));
+    } finally {
+      setLinkingScoutTarget(false);
+    }
+  };
+  const handleAddScoutToProject = async () => {
+    if (!projectTargetPaper || !selectedProjectId) return;
+    setLinkingScoutTarget(true);
+    try {
+      const paperId = await ensureResearchScoutIngested(projectTargetPaper);
+      if (!paperId) return;
+      await api.post(`/research/projects/${selectedProjectId}/papers`, { paper_ids: [paperId] });
+      const project = researchProjects.find(item => item.id === selectedProjectId);
+      message.success(`已加入研究方向${project ? `「${project.name}」` : ''}`);
+      setProjectTargetPaper(null);
+      setSelectedProjectId(null);
+    } catch (error) {
+      message.error(getApiErrorMessage(error, { fallback: '加入研究方向失败' }));
+    } finally {
+      setLinkingScoutTarget(false);
     }
   };
   const statusRows = [
@@ -546,11 +631,43 @@ const ChatPage: React.FC = () => {
     openalex: 'OpenAlex',
     google_scholar: 'Google Scholar',
   }[source || ''] || source || '学术来源');
+  const researchScoutPreferenceLabel = (value: string) => ({
+    novel_or_interesting: '偏新颖/有趣',
+    reproducible: '可复现',
+    high_citation: '高引用/经典',
+    recent: '近期',
+    relevance: '相关性',
+  }[value] || value);
   const continueScoutSearch = (query: string, flavor: string) => {
     setAssistantMode('research_scout');
     setWebSearch(true);
     setSearchDepth('deep');
     setInput(`请继续用论文猎手模式找 ${flavor} 类型的论文，主题是：${query}`);
+  };
+  const renderResearchScoutIntent = (intent?: ResearchScoutIntent) => {
+    if (!intent) return null;
+    const rows = [
+      { label: '主题', values: intent.topic ? [intent.topic] : [] },
+      { label: '任务', values: intent.tasks || [] },
+      { label: '方法', values: intent.methods || [] },
+      { label: '数据集', values: intent.datasets || [] },
+      { label: '年份', values: (intent.years || []).map(String) },
+      { label: '偏好', values: (intent.preferences || []).map(researchScoutPreferenceLabel) },
+    ].filter(item => item.values.length > 0);
+    if (!rows.length) return null;
+    return (
+      <div className="research-scout-intent">
+        <Text strong className="research-scout-intent-title">检索意图拆解</Text>
+        <div className="research-scout-intent-grid">
+          {rows.map(item => (
+            <div className="research-scout-intent-item" key={item.label}>
+              <span>{item.label}</span>
+              <Text ellipsis={{ tooltip: item.values.join(' / ') }}>{item.values.join(' / ')}</Text>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
   };
   const renderResearchScoutCards = (msg: any) => {
     const candidates = msg.research_scout?.candidates || [];
@@ -572,6 +689,7 @@ const ChatPage: React.FC = () => {
             ))}
           </Space>
         </div>
+        {renderResearchScoutIntent(msg.research_scout?.intent)}
         <div className="research-scout-grid">
           {candidates.slice(0, 6).map((paper: ResearchScoutCandidate) => {
             const key = scoutCandidateKey(paper);
@@ -592,6 +710,8 @@ const ChatPage: React.FC = () => {
                 {paper.authors?.length ? <Text type="secondary" className="research-scout-authors" ellipsis>{paper.authors.join(', ')}</Text> : null}
                 <Text className="research-scout-rationale">{paper.why_interesting}</Text>
                 <Text type="secondary" className="research-scout-useful">{paper.why_useful}</Text>
+                {paper.library_relation && <Text type="secondary" className="research-scout-relation"><NodeIndexOutlined />{paper.library_relation}</Text>}
+                {paper.caveat && <Text type="secondary" className="research-scout-risk"><WarningOutlined />{paper.caveat}</Text>}
                 {paper.abstract && <Text type="secondary" className="research-scout-abstract">{paper.abstract.slice(0, 220)}{paper.abstract.length > 220 ? '...' : ''}</Text>}
                 <Space wrap size={6} className="research-scout-actions">
                   <Button
@@ -603,6 +723,12 @@ const ChatPage: React.FC = () => {
                     onClick={() => handleResearchScoutIngest(paper)}
                   >
                     {ingested ? '已入库' : '加入论文库'}
+                  </Button>
+                  <Button size="small" icon={<FolderOutlined />} disabled={collectionOptions.length === 0} onClick={() => { setCollectionTargetPaper(paper); setSelectedCollectionId(collectionOptions[0]?.value || null); }}>
+                    加入分类
+                  </Button>
+                  <Button size="small" icon={<NodeIndexOutlined />} disabled={projectOptions.length === 0} onClick={() => { setProjectTargetPaper(paper); setSelectedProjectId(projectOptions[0]?.value || null); }}>
+                    加入研究方向
                   </Button>
                   {paper.source_url && <Button size="small" onClick={() => window.open(paper.source_url || '', '_blank', 'noopener,noreferrer')}>来源</Button>}
                   {paper.pdf_url && <Button size="small" onClick={() => window.open(paper.pdf_url || '', '_blank', 'noopener,noreferrer')}>PDF</Button>}
@@ -617,6 +743,14 @@ const ChatPage: React.FC = () => {
       </div>
     );
   };
+  const collectionOptions = collections.flatMap(collection => [
+    { value: collection.id, label: `${collection.name}${collection.paper_count != null ? ` (${collection.paper_count})` : ''}` },
+    ...(collection.children || []).map(child => ({ value: child.id, label: `${collection.name} / ${child.name}${child.paper_count != null ? ` (${child.paper_count})` : ''}` })),
+  ]);
+  const projectOptions = researchProjects.map(project => ({
+    value: project.id,
+    label: `${project.name}${project.ideas_count != null ? ` (${project.ideas_count} ideas)` : ''}`,
+  }));
   const toolbarMenuItems = [
     { key: 'export', icon: <ExportOutlined />, label: '导出对话', onClick: handleExport },
     ...(currentSessionId ? [{ key: 'clear', icon: <DeleteOutlined />, label: '清空当前对话', danger: true, onClick: handleClearMessages }] : []),
@@ -652,11 +786,66 @@ const ChatPage: React.FC = () => {
 
   return (
     <div className="chat-workspace" style={{ background: token.colorBgLayout }}>
+      <Modal
+        title="加入论文分类"
+        open={!!collectionTargetPaper}
+        onOk={handleAddScoutToCollection}
+        onCancel={() => { setCollectionTargetPaper(null); setSelectedCollectionId(null); }}
+        okText="加入分类"
+        cancelText="取消"
+        confirmLoading={linkingScoutTarget}
+        okButtonProps={{ disabled: !selectedCollectionId }}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Text strong ellipsis={{ tooltip: collectionTargetPaper?.title }}>{collectionTargetPaper?.title}</Text>
+          <Text type="secondary">如果这篇论文还没有入库，会先加入论文库，再写入所选分类。</Text>
+          <Select
+            placeholder="选择目标分类"
+            value={selectedCollectionId}
+            onChange={setSelectedCollectionId}
+            options={collectionOptions}
+            style={{ width: '100%' }}
+            notFoundContent="暂无分类，请先在论文库创建分类"
+          />
+        </Space>
+      </Modal>
+      <Modal
+        title="加入研究方向素材池"
+        open={!!projectTargetPaper}
+        onOk={handleAddScoutToProject}
+        onCancel={() => { setProjectTargetPaper(null); setSelectedProjectId(null); }}
+        okText="加入研究方向"
+        cancelText="取消"
+        confirmLoading={linkingScoutTarget}
+        okButtonProps={{ disabled: !selectedProjectId }}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Text strong ellipsis={{ tooltip: projectTargetPaper?.title }}>{projectTargetPaper?.title}</Text>
+          <Text type="secondary">如果这篇论文还没有入库，会先加入论文库，再追加到研究方向关联论文。</Text>
+          <Select
+            placeholder="选择研究方向"
+            value={selectedProjectId}
+            onChange={setSelectedProjectId}
+            options={projectOptions}
+            style={{ width: '100%' }}
+            notFoundContent="暂无研究方向，请先创建研究方向"
+          />
+        </Space>
+      </Modal>
       <Drawer className="chat-session-drawer" title="对话记录" placement="left" width={280} open={isMobile && drawerOpen} onClose={() => setDrawerOpen(false)}>
         {sessionList}
       </Drawer>
-      {!isMobile && <div className="chat-session-sidebar" style={{ width: drawerOpen ? 260 : 0, overflow: 'hidden', transition: 'width 0.25s', borderRight: drawerOpen ? `1px solid ${token.colorBorderSecondary}` : 'none', background: '#fafbfc', flexShrink: 0 }}>
-        {sessionList}
+      {!isMobile && <div
+        className={`chat-session-sidebar ${desktopSidebarOpen ? 'is-open' : 'is-rail'}`}
+        onMouseEnter={() => setSidebarHoverOpen(true)}
+        onMouseLeave={() => setSidebarHoverOpen(false)}
+        style={{ width: desktopSidebarOpen ? 272 : 52, overflow: 'hidden', transition: 'width 0.22s ease', borderRight: `1px solid ${token.colorBorderSecondary}`, background: '#fafbfc', flexShrink: 0 }}
+      >
+        <div className="chat-session-rail">
+          <Button type="text" icon={<MenuOutlined />} onClick={() => setDrawerOpen(!drawerOpen)} />
+          <Tooltip title="新对话" placement="right"><Button type="text" icon={<PlusOutlined />} onClick={handleCreateSession} /></Tooltip>
+        </div>
+        <div className="chat-session-panel">{sessionList}</div>
       </div>}
       <div className="chat-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', background: token.colorBgContainer, marginLeft: 1 }}>
         <div className="chat-toolbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 20px', borderBottom: `1px solid ${token.colorBorderSecondary}`, background: token.colorBgLayout }}>
@@ -773,14 +962,6 @@ const ChatPage: React.FC = () => {
         </div>
         <div className="chat-composer">
           <div className="chat-composer-panel">
-            <div className="chat-prompt-shortcuts">
-              {promptShortcuts.map(item => (
-                <button className="chat-prompt-chip" type="button" key={item.label} onClick={() => setInput(prev => prev ? `${prev}\n${item.text}` : item.text)}>
-                  {item.icon}
-                  <span>{item.label}</span>
-                </button>
-              ))}
-            </div>
             {attachedFiles.length > 0 && (
               <div className="chat-attachments">
                 {attachedFiles.map(af => (
@@ -808,13 +989,35 @@ const ChatPage: React.FC = () => {
               </div>
             )}
             <div className="chat-editor">
-              <Tooltip title="上传论文或图片"><Button className="chat-upload-button chat-tool-button" type="text" icon={<UploadOutlined />} onClick={openAttachmentPicker} /></Tooltip>
-              <div className="chat-input-wrap"><Input.TextArea className="chat-input" value={input} onChange={e => setInput(e.target.value)} onPressEnter={e => { if (!e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={ragEnabled ? '输入消息，Enter 发送，Shift+Enter 换行' : '输入消息...'} autoSize={{ minRows: 1, maxRows: 5 }} /></div>
-              {sending ? (
-                <Tooltip title="停止生成"><Button className="chat-stop-button chat-tool-button" type="text" icon={<StopOutlined />} onClick={handleStopGeneration} /></Tooltip>
-              ) : (
-                <Tooltip title="发送"><Button className="chat-send-button chat-tool-button" type="primary" shape="circle" icon={<SendOutlined />} onClick={() => handleSend()} disabled={!input.trim() && attachedFiles.length === 0 && rememberedAttachments.length === 0} /></Tooltip>
-              )}
+              <div className="chat-input-wrap">
+                <Input.TextArea
+                  className="chat-input"
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onPressEnter={e => { if (!e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                  placeholder={assistantMode === 'research_scout' ? '描述你想找的论文、方法或实验线索...' : ragEnabled ? '输入消息，Enter 发送，Shift+Enter 换行' : '输入消息...'}
+                  autoSize={{ minRows: 1, maxRows: 6 }}
+                />
+              </div>
+              <div className="chat-editor-footer">
+                <div className="chat-editor-tools">
+                  <Tooltip title="添加论文、图片或文件">
+                    <Button className="chat-plus-button chat-tool-button" type="text" icon={<PlusOutlined />} onClick={openAttachmentPicker} />
+                  </Tooltip>
+                  <span className={`chat-composer-mode ${assistantMode === 'research_scout' ? 'is-scout' : ''}`}>
+                    {assistantMode === 'research_scout' ? <ExperimentOutlined /> : <RobotOutlined />}
+                    <span>{assistantMode === 'research_scout' ? '论文猎手' : '科研对话'}</span>
+                  </span>
+                </div>
+                <div className="chat-editor-actions">
+                  <span className="chat-composer-runtime">{assistantMode === 'research_scout' ? '深度检索' : webSearch ? '联网' : ragEnabled ? '知识库' : '标准'}</span>
+                  {sending ? (
+                    <Tooltip title="停止生成"><Button className="chat-stop-button chat-tool-button" type="text" icon={<StopOutlined />} onClick={handleStopGeneration} /></Tooltip>
+                  ) : (
+                    <Tooltip title="发送"><Button className="chat-send-button chat-tool-button" type="primary" shape="circle" icon={<ArrowUpOutlined />} onClick={() => handleSend()} disabled={!input.trim() && attachedFiles.length === 0 && rememberedAttachments.length === 0} /></Tooltip>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>
