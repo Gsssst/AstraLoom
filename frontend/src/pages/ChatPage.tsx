@@ -510,6 +510,16 @@ const ChatPage: React.FC = () => {
       message.info('已切换到论文猎手，并自动开启联网深度学术检索');
     }
   };
+  const assistantModeOptions = [
+    {
+      value: 'general',
+      label: <span className="chat-composer-mode-option"><RobotOutlined /><span className="chat-composer-mode-label">科研对话</span></span>,
+    },
+    {
+      value: 'research_scout',
+      label: <span className="chat-composer-mode-option"><ExperimentOutlined /><span className="chat-composer-mode-label">论文猎手</span></span>,
+    },
+  ];
   const researchScoutAutoWeb = assistantMode === 'research_scout';
   const effectiveWebSearchActive = researchScoutAutoWeb || webSearch;
   const scoutCandidateKey = (paper: ResearchScoutCandidate) => `${paper.source || 'unknown'}:${paper.remote_id || paper.arxiv_id || paper.doi || paper.title}`;
@@ -862,16 +872,6 @@ const ChatPage: React.FC = () => {
             )}
           </Space>
           <div className="chat-toolbar-actions">
-            <Select
-              className="chat-assistant-mode-select"
-              size="small"
-              value={assistantMode}
-              onChange={handleAssistantModeChange}
-              options={[
-                { value: 'general', label: '普通对话' },
-                { value: 'research_scout', label: '论文猎手' },
-              ]}
-            />
             <Tooltip title={modelDetail}>
               <span className="chat-model-badge">
                 <RobotOutlined />
@@ -1004,10 +1004,15 @@ const ChatPage: React.FC = () => {
                   <Tooltip title="添加论文、图片或文件">
                     <Button className="chat-plus-button chat-tool-button" type="text" icon={<PlusOutlined />} onClick={openAttachmentPicker} />
                   </Tooltip>
-                  <span className={`chat-composer-mode ${assistantMode === 'research_scout' ? 'is-scout' : ''}`}>
-                    {assistantMode === 'research_scout' ? <ExperimentOutlined /> : <RobotOutlined />}
-                    <span>{assistantMode === 'research_scout' ? '论文猎手' : '科研对话'}</span>
-                  </span>
+                  <Select
+                    className={`chat-composer-mode-select chat-composer-mode ${assistantMode === 'research_scout' ? 'is-scout' : ''}`}
+                    size="small"
+                    value={assistantMode}
+                    onChange={handleAssistantModeChange}
+                    options={assistantModeOptions}
+                    optionLabelProp="label"
+                    popupMatchSelectWidth={false}
+                  />
                 </div>
                 <div className="chat-editor-actions">
                   <span className="chat-composer-runtime">{assistantMode === 'research_scout' ? '深度检索' : webSearch ? '联网' : ragEnabled ? '知识库' : '标准'}</span>

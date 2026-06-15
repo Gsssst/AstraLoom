@@ -24,7 +24,7 @@ const backendResearchSource = readFileSync(
 
 test('chat page exposes Research Scout mode and sends assistant_mode', () => {
   assert.match(chatPageSource, /type ChatAssistantMode = 'general' \| 'research_scout'/);
-  assert.match(chatPageSource, /chat-assistant-mode-select/);
+  assert.match(chatPageSource, /chat-composer-mode-select/);
   assert.match(chatPageSource, /论文猎手/);
   assert.match(chatPageSource, /handleAssistantModeChange/);
   assert.match(chatPageSource, /assistant_mode: assistantMode/);
@@ -81,7 +81,16 @@ test('chat composer uses a Codex-like single input surface without legacy shortc
   assert.doesNotMatch(chatPageSource, /润色文本/);
   assert.match(chatPageSource, /chat-editor-footer/);
   assert.match(chatPageSource, /chat-composer-mode/);
+  assert.match(chatPageSource, /assistantModeOptions/);
   assert.match(chatPageSource, /chat-plus-button/);
+});
+
+test('assistant mode selector lives in the composer instead of the toolbar', () => {
+  assert.doesNotMatch(chatPageSource, /<div className="chat-toolbar-actions">[\s\S]*chat-assistant-mode-select/);
+  assert.match(chatPageSource, /<div className="chat-editor-tools">[\s\S]*chat-composer-mode-select/);
+  assert.match(chatPageSource, /optionLabelProp="label"/);
+  assert.match(responsiveSource, /\.chat-composer-mode-select/);
+  assert.doesNotMatch(responsiveSource, /\.chat-assistant-mode-select/);
 });
 
 test('chat workbench visual polish avoids glossy plastic treatment', () => {
@@ -96,7 +105,7 @@ test('chat workbench visual polish avoids glossy plastic treatment', () => {
 });
 
 test('Research Scout styles are scoped', () => {
-  assert.match(responsiveSource, /\.chat-assistant-mode-select/);
+  assert.match(responsiveSource, /\.chat-composer-mode-select/);
   assert.match(responsiveSource, /\.research-scout-cards/);
   assert.match(responsiveSource, /\.research-scout-grid/);
   assert.match(responsiveSource, /\.research-scout-card/);

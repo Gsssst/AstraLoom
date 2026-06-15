@@ -1233,13 +1233,6 @@
   background: #ffffff;
 }
 
-.chat-assistant-mode-select {
-  width: 112px;
-  border-radius: 8px;
-  background: #ffffff;
-}
-
-.chat-assistant-mode-select .ant-select-selector,
 .chat-depth-select .ant-select-selector {
   border-radius: 8px !important;
 }
@@ -1964,10 +1957,8 @@
 .chat-composer-mode {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
   min-width: 0;
   height: 30px;
-  padding: 0 10px;
   border: 1px solid #dbeafe;
   border-radius: 8px;
   color: #1d4ed8;
@@ -1979,6 +1970,43 @@
 .chat-composer-mode.is-scout {
   color: #1e40af;
   background: #dbeafe;
+}
+
+.chat-composer-mode-select {
+  width: 124px;
+}
+
+.chat-composer-mode-select .ant-select-selector {
+  height: 30px !important;
+  padding: 0 9px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.chat-composer-mode-select .ant-select-selection-item {
+  display: flex;
+  align-items: center;
+  line-height: 28px !important;
+}
+
+.chat-composer-mode-select .ant-select-arrow {
+  color: #64748b;
+}
+
+.chat-composer-mode-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.chat-composer-mode-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-composer-runtime {
@@ -2100,15 +2128,21 @@
     gap: 8px;
   }
 
-  .chat-composer-mode span {
+  .chat-composer-mode-label {
     display: none;
   }
 
   .chat-composer-mode {
-    width: 34px;
+    width: 44px;
     height: 30px;
+  }
+
+  .chat-composer-mode-select .ant-select-selector {
+    padding: 0 6px !important;
+  }
+
+  .chat-composer-mode-select .chat-composer-mode-option {
     justify-content: center;
-    padding: 0;
   }
 
   .chat-composer-runtime {
