@@ -129,6 +129,14 @@ interface ResearchScoutPayload {
   auto_routed?: boolean;
   query?: string;
   planned_queries?: string[];
+  retrieval?: {
+    strategy?: string;
+    fallback_used?: boolean;
+    providers?: string[];
+    fallback_providers?: string[];
+    stage_counts?: Record<string, number>;
+    candidate_count?: number;
+  };
   intent?: ResearchScoutIntent;
   candidate_count?: number;
   candidates?: ResearchScoutCandidate[];

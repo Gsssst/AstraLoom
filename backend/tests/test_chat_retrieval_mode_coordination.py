@@ -99,6 +99,115 @@ def test_research_scout_planned_query_coercion_prefers_llm_queries_with_fallback
     ]
 
 
+def test_research_scout_ranking_prefers_arxiv_pdf_but_keeps_broad_candidates():
+    intent = chat_sessions._research_scout_intent("find multimodal memory papers", "deep")
+    semantic = chat_sessions.PaperResult(
+        title="Multimodal Large Language Model Memory",
+        authors=["A"],
+        abstract="multimodal large language model memory benchmark",
+        year=2026,
+        source="semantic_scholar",
+        citation_count=900,
+        metadata={"remote_id": "S1"},
+    )
+    arxiv = chat_sessions.PaperResult(
+        title="Memory for Multimodal Agents",
+        authors=["B"],
+        abstract="multimodal memory model",
+        year=2024,
+        arxiv_id="2601.00001",
+        source="arxiv",
+        pdf_url="https://arxiv.org/pdf/2601.00001",
+        citation_count=3,
+        metadata={"remote_id": "2601.00001"},
+    )
+
+    ranked = chat_sessions._rank_research_scout_papers(
+        [semantic, arxiv],
+        "find multimodal memory papers",
+        ["multimodal large language model memory"],
+        intent,
+        limit=2,
+    )
+
+    assert ranked[0].source == "arxiv"
+    assert {paper.source for paper in ranked} == {"arxiv", "semantic_scholar"}
+
+
+@pytest.mark.asyncio
+async def test_research_scout_retrieval_falls_back_to_broad_scholarly_sources(monkeypatch):
+    calls = []
+    intent = chat_sessions._research_scout_intent("请帮我找10篇关于多模态大模型memory的论文", "deep")
+
+    async def _fake_search_scholarly_papers(query, *, source, max_results, sort_by="relevance", **kwargs):
+        calls.append((query, source, max_results, sort_by))
+        if source == "arxiv_enriched":
+            return []
+        return [
+            chat_sessions.PaperResult(
+                title="Multimodal Large Language Model Memory",
+                authors=["A"],
+                abstract="multimodal large language model memory",
+                year=2026,
+                source="semantic_scholar",
+                source_url="https://semanticscholar.org/paper/S1",
+                citation_count=42,
+                metadata={"remote_id": "S1"},
+            ),
+            chat_sessions.PaperResult(
+                title="Memory Augmented Vision Language Models",
+                authors=["B"],
+                abstract="vision language model memory",
+                year=2025,
+                source="openalex",
+                source_url="https://openalex.org/W1",
+                pdf_url="https://example.com/paper.pdf",
+                citation_count=12,
+                metadata={"remote_id": "W1"},
+            ),
+        ]
+
+    monkeypatch.setattr(chat_sessions, "search_scholarly_papers", _fake_search_scholarly_papers)
+
+    papers, metadata = await chat_sessions._retrieve_research_scout_papers(
+        "请帮我找10篇关于多模态大模型memory的论文",
+        ["multimodal large language model memory"],
+        intent,
+        limit=10,
+    )
+
+    assert [call[1] for call in calls] == ["arxiv_enriched", "scholarly"]
+    assert metadata["fallback_used"] is True
+    assert metadata["strategy"] == "arxiv_first_then_scholarly_fallback"
+    assert metadata["stage_counts"]["arxiv_enriched"] == 0
+    assert metadata["stage_counts"]["scholarly_fallback"] == 2
+    assert {paper.source for paper in papers} == {"semantic_scholar", "openalex"}
+
+
+def test_research_scout_tool_trace_reports_broad_fallback():
+    trace = chat_sessions._research_scout_tool_trace(
+        "请帮我找10篇关于多模态大模型memory的论文",
+        {"topic": "多模态大模型memory"},
+        [{"title": "Multimodal Large Language Model Memory", "evaluation": {"reading_priority": "high"}}],
+        ["multimodal large language model memory"],
+        {
+            "strategy": "arxiv_first_then_scholarly_fallback",
+            "fallback_used": True,
+            "planned_queries": ["multimodal large language model memory"],
+            "providers": ["Semantic Scholar", "OpenAlex"],
+            "fallback_providers": ["Semantic Scholar", "OpenAlex"],
+            "stage_counts": {"arxiv_enriched": 0, "scholarly_fallback": 2, "ranked": 1},
+        },
+    )
+
+    search_step = next(step for step in trace["steps"] if step["tool"] == "search_papers")
+
+    assert "扩展到 Semantic Scholar/OpenAlex/Google Scholar" in search_step["summary"]
+    assert search_step["details"]["strategy"] == "arxiv_first_then_scholarly_fallback"
+    assert search_step["details"]["fallback_used"] is True
+    assert search_step["details"]["stage_counts"]["scholarly_fallback"] == 2
+
+
 @pytest.mark.parametrize(
     ("search_depth", "expected"),
     [

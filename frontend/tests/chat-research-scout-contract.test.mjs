@@ -180,14 +180,20 @@ test('backend streams Research Scout metadata from scholarly discovery', () => {
   assert.match(backendChatSource, /RESEARCH_SCOUT_LIMITS/);
   assert.match(backendChatSource, /search_scholarly_papers\(/);
   assert.match(backendChatSource, /source="arxiv_enriched"/);
+  assert.match(backendChatSource, /source="scholarly"/);
+  assert.match(backendChatSource, /_retrieve_research_scout_papers/);
+  assert.match(backendChatSource, /_rank_research_scout_papers/);
+  assert.match(backendChatSource, /arxiv_first_then_scholarly_fallback/);
   assert.match(backendChatSource, /_build_research_scout_context/);
   assert.match(backendChatSource, /_research_scout_intent/);
   assert.match(backendChatSource, /library_relation/);
   assert.match(backendChatSource, /优先阅读 Top 3/);
   assert.match(backendChatSource, /"intent": scout_intent/);
   assert.match(backendChatSource, /"research_scout": \{/);
+  assert.match(backendChatSource, /"retrieval": scout_retrieval/);
   assert.match(backendChatSource, /论文猎手已整理/);
   assert.match(chatPageSource, /planned_queries\?: string\[\]/);
+  assert.match(chatPageSource, /retrieval\?: \{/);
 });
 
 test('Research Scout source strip excludes generic web references', () => {
@@ -208,6 +214,8 @@ test('backend streams Research Scout tool execution trace', () => {
   assert.match(backendChatSource, /"import_paper"/);
   assert.match(backendChatSource, /arXiv PDF/);
   assert.match(backendChatSource, /arxiv_first_enriched/);
+  assert.match(backendChatSource, /fallback_used/);
+  assert.match(backendChatSource, /stage_counts/);
   assert.match(backendChatSource, /不会自动执行副作用操作/);
 });
 

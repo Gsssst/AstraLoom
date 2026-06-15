@@ -1,5 +1,6 @@
 """多对话会话管理 API。"""
 
+import asyncio
 import json
 import logging
 import re
@@ -980,6 +981,158 @@ def _research_scout_candidate(paper: PaperResult, query: str, rank: int, intent:
     }
 
 
+def _research_scout_provider_label(source: str | None) -> str:
+    labels = {
+        "arxiv": "arXiv PDF",
+        "semantic_scholar": "Semantic Scholar",
+        "openalex": "OpenAlex",
+        "google_scholar": "Google Scholar/SerpApi",
+    }
+    return labels.get(source or "", source or "scholarly")
+
+
+def _research_scout_result_source_order(paper: PaperResult) -> int:
+    if paper.source == "arxiv" or paper.arxiv_id:
+        return 0
+    if paper.pdf_url:
+        return 1
+    if paper.source in {"semantic_scholar", "openalex"}:
+        return 2
+    return 3
+
+
+def _score_research_scout_paper(
+    paper: PaperResult,
+    query: str,
+    planned_queries: list[str],
+    intent: dict[str, Any],
+) -> float:
+    score = 0.0
+    retrieval_query = " ".join([query, *planned_queries])
+    query_matches = _research_scout_query_matches(paper, retrieval_query)
+    score += min(len(query_matches), 6) * 10
+
+    if paper.source == "arxiv":
+        score += 16
+    if paper.arxiv_id:
+        score += 14
+    if paper.pdf_url:
+        score += 10
+
+    citation_count = max(int(paper.citation_count or 0), 0)
+    if citation_count:
+        score += min(18, citation_count ** 0.5)
+
+    year = int(paper.year or 0)
+    if year >= 2025:
+        score += 7
+    elif year >= 2023:
+        score += 5
+    elif year >= 2020:
+        score += 2
+
+    constraint_matches = _research_scout_constraint_matches(paper, intent)
+    for group in ("venue", "institution", "author"):
+        match = constraint_matches.get(group, {}) or {}
+        if match.get("matched"):
+            score += 12
+        elif intent.get("constraint_mode") == "hard" and match.get("requested"):
+            score -= 10
+
+    if paper.abstract:
+        score += 3
+    return score
+
+
+def _rank_research_scout_papers(
+    papers: list[PaperResult],
+    query: str,
+    planned_queries: list[str],
+    intent: dict[str, Any],
+    limit: int,
+) -> list[PaperResult]:
+    deduped = deduplicate_papers(papers)
+    ranked = sorted(
+        enumerate(deduped),
+        key=lambda item: (
+            -_score_research_scout_paper(item[1], query, planned_queries, intent),
+            _research_scout_result_source_order(item[1]),
+            -(item[1].year or 0),
+            item[0],
+        ),
+    )
+    return [paper for _, paper in ranked[:limit]]
+
+
+async def _run_research_scout_search_stage(
+    planned_queries: list[str],
+    *,
+    source: str,
+    max_results: int,
+    sort_by: str = "relevance",
+) -> list[PaperResult]:
+    groups = await asyncio.gather(*[
+        search_scholarly_papers(
+            planned_query,
+            source=source,
+            max_results=max_results,
+            sort_by=sort_by,
+        )
+        for planned_query in planned_queries
+    ], return_exceptions=True)
+
+    papers: list[PaperResult] = []
+    for group in groups:
+        if isinstance(group, Exception):
+            logger.warning("Research Scout %s query failed: %s", source, group)
+            continue
+        papers.extend(group)
+    return papers
+
+
+async def _retrieve_research_scout_papers(
+    query: str,
+    planned_queries: list[str],
+    intent: dict[str, Any],
+    limit: int,
+) -> tuple[list[PaperResult], dict[str, Any]]:
+    per_query_limit = max(limit, 8)
+    arxiv_papers = await _run_research_scout_search_stage(
+        planned_queries,
+        source="arxiv_enriched",
+        max_results=per_query_limit,
+    )
+    arxiv_unique = deduplicate_papers(arxiv_papers)
+
+    fallback_used = len(arxiv_unique) < limit
+    fallback_papers: list[PaperResult] = []
+    if fallback_used:
+        fallback_papers = await _run_research_scout_search_stage(
+            planned_queries,
+            source="scholarly",
+            max_results=per_query_limit,
+        )
+
+    merged = [*arxiv_unique, *fallback_papers]
+    ranked = _rank_research_scout_papers(merged, query, planned_queries, intent, limit)
+    provider_labels = list(dict.fromkeys(_research_scout_provider_label(paper.source) for paper in ranked))
+    fallback_labels = list(dict.fromkeys(_research_scout_provider_label(paper.source) for paper in fallback_papers))
+    metadata = {
+        "strategy": "arxiv_first_then_scholarly_fallback" if fallback_used else "arxiv_first_enriched",
+        "fallback_used": fallback_used,
+        "planned_queries": planned_queries,
+        "providers": provider_labels or ["arXiv PDF", "Semantic Scholar", "OpenAlex"],
+        "fallback_providers": fallback_labels,
+        "stage_counts": {
+            "arxiv_enriched": len(arxiv_unique),
+            "scholarly_fallback": len(deduplicate_papers(fallback_papers)) if fallback_used else 0,
+            "ranked": len(ranked),
+        },
+        "candidate_count": len(ranked),
+    }
+    return ranked, metadata
+
+
 async def _apply_llm_research_scout_evaluations(
     candidates: list[dict[str, Any]],
     query: str,
@@ -1092,6 +1245,7 @@ def _research_scout_tool_trace(
     intent: dict[str, Any] | None,
     candidates: list[dict[str, Any]],
     planned_queries: list[str] | None = None,
+    retrieval: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     candidate_count = len(candidates)
     llm_evaluated = sum(1 for item in candidates[:6] if (item.get("evaluation") or {}).get("source") == "llm")
@@ -1100,6 +1254,15 @@ def _research_scout_tool_trace(
         for item in candidates
         if (item.get("evaluation") or {}).get("reading_priority") == "high"
     ][:3]
+    retrieval = retrieval or {}
+    fallback_used = bool(retrieval.get("fallback_used"))
+    providers = retrieval.get("providers") or ["arXiv PDF", "Semantic Scholar enrichment", "OpenAlex enrichment"]
+    stage_counts = retrieval.get("stage_counts") or {}
+    search_summary = (
+        f"arXiv-first 检索候选不足，已扩展到 Semantic Scholar/OpenAlex/Google Scholar 等学术来源，找到 {candidate_count} 篇候选。"
+        if fallback_used
+        else f"已优先检索 arXiv PDF，并用 Semantic Scholar/OpenAlex 增强元数据，找到 {candidate_count} 篇候选。"
+    )
     steps = [
         _tool_trace_step(
             "parse-intent",
@@ -1121,12 +1284,15 @@ def _research_scout_tool_trace(
             "search_papers",
             "检索论文候选",
             "completed",
-            f"已优先检索 arXiv PDF，并用 Semantic Scholar/OpenAlex 增强元数据，找到 {candidate_count} 篇候选。",
+            search_summary,
             {
                 "query": query,
-                "planned_queries": planned_queries or [query],
-                "providers": ["arXiv PDF", "Semantic Scholar enrichment", "OpenAlex enrichment"],
-                "strategy": "arxiv_first_enriched",
+                "planned_queries": retrieval.get("planned_queries") or planned_queries or [query],
+                "providers": providers,
+                "strategy": retrieval.get("strategy") or "arxiv_first_enriched",
+                "fallback_used": fallback_used,
+                "fallback_providers": retrieval.get("fallback_providers") or [],
+                "stage_counts": stage_counts,
                 "candidate_count": candidate_count,
             },
         ),
@@ -1228,29 +1394,23 @@ def _format_research_scout_context(candidates: list[dict[str, Any]], intent: dic
     return f"Parsed user intent:\n{_format_research_scout_intent(intent)}\n\nCandidate papers:\n" + "\n\n".join(blocks)
 
 
-async def _build_research_scout_context(query: str, search_depth: str, intent: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, str]], list[str]]:
+async def _build_research_scout_context(query: str, search_depth: str, intent: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, str]], list[str], dict[str, Any]]:
     limit = RESEARCH_SCOUT_LIMITS.get(search_depth, RESEARCH_SCOUT_LIMITS["standard"])
     planned_queries = await _plan_research_scout_queries(query, intent, search_depth)
     try:
-        groups = await asyncio.gather(*[
-            search_scholarly_papers(
-                planned_query,
-                source="arxiv_enriched",
-                max_results=max(limit, 8),
-                sort_by="relevance",
-            )
-            for planned_query in planned_queries
-        ], return_exceptions=True)
-        papers = []
-        for group in groups:
-            if isinstance(group, Exception):
-                logger.warning("Research Scout planned query failed: %s", group)
-                continue
-            papers.extend(group)
-        papers = deduplicate_papers(papers, limit)
+        papers, retrieval = await _retrieve_research_scout_papers(query, planned_queries, intent, limit)
     except Exception as exc:
         logger.warning("Research Scout scholarly discovery failed: %s", exc)
         papers = []
+        retrieval = {
+            "strategy": "arxiv_first_then_scholarly_fallback",
+            "fallback_used": True,
+            "planned_queries": planned_queries,
+            "providers": [],
+            "fallback_providers": [],
+            "stage_counts": {"arxiv_enriched": 0, "scholarly_fallback": 0, "ranked": 0},
+            "candidate_count": 0,
+        }
 
     candidates = [_research_scout_candidate(paper, query, index + 1, intent) for index, paper in enumerate(papers)]
     candidates = await _apply_llm_research_scout_evaluations(candidates, query, intent)
@@ -1277,7 +1437,7 @@ async def _build_research_scout_context(query: str, search_depth: str, intent: d
                 f"{_format_research_scout_context(candidates, intent)}"
             ),
         }]
-    return candidates, references, system_context, planned_queries
+    return candidates, references, system_context, planned_queries, retrieval
 
 
 async def _retrieval_quality_snapshot(*, rag_enabled: bool) -> dict:
@@ -1579,10 +1739,11 @@ async def send_message(
     scout_intent: dict[str, Any] | None = None
     tool_trace: dict[str, Any] | None = None
     scout_planned_queries: list[str] = []
+    scout_retrieval: dict[str, Any] = {}
     if scout_enabled:
         scout_intent = _research_scout_intent(req.content, effective_search_depth)
-        scout_candidates, scout_refs, scout_context, scout_planned_queries = await _build_research_scout_context(req.content, effective_search_depth, scout_intent)
-        tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates, scout_planned_queries)
+        scout_candidates, scout_refs, scout_context, scout_planned_queries, scout_retrieval = await _build_research_scout_context(req.content, effective_search_depth, scout_intent)
+        tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates, scout_planned_queries, scout_retrieval)
         context = [*scout_context, *context]
         references.extend(scout_refs)
 
@@ -1679,10 +1840,11 @@ async def send_message_stream(
     scout_intent: dict[str, Any] | None = None
     tool_trace: dict[str, Any] | None = None
     scout_planned_queries: list[str] = []
+    scout_retrieval: dict[str, Any] = {}
     if scout_enabled:
         scout_intent = _research_scout_intent(req.content, effective_search_depth)
-        scout_candidates, scout_refs, scout_context, scout_planned_queries = await _build_research_scout_context(req.content, effective_search_depth, scout_intent)
-        tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates, scout_planned_queries)
+        scout_candidates, scout_refs, scout_context, scout_planned_queries, scout_retrieval = await _build_research_scout_context(req.content, effective_search_depth, scout_intent)
+        tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates, scout_planned_queries, scout_retrieval)
         context = [*scout_context, *context]
         references.extend(scout_refs)
     retrieval_quality = await _retrieval_quality_snapshot(rag_enabled=rag_enabled)
@@ -1718,6 +1880,7 @@ async def send_message_stream(
                     "query": req.content,
                     "intent": scout_intent,
                     "planned_queries": scout_planned_queries,
+                    "retrieval": scout_retrieval,
                     "candidates": scout_candidates,
                     "candidate_count": len(scout_candidates),
                 } if scout_enabled else None,
