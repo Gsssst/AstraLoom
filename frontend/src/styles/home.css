@@ -378,16 +378,6 @@
 }
 .chat-empty-suggestion:hover { border-color: #667eea; background: #f8f9ff; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(102,126,234,.1); }
 
-/* 快捷指令 chips */
-.chat-prompt-shortcuts { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 16px 0; }
-.chat-prompt-chip {
-  display: flex; align-items: center; gap: 4px; padding: 4px 12px;
-  border-radius: 20px; border: 1px solid #e8e8e8; background: #fafafa;
-  cursor: pointer; font-size: 12px; color: #666;
-  transition: all 0.2s;
-}
-.chat-prompt-chip:hover { border-color: #667eea; color: #667eea; background: #f8f9ff; }
-
 /* 编辑器区域 */
 .chat-composer { padding: 12px 20px 16px; border-top: 1px solid #f0f0f0; background: #fff; }
 .chat-editor { display: flex; gap: 8px; align-items: flex-end; }

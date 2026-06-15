@@ -291,32 +291,50 @@ const AdminPage: React.FC = () => {
           loading={loading}
           dataSource={workspaces}
           pagination={{ pageSize: 8 }}
+          tableLayout="fixed"
+          scroll={{ x: 1080 }}
           columns={[
             {
               title: '空间',
+              width: 520,
               render: (_: any, record: any) => (
-                <div>
-                  <Text strong>{record.name}</Text>
-                  <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>{record.description || '暂无描述'}</Text>
+                <div style={{ minWidth: 0 }}>
+                  <Text strong ellipsis={{ tooltip: record.name }} style={{ display: 'block' }}>
+                    {record.name}
+                  </Text>
+                  <Text
+                    type="secondary"
+                    ellipsis={{ tooltip: record.description || '暂无描述' }}
+                    style={{ display: 'block', fontSize: 12 }}
+                  >
+                    {record.description || '暂无描述'}
+                  </Text>
                 </div>
               ),
             },
             {
               title: 'Owner',
+              width: 180,
               render: (_: any, record: any) => record.owner ? (
-                <Space>
-                  <Avatar size={24} src={record.owner.avatar} icon={<UserOutlined />} />
-                  <Text>{record.owner.display_name || record.owner.username}</Text>
+                <Space size={8} style={{ width: '100%', minWidth: 0, flexWrap: 'nowrap' }}>
+                  <Avatar size={24} src={record.owner.avatar} icon={<UserOutlined />} style={{ flex: '0 0 auto' }} />
+                  <Text
+                    ellipsis={{ tooltip: record.owner.display_name || record.owner.username }}
+                    style={{ minWidth: 0, whiteSpace: 'nowrap' }}
+                  >
+                    {record.owner.display_name || record.owner.username}
+                  </Text>
                 </Space>
               ) : <Tag color="red">缺失</Tag>,
             },
             {
               title: '成员',
               dataIndex: 'member_count',
-              width: 100,
+              width: 80,
             },
             {
               title: '角色分布',
+              width: 180,
               render: (_: any, record: any) => (
                 <Space wrap>
                   <Tag color="purple">owner {record.role_counts?.owner || 0}</Tag>
@@ -333,7 +351,7 @@ const AdminPage: React.FC = () => {
             },
             {
               title: '操作',
-              width: 120,
+              width: 130,
               render: (_: any, record: any) => (
                 <Button size="small" icon={<EyeOutlined />} onClick={() => openWorkspaceDetail(record)}>
                   查看内容

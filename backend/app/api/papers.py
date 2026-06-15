@@ -1,10 +1,15 @@
 """论文 API — 搜索、详情、入库、分类管理。"""
 
 import asyncio
+import base64
+import json
 import logging
+import mimetypes
 import os
+import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, List, Any, AsyncIterator, Literal
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
@@ -349,6 +354,58 @@ async def _paper_count(db: AsyncSession, *criteria) -> int:
 
 _MAINTENANCE_JOBS: dict[str, MaintenanceJobStatus] = {}
 _SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER: dict[str, str] = {}
+_MAINTENANCE_JOB_TTL_SECONDS = 60 * 60 * 6
+_MAINTENANCE_REDIS_CLIENT = None
+
+
+def _maintenance_job_cache_key(job_id: str) -> str:
+    return f"astraloom:maintenance-job:{job_id}"
+
+
+def _maintenance_job_redis():
+    global _MAINTENANCE_REDIS_CLIENT
+    if _MAINTENANCE_REDIS_CLIENT is not None:
+        return _MAINTENANCE_REDIS_CLIENT
+    try:
+        import redis
+
+        _MAINTENANCE_REDIS_CLIENT = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        return _MAINTENANCE_REDIS_CLIENT
+    except Exception as exc:
+        logger.warning("Maintenance job Redis cache unavailable; falling back to process memory: %s", exc)
+        _MAINTENANCE_REDIS_CLIENT = False
+        return None
+
+
+def _persist_maintenance_job(job: MaintenanceJobStatus) -> None:
+    if not job.id:
+        return
+    _MAINTENANCE_JOBS[job.id] = job
+    client = _maintenance_job_redis()
+    if not client:
+        return
+    try:
+        client.setex(
+            _maintenance_job_cache_key(job.id),
+            _MAINTENANCE_JOB_TTL_SECONDS,
+            json.dumps(job.model_dump(mode="json"), ensure_ascii=False),
+        )
+    except Exception as exc:
+        logger.warning("Maintenance job Redis persist failed %s: %s", job.id, exc)
+
+
+def _load_maintenance_job(job_id: str) -> Optional[MaintenanceJobStatus]:
+    client = _maintenance_job_redis()
+    try:
+        if client:
+            raw = client.get(_maintenance_job_cache_key(job_id))
+            if raw:
+                job = MaintenanceJobStatus(**json.loads(raw))
+                _MAINTENANCE_JOBS[job_id] = job
+                return job
+    except Exception as exc:
+        logger.warning("Maintenance job Redis load failed %s: %s", job_id, exc)
+    return _MAINTENANCE_JOBS.get(job_id)
 
 
 async def _missing_samples(db: AsyncSession, criterion, limit: int = 5) -> list[MaintenancePaperSample]:
@@ -1423,10 +1480,11 @@ async def _run_visual_evidence_backfill(
                 action.failed += 1
                 action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": (status.get("last_error") or {}).get("message") or "visual evidence failed"})
         except Exception as exc:
+            await db.rollback()
             action.failed += 1
             action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": str(exc)})
-    if action.processed:
-        await db.commit()
+        else:
+            await db.commit()
     return action
 
 
@@ -1437,12 +1495,13 @@ async def _run_visual_evidence_backfill_job(job_id: str, limit: int) -> None:
         visual_evidence_status_from_paper,
     )
 
-    job = _MAINTENANCE_JOBS.get(job_id)
+    job = _load_maintenance_job(job_id)
     if not job:
         return
     job.state = "running"
     job.status = "running"
     job.message = "正在提取视觉证据"
+    _persist_maintenance_job(job)
     try:
         async with AsyncSessionLocal() as db:
             result = await db.execute(
@@ -1461,6 +1520,7 @@ async def _run_visual_evidence_backfill_job(job_id: str, limit: int) -> None:
                     break
 
             job.total = len(papers)
+            _persist_maintenance_job(job)
             action = MaintenanceActionResult(processed=len(papers))
             if not papers:
                 job.state = "success"
@@ -1468,12 +1528,14 @@ async def _run_visual_evidence_backfill_job(job_id: str, limit: int) -> None:
                 job.progress_percent = 100
                 job.message = "没有需要提取视觉证据的论文"
                 job.result = action
+                _persist_maintenance_job(job)
                 return
 
             for index, paper in enumerate(papers, 1):
                 job.current_paper = {"id": str(paper.id), "title": paper.title, "year": paper.year}
                 job.processed = index - 1
                 job.progress_percent = int(round(((index - 1) / len(papers)) * 100))
+                _persist_maintenance_job(job)
                 try:
                     payload = await ensure_document_visual_evidence(paper, db, force=True)
                     status = visual_evidence_status_from_paper(paper)
@@ -1486,27 +1548,31 @@ async def _run_visual_evidence_backfill_job(job_id: str, limit: int) -> None:
                         action.failed += 1
                         action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": (status.get("last_error") or {}).get("message") or "visual evidence failed"})
                 except Exception as exc:
+                    await db.rollback()
                     action.failed += 1
                     action.errors.append({"paper_id": str(paper.id), "title": paper.title, "reason": str(exc)})
+                else:
+                    await db.commit()
                 job.processed = index
                 job.success = action.success
                 job.failed = action.failed
                 job.skipped = action.skipped
                 job.errors = action.errors[-10:]
                 job.progress_percent = int(round((index / len(papers)) * 100))
-            if action.processed:
-                await db.commit()
+                _persist_maintenance_job(job)
             job.result = action
             job.state = "success" if action.failed == 0 else "failed"
             job.status = job.state
             job.message = "视觉证据提取完成" if job.state == "success" else "视觉证据提取部分失败"
             job.current_paper = None
             job.progress_percent = 100
+            _persist_maintenance_job(job)
     except Exception as exc:
         job.state = "failed"
         job.status = "failed"
         job.message = str(exc)
         job.errors = [{"reason": str(exc)}]
+        _persist_maintenance_job(job)
 
 
 async def _run_single_visual_evidence_job(job_id: str, paper_id: str) -> None:
@@ -1518,7 +1584,7 @@ async def _run_single_visual_evidence_job(job_id: str, paper_id: str) -> None:
         visual_evidence_status_from_paper,
     )
 
-    job = _MAINTENANCE_JOBS.get(job_id)
+    job = _load_maintenance_job(job_id)
     if not job:
         return
     job.state = "running"
@@ -1527,6 +1593,7 @@ async def _run_single_visual_evidence_job(job_id: str, paper_id: str) -> None:
     job.processed = 0
     job.progress_percent = 5
     job.message = "正在提取视觉证据和表格 OCR"
+    _persist_maintenance_job(job)
     try:
         async with AsyncSessionLocal() as db:
             result = await db.execute(select(Paper).where(Paper.id == UUID(paper_id)))
@@ -1534,6 +1601,7 @@ async def _run_single_visual_evidence_job(job_id: str, paper_id: str) -> None:
             if not paper:
                 raise ValueError("论文未找到")
             job.current_paper = {"id": str(paper.id), "title": paper.title, "year": paper.year}
+            _persist_maintenance_job(job)
             try:
                 payload = await ensure_document_visual_evidence(paper, db, force=True)
                 status = visual_evidence_status_from_paper(paper)
@@ -1567,6 +1635,7 @@ async def _run_single_visual_evidence_job(job_id: str, paper_id: str) -> None:
             job.progress_percent = 100
             job.status = job.state
             job.current_paper = None
+            _persist_maintenance_job(job)
     except Exception as exc:
         job.state = "failed"
         job.status = "failed"
@@ -1576,6 +1645,7 @@ async def _run_single_visual_evidence_job(job_id: str, paper_id: str) -> None:
         job.progress_percent = 100
         job.message = str(exc)
         job.errors = [{"paper_id": paper_id, "reason": str(exc)}]
+        _persist_maintenance_job(job)
     finally:
         if _SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER.get(paper_id) == job_id:
             _SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER.pop(paper_id, None)
@@ -1585,7 +1655,7 @@ def _active_single_visual_evidence_job(paper_id: str) -> Optional[MaintenanceJob
     job_id = _SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER.get(paper_id)
     if not job_id:
         return None
-    job = _MAINTENANCE_JOBS.get(job_id)
+    job = _load_maintenance_job(job_id)
     if not job or job.state not in {"queued", "running", "unknown"}:
         _SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER.pop(paper_id, None)
         return None
@@ -1609,7 +1679,7 @@ def _enqueue_single_visual_evidence_job(paper: Paper) -> MaintenanceJobStatus:
         current_paper={"id": paper_id, "title": paper.title, "year": paper.year},
         message="视觉证据提取已进入后台任务",
     )
-    _MAINTENANCE_JOBS[job_id] = job
+    _persist_maintenance_job(job)
     _SINGLE_VISUAL_EVIDENCE_JOBS_BY_PAPER[paper_id] = job_id
     asyncio.create_task(_run_single_visual_evidence_job(job_id, paper_id))
     return job
@@ -1632,7 +1702,7 @@ async def backfill_visual_evidence(
         total=limit,
         message="视觉证据提取已进入后台任务",
     )
-    _MAINTENANCE_JOBS[job_id] = job
+    _persist_maintenance_job(job)
     asyncio.create_task(_run_visual_evidence_backfill_job(job_id, limit))
     return MaintenanceJobEnqueueResponse(job_id=job_id, job=job)
 
@@ -1643,8 +1713,9 @@ async def get_maintenance_job_status(
     user=Depends(require_admin),
 ):
     """Return normalized status for a queued maintenance job."""
-    if job_id in _MAINTENANCE_JOBS:
-        return _MAINTENANCE_JOBS[job_id]
+    cached_job = _load_maintenance_job(job_id)
+    if cached_job:
+        return cached_job
     from app.tasks.celery_app import celery_app
 
     async_result = celery_app.AsyncResult(job_id)
@@ -2094,6 +2165,153 @@ async def _build_paper_chat_context(paper, req: AskPaperRequest) -> tuple[list[d
     return context, [*evidence_refs, *references]
 
 
+def _caption_match_score(query: str, candidate: str) -> float:
+    query_terms = set(re.findall(r"[a-z0-9]+", (query or "").lower()))
+    candidate_terms = set(re.findall(r"[a-z0-9]+", (candidate or "").lower()))
+    if not query_terms or not candidate_terms:
+        return 0.0
+    overlap = len(query_terms & candidate_terms)
+    return overlap / max(1, min(len(query_terms), len(candidate_terms)))
+
+
+def _paper_ref_page_number(ref: dict) -> Optional[int]:
+    value = ref.get("page_start") or ref.get("page")
+    try:
+        page = int(value)
+    except (TypeError, ValueError):
+        return None
+    return page if page > 0 else None
+
+
+def _visual_evidence_attachments_from_references(
+    paper: Paper,
+    references: list[dict],
+    *,
+    max_images: int = 2,
+) -> list[ChatImageAttachment]:
+    """Attach retrieved visual assets so caption hits do not masquerade as image understanding."""
+    from app.services.document_visual_evidence import (
+        ready_visual_evidence_items_from_paper,
+        resolve_visual_asset_path_from_paper,
+        visual_asset_public_token,
+    )
+
+    if max_images <= 0:
+        return []
+
+    selected_paths: list[tuple[Path, str]] = []
+    seen: set[str] = set()
+
+    def add_path(path: Optional[Path], label: str) -> None:
+        if not path or len(selected_paths) >= max_images:
+            return
+        key = str(path)
+        if key in seen or not path.is_file():
+            return
+        seen.add(key)
+        selected_paths.append((path, label))
+
+    for ref in references:
+        if len(selected_paths) >= max_images:
+            break
+        metadata = ref.get("metadata") if isinstance(ref.get("metadata"), dict) else {}
+        if not (metadata.get("visual_evidence") or str(ref.get("evidence_type") or "").startswith("visual")):
+            continue
+        token = metadata.get("thumbnail_token") or metadata.get("asset_token")
+        if token:
+            add_path(resolve_visual_asset_path_from_paper(paper, str(token)), str(ref.get("id") or "visual evidence"))
+
+    caption_refs = [
+        ref for ref in references
+        if str(ref.get("evidence_type") or "") == "caption"
+    ]
+    if caption_refs and len(selected_paths) < max_images:
+        visual_items = ready_visual_evidence_items_from_paper(paper)
+        for ref in caption_refs:
+            if len(selected_paths) >= max_images:
+                break
+            page = _paper_ref_page_number(ref)
+            caption_text = " ".join(
+                str(value or "")
+                for value in [
+                    (ref.get("metadata") or {}).get("caption") if isinstance(ref.get("metadata"), dict) else "",
+                    ref.get("snippet"),
+                    ref.get("title"),
+                ]
+            )
+            candidates = [
+                item for item in visual_items
+                if item.page == page and (item.thumbnail_path or item.asset_path)
+            ]
+            candidates.sort(
+                key=lambda item: _caption_match_score(caption_text, item.caption or item.summary or item.text or ""),
+                reverse=True,
+            )
+            for item in candidates[:2]:
+                path_value = item.thumbnail_path or item.asset_path
+                token = visual_asset_public_token(path_value) if path_value else ""
+                path = resolve_visual_asset_path_from_paper(paper, token) if token else None
+                add_path(path, str(ref.get("id") or f"page {page} caption visual"))
+                if len(selected_paths) >= max_images:
+                    break
+
+    attachments: list[ChatImageAttachment] = []
+    for path, label in selected_paths[:max_images]:
+        try:
+            raw = path.read_bytes()
+            mime_type = mimetypes.guess_type(path.name)[0] or "image/png"
+            data_url = f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}"
+            attachments.append(ChatImageAttachment(filename=f"{label}-{path.name}", mime_type=mime_type, data_url=data_url))
+        except Exception as exc:
+            logger.warning("论文视觉证据图片附件构造失败 %s: %s", path, exc)
+    return attachments
+
+
+def _caption_only_evidence_warning(references: list[dict], attachments: list[ChatImageAttachment]) -> str:
+    has_caption = any(str(ref.get("evidence_type") or "") == "caption" for ref in references)
+    if not has_caption:
+        return ""
+    if attachments:
+        names = ", ".join(item.filename for item in attachments[:2])
+        return (
+            "本轮检索命中了图/表标题，并已自动附加相邻视觉证据图片给视觉模型查看："
+            f"{names}。若图片内容仍不足，请明确说明缺少可读细节。"
+        )
+    return (
+        "本轮检索命中了图/表标题 caption，但没有找到可附加的图片资产。"
+        "caption 只能证明图表主题，不能证明模型已经看过图片本体；"
+        "涉及图中具体场景、曲线、数值或视觉对比时必须说明视觉证据不足。"
+    )
+
+
+def _paper_chat_request_with_evidence_images(
+    req: AskPaperRequest,
+    attachments: list[ChatImageAttachment],
+) -> AskPaperRequest:
+    """Return a request copy with auto-selected evidence images, preserving user uploads first."""
+    if not attachments:
+        return req
+    existing = list(req.attachments or [])
+    remaining = max(0, 4 - len(existing))
+    if remaining <= 0:
+        return req
+    return req.model_copy(update={"attachments": [*existing, *attachments[:remaining]]})
+
+
+def _append_visual_evidence_guidance(
+    context: list[dict[str, str]],
+    references: list[dict],
+    attachments: list[ChatImageAttachment],
+) -> list[dict[str, str]]:
+    warning = _caption_only_evidence_warning(references, attachments)
+    if not warning:
+        return context
+    guidance = {"role": "system", "content": warning}
+    if context and context[-1].get("role") == "user":
+        return [*context[:-1], guidance, context[-1]]
+    return [*context, guidance]
+
+
 def _paper_evidence_meta(references: list[dict]) -> dict:
     evidence = [ref for ref in references if ref.get("type") == "paper_evidence"]
     visual_evidence = [
@@ -2224,7 +2442,14 @@ async def ask_about_paper(paper_id: str, req: AskPaperRequest, db: AsyncSession 
 
     context, references = await _build_paper_chat_context(paper, req)
     from app.api.chat_sessions import _build_llm_context_for_request
-    context = _build_llm_context_for_request(context, req)
+    auto_attachments = _visual_evidence_attachments_from_references(
+        paper,
+        references,
+        max_images=max(0, 4 - len(req.attachments or [])),
+    )
+    context = _append_visual_evidence_guidance(context, references, auto_attachments)
+    llm_req = _paper_chat_request_with_evidence_images(req, auto_attachments)
+    context = _build_llm_context_for_request(context, llm_req)
     answer = await llm_service.chat(
         messages=context,
         temperature=0.5,
@@ -2246,7 +2471,14 @@ async def ask_about_paper_stream(paper_id: str, req: AskPaperRequest, db: AsyncS
 
     context, references = await _build_paper_chat_context(paper, req)
     from app.api.chat_sessions import _build_llm_context_for_request
-    context = _build_llm_context_for_request(context, req)
+    auto_attachments = _visual_evidence_attachments_from_references(
+        paper,
+        references,
+        max_images=max(0, 4 - len(req.attachments or [])),
+    )
+    context = _append_visual_evidence_guidance(context, references, auto_attachments)
+    llm_req = _paper_chat_request_with_evidence_images(req, auto_attachments)
+    context = _build_llm_context_for_request(context, llm_req)
     max_tokens = llm_service.paper_chat_max_tokens()
     from app.api.chat_sessions import _retrieval_quality_snapshot
     retrieval_quality = await _retrieval_quality_snapshot(rag_enabled=req.rag_enabled)

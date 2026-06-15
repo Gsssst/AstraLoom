@@ -21,8 +21,8 @@ dist/
 
 # Environment
 .env
-.env.local
-.env.production
+.env.*
+!.env.example
 
 # IDE
 .vscode/
@@ -38,6 +38,20 @@ Thumbs.db
 # Docker
 .docker/
 backend/model-cache/
+model-cache/
+model_cache/
+postgres_data/
+redis_data/
+uploads_data/
+
+# SSL / deployment secrets
+nginx/ssl/
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
 
 # Celery Beat runtime state
 celerybeat-schedule*
@@ -45,6 +59,17 @@ backend/celerybeat-schedule*
 
 # Uploads
 uploads/
+backend/uploads/
+
+# Database / backup artifacts
+backups/
+*.sql
+*.dump
+*.backup
+*.bak
+*.db
+*.sqlite
+*.sqlite3
 
 # Logs
 logs/
