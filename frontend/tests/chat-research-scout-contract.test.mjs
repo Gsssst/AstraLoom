@@ -84,6 +84,17 @@ test('chat composer uses a Codex-like single input surface without legacy shortc
   assert.match(chatPageSource, /chat-plus-button/);
 });
 
+test('chat workbench visual polish avoids glossy plastic treatment', () => {
+  assert.match(responsiveSource, /\.chat-message-list\s*\{[\s\S]*background: #f6f7f9 !important;/);
+  assert.match(responsiveSource, /\.chat-toolbar\s*\{[\s\S]*background: rgba\(248, 250, 252, 0\.96\) !important;/);
+  assert.match(responsiveSource, /\.chat-composer-panel\s*\{[\s\S]*border-radius: 14px;/);
+  assert.match(responsiveSource, /\.chat-message-bubble\.is-assistant\s*\{[\s\S]*box-shadow: 0 1px 2px/);
+  assert.match(responsiveSource, /\.chat-control-pill:hover,[\s\S]*color: #1d4ed8 !important;/);
+  assert.doesNotMatch(responsiveSource, /\.chat-message-list\s*\{[\s\S]*radial-gradient/);
+  assert.doesNotMatch(responsiveSource, /\.chat-composer-panel\s*\{[\s\S]*border-radius: 28px/);
+  assert.doesNotMatch(responsiveSource, /\.chat-send-button\s*\{[\s\S]*linear-gradient/);
+});
+
 test('Research Scout styles are scoped', () => {
   assert.match(responsiveSource, /\.chat-assistant-mode-select/);
   assert.match(responsiveSource, /\.research-scout-cards/);

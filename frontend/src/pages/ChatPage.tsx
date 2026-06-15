@@ -839,7 +839,7 @@ const ChatPage: React.FC = () => {
         className={`chat-session-sidebar ${desktopSidebarOpen ? 'is-open' : 'is-rail'}`}
         onMouseEnter={() => setSidebarHoverOpen(true)}
         onMouseLeave={() => setSidebarHoverOpen(false)}
-        style={{ width: desktopSidebarOpen ? 272 : 52, overflow: 'hidden', transition: 'width 0.22s ease', borderRight: `1px solid ${token.colorBorderSecondary}`, background: '#fafbfc', flexShrink: 0 }}
+        style={{ width: desktopSidebarOpen ? 272 : 52, overflow: 'hidden', transition: 'width 0.22s ease', flexShrink: 0 }}
       >
         <div className="chat-session-rail">
           <Button type="text" icon={<MenuOutlined />} onClick={() => setDrawerOpen(!drawerOpen)} />
@@ -847,8 +847,8 @@ const ChatPage: React.FC = () => {
         </div>
         <div className="chat-session-panel">{sessionList}</div>
       </div>}
-      <div className="chat-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', background: token.colorBgContainer, marginLeft: 1 }}>
-        <div className="chat-toolbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 20px', borderBottom: `1px solid ${token.colorBorderSecondary}`, background: token.colorBgLayout }}>
+      <div className="chat-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 1 }}>
+        <div className="chat-toolbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 20px' }}>
           <Space size={4} className="chat-toolbar-title">
             <Button type="text" icon={<MenuOutlined />} onClick={() => setDrawerOpen(!drawerOpen)} />
             <Text strong className="chat-toolbar-title-text">{currentSession?.title || '新对话'}</Text>
@@ -902,7 +902,7 @@ const ChatPage: React.FC = () => {
             </Dropdown>
           </div>
         </div>
-        <div ref={chatScrollRef} className="chat-message-list" style={{ flex: 1, overflowY: 'auto', padding: '24px 20px', background: token.colorBgLayout }}>
+        <div ref={chatScrollRef} className="chat-message-list" style={{ flex: 1, overflowY: 'auto', padding: '24px 20px' }}>
           {messages.length === 0 && !pendingMsg ? (
             <div className="chat-empty-state">
               <div className="chat-empty-logo">✦</div>
@@ -955,7 +955,7 @@ const ChatPage: React.FC = () => {
                 </div>
               ))}
               {pendingMsg && <div className="chat-message-row is-user"><Avatar className="chat-message-avatar" size={30} icon={<UserOutlined />} /><div className="chat-message-body is-user"><div className="chat-message-bubble is-user">{pendingMsg}</div></div></div>}
-              {sending && <div className="chat-message-row is-assistant"><Avatar className="chat-message-avatar" size={30} icon={<RobotOutlined />} /><div className="chat-message-body is-assistant"><div className="chat-stream-status"><Space size={8} align="start"><Space size={5} style={{ paddingTop: 5 }}>{[0, 0.2, 0.4].map((d, i) => <div key={i} style={{ width: 7, height: 7, borderRadius: '50%', background: '#c471ed', animation: `bounce 1.4s infinite ease-in-out ${d}s` }} />)}</Space><div className="chat-stream-status-copy">{streamPhaseLabel && <span className="chat-stream-phase"><ClockCircleOutlined />{streamPhaseLabel}</span>}<Text type="secondary" className="chat-stream-status-text">{streamStatus || '正在等待模型响应...'}</Text></div><Button className="chat-stop-inline-button" type="text" size="small" icon={<StopOutlined />} onClick={handleStopGeneration}>停止</Button></Space></div></div></div>}
+              {sending && <div className="chat-message-row is-assistant"><Avatar className="chat-message-avatar" size={30} icon={<RobotOutlined />} /><div className="chat-message-body is-assistant"><div className="chat-stream-status"><Space size={8} align="start"><Space size={5} style={{ paddingTop: 5 }}>{[0, 0.2, 0.4].map((d, i) => <div key={i} style={{ width: 7, height: 7, borderRadius: '50%', background: '#2563eb', animation: `bounce 1.4s infinite ease-in-out ${d}s` }} />)}</Space><div className="chat-stream-status-copy">{streamPhaseLabel && <span className="chat-stream-phase"><ClockCircleOutlined />{streamPhaseLabel}</span>}<Text type="secondary" className="chat-stream-status-text">{streamStatus || '正在等待模型响应...'}</Text></div><Button className="chat-stop-inline-button" type="text" size="small" icon={<StopOutlined />} onClick={handleStopGeneration}>停止</Button></Space></div></div></div>}
             </>
           )}
           <div ref={messagesEndRef} />
