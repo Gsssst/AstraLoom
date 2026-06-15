@@ -17,7 +17,7 @@ from app.db.models.user import User
 from app.core.security import get_current_user
 from app.core.config import settings
 from app.services.llm import OPENAI_COMPATIBLE_PROVIDER, llm_service
-from app.services.paper_search import PaperResult, create_remote_ingest_token, search_scholarly_papers
+from app.services.paper_search import PaperResult, create_remote_ingest_token, deduplicate_papers, search_scholarly_papers
 from app.services.rag_service import RAGService
 from app.services.web_search import format_web_context, search_web_results
 from app.db.session import AsyncSessionLocal
@@ -612,6 +612,104 @@ def _research_scout_intent(query: str, search_depth: str) -> dict[str, Any]:
     }
 
 
+RESEARCH_SCOUT_QUERY_LIMITS = {"quick": 2, "standard": 3, "deep": 4}
+RESEARCH_SCOUT_QUERY_NOISE_RE = re.compile(
+    r"(请帮我|帮我|请|找|搜索|检索|推荐|列出|整理|论文|几篇|一些|关于|有关|的|paper|papers|find|search|recommend|list)",
+    re.IGNORECASE,
+)
+
+
+def _clean_research_scout_query(value: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+    cleaned = cleaned.strip(" ,;:，。；：")
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"\b\d+\s*(?:篇|papers?)?\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = RESEARCH_SCOUT_QUERY_NOISE_RE.sub(" ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;:，。；：")
+    return cleaned
+
+
+def _fallback_research_scout_queries(query: str, intent: dict[str, Any], limit: int = 4) -> list[str]:
+    raw = _clean_research_scout_query(query)
+    lowered = (query or "").lower()
+    variants: list[str] = []
+    if any(term in query for term in ["多模态大模型", "多模态大语言模型"]) or "mllm" in lowered:
+        variants.extend([
+            "multimodal large language model",
+            "MLLM",
+            "vision language model",
+        ])
+    if any(term in query for term in ["视觉语言模型", "视觉-语言模型"]) or "vlm" in lowered:
+        variants.extend(["vision language model", "visual language model", "VLM"])
+    if any(term in query for term in ["大语言模型", "大模型"]) or "llm" in lowered:
+        variants.extend(["large language model", "LLM"])
+    if "memory" in lowered or "记忆" in query:
+        memory_variants = ["memory", "long term memory", "memory augmented"]
+        if variants:
+            variants = [f"{base} {suffix}" for base in variants[:4] for suffix in memory_variants[:2]]
+            variants.append("memory augmented multimodal large language model")
+        else:
+            variants.extend(memory_variants)
+    if "video grounding" in lowered or "视频定位" in query or "视频 grounding" in lowered:
+        variants.extend(["video grounding", "temporal video grounding", "video moment retrieval"])
+    methods = intent.get("methods") or []
+    tasks = intent.get("tasks") or []
+    topic_terms = [str(item) for item in [raw, *methods, *tasks] if item]
+    if topic_terms:
+        variants.append(" ".join(topic_terms[:6]))
+    variants.append(raw or query)
+    return _dedupe_preserve(variants)[:limit]
+
+
+def _coerce_research_scout_planned_queries(parsed: Any, fallback: list[str], limit: int) -> list[str]:
+    if not isinstance(parsed, dict):
+        return fallback[:limit]
+    queries = parsed.get("queries")
+    if not isinstance(queries, list):
+        return fallback[:limit]
+    cleaned = []
+    for item in queries:
+        if isinstance(item, dict):
+            value = item.get("query") or item.get("text")
+        else:
+            value = item
+        value = _clean_research_scout_query(str(value or ""))
+        if value and len(value) <= 120:
+            cleaned.append(value)
+    return _dedupe_preserve([*cleaned, *fallback])[:limit]
+
+
+async def _plan_research_scout_queries(query: str, intent: dict[str, Any], search_depth: str) -> list[str]:
+    limit = RESEARCH_SCOUT_QUERY_LIMITS.get(search_depth, RESEARCH_SCOUT_QUERY_LIMITS["standard"])
+    fallback = _fallback_research_scout_queries(query, intent, limit=limit)
+    prompt = (
+        "你是学术论文检索 query planner。请根据用户问题生成适合 arXiv、Semantic Scholar、OpenAlex 的英文检索关键词。"
+        "要求：只输出 JSON；queries 是 2-4 个英文短 query；优先使用学术常用术语、缩写、同义任务名；不要包含中文礼貌请求、数量词或无关解释。"
+        "如果用户问题是中文，先理解研究方向再翻译/扩展。"
+        "\n输出格式：{\"queries\":[\"query 1\",\"query 2\"],\"aliases\":[\"...\"],\"rationale\":\"...\"}"
+        "\n\n用户问题："
+        f"{query}"
+        "\n\n已解析意图："
+        + json.dumps(intent, ensure_ascii=False)
+        + "\n\n本地兜底候选："
+        + json.dumps(fallback, ensure_ascii=False)
+    )
+    try:
+        raw = await llm_service.chat(
+            messages=[
+                {"role": "system", "content": "你只返回可解析 JSON。不要 Markdown。不要编造论文，只规划检索 query。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=800,
+        )
+        return _coerce_research_scout_planned_queries(_extract_json_object(raw), fallback, limit)
+    except Exception as exc:
+        logger.warning("Research Scout query planning failed, using fallback queries: %s", exc)
+        return fallback[:limit]
+
+
 def _research_scout_score_dimension(
     *,
     score: int,
@@ -993,6 +1091,7 @@ def _research_scout_tool_trace(
     query: str,
     intent: dict[str, Any] | None,
     candidates: list[dict[str, Any]],
+    planned_queries: list[str] | None = None,
 ) -> dict[str, Any]:
     candidate_count = len(candidates)
     llm_evaluated = sum(1 for item in candidates[:6] if (item.get("evaluation") or {}).get("source") == "llm")
@@ -1025,6 +1124,7 @@ def _research_scout_tool_trace(
             f"已优先检索 arXiv PDF，并用 Semantic Scholar/OpenAlex 增强元数据，找到 {candidate_count} 篇候选。",
             {
                 "query": query,
+                "planned_queries": planned_queries or [query],
                 "providers": ["arXiv PDF", "Semantic Scholar enrichment", "OpenAlex enrichment"],
                 "strategy": "arxiv_first_enriched",
                 "candidate_count": candidate_count,
@@ -1128,15 +1228,26 @@ def _format_research_scout_context(candidates: list[dict[str, Any]], intent: dic
     return f"Parsed user intent:\n{_format_research_scout_intent(intent)}\n\nCandidate papers:\n" + "\n\n".join(blocks)
 
 
-async def _build_research_scout_context(query: str, search_depth: str, intent: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, str]]]:
+async def _build_research_scout_context(query: str, search_depth: str, intent: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, str]], list[str]]:
     limit = RESEARCH_SCOUT_LIMITS.get(search_depth, RESEARCH_SCOUT_LIMITS["standard"])
+    planned_queries = await _plan_research_scout_queries(query, intent, search_depth)
     try:
-        papers = await search_scholarly_papers(
-            query,
-            source="arxiv_enriched",
-            max_results=limit,
-            sort_by="relevance",
-        )
+        groups = await asyncio.gather(*[
+            search_scholarly_papers(
+                planned_query,
+                source="arxiv_enriched",
+                max_results=max(limit, 8),
+                sort_by="relevance",
+            )
+            for planned_query in planned_queries
+        ], return_exceptions=True)
+        papers = []
+        for group in groups:
+            if isinstance(group, Exception):
+                logger.warning("Research Scout planned query failed: %s", group)
+                continue
+            papers.extend(group)
+        papers = deduplicate_papers(papers, limit)
     except Exception as exc:
         logger.warning("Research Scout scholarly discovery failed: %s", exc)
         papers = []
@@ -1166,7 +1277,7 @@ async def _build_research_scout_context(query: str, search_depth: str, intent: d
                 f"{_format_research_scout_context(candidates, intent)}"
             ),
         }]
-    return candidates, references, system_context
+    return candidates, references, system_context, planned_queries
 
 
 async def _retrieval_quality_snapshot(*, rag_enabled: bool) -> dict:
@@ -1467,10 +1578,11 @@ async def send_message(
     scout_candidates: list[dict[str, Any]] = []
     scout_intent: dict[str, Any] | None = None
     tool_trace: dict[str, Any] | None = None
+    scout_planned_queries: list[str] = []
     if scout_enabled:
         scout_intent = _research_scout_intent(req.content, effective_search_depth)
-        scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, effective_search_depth, scout_intent)
-        tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates)
+        scout_candidates, scout_refs, scout_context, scout_planned_queries = await _build_research_scout_context(req.content, effective_search_depth, scout_intent)
+        tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates, scout_planned_queries)
         context = [*scout_context, *context]
         references.extend(scout_refs)
 
@@ -1566,10 +1678,11 @@ async def send_message_stream(
     scout_candidates: list[dict[str, Any]] = []
     scout_intent: dict[str, Any] | None = None
     tool_trace: dict[str, Any] | None = None
+    scout_planned_queries: list[str] = []
     if scout_enabled:
         scout_intent = _research_scout_intent(req.content, effective_search_depth)
-        scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, effective_search_depth, scout_intent)
-        tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates)
+        scout_candidates, scout_refs, scout_context, scout_planned_queries = await _build_research_scout_context(req.content, effective_search_depth, scout_intent)
+        tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates, scout_planned_queries)
         context = [*scout_context, *context]
         references.extend(scout_refs)
     retrieval_quality = await _retrieval_quality_snapshot(rag_enabled=rag_enabled)
@@ -1604,6 +1717,7 @@ async def send_message_stream(
                     "auto_routed": req.assistant_mode != "research_scout",
                     "query": req.content,
                     "intent": scout_intent,
+                    "planned_queries": scout_planned_queries,
                     "candidates": scout_candidates,
                     "candidate_count": len(scout_candidates),
                 } if scout_enabled else None,

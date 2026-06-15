@@ -1,0 +1,6 @@
+- [x] 1. Add LLM-driven Research Scout query planner with strict JSON parsing.
+- [x] 2. Add deterministic fallback query normalization and expansion helpers.
+- [x] 3. Run bounded multi-query scholarly discovery and deduplicate merged candidates.
+- [x] 4. Keep original query for intent/evaluation while using planned queries for retrieval.
+- [x] 5. Add tests for Chinese/mixed-language paper discovery prompts and planner fallback.
+- [x] 6. Validate OpenSpec, backend tests, frontend contract tests, build, and commit.

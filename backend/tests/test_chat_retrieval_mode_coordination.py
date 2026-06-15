@@ -69,6 +69,36 @@ def test_general_mode_keeps_requested_web_retrieval():
     assert chat_sessions._web_search_enabled_for_mode(request, effective_mode) is True
 
 
+def test_research_scout_fallback_queries_expand_chinese_mllm_memory_prompt():
+    intent = chat_sessions._research_scout_intent("请帮我找10篇关于多模态大模型memory的论文", "deep")
+
+    queries = chat_sessions._fallback_research_scout_queries(
+        "请帮我找10篇关于多模态大模型memory的论文",
+        intent,
+        limit=4,
+    )
+
+    assert "multimodal large language model memory" in queries
+    assert any("MLLM" in query or "vision language model" in query for query in queries)
+    assert all("请帮我" not in query and "论文" not in query for query in queries)
+
+
+def test_research_scout_planned_query_coercion_prefers_llm_queries_with_fallback():
+    fallback = ["multimodal large language model memory", "MLLM memory"]
+
+    queries = chat_sessions._coerce_research_scout_planned_queries(
+        {"queries": ["memory augmented multimodal large language model", "vision language model memory"]},
+        fallback,
+        limit=3,
+    )
+
+    assert queries == [
+        "memory augmented multimodal large language model",
+        "vision language model memory",
+        "multimodal large language model memory",
+    ]
+
+
 @pytest.mark.parametrize(
     ("search_depth", "expected"),
     [

@@ -128,6 +128,7 @@ interface ResearchScoutPayload {
   enabled?: boolean;
   auto_routed?: boolean;
   query?: string;
+  planned_queries?: string[];
   intent?: ResearchScoutIntent;
   candidate_count?: number;
   candidates?: ResearchScoutCandidate[];

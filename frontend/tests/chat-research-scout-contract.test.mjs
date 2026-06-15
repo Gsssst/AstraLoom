@@ -170,6 +170,10 @@ test('backend streams Research Scout metadata from scholarly discovery', () => {
   assert.match(backendChatSource, /_is_paper_discovery_request/);
   assert.match(backendChatSource, /_effective_assistant_mode/);
   assert.match(backendChatSource, /_web_search_enabled_for_mode/);
+  assert.match(backendChatSource, /_plan_research_scout_queries/);
+  assert.match(backendChatSource, /_fallback_research_scout_queries/);
+  assert.match(backendChatSource, /只规划检索 query/);
+  assert.match(backendChatSource, /planned_queries/);
   assert.match(backendChatSource, /scout_enabled = effective_mode == "research_scout"/);
   assert.match(backendChatSource, /web_search_enabled=_web_search_enabled_for_mode\(req, effective_mode\)/);
   assert.match(backendChatSource, /"auto_routed": req\.assistant_mode != "research_scout"/);
@@ -183,6 +187,7 @@ test('backend streams Research Scout metadata from scholarly discovery', () => {
   assert.match(backendChatSource, /"intent": scout_intent/);
   assert.match(backendChatSource, /"research_scout": \{/);
   assert.match(backendChatSource, /论文猎手已整理/);
+  assert.match(chatPageSource, /planned_queries\?: string\[\]/);
 });
 
 test('Research Scout source strip excludes generic web references', () => {
