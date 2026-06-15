@@ -52,7 +52,38 @@ interface ResearchScoutIntent {
   datasets?: string[];
   tasks?: string[];
   preferences?: string[];
+  venues?: string[];
+  institutions?: string[];
+  authors?: string[];
+  constraint_mode?: 'hard' | 'soft';
+  evaluation_focus?: string[];
   search_depth?: string;
+}
+
+interface ResearchScoutEvaluationDimension {
+  score: number;
+  reason: string;
+  evidence?: string[];
+  confidence?: 'high' | 'medium' | 'low';
+}
+
+interface ResearchScoutEvaluation {
+  novelty?: ResearchScoutEvaluationDimension;
+  relevance?: ResearchScoutEvaluationDimension;
+  reproducibility?: ResearchScoutEvaluationDimension;
+  impact?: ResearchScoutEvaluationDimension;
+  experiment_quality?: ResearchScoutEvaluationDimension;
+  risk?: ResearchScoutEvaluationDimension;
+  reading_priority?: 'high' | 'medium' | 'low';
+  focus?: string[];
+  source?: 'llm' | 'heuristic';
+}
+
+interface ResearchScoutConstraintMatch {
+  requested?: string[];
+  matched?: string[];
+  available?: string | string[] | null;
+  status?: 'matched' | 'unknown' | 'not_requested';
 }
 
 interface ResearchScoutCandidate {
@@ -61,6 +92,8 @@ interface ResearchScoutCandidate {
   authors?: string[];
   abstract?: string;
   year?: number | null;
+  venue?: string | null;
+  institutions?: string[];
   source?: string;
   source_url?: string | null;
   pdf_url?: string | null;
@@ -73,6 +106,13 @@ interface ResearchScoutCandidate {
   why_useful?: string;
   caveat?: string;
   library_relation?: string;
+  constraint_matches?: {
+    constraint_mode?: 'hard' | 'soft';
+    venue?: ResearchScoutConstraintMatch;
+    institution?: ResearchScoutConstraintMatch;
+    author?: ResearchScoutConstraintMatch;
+  };
+  evaluation?: ResearchScoutEvaluation;
 }
 
 interface ResearchScoutPayload {
@@ -648,11 +688,90 @@ const ChatPage: React.FC = () => {
     recent: '近期',
     relevance: '相关性',
   }[value] || value);
+  const researchScoutEvaluationLabel = (value: string) => ({
+    novelty: '创新性',
+    relevance: '相关性',
+    reproducibility: '可复现',
+    impact: '影响力',
+    experiment_quality: '实验质量',
+    risk: '风险',
+  }[value] || value);
+  const researchScoutConfidenceLabel = (value?: string) => ({
+    high: '高置信',
+    medium: '中置信',
+    low: '低置信',
+  }[value || ''] || '置信未知');
+  const researchScoutConstraintStatusLabel = (value?: string) => ({
+    matched: '已匹配',
+    unknown: '待确认',
+    not_requested: '未要求',
+  }[value || ''] || '待确认');
+  const researchScoutPriorityLabel = (value?: string) => ({
+    high: '优先读',
+    medium: '可候选',
+    low: '低优先',
+  }[value || ''] || '未排序');
   const continueScoutSearch = (query: string, flavor: string) => {
     setAssistantMode('research_scout');
     setWebSearch(true);
     setSearchDepth('deep');
     setInput(`请继续用论文猎手模式找 ${flavor} 类型的论文，主题是：${query}`);
+  };
+  const renderResearchScoutEvaluation = (evaluation?: ResearchScoutEvaluation) => {
+    if (!evaluation) return null;
+    const dimensions = ['novelty', 'relevance', 'reproducibility', 'impact', 'experiment_quality', 'risk'] as const;
+    return (
+      <div className="research-scout-evaluation">
+        <div className="research-scout-evaluation-head">
+          <Text type="secondary">结构化评估</Text>
+          <Space size={4}>
+            <Tag color={evaluation.source === 'llm' ? 'purple' : 'default'}>{evaluation.source === 'llm' ? 'LLM 评估' : '规则初筛'}</Tag>
+            {evaluation.reading_priority && <Tag color={evaluation.reading_priority === 'high' ? 'green' : evaluation.reading_priority === 'medium' ? 'blue' : 'default'}>{researchScoutPriorityLabel(evaluation.reading_priority)}</Tag>}
+          </Space>
+        </div>
+        <div className="research-scout-evaluation-grid">
+          {dimensions.map(key => {
+            const item = evaluation[key];
+            if (!item) return null;
+            const color = key === 'risk' ? (item.score >= 4 ? 'red' : item.score >= 3 ? 'orange' : 'green') : (item.score >= 4 ? 'green' : item.score >= 3 ? 'blue' : 'default');
+            const evidence = item.evidence?.filter(Boolean).join(' / ');
+            return (
+              <Tooltip key={key} title={`${item.reason}${evidence ? `｜证据：${evidence}` : ''}`}>
+                <span className={`research-scout-score-chip is-${key}`}>
+                  <b>{researchScoutEvaluationLabel(key)}</b>
+                  <Tag color={color}>{item.score}/5</Tag>
+                  <em>{researchScoutConfidenceLabel(item.confidence)}</em>
+                </span>
+              </Tooltip>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+  const renderResearchScoutConstraintMatches = (paper: ResearchScoutCandidate) => {
+    const matches = paper.constraint_matches;
+    if (!matches) return null;
+    const rows = [
+      { key: 'venue', label: 'Venue', item: matches.venue },
+      { key: 'institution', label: '单位', item: matches.institution },
+      { key: 'author', label: '作者', item: matches.author },
+    ].filter(row => row.item?.requested?.length || row.item?.matched?.length);
+    if (!rows.length) return null;
+    return (
+      <div className="research-scout-constraints">
+        <Tag color={matches.constraint_mode === 'hard' ? 'red' : 'blue'}>{matches.constraint_mode === 'hard' ? '硬约束' : '软偏好'}</Tag>
+        {rows.map(row => {
+          const item = row.item as ResearchScoutConstraintMatch;
+          const matched = item.matched?.length ? item.matched.join(' / ') : '当前元数据无法确认';
+          return (
+            <Tooltip key={row.key} title={`要求：${item.requested?.join(' / ') || '未要求'}｜可见元数据：${Array.isArray(item.available) ? item.available.join(' / ') : item.available || '无'}`}>
+              <Tag color={item.status === 'matched' ? 'green' : 'orange'}>{row.label}：{researchScoutConstraintStatusLabel(item.status)} · {matched}</Tag>
+            </Tooltip>
+          );
+        })}
+      </div>
+    );
   };
   const renderResearchScoutIntent = (intent?: ResearchScoutIntent) => {
     if (!intent) return null;
@@ -663,6 +782,11 @@ const ChatPage: React.FC = () => {
       { label: '数据集', values: intent.datasets || [] },
       { label: '年份', values: (intent.years || []).map(String) },
       { label: '偏好', values: (intent.preferences || []).map(researchScoutPreferenceLabel) },
+      { label: '会议/期刊', values: intent.venues || [] },
+      { label: '发表单位', values: intent.institutions || [] },
+      { label: '作者/团队', values: intent.authors || [] },
+      { label: '约束', values: intent.constraint_mode ? [intent.constraint_mode === 'hard' ? '硬约束' : '软偏好'] : [] },
+      { label: '评估重点', values: (intent.evaluation_focus || []).map(researchScoutEvaluationLabel) },
     ].filter(item => item.values.length > 0);
     if (!rows.length) return null;
     return (
@@ -712,12 +836,16 @@ const ChatPage: React.FC = () => {
                 </div>
                 <Space wrap size={4} className="research-scout-meta">
                   {paper.year && <Tag color="blue">{paper.year}</Tag>}
+                  {paper.venue && <Tag color="cyan">{paper.venue}</Tag>}
                   <Tag color="purple">{researchScoutSourceLabel(paper.source)}</Tag>
                   {!!paper.citation_count && <Tag color="gold">引用 {paper.citation_count}</Tag>}
                   {paper.pdf_url && <Tag color="green">PDF</Tag>}
                   {ingested && <Tag color="success" icon={<CheckCircleOutlined />}>已入库</Tag>}
                 </Space>
                 {paper.authors?.length ? <Text type="secondary" className="research-scout-authors" ellipsis>{paper.authors.join(', ')}</Text> : null}
+                {paper.institutions?.length ? <Text type="secondary" className="research-scout-institutions" ellipsis>{paper.institutions.join(' / ')}</Text> : null}
+                {renderResearchScoutConstraintMatches(paper)}
+                {renderResearchScoutEvaluation(paper.evaluation)}
                 <Text className="research-scout-rationale">{paper.why_interesting}</Text>
                 <Text type="secondary" className="research-scout-useful">{paper.why_useful}</Text>
                 {paper.library_relation && <Text type="secondary" className="research-scout-relation"><NodeIndexOutlined />{paper.library_relation}</Text>}

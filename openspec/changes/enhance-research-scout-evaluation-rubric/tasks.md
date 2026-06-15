@@ -1,0 +1,6 @@
+- [x] 1. Extend Research Scout intent extraction with venues, institutions, authors, constraint mode, and evaluation focus.
+- [x] 2. Add evidence-bound candidate evaluation helpers and include evaluation/constraint matches in stream metadata.
+- [x] 3. Update Research Scout model context so prose recommendations use the new intent and evaluation metadata.
+- [x] 4. Render constraint fields and evaluation score details on Research Scout cards.
+- [x] 5. Extend contract tests for the new backend and frontend Research Scout fields.
+- [x] 6. Validate OpenSpec, backend syntax, frontend contract tests, and frontend build.

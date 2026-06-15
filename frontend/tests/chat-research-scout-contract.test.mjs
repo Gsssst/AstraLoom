@@ -66,6 +66,25 @@ test('Research Scout cards can route candidates into collections and research pr
   assert.match(chatPageSource, /加入研究方向素材池/);
 });
 
+test('Research Scout supports constraint-aware evaluation metadata', () => {
+  assert.match(chatPageSource, /venues\?: string\[\]/);
+  assert.match(chatPageSource, /institutions\?: string\[\]/);
+  assert.match(chatPageSource, /authors\?: string\[\]/);
+  assert.match(chatPageSource, /constraint_mode\?: 'hard' \| 'soft'/);
+  assert.match(chatPageSource, /ResearchScoutEvaluationDimension/);
+  assert.match(chatPageSource, /ResearchScoutConstraintMatch/);
+  assert.match(chatPageSource, /renderResearchScoutEvaluation/);
+  assert.match(chatPageSource, /renderResearchScoutConstraintMatches/);
+  assert.match(chatPageSource, /结构化评估/);
+  assert.match(chatPageSource, /LLM 评估/);
+  assert.match(chatPageSource, /规则初筛/);
+  assert.match(chatPageSource, /发表单位/);
+  assert.match(chatPageSource, /当前元数据无法确认/);
+  assert.match(responsiveSource, /\.research-scout-evaluation/);
+  assert.match(responsiveSource, /\.research-scout-score-chip/);
+  assert.match(responsiveSource, /\.research-scout-constraints/);
+});
+
 test('chat sidebar collapses to a hover rail and send button uses a compact arrow control', () => {
   assert.match(chatPageSource, /sidebarHoverOpen/);
   assert.match(chatPageSource, /chat-session-rail/);
@@ -129,6 +148,28 @@ test('backend streams Research Scout metadata from scholarly discovery', () => {
   assert.match(backendChatSource, /"intent": scout_intent/);
   assert.match(backendChatSource, /"research_scout": \{/);
   assert.match(backendChatSource, /论文猎手已整理/);
+});
+
+test('backend builds evidence-bound Research Scout evaluations and constraints', () => {
+  assert.match(backendChatSource, /RESEARCH_SCOUT_INSTITUTION_ALIASES/);
+  assert.match(backendChatSource, /RESEARCH_SCOUT_VENUE_ALIASES/);
+  assert.match(backendChatSource, /RESEARCH_SCOUT_EVALUATION_FOCUS/);
+  assert.match(backendChatSource, /_research_scout_constraint_matches/);
+  assert.match(backendChatSource, /_research_scout_candidate_evaluation/);
+  assert.match(backendChatSource, /_apply_llm_research_scout_evaluations/);
+  assert.match(backendChatSource, /只返回可解析 JSON/);
+  assert.match(backendChatSource, /using heuristic evaluation/);
+  assert.match(backendChatSource, /"evaluation": evaluation/);
+  assert.match(backendChatSource, /"constraint_matches": constraint_matches/);
+  assert.match(backendChatSource, /当前元数据无法确认/);
+  assert.match(backendChatSource, /不要编造 affiliation/);
+  assert.match(backendChatSource, /"constraint_mode": constraint_mode/);
+  assert.match(backendChatSource, /"evaluation_focus": evaluation_focus/);
+});
+
+test('scholarly search preserves OpenAlex venue and institution metadata for scout cards', () => {
+  assert.match(readFileSync(new URL('../../backend/app/services/paper_search.py', import.meta.url), 'utf8'), /"institutions": institutions/);
+  assert.match(readFileSync(new URL('../../backend/app/services/paper_search.py', import.meta.url), 'utf8'), /"venue": best_source\.get\("display_name"\) or primary_source\.get\("display_name"\)/);
 });
 
 test('backend exposes research project paper append endpoint for scout actions', () => {

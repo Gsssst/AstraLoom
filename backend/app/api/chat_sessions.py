@@ -256,6 +256,63 @@ RESEARCH_SCOUT_RECENT_HINTS = {"recent", "latest", "new", "newest", "sota", "202
 RESEARCH_SCOUT_REPRO_HINTS = {"reproducible", "replication", "code", "github", "可复现", "复现", "代码"}
 RESEARCH_SCOUT_CITATION_HINTS = {"high citation", "highly cited", "经典", "高引用", "seminal", "survey"}
 RESEARCH_SCOUT_NOVEL_HINTS = {"interesting", "novel", "新颖", "有趣", "idea", "inspiration"}
+RESEARCH_SCOUT_HARD_CONSTRAINT_HINTS = {"必须", "只要", "限定", "仅限", "只能", "only", "must", "require", "required", "hard"}
+RESEARCH_SCOUT_EVALUATION_FOCUS = {
+    "novelty": {"novel", "novelty", "innovation", "innovative", "新颖", "创新", "有趣"},
+    "relevance": {"relevant", "relevance", "related", "关系", "相关", "有用"},
+    "reproducibility": {"reproducible", "replication", "code", "github", "复现", "可复现", "代码"},
+    "impact": {"impact", "citation", "cited", "influential", "影响力", "高引用", "经典"},
+    "experiment_quality": {"experiment", "ablation", "benchmark", "dataset", "实验", "消融", "基准", "数据集"},
+    "risk": {"risk", "limitation", "weakness", "风险", "局限", "缺点"},
+}
+RESEARCH_SCOUT_VENUE_ALIASES = {
+    "cvpr": "CVPR",
+    "iccv": "ICCV",
+    "eccv": "ECCV",
+    "neurips": "NeurIPS",
+    "nips": "NeurIPS",
+    "iclr": "ICLR",
+    "icml": "ICML",
+    "acl": "ACL",
+    "emnlp": "EMNLP",
+    "naacl": "NAACL",
+    "sigir": "SIGIR",
+    "kdd": "KDD",
+    "aaai": "AAAI",
+    "ijcai": "IJCAI",
+    "mm": "ACM MM",
+    "acm mm": "ACM MM",
+    "tpami": "TPAMI",
+    "ijcv": "IJCV",
+    "tacl": "TACL",
+}
+RESEARCH_SCOUT_INSTITUTION_ALIASES = {
+    "mit": "MIT",
+    "stanford": "Stanford",
+    "cmu": "CMU",
+    "carnegie mellon": "Carnegie Mellon",
+    "berkeley": "UC Berkeley",
+    "uc berkeley": "UC Berkeley",
+    "harvard": "Harvard",
+    "oxford": "Oxford",
+    "cambridge": "Cambridge",
+    "tsinghua": "Tsinghua",
+    "清华": "清华大学",
+    "pku": "Peking University",
+    "peking university": "Peking University",
+    "北大": "北京大学",
+    "zhejiang university": "Zhejiang University",
+    "浙大": "浙江大学",
+    "google": "Google",
+    "google research": "Google Research",
+    "deepmind": "DeepMind",
+    "meta": "Meta",
+    "fair": "FAIR",
+    "microsoft": "Microsoft",
+    "msra": "MSRA",
+    "openai": "OpenAI",
+    "nvidia": "NVIDIA",
+}
 
 EMPTY_STREAM_FALLBACK = "⚠️ 模型本轮未返回可展示内容，请重新发送问题或稍后重试。"
 INTERRUPTED_STREAM_FALLBACK = "\n\n> ⚠️ 回答生成中途出现异常，以上内容可能不完整，请重试。"
@@ -354,6 +411,76 @@ def _compact_author_list(authors: list[str], limit: int = 3) -> list[str]:
     return [*cleaned[:limit], f"+{len(cleaned) - limit} authors"]
 
 
+def _dedupe_preserve(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for item in items:
+        cleaned = re.sub(r"\s+", " ", str(item or "").strip(" \t\n\r,，;；。.:："))
+        key = cleaned.lower()
+        if cleaned and key not in seen:
+            seen.add(key)
+            output.append(cleaned)
+    return output
+
+
+def _research_scout_alias_matches(text: str, aliases: dict[str, str]) -> list[str]:
+    lowered = (text or "").lower()
+    return _dedupe_preserve([
+        label
+        for alias, label in aliases.items()
+        if re.search(rf"(?<![a-z0-9]){re.escape(alias.lower())}(?![a-z0-9])", lowered)
+    ])
+
+
+def _research_scout_split_constraint_text(value: str) -> list[str]:
+    cleaned = re.sub(
+        r"(论文|paper|papers|文章|工作|成果|发表|单位|机构|学校|公司|实验室|lab|university|institute|company)$",
+        "",
+        (value or "").strip(),
+        flags=re.IGNORECASE,
+    )
+    parts = re.split(r"\s*(?:,|，|、|/|;|；|\band\b|\bor\b|和|或)\s*", cleaned)
+    return [part.strip() for part in parts if 1 < len(part.strip()) <= 80]
+
+
+def _research_scout_marker_values(query: str, markers: list[str]) -> list[str]:
+    values: list[str] = []
+    for marker in markers:
+        pattern = rf"{marker}\s*(?:是|为|:|：|=|from|in|at)?\s*([^，。；;\n]+)"
+        for match in re.finditer(pattern, query or "", flags=re.IGNORECASE):
+            values.extend(_research_scout_split_constraint_text(match.group(1)))
+    return values
+
+
+def _research_scout_venue_from_metadata(metadata: dict[str, Any]) -> str | None:
+    venue = metadata.get("venue")
+    if isinstance(venue, dict):
+        return venue.get("name") or venue.get("displayName") or venue.get("alternate_names", [None])[0]
+    if isinstance(venue, str):
+        return venue
+    return None
+
+
+def _research_scout_institutions_from_metadata(metadata: dict[str, Any]) -> list[str]:
+    institutions = metadata.get("institutions") or []
+    if not isinstance(institutions, list):
+        return []
+    return _dedupe_preserve([str(item) for item in institutions if item])
+
+
+def _research_scout_text_blob(paper: PaperResult) -> str:
+    metadata = getattr(paper, "metadata", {}) or {}
+    parts = [
+        paper.title or "",
+        paper.abstract or "",
+        " ".join(paper.authors or []),
+        _research_scout_venue_from_metadata(metadata) or "",
+        " ".join(_research_scout_institutions_from_metadata(metadata)),
+        " ".join(str(item) for item in metadata.get("concepts", []) or []),
+    ]
+    return " ".join(parts).lower()
+
+
 def _research_scout_rationale(paper: PaperResult, query: str, rank: int) -> dict[str, str]:
     abstract = (paper.abstract or "").lower()
     title = (paper.title or "").lower()
@@ -417,6 +544,21 @@ def _research_scout_intent(query: str, search_depth: str) -> dict[str, Any]:
         preferences.append("high_citation")
     if any(hint in lowered for hint in RESEARCH_SCOUT_RECENT_HINTS):
         preferences.append("recent")
+    venues = [
+        *_research_scout_alias_matches(query, RESEARCH_SCOUT_VENUE_ALIASES),
+        *_research_scout_marker_values(query, ["venue", "conference", "journal", "会议", "期刊", "顶会", "发表在", "来自会议"]),
+    ]
+    institutions = [
+        *_research_scout_alias_matches(query, RESEARCH_SCOUT_INSTITUTION_ALIASES),
+        *_research_scout_marker_values(query, ["institution", "affiliation", "organization", "org", "单位", "机构", "学校", "公司", "实验室", "来自"]),
+    ]
+    authors = _research_scout_marker_values(query, ["author", "authors", "作者", "团队"])
+    evaluation_focus = [
+        key
+        for key, hints in RESEARCH_SCOUT_EVALUATION_FOCUS.items()
+        if any(hint in lowered for hint in hints)
+    ]
+    constraint_mode = "hard" if any(hint in lowered for hint in RESEARCH_SCOUT_HARD_CONSTRAINT_HINTS) else "soft"
     return {
         "topic": " ".join(tokens[:8]) or query,
         "years": years,
@@ -424,20 +566,263 @@ def _research_scout_intent(query: str, search_depth: str) -> dict[str, Any]:
         "datasets": sorted(set(datasets)),
         "tasks": sorted(set(tasks)),
         "preferences": preferences or ["relevance"],
+        "venues": _dedupe_preserve(venues),
+        "institutions": _dedupe_preserve(institutions),
+        "authors": _dedupe_preserve(authors),
+        "constraint_mode": constraint_mode,
+        "evaluation_focus": evaluation_focus or ["novelty", "relevance", "reproducibility", "impact", "experiment_quality", "risk"],
         "search_depth": search_depth,
     }
 
 
-def _research_scout_candidate(paper: PaperResult, query: str, rank: int) -> dict[str, Any]:
+def _research_scout_score_dimension(
+    *,
+    score: int,
+    reason: str,
+    evidence: list[str],
+    confidence: str = "medium",
+) -> dict[str, Any]:
+    bounded_score = max(1, min(5, int(score)))
+    return {
+        "score": bounded_score,
+        "reason": reason,
+        "evidence": evidence[:3] or ["当前检索元数据不足，需阅读全文确认。"],
+        "confidence": confidence if confidence in {"high", "medium", "low"} else "medium",
+    }
+
+
+def _coerce_research_scout_dimension(value: Any, fallback: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return fallback
+    try:
+        score = int(value.get("score", fallback.get("score", 3)))
+    except (TypeError, ValueError):
+        score = int(fallback.get("score", 3))
+    evidence = value.get("evidence")
+    if not isinstance(evidence, list):
+        evidence = fallback.get("evidence") or []
+    confidence = value.get("confidence") if value.get("confidence") in {"high", "medium", "low"} else fallback.get("confidence", "medium")
+    reason = str(value.get("reason") or fallback.get("reason") or "基于可见检索元数据的保守评估。")[:260]
+    return _research_scout_score_dimension(
+        score=score,
+        reason=reason,
+        evidence=[str(item)[:220] for item in evidence if item],
+        confidence=str(confidence),
+    )
+
+
+def _coerce_research_scout_evaluation(value: Any, fallback: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return fallback
+    coerced = dict(fallback)
+    for key in ["novelty", "relevance", "reproducibility", "impact", "experiment_quality", "risk"]:
+        coerced[key] = _coerce_research_scout_dimension(value.get(key), fallback.get(key, {}))
+    reading_priority = value.get("reading_priority")
+    if reading_priority in {"high", "medium", "low"}:
+        coerced["reading_priority"] = reading_priority
+    focus = value.get("focus")
+    if isinstance(focus, list):
+        coerced["focus"] = [str(item) for item in focus if item][:6]
+    coerced["source"] = "llm"
+    return coerced
+
+
+def _extract_json_object(text: str) -> Any:
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(cleaned[start:end + 1])
+        raise
+
+
+def _research_scout_query_matches(paper: PaperResult, query: str) -> list[str]:
+    blob = _research_scout_text_blob(paper)
+    terms = [
+        term
+        for term in re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}", (query or "").lower())
+        if term not in {"find", "some", "paper", "papers", "about", "with", "from", "into", "that", "using"}
+    ]
+    return [term for term in _dedupe_preserve(terms) if term in blob][:6]
+
+
+def _research_scout_constraint_matches(paper: PaperResult, intent: dict[str, Any]) -> dict[str, Any]:
+    metadata = getattr(paper, "metadata", {}) or {}
+    blob = _research_scout_text_blob(paper)
+    venue = _research_scout_venue_from_metadata(metadata)
+    institutions = _research_scout_institutions_from_metadata(metadata)
+    author_blob = " ".join(paper.authors or []).lower()
+
+    def match_values(values: list[str], *, target: str | None = None, fallback_blob: str = blob) -> list[str]:
+        matches = []
+        for value in values or []:
+            normalized = value.lower()
+            if (target and normalized in target.lower()) or normalized in fallback_blob:
+                matches.append(value)
+        return _dedupe_preserve(matches)
+
+    venue_matches = match_values(intent.get("venues") or [], target=venue)
+    institution_matches = match_values(intent.get("institutions") or [], target=" ".join(institutions))
+    author_matches = match_values(intent.get("authors") or [], fallback_blob=author_blob)
+    requested = {
+        "venues": intent.get("venues") or [],
+        "institutions": intent.get("institutions") or [],
+        "authors": intent.get("authors") or [],
+    }
+    return {
+        "constraint_mode": intent.get("constraint_mode") or "soft",
+        "venue": {
+            "requested": requested["venues"],
+            "matched": venue_matches,
+            "available": venue,
+            "status": "matched" if venue_matches else ("not_requested" if not requested["venues"] else "unknown"),
+        },
+        "institution": {
+            "requested": requested["institutions"],
+            "matched": institution_matches,
+            "available": institutions,
+            "status": "matched" if institution_matches else ("not_requested" if not requested["institutions"] else "unknown"),
+        },
+        "author": {
+            "requested": requested["authors"],
+            "matched": author_matches,
+            "available": _compact_author_list(paper.authors or [], limit=5),
+            "status": "matched" if author_matches else ("not_requested" if not requested["authors"] else "unknown"),
+        },
+    }
+
+
+def _research_scout_candidate_evaluation(
+    paper: PaperResult,
+    query: str,
+    intent: dict[str, Any],
+    constraint_matches: dict[str, Any],
+) -> dict[str, Any]:
+    metadata = getattr(paper, "metadata", {}) or {}
+    query_matches = _research_scout_query_matches(paper, query)
+    concepts = [str(item) for item in (metadata.get("concepts") or []) if item]
+    year = paper.year or 0
+    citation_count = int(paper.citation_count or 0)
+    current_year = 2026
+    is_recent = bool(year and year >= current_year - 2)
+    has_pdf = bool(paper.pdf_url)
+    has_open_metadata = bool(metadata.get("open_access") or paper.pdf_url)
+    has_dataset = any(dataset.lower() in _research_scout_text_blob(paper) for dataset in intent.get("datasets") or [])
+    has_experiment_terms = any(
+        term in _research_scout_text_blob(paper)
+        for term in ["benchmark", "dataset", "experiment", "ablation", "evaluation", "state-of-the-art", "实验", "消融", "基准"]
+    )
+    matched_constraints = [
+        match
+        for group in ("venue", "institution", "author")
+        for match in (constraint_matches.get(group, {}) or {}).get("matched", [])
+    ]
+
+    relevance_score = 2 + min(len(query_matches), 3)
+    if matched_constraints:
+        relevance_score += 1
+    novelty_score = 3 + (1 if is_recent else 0) + (1 if any(pref in intent.get("preferences", []) for pref in ["novel_or_interesting", "recent"]) else 0)
+    reproducibility_score = 2 + (1 if has_pdf else 0) + (1 if any(term in _research_scout_text_blob(paper) for term in ["code", "github", "dataset", "benchmark"]) else 0)
+    impact_score = 2 + (1 if citation_count >= 25 else 0) + (1 if citation_count >= 100 else 0) + (1 if paper.source in {"semantic_scholar", "openalex"} else 0)
+    experiment_score = 2 + (1 if has_dataset else 0) + (1 if has_experiment_terms else 0) + (1 if concepts else 0)
+    risk_score = 2
+    if not has_pdf:
+        risk_score += 1
+    if not paper.abstract:
+        risk_score += 1
+    if intent.get("constraint_mode") == "hard" and any(
+        constraint_matches.get(group, {}).get("status") == "unknown"
+        for group in ("venue", "institution", "author")
+        if constraint_matches.get(group, {}).get("requested")
+    ):
+        risk_score += 1
+
+    novelty_confidence = "medium" if paper.abstract or year else "low"
+    reproducibility_confidence = "medium" if has_pdf or has_open_metadata else "low"
+    impact_confidence = "high" if citation_count else "low"
+    experiment_confidence = "medium" if paper.abstract else "low"
+    relevance_confidence = "high" if query_matches or matched_constraints else "medium"
+    risk_confidence = "medium" if paper.abstract or has_pdf else "low"
+
+    evaluation = {
+        "novelty": _research_scout_score_dimension(
+            score=novelty_score,
+            reason="近期论文或用户明确偏好新颖性会提高初筛创新性评分。",
+            evidence=[*( [f"{paper.year} 年论文"] if paper.year else [] ), *( ["用户要求偏新颖/近期"] if any(pref in intent.get("preferences", []) for pref in ["novel_or_interesting", "recent"]) else [] )],
+            confidence=novelty_confidence,
+        ),
+        "relevance": _research_scout_score_dimension(
+            score=relevance_score,
+            reason="根据题名、摘要、作者、venue 与用户检索词的重合度进行相关性初筛。",
+            evidence=[*( [f"匹配关键词：{', '.join(query_matches[:4])}"] if query_matches else [] ), *( [f"匹配约束：{', '.join(matched_constraints[:3])}"] if matched_constraints else [] )],
+            confidence=relevance_confidence,
+        ),
+        "reproducibility": _research_scout_score_dimension(
+            score=reproducibility_score,
+            reason="开放 PDF、代码/数据集/benchmark 线索会提高可复现性评分。",
+            evidence=[*( ["有开放 PDF"] if has_pdf else [] ), *( ["摘要或元数据出现代码/数据集/benchmark 线索"] if any(term in _research_scout_text_blob(paper) for term in ["code", "github", "dataset", "benchmark"]) else [] )],
+            confidence=reproducibility_confidence,
+        ),
+        "impact": _research_scout_score_dimension(
+            score=impact_score,
+            reason="基于检索源提供的引用数和索引来源估计影响力。",
+            evidence=[*( [f"引用数约 {citation_count}"] if citation_count else [] ), f"来源：{paper.source or 'unknown'}"],
+            confidence=impact_confidence,
+        ),
+        "experiment_quality": _research_scout_score_dimension(
+            score=experiment_score,
+            reason="根据摘要中实验、数据集、benchmark、消融等线索估计实验完整度。",
+            evidence=[*( ["匹配用户指定数据集"] if has_dataset else [] ), *( ["摘要出现实验/benchmark/消融线索"] if has_experiment_terms else [] ), *( [f"OpenAlex concepts: {', '.join(concepts[:3])}"] if concepts else [] )],
+            confidence=experiment_confidence,
+        ),
+        "risk": _research_scout_score_dimension(
+            score=risk_score,
+            reason="分数越高表示初筛风险越高，主要来自 PDF/摘要缺失或硬约束无法确认。",
+            evidence=[
+                *( ["未发现开放 PDF"] if not has_pdf else [] ),
+                *( ["摘要缺失"] if not paper.abstract else [] ),
+                *( ["硬约束尚未完全确认"] if risk_score >= 4 else [] ),
+            ],
+            confidence=risk_confidence,
+        ),
+    }
+    positive_average = (
+        evaluation["novelty"]["score"]
+        + evaluation["relevance"]["score"]
+        + evaluation["reproducibility"]["score"]
+        + evaluation["impact"]["score"]
+        + evaluation["experiment_quality"]["score"]
+    ) / 5
+    risk_penalty = evaluation["risk"]["score"] * 0.35
+    priority_value = positive_average - risk_penalty
+    evaluation["reading_priority"] = "high" if priority_value >= 3.2 else "medium" if priority_value >= 2.35 else "low"
+    evaluation["focus"] = intent.get("evaluation_focus") or []
+    evaluation["source"] = "heuristic"
+    return evaluation
+
+
+def _research_scout_candidate(paper: PaperResult, query: str, rank: int, intent: dict[str, Any]) -> dict[str, Any]:
     metadata = getattr(paper, "metadata", {}) or {}
     remote_id = metadata.get("remote_id") or paper.arxiv_id or paper.doi or paper.source_url or paper.title
     rationale = _research_scout_rationale(paper, query, rank)
+    venue = _research_scout_venue_from_metadata(metadata)
+    institutions = _research_scout_institutions_from_metadata(metadata)
+    constraint_matches = _research_scout_constraint_matches(paper, intent)
+    evaluation = _research_scout_candidate_evaluation(paper, query, intent, constraint_matches)
     return {
         "rank": rank,
         "title": paper.title,
         "authors": _compact_author_list(paper.authors or []),
         "abstract": paper.abstract or "",
         "year": paper.year,
+        "venue": venue,
+        "institutions": institutions,
         "source": paper.source,
         "source_url": paper.source_url,
         "pdf_url": paper.pdf_url,
@@ -447,8 +832,84 @@ def _research_scout_candidate(paper: PaperResult, query: str, rank: int) -> dict
         "categories": paper.categories or [],
         "remote_id": remote_id,
         "ingest_token": create_remote_ingest_token(paper),
+        "constraint_matches": constraint_matches,
+        "evaluation": evaluation,
         **rationale,
     }
+
+
+async def _apply_llm_research_scout_evaluations(
+    candidates: list[dict[str, Any]],
+    query: str,
+    intent: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not candidates:
+        return candidates
+    evaluation_targets = []
+    for item in candidates[:6]:
+        evaluation_targets.append({
+            "rank": item.get("rank"),
+            "title": item.get("title"),
+            "year": item.get("year"),
+            "venue": item.get("venue"),
+            "authors": item.get("authors"),
+            "institutions": item.get("institutions"),
+            "citation_count": item.get("citation_count"),
+            "pdf_available": bool(item.get("pdf_url")),
+            "constraint_matches": item.get("constraint_matches"),
+            "heuristic_evaluation": item.get("evaluation"),
+            "abstract": (item.get("abstract") or "")[:1200],
+        })
+    prompt = (
+        "你是科研论文初筛评估器。请只基于输入 JSON 中的题名、摘要、作者、venue、机构、引用、PDF 状态、约束匹配和 heuristic_evaluation，"
+        "为每篇候选输出结构化 JSON。不要引入外部知识，不要声称已读全文。"
+        "如果证据不足，confidence 必须为 low，reason 需说明无法确认。"
+        "每个维度 score 为 1-5；risk 分数越高表示风险越高。"
+        "只输出 JSON 对象，不要 Markdown。格式："
+        '{"evaluations":[{"rank":1,"evaluation":{"novelty":{"score":3,"reason":"...","evidence":["..."],"confidence":"medium"},"relevance":{...},"reproducibility":{...},"impact":{...},"experiment_quality":{...},"risk":{...},"reading_priority":"high","focus":["novelty"]}}]}'
+        "\n\n输入："
+        + json.dumps(
+            {
+                "query": query,
+                "intent": intent,
+                "candidates": evaluation_targets,
+            },
+            ensure_ascii=False,
+        )
+    )
+    try:
+        raw = await llm_service.chat(
+            messages=[
+                {"role": "system", "content": "你只返回可解析 JSON。禁止编造输入之外的论文事实。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.15,
+            max_tokens=2600,
+        )
+        parsed = _extract_json_object(raw)
+    except Exception as exc:
+        logger.warning("Research Scout LLM evaluation failed, using heuristic evaluation: %s", exc)
+        return candidates
+
+    evaluations = parsed.get("evaluations") if isinstance(parsed, dict) else None
+    if not isinstance(evaluations, list):
+        return candidates
+    by_rank = {
+        int(item.get("rank")): item.get("evaluation")
+        for item in evaluations
+        if isinstance(item, dict) and str(item.get("rank", "")).isdigit()
+    }
+    enriched = []
+    for item in candidates:
+        rank = item.get("rank")
+        fallback = item.get("evaluation") or {}
+        if rank in by_rank:
+            item = {
+                **item,
+                "evaluation": _coerce_research_scout_evaluation(by_rank[rank], fallback),
+            }
+        enriched.append(item)
+    return enriched
 
 
 def _research_scout_reference(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -456,6 +917,7 @@ def _research_scout_reference(candidate: dict[str, Any]) -> dict[str, Any]:
         "title": candidate.get("title"),
         "arxiv_id": candidate.get("arxiv_id"),
         "year": candidate.get("year"),
+        "venue": candidate.get("venue"),
         "url": candidate.get("source_url"),
         "pdf_url": candidate.get("pdf_url"),
         "source": "research_scout",
@@ -465,26 +927,65 @@ def _research_scout_reference(candidate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _format_research_scout_context(candidates: list[dict[str, Any]]) -> str:
+def _format_research_scout_intent(intent: dict[str, Any]) -> str:
+    fields = []
+    labels = {
+        "topic": "Topic",
+        "years": "Years",
+        "methods": "Methods",
+        "datasets": "Datasets",
+        "tasks": "Tasks",
+        "preferences": "Preferences",
+        "venues": "Venues",
+        "institutions": "Institutions",
+        "authors": "Authors",
+        "constraint_mode": "Constraint mode",
+        "evaluation_focus": "Evaluation focus",
+    }
+    for key, label in labels.items():
+        value = intent.get(key)
+        if isinstance(value, list) and value:
+            fields.append(f"{label}: {', '.join(str(item) for item in value)}")
+        elif isinstance(value, str) and value:
+            fields.append(f"{label}: {value}")
+    return "\n".join(fields)
+
+
+def _format_research_scout_context(candidates: list[dict[str, Any]], intent: dict[str, Any]) -> str:
     if not candidates:
         return ""
     blocks = []
     for item in candidates[:8]:
         abstract = (item.get("abstract") or "")[:900]
+        evaluation = item.get("evaluation") or {}
+        constraint_matches = item.get("constraint_matches") or {}
+        evaluation_summary = ", ".join(
+            f"{key}={value.get('score')}/5 ({value.get('confidence')})"
+            for key, value in evaluation.items()
+            if isinstance(value, dict) and "score" in value
+        )
+        constraint_summary = "; ".join(
+            f"{key}: {value.get('status')} matched={', '.join(value.get('matched') or []) or 'none'}"
+            for key, value in constraint_matches.items()
+            if isinstance(value, dict) and key in {"venue", "institution", "author"}
+        )
         blocks.append(
             "\n".join([
                 f"[PAPER-{item['rank']}] {item.get('title') or 'Untitled'}",
-                f"Source: {item.get('source') or 'unknown'} | Year: {item.get('year') or 'unknown'} | Citations: {item.get('citation_count') or 0}",
+                f"Source: {item.get('source') or 'unknown'} | Venue: {item.get('venue') or 'unknown'} | Year: {item.get('year') or 'unknown'} | Citations: {item.get('citation_count') or 0}",
                 f"Authors: {', '.join(item.get('authors') or [])}",
+                f"Institutions: {', '.join(item.get('institutions') or []) or 'unknown'}",
+                f"Constraint matches: {constraint_summary or 'none requested'}",
+                f"Evaluation: {evaluation_summary or 'not available'} | reading_priority={evaluation.get('reading_priority') or 'unknown'}",
                 f"Why interesting: {item.get('why_interesting')}",
                 f"Why useful: {item.get('why_useful')}",
                 f"Abstract: {abstract}",
             ])
         )
-    return "\n\n".join(blocks)
+    return f"Parsed user intent:\n{_format_research_scout_intent(intent)}\n\nCandidate papers:\n" + "\n\n".join(blocks)
 
 
-async def _build_research_scout_context(query: str, search_depth: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, str]]]:
+async def _build_research_scout_context(query: str, search_depth: str, intent: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, str]]]:
     limit = RESEARCH_SCOUT_LIMITS.get(search_depth, RESEARCH_SCOUT_LIMITS["standard"])
     try:
         papers = await search_scholarly_papers(
@@ -497,7 +998,8 @@ async def _build_research_scout_context(query: str, search_depth: str) -> tuple[
         logger.warning("Research Scout scholarly discovery failed: %s", exc)
         papers = []
 
-    candidates = [_research_scout_candidate(paper, query, index + 1) for index, paper in enumerate(papers)]
+    candidates = [_research_scout_candidate(paper, query, index + 1, intent) for index, paper in enumerate(papers)]
+    candidates = await _apply_llm_research_scout_evaluations(candidates, query, intent)
     references = [_research_scout_reference(item) for item in candidates]
     if not candidates:
         system_context = [{
@@ -512,10 +1014,13 @@ async def _build_research_scout_context(query: str, search_depth: str) -> tuple[
             "role": "system",
             "content": (
                 "当前处于 Research Scout 论文猎手模式。你不是普通聊天助手，而是科研论文发现助手。"
-                "请基于以下候选论文，推荐最值得用户优先阅读的论文。必须区分：为什么有趣、为什么对用户有用、风险/局限、下一步检索方向。"
+                "请基于以下候选论文和结构化评估，推荐最值得用户优先阅读的论文。"
+                "必须区分：为什么有趣、为什么对用户有用、风险/局限、下一步检索方向。"
+                "如果单位、作者或 venue 约束没有证据确认，必须明确说“当前元数据无法确认”，不要编造 affiliation。"
+                "评价创新性、可复现性、影响力和实验质量时只能依据 Evaluation 中的分数、证据和置信度。"
                 "回答末尾必须给出“优先阅读 Top 3”，每项用 [PAPER-N] 编号并说明先读原因。"
                 "引用候选时使用 [PAPER-N] 编号，不要编造候选列表之外的论文。\n\n"
-                f"{_format_research_scout_context(candidates)}"
+                f"{_format_research_scout_context(candidates, intent)}"
             ),
         }]
     return candidates, references, system_context
@@ -817,7 +1322,7 @@ async def send_message(
     scout_intent: dict[str, Any] | None = None
     if req.assistant_mode == "research_scout":
         scout_intent = _research_scout_intent(req.content, req.search_depth)
-        scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, req.search_depth)
+        scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, req.search_depth, scout_intent)
         context = [*scout_context, *context]
         references.extend(scout_refs)
 
@@ -911,7 +1416,7 @@ async def send_message_stream(
     scout_intent: dict[str, Any] | None = None
     if req.assistant_mode == "research_scout":
         scout_intent = _research_scout_intent(req.content, req.search_depth)
-        scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, req.search_depth)
+        scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, req.search_depth, scout_intent)
         context = [*scout_context, *context]
         references.extend(scout_refs)
     retrieval_quality = await _retrieval_quality_snapshot(rag_enabled=rag_enabled)

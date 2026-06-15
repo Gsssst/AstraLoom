@@ -375,6 +375,14 @@ class OpenAlexService:
         ids = item.get("ids", {}) or {}
         primary_location = item.get("primary_location", {}) or {}
         best_oa_location = item.get("best_oa_location", {}) or {}
+        primary_source = primary_location.get("source", {}) or {}
+        best_source = best_oa_location.get("source", {}) or {}
+        institutions = sorted({
+            institution.get("display_name", "")
+            for authorship in (item.get("authorships", []) or [])
+            for institution in (authorship.get("institutions", []) or [])
+            if institution.get("display_name")
+        })
         pdf_url = best_oa_location.get("pdf_url") or primary_location.get("pdf_url")
         source_url = best_oa_location.get("landing_page_url") or primary_location.get("landing_page_url") or item.get("id")
         openalex_id = (item.get("id") or "").rsplit("/", 1)[-1]
@@ -396,6 +404,8 @@ class OpenAlexService:
             metadata={
                 "remote_id": openalex_id,
                 "openalex_id": openalex_id,
+                "venue": best_source.get("display_name") or primary_source.get("display_name"),
+                "institutions": institutions,
                 "open_access": item.get("open_access", {}) or {},
                 "concepts": [concept.get("display_name") for concept in (item.get("concepts", []) or [])[:8]],
             },

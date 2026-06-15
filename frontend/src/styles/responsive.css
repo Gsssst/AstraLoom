@@ -1669,6 +1669,7 @@
 }
 
 .research-scout-authors,
+.research-scout-institutions,
 .research-scout-rationale,
 .research-scout-useful,
 .research-scout-relation,
@@ -1677,6 +1678,81 @@
   display: block;
   font-size: 12px;
   line-height: 1.55;
+}
+
+.research-scout-institutions {
+  color: #475569;
+}
+
+.research-scout-constraints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.research-scout-constraints .ant-tag {
+  max-width: 100%;
+  margin-inline-end: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.research-scout-evaluation {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+
+.research-scout-evaluation-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.research-scout-evaluation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+  gap: 6px;
+}
+
+.research-scout-score-chip {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 2px 5px;
+  padding: 6px 7px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  color: #0f172a;
+}
+
+.research-scout-score-chip b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.research-scout-score-chip .ant-tag {
+  margin-inline-end: 0;
+  font-size: 10px;
+}
+
+.research-scout-score-chip em {
+  grid-column: 1 / -1;
+  color: #64748b;
+  font-size: 10px;
+  font-style: normal;
 }
 
 .research-scout-rationale {
