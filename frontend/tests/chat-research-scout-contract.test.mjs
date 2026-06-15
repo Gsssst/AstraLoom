@@ -90,6 +90,7 @@ test('Research Scout supports constraint-aware evaluation metadata', () => {
   assert.match(chatPageSource, /constraint_mode\?: 'hard' \| 'soft'/);
   assert.match(chatPageSource, /metadata_provenance\?: Record<string, string>/);
   assert.match(chatPageSource, /enrichment\?: \{/);
+  assert.match(chatPageSource, /pdf_first_page_affiliations\?:/);
   assert.match(chatPageSource, /ResearchScoutEvaluationDimension/);
   assert.match(chatPageSource, /ResearchScoutConstraintMatch/);
   assert.match(chatPageSource, /renderResearchScoutEvaluation/);
@@ -97,6 +98,7 @@ test('Research Scout supports constraint-aware evaluation metadata', () => {
   assert.match(chatPageSource, /renderResearchScoutProvenance/);
   assert.match(chatPageSource, /结构化评估/);
   assert.match(chatPageSource, /arXiv PDF 优先/);
+  assert.match(chatPageSource, /机构证据: PDF 首页/);
   assert.match(chatPageSource, /research-scout-provenance/);
   assert.match(chatPageSource, /LLM 评估/);
   assert.match(chatPageSource, /规则初筛/);
@@ -216,6 +218,17 @@ test('scholarly search supports arXiv-first enriched discovery', () => {
   assert.match(backendPaperSearchSource, /source == "arxiv_enriched"/);
   assert.match(backendPaperSearchSource, /"strategy": "arxiv_first"/);
   assert.match(backendPaperSearchSource, /"metadata_provenance"/);
+});
+
+test('scholarly search extracts PDF first-page affiliation evidence for arXiv candidates', () => {
+  assert.match(backendPaperSearchSource, /ensure_cached_arxiv_pdf/);
+  assert.match(backendPaperSearchSource, /ARXIV_ENRICHED_PDF_AFFILIATION_LIMIT/);
+  assert.match(backendPaperSearchSource, /extract_affiliations_from_first_page_text/);
+  assert.match(backendPaperSearchSource, /_extract_first_page_text_sync/);
+  assert.match(backendPaperSearchSource, /enrich_arxiv_pdf_first_page_affiliations/);
+  assert.match(backendPaperSearchSource, /"pdf_first_page_affiliations"/);
+  assert.match(backendPaperSearchSource, /"pdf_first_page"/);
+  assert.match(backendChatSource, /"pdf_first_page_affiliations": metadata\.get\("pdf_first_page_affiliations"\) or \[\]/);
 });
 
 test('backend exposes research project paper append endpoint for scout actions', () => {

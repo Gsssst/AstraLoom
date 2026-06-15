@@ -832,6 +832,7 @@ def _research_scout_candidate(paper: PaperResult, query: str, rank: int, intent:
         "institutions": institutions,
         "journal_ref": metadata.get("journal_ref"),
         "comment": metadata.get("comment"),
+        "pdf_first_page_affiliations": metadata.get("pdf_first_page_affiliations") or [],
         "metadata_provenance": metadata_provenance,
         "enrichment": enrichment,
         "source": paper.source,

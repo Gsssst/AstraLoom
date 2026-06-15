@@ -15,9 +15,18 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from app.core.config import settings
+from app.services.arxiv_pdf_cache import ensure_cached_arxiv_pdf
 
 logger = logging.getLogger(__name__)
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+ARXIV_ENRICHED_PDF_AFFILIATION_LIMIT = 4
+AFFILIATION_KEYWORDS = (
+    "university", "institute", "laboratory", "lab", "college", "school", "department",
+    "centre", "center", "academy", "research", "google", "deepmind", "microsoft", "meta",
+    "openai", "nvidia", "adobe", "amazon", "bytedance", "tencent", "alibaba", "baidu",
+    "大学", "学院", "研究院", "实验室", "研究所", "集团", "公司",
+)
+AFFILIATION_EMAIL_DOMAIN_RE = re.compile(r"@([A-Za-z0-9.-]+\.(?:edu|ac\.[a-z]{2}|edu\.[a-z]{2}|org|com))")
 
 
 @dataclass
@@ -602,6 +611,127 @@ def _institutions_from_metadata(metadata: Dict[str, Any]) -> List[str]:
     return [str(item) for item in institutions if item]
 
 
+def _clean_affiliation_candidate(value: str) -> str:
+    cleaned = re.sub(r"\S+@\S+", "", value or "")
+    cleaned = re.sub(r"^[\s,;:*\dagger†‡§¶|•·]+", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;:.-")
+    cleaned = re.sub(r"\b(abstract|keywords|introduction)\b.*$", "", cleaned, flags=re.IGNORECASE).strip(" ,;:.-")
+    return cleaned
+
+
+def _looks_like_affiliation_line(line: str) -> bool:
+    lowered = (line or "").lower()
+    if not lowered or len(lowered) < 4 or len(lowered) > 220:
+        return False
+    if lowered.startswith(("abstract", "keywords", "introduction", "figure ", "table ")):
+        return False
+    return any(keyword in lowered for keyword in AFFILIATION_KEYWORDS) or bool(AFFILIATION_EMAIL_DOMAIN_RE.search(line))
+
+
+def extract_affiliations_from_first_page_text(text: str, *, limit: int = 8) -> list[dict[str, str]]:
+    """Extract conservative institution evidence from a paper first page."""
+
+    lines = [
+        _clean_affiliation_candidate(line)
+        for line in re.split(r"[\n\r]+", text or "")
+        if _looks_like_affiliation_line(line)
+    ]
+    domain_lines = []
+    for match in AFFILIATION_EMAIL_DOMAIN_RE.finditer(text or ""):
+        domain = match.group(1).lower()
+        if domain and not any(domain in line.lower() for line in lines):
+            domain_lines.append(domain)
+    seen: set[str] = set()
+    evidence: list[dict[str, str]] = []
+    for line in [*lines, *domain_lines]:
+        cleaned = _clean_affiliation_candidate(line)
+        key = cleaned.lower()
+        if not cleaned or key in seen:
+            continue
+        seen.add(key)
+        evidence.append({"institution": cleaned[:160], "evidence": cleaned[:260], "source": "pdf_first_page"})
+        if len(evidence) >= limit:
+            break
+    return evidence
+
+
+def _extract_first_page_text_sync(path: str) -> str:
+    try:
+        import fitz
+
+        doc = fitz.open(path)
+        try:
+            if len(doc) == 0:
+                return ""
+            return (doc[0].get_text() or "").strip()
+        finally:
+            doc.close()
+    except Exception as fitz_exc:
+        logger.debug("fitz first-page extraction failed for %s: %s", path, fitz_exc)
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(path) as pdf:
+            if not pdf.pages:
+                return ""
+            return (pdf.pages[0].extract_text() or "").strip()
+    except Exception as pdfplumber_exc:
+        logger.debug("pdfplumber first-page extraction failed for %s: %s", path, pdfplumber_exc)
+        return ""
+
+
+async def enrich_arxiv_pdf_first_page_affiliations(papers: List[PaperResult], limit: int = ARXIV_ENRICHED_PDF_AFFILIATION_LIMIT) -> List[PaperResult]:
+    """Enrich top arXiv candidates with first-page affiliation evidence."""
+
+    async with httpx.AsyncClient(timeout=settings.ARXIV_PDF_TIMEOUT_SECONDS, follow_redirects=True) as client:
+        async def enrich_one(index: int, paper: PaperResult) -> PaperResult:
+            if index >= limit or not paper.arxiv_id or not paper.pdf_url:
+                return paper
+            try:
+                cached = await ensure_cached_arxiv_pdf(paper.arxiv_id, client=client)
+                first_page_text = await asyncio.to_thread(_extract_first_page_text_sync, cached.path)
+                evidence = extract_affiliations_from_first_page_text(first_page_text)
+            except Exception as exc:
+                logger.info("arXiv PDF affiliation extraction skipped for %s: %s", paper.arxiv_id, exc)
+                return paper
+            if not evidence:
+                return paper
+            metadata = dict(getattr(paper, "metadata", {}) or {})
+            existing_institutions = _institutions_from_metadata(metadata)
+            extracted_institutions = [item["institution"] for item in evidence]
+            merged_institutions = list(dict.fromkeys([*existing_institutions, *extracted_institutions]))
+            provenance = _metadata_provenance(metadata)
+            metadata["institutions"] = merged_institutions
+            provenance["institutions"] = provenance.get("institutions") or "pdf_first_page"
+            provenance["pdf_first_page_affiliations"] = "pdf_first_page"
+            metadata["metadata_provenance"] = {key: value for key, value in provenance.items() if value}
+            metadata["pdf_first_page_affiliations"] = evidence
+            metadata["pdf_first_page_text_snippet"] = first_page_text[:900]
+            enrichment = dict(metadata.get("enrichment") or {})
+            providers = list(enrichment.get("providers") or [])
+            if "pdf_first_page" not in providers:
+                providers.append("pdf_first_page")
+            enrichment.update({"strategy": enrichment.get("strategy") or "arxiv_first", "providers": providers, "matched": True})
+            metadata["enrichment"] = enrichment
+            return PaperResult(
+                title=paper.title,
+                authors=paper.authors,
+                abstract=paper.abstract,
+                year=paper.year,
+                published_at=paper.published_at,
+                arxiv_id=paper.arxiv_id,
+                doi=paper.doi,
+                source=paper.source,
+                source_url=paper.source_url,
+                pdf_url=paper.pdf_url,
+                categories=paper.categories,
+                citation_count=paper.citation_count,
+                metadata=metadata,
+            )
+
+        return await asyncio.gather(*(enrich_one(index, paper) for index, paper in enumerate(papers)))
+
+
 def _merge_arxiv_with_enrichment(base: PaperResult, enrichments: List[PaperResult]) -> PaperResult:
     """Keep arXiv identity/PDF while copying stronger scholarly metadata."""
 
@@ -754,7 +884,8 @@ async def search_scholarly_papers(
             semantic_results(),
             openalex_results(),
         )
-        return merge_arxiv_enriched_results(arxiv_group, [semantic_group, openalex_group], max_results)
+        enriched = merge_arxiv_enriched_results(arxiv_group, [semantic_group, openalex_group], max_results)
+        return await enrich_arxiv_pdf_first_page_affiliations(enriched)
     if source in ("all", "scholarly"):
         groups = await asyncio.gather(arxiv_results(), semantic_results(), openalex_results(), google_scholar_results())
         return merge_provider_results(groups, max_results)

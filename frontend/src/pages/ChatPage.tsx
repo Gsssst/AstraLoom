@@ -96,6 +96,7 @@ interface ResearchScoutCandidate {
   institutions?: string[];
   journal_ref?: string | null;
   comment?: string | null;
+  pdf_first_page_affiliations?: { institution?: string; evidence?: string; source?: string }[];
   metadata_provenance?: Record<string, string>;
   enrichment?: {
     strategy?: string;
@@ -712,6 +713,7 @@ const ChatPage: React.FC = () => {
     semantic_scholar: 'Semantic Scholar',
     openalex: 'OpenAlex',
     google_scholar: 'Google Scholar',
+    pdf_first_page: 'PDF 首页',
   }[source || ''] || source || '未知来源');
   const researchScoutPreferenceLabel = (value: string) => ({
     novel_or_interesting: '偏新颖/有趣',
@@ -833,7 +835,8 @@ const ChatPage: React.FC = () => {
       { label: 'DOI', source: provenance.doi, visible: !!paper.doi },
     ].filter(item => item.visible && item.source);
     const providers = paper.enrichment?.providers || [];
-    if (!rows.length && !providers.length && !paper.comment && !paper.journal_ref) return null;
+    const pdfAffiliations = paper.pdf_first_page_affiliations || [];
+    if (!rows.length && !providers.length && !pdfAffiliations.length && !paper.comment && !paper.journal_ref) return null;
     return (
       <div className="research-scout-provenance">
         {paper.enrichment?.strategy === 'arxiv_first' && <Tag color="green">arXiv PDF 优先</Tag>}
@@ -841,6 +844,11 @@ const ChatPage: React.FC = () => {
           <Tag key={item.label} color="default">{item.label}: {researchScoutProvenanceLabel(item.source)}</Tag>
         ))}
         {providers.length > 0 && <Tag color="blue">增强: {providers.map(researchScoutProvenanceLabel).join(' / ')}</Tag>}
+        {pdfAffiliations.length > 0 && (
+          <Tooltip title={pdfAffiliations.map(item => item.evidence || item.institution).filter(Boolean).join(' / ')}>
+            <Tag color="green">机构证据: PDF 首页</Tag>
+          </Tooltip>
+        )}
         {paper.journal_ref && <Tooltip title={paper.journal_ref}><Tag color="cyan">journal-ref</Tag></Tooltip>}
         {paper.comment && <Tooltip title={paper.comment}><Tag color="geekblue">arXiv comment</Tag></Tooltip>}
       </div>

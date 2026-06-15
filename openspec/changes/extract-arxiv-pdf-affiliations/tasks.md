@@ -1,0 +1,6 @@
+- [x] 1. Add bounded PDF first-page download/text extraction helpers for arXiv PDFs.
+- [x] 2. Add conservative affiliation extraction and merge provenance into arXiv-enriched candidates.
+- [x] 3. Pass PDF-first-page affiliation evidence through Research Scout candidate payloads.
+- [x] 4. Render PDF-first-page institution provenance/evidence on Research Scout cards.
+- [x] 5. Extend contract tests for PDF affiliation extraction, provenance, and UI rendering.
+- [x] 6. Validate OpenSpec, backend syntax, frontend contract tests, and frontend build.
