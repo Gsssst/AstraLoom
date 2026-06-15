@@ -195,6 +195,8 @@ class ArxivSearchService:
             entry_id = entry.findtext("atom:id", default="", namespaces=ATOM_NS)
             arxiv_id = entry_id.split("/abs/")[-1] if "/abs/" in entry_id else None
             doi = entry.findtext("arxiv:doi", default="", namespaces=ATOM_NS) or None
+            journal_ref = entry.findtext("arxiv:journal_ref", default="", namespaces=ATOM_NS) or None
+            comment = entry.findtext("arxiv:comment", default="", namespaces=ATOM_NS) or None
             pdf_url = None
             for link in entry.findall("atom:link", ATOM_NS):
                 if link.get("title") == "pdf":
@@ -220,7 +222,18 @@ class ArxivSearchService:
                     for category in entry.findall("atom:category", ATOM_NS)
                     if category.get("term")
                 ],
-                metadata={"remote_id": arxiv_id},
+                metadata={
+                    "remote_id": arxiv_id,
+                    "journal_ref": journal_ref,
+                    "comment": comment,
+                    "metadata_provenance": {
+                        "pdf": "arxiv",
+                        "arxiv_id": "arxiv",
+                        "doi": "arxiv" if doi else None,
+                        "journal_ref": "arxiv" if journal_ref else None,
+                        "comment": "arxiv" if comment else None,
+                    },
+                },
             ))
         return papers
 
@@ -554,6 +567,143 @@ def merge_provider_results(groups: List[List[PaperResult]], limit: int) -> List[
     return deduplicate_papers(interleaved, limit)
 
 
+def _paper_match_keys(paper: PaperResult) -> set[str]:
+    """Return provider-independent keys for safe metadata enrichment."""
+
+    keys: set[str] = set()
+    if paper.arxiv_id:
+        keys.add(f"arxiv:{re.sub(r'v\d+$', '', paper.arxiv_id.lower())}")
+    if paper.doi:
+        keys.add(f"doi:{_clean_doi(paper.doi)}")
+    normalized = _normalized_title(paper.title)
+    if normalized and len(normalized) >= 18:
+        keys.add(f"title:{normalized}")
+    return keys
+
+
+def _metadata_provenance(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    provenance = metadata.get("metadata_provenance")
+    return dict(provenance) if isinstance(provenance, dict) else {}
+
+
+def _venue_from_metadata(metadata: Dict[str, Any]) -> Optional[str]:
+    venue = metadata.get("venue")
+    if isinstance(venue, dict):
+        return venue.get("name") or venue.get("displayName") or (venue.get("alternate_names") or [None])[0]
+    if isinstance(venue, str):
+        return venue
+    return None
+
+
+def _institutions_from_metadata(metadata: Dict[str, Any]) -> List[str]:
+    institutions = metadata.get("institutions")
+    if not isinstance(institutions, list):
+        return []
+    return [str(item) for item in institutions if item]
+
+
+def _merge_arxiv_with_enrichment(base: PaperResult, enrichments: List[PaperResult]) -> PaperResult:
+    """Keep arXiv identity/PDF while copying stronger scholarly metadata."""
+
+    metadata: Dict[str, Any] = dict(getattr(base, "metadata", {}) or {})
+    provenance = _metadata_provenance(metadata)
+    providers: list[str] = []
+    citation_count = int(base.citation_count or 0)
+    source_url = base.source_url
+    doi = _clean_doi(base.doi)
+    venue = _venue_from_metadata(metadata)
+    institutions = _institutions_from_metadata(metadata)
+    concepts = list(metadata.get("concepts") or []) if isinstance(metadata.get("concepts"), list) else []
+
+    for enrichment in enrichments:
+        provider = enrichment.source or "scholarly"
+        if provider not in providers:
+            providers.append(provider)
+        enrichment_metadata = getattr(enrichment, "metadata", {}) or {}
+        enrichment_venue = _venue_from_metadata(enrichment_metadata)
+        if not venue and enrichment_venue:
+            venue = enrichment_venue
+            provenance["venue"] = provider
+        enrichment_institutions = _institutions_from_metadata(enrichment_metadata)
+        if enrichment_institutions:
+            merged_institutions = sorted(set([*institutions, *enrichment_institutions]))
+            if merged_institutions != institutions:
+                institutions = merged_institutions
+                provenance["institutions"] = provider
+        if not doi and enrichment.doi:
+            doi = _clean_doi(enrichment.doi)
+            provenance["doi"] = provider
+        if int(enrichment.citation_count or 0) > citation_count:
+            citation_count = int(enrichment.citation_count or 0)
+            provenance["citation_count"] = provider
+        if source_url == base.source_url and enrichment.source_url:
+            metadata["enriched_source_url"] = enrichment.source_url
+            provenance["enriched_source_url"] = provider
+        enrichment_concepts = enrichment_metadata.get("concepts")
+        if isinstance(enrichment_concepts, list):
+            concepts = list(dict.fromkeys([*concepts, *[item for item in enrichment_concepts if item]]))[:8]
+
+    if venue:
+        metadata["venue"] = venue
+    if institutions:
+        metadata["institutions"] = institutions
+    if concepts:
+        metadata["concepts"] = concepts
+    metadata["enrichment"] = {
+        "strategy": "arxiv_first",
+        "providers": providers,
+        "matched": bool(providers),
+    }
+    metadata["metadata_provenance"] = {key: value for key, value in provenance.items() if value}
+    return PaperResult(
+        title=base.title,
+        authors=base.authors,
+        abstract=base.abstract,
+        year=base.year,
+        published_at=base.published_at,
+        arxiv_id=base.arxiv_id,
+        doi=doi or base.doi,
+        source="arxiv",
+        source_url=source_url,
+        pdf_url=base.pdf_url,
+        categories=base.categories,
+        citation_count=citation_count,
+        metadata=metadata,
+    )
+
+
+def merge_arxiv_enriched_results(
+    arxiv_papers: List[PaperResult],
+    enrichment_groups: List[List[PaperResult]],
+    limit: int,
+) -> List[PaperResult]:
+    """Return arXiv-first candidates enriched by matching provider metadata."""
+
+    enrichment_index: Dict[str, List[PaperResult]] = {}
+    for group in enrichment_groups:
+        for paper in group:
+            for key in _paper_match_keys(paper):
+                enrichment_index.setdefault(key, []).append(paper)
+
+    enriched: List[PaperResult] = []
+    seen_keys: set[str] = set()
+    for paper in arxiv_papers:
+        keys = _paper_match_keys(paper)
+        matches = []
+        for key in keys:
+            matches.extend(enrichment_index.get(key, []))
+        deduped_matches = deduplicate_papers(matches)
+        enriched_paper = _merge_arxiv_with_enrichment(paper, deduped_matches)
+        canonical = canonical_paper_key(enriched_paper)
+        if canonical in seen_keys:
+            continue
+        seen_keys.add(canonical)
+        enriched.append(enriched_paper)
+        if len(enriched) >= limit:
+            break
+    return enriched
+
+
 async def search_scholarly_papers(
     query: str,
     *,
@@ -598,6 +748,13 @@ async def search_scholarly_papers(
         return deduplicate_papers(await semantic_results(), max_results)
     if source == "google_scholar":
         return deduplicate_papers(await google_scholar_results(), max_results)
+    if source == "arxiv_enriched":
+        arxiv_group, semantic_group, openalex_group = await asyncio.gather(
+            arxiv_results(),
+            semantic_results(),
+            openalex_results(),
+        )
+        return merge_arxiv_enriched_results(arxiv_group, [semantic_group, openalex_group], max_results)
     if source in ("all", "scholarly"):
         groups = await asyncio.gather(arxiv_results(), semantic_results(), openalex_results(), google_scholar_results())
         return merge_provider_results(groups, max_results)

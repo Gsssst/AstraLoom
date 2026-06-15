@@ -1773,6 +1773,20 @@
   min-width: 0;
 }
 
+.research-scout-provenance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.research-scout-provenance .ant-tag {
+  max-width: 100%;
+  margin-inline-end: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .research-scout-constraints .ant-tag {
   max-width: 100%;
   margin-inline-end: 0;

@@ -94,6 +94,14 @@ interface ResearchScoutCandidate {
   year?: number | null;
   venue?: string | null;
   institutions?: string[];
+  journal_ref?: string | null;
+  comment?: string | null;
+  metadata_provenance?: Record<string, string>;
+  enrichment?: {
+    strategy?: string;
+    providers?: string[];
+    matched?: boolean;
+  };
   source?: string;
   source_url?: string | null;
   pdf_url?: string | null;
@@ -699,6 +707,12 @@ const ChatPage: React.FC = () => {
     openalex: 'OpenAlex',
     google_scholar: 'Google Scholar',
   }[source || ''] || source || '学术来源');
+  const researchScoutProvenanceLabel = (source?: string) => ({
+    arxiv: 'arXiv',
+    semantic_scholar: 'Semantic Scholar',
+    openalex: 'OpenAlex',
+    google_scholar: 'Google Scholar',
+  }[source || ''] || source || '未知来源');
   const researchScoutPreferenceLabel = (value: string) => ({
     novel_or_interesting: '偏新颖/有趣',
     reproducible: '可复现',
@@ -809,6 +823,29 @@ const ChatPage: React.FC = () => {
       </div>
     );
   };
+  const renderResearchScoutProvenance = (paper: ResearchScoutCandidate) => {
+    const provenance = paper.metadata_provenance || {};
+    const rows = [
+      { label: 'PDF', source: provenance.pdf, visible: !!paper.pdf_url },
+      { label: 'Venue', source: provenance.venue, visible: !!paper.venue },
+      { label: '机构', source: provenance.institutions, visible: !!paper.institutions?.length },
+      { label: '引用', source: provenance.citation_count, visible: !!paper.citation_count },
+      { label: 'DOI', source: provenance.doi, visible: !!paper.doi },
+    ].filter(item => item.visible && item.source);
+    const providers = paper.enrichment?.providers || [];
+    if (!rows.length && !providers.length && !paper.comment && !paper.journal_ref) return null;
+    return (
+      <div className="research-scout-provenance">
+        {paper.enrichment?.strategy === 'arxiv_first' && <Tag color="green">arXiv PDF 优先</Tag>}
+        {rows.map(item => (
+          <Tag key={item.label} color="default">{item.label}: {researchScoutProvenanceLabel(item.source)}</Tag>
+        ))}
+        {providers.length > 0 && <Tag color="blue">增强: {providers.map(researchScoutProvenanceLabel).join(' / ')}</Tag>}
+        {paper.journal_ref && <Tooltip title={paper.journal_ref}><Tag color="cyan">journal-ref</Tag></Tooltip>}
+        {paper.comment && <Tooltip title={paper.comment}><Tag color="geekblue">arXiv comment</Tag></Tooltip>}
+      </div>
+    );
+  };
   const renderResearchScoutIntent = (intent?: ResearchScoutIntent) => {
     if (!intent) return null;
     const rows = [
@@ -905,11 +942,12 @@ const ChatPage: React.FC = () => {
                   {paper.venue && <Tag color="cyan">{paper.venue}</Tag>}
                   <Tag color="purple">{researchScoutSourceLabel(paper.source)}</Tag>
                   {!!paper.citation_count && <Tag color="gold">引用 {paper.citation_count}</Tag>}
-                  {paper.pdf_url && <Tag color="green">PDF</Tag>}
+                  {paper.pdf_url && <Tag color="green">{paper.metadata_provenance?.pdf === 'arxiv' ? 'arXiv PDF' : 'PDF'}</Tag>}
                   {ingested && <Tag color="success" icon={<CheckCircleOutlined />}>已入库</Tag>}
                 </Space>
                 {paper.authors?.length ? <Text type="secondary" className="research-scout-authors" ellipsis>{paper.authors.join(', ')}</Text> : null}
                 {paper.institutions?.length ? <Text type="secondary" className="research-scout-institutions" ellipsis>{paper.institutions.join(' / ')}</Text> : null}
+                {renderResearchScoutProvenance(paper)}
                 {renderResearchScoutConstraintMatches(paper)}
                 {renderResearchScoutEvaluation(paper.evaluation)}
                 <Text className="research-scout-rationale">{paper.why_interesting}</Text>

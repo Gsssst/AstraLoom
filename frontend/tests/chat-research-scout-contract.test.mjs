@@ -22,6 +22,11 @@ const backendResearchSource = readFileSync(
   'utf8',
 );
 
+const backendPaperSearchSource = readFileSync(
+  new URL('../../backend/app/services/paper_search.py', import.meta.url),
+  'utf8',
+);
+
 test('chat page exposes Research Scout mode and sends assistant_mode', () => {
   assert.match(chatPageSource, /type ChatAssistantMode = 'general' \| 'research_scout'/);
   assert.match(chatPageSource, /chat-composer-mode-select/);
@@ -83,11 +88,16 @@ test('Research Scout supports constraint-aware evaluation metadata', () => {
   assert.match(chatPageSource, /institutions\?: string\[\]/);
   assert.match(chatPageSource, /authors\?: string\[\]/);
   assert.match(chatPageSource, /constraint_mode\?: 'hard' \| 'soft'/);
+  assert.match(chatPageSource, /metadata_provenance\?: Record<string, string>/);
+  assert.match(chatPageSource, /enrichment\?: \{/);
   assert.match(chatPageSource, /ResearchScoutEvaluationDimension/);
   assert.match(chatPageSource, /ResearchScoutConstraintMatch/);
   assert.match(chatPageSource, /renderResearchScoutEvaluation/);
   assert.match(chatPageSource, /renderResearchScoutConstraintMatches/);
+  assert.match(chatPageSource, /renderResearchScoutProvenance/);
   assert.match(chatPageSource, /结构化评估/);
+  assert.match(chatPageSource, /arXiv PDF 优先/);
+  assert.match(chatPageSource, /research-scout-provenance/);
   assert.match(chatPageSource, /LLM 评估/);
   assert.match(chatPageSource, /规则初筛/);
   assert.match(chatPageSource, /发表单位/);
@@ -95,6 +105,7 @@ test('Research Scout supports constraint-aware evaluation metadata', () => {
   assert.match(responsiveSource, /\.research-scout-evaluation/);
   assert.match(responsiveSource, /\.research-scout-score-chip/);
   assert.match(responsiveSource, /\.research-scout-constraints/);
+  assert.match(responsiveSource, /\.research-scout-provenance/);
 });
 
 test('chat sidebar collapses to a hover rail and send button uses a compact arrow control', () => {
@@ -152,7 +163,7 @@ test('backend streams Research Scout metadata from scholarly discovery', () => {
   assert.match(backendChatSource, /assistant_mode: Literal\["general", "research_scout"\]/);
   assert.match(backendChatSource, /RESEARCH_SCOUT_LIMITS/);
   assert.match(backendChatSource, /search_scholarly_papers\(/);
-  assert.match(backendChatSource, /source="scholarly"/);
+  assert.match(backendChatSource, /source="arxiv_enriched"/);
   assert.match(backendChatSource, /_build_research_scout_context/);
   assert.match(backendChatSource, /_research_scout_intent/);
   assert.match(backendChatSource, /library_relation/);
@@ -170,6 +181,8 @@ test('backend streams Research Scout tool execution trace', () => {
   assert.match(backendChatSource, /"evaluate_papers"/);
   assert.match(backendChatSource, /"rank_recommendations"/);
   assert.match(backendChatSource, /"import_paper"/);
+  assert.match(backendChatSource, /arXiv PDF/);
+  assert.match(backendChatSource, /arxiv_first_enriched/);
   assert.match(backendChatSource, /不会自动执行副作用操作/);
 });
 
@@ -191,8 +204,18 @@ test('backend builds evidence-bound Research Scout evaluations and constraints',
 });
 
 test('scholarly search preserves OpenAlex venue and institution metadata for scout cards', () => {
-  assert.match(readFileSync(new URL('../../backend/app/services/paper_search.py', import.meta.url), 'utf8'), /"institutions": institutions/);
-  assert.match(readFileSync(new URL('../../backend/app/services/paper_search.py', import.meta.url), 'utf8'), /"venue": best_source\.get\("display_name"\) or primary_source\.get\("display_name"\)/);
+  assert.match(backendPaperSearchSource, /"institutions": institutions/);
+  assert.match(backendPaperSearchSource, /"venue": best_source\.get\("display_name"\) or primary_source\.get\("display_name"\)/);
+});
+
+test('scholarly search supports arXiv-first enriched discovery', () => {
+  assert.match(backendPaperSearchSource, /journal_ref = entry\.findtext\("arxiv:journal_ref"/);
+  assert.match(backendPaperSearchSource, /comment = entry\.findtext\("arxiv:comment"/);
+  assert.match(backendPaperSearchSource, /merge_arxiv_enriched_results/);
+  assert.match(backendPaperSearchSource, /_merge_arxiv_with_enrichment/);
+  assert.match(backendPaperSearchSource, /source == "arxiv_enriched"/);
+  assert.match(backendPaperSearchSource, /"strategy": "arxiv_first"/);
+  assert.match(backendPaperSearchSource, /"metadata_provenance"/);
 });
 
 test('backend exposes research project paper append endpoint for scout actions', () => {

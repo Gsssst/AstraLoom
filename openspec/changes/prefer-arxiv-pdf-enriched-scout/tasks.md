@@ -1,0 +1,6 @@
+- [x] 1. Preserve arXiv journal/comment metadata in `PaperResult.metadata`.
+- [x] 2. Add arXiv-first enrichment helpers and `source="arxiv_enriched"` search behavior.
+- [x] 3. Update Research Scout to use arXiv-enriched discovery and expose metadata provenance in candidates/tool trace.
+- [x] 4. Render metadata provenance and arXiv-first PDF signals on Research Scout cards.
+- [x] 5. Extend contract tests for arXiv-enriched search, provenance, and UI rendering.
+- [x] 6. Validate OpenSpec, backend syntax, frontend contract tests, and frontend build.

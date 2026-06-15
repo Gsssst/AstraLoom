@@ -468,6 +468,11 @@ def _research_scout_institutions_from_metadata(metadata: dict[str, Any]) -> list
     return _dedupe_preserve([str(item) for item in institutions if item])
 
 
+def _research_scout_metadata_provenance(metadata: dict[str, Any]) -> dict[str, Any]:
+    provenance = metadata.get("metadata_provenance")
+    return dict(provenance) if isinstance(provenance, dict) else {}
+
+
 def _research_scout_text_blob(paper: PaperResult) -> str:
     metadata = getattr(paper, "metadata", {}) or {}
     parts = [
@@ -813,6 +818,8 @@ def _research_scout_candidate(paper: PaperResult, query: str, rank: int, intent:
     rationale = _research_scout_rationale(paper, query, rank)
     venue = _research_scout_venue_from_metadata(metadata)
     institutions = _research_scout_institutions_from_metadata(metadata)
+    metadata_provenance = _research_scout_metadata_provenance(metadata)
+    enrichment = metadata.get("enrichment") if isinstance(metadata.get("enrichment"), dict) else {}
     constraint_matches = _research_scout_constraint_matches(paper, intent)
     evaluation = _research_scout_candidate_evaluation(paper, query, intent, constraint_matches)
     return {
@@ -823,6 +830,10 @@ def _research_scout_candidate(paper: PaperResult, query: str, rank: int, intent:
         "year": paper.year,
         "venue": venue,
         "institutions": institutions,
+        "journal_ref": metadata.get("journal_ref"),
+        "comment": metadata.get("comment"),
+        "metadata_provenance": metadata_provenance,
+        "enrichment": enrichment,
         "source": paper.source,
         "source_url": paper.source_url,
         "pdf_url": paper.pdf_url,
@@ -978,10 +989,11 @@ def _research_scout_tool_trace(
             "search_papers",
             "检索论文候选",
             "completed",
-            f"已检索 arXiv、Semantic Scholar、OpenAlex 等来源，找到 {candidate_count} 篇候选。",
+            f"已优先检索 arXiv PDF，并用 Semantic Scholar/OpenAlex 增强元数据，找到 {candidate_count} 篇候选。",
             {
                 "query": query,
-                "providers": ["arXiv", "Semantic Scholar", "OpenAlex"],
+                "providers": ["arXiv PDF", "Semantic Scholar enrichment", "OpenAlex enrichment"],
+                "strategy": "arxiv_first_enriched",
                 "candidate_count": candidate_count,
             },
         ),
@@ -1088,7 +1100,7 @@ async def _build_research_scout_context(query: str, search_depth: str, intent: d
     try:
         papers = await search_scholarly_papers(
             query,
-            source="scholarly",
+            source="arxiv_enriched",
             max_results=limit,
             sort_by="relevance",
         )
