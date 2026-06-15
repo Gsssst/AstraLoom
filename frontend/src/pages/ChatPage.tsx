@@ -7,7 +7,7 @@ import {
   DatabaseOutlined, GlobalOutlined, ExportOutlined, MessageOutlined,
   BulbOutlined, FileTextOutlined, ExperimentOutlined, SwapOutlined,
   HighlightOutlined, EyeOutlined, ClockCircleOutlined, StopOutlined,
-  InfoCircleOutlined,
+  InfoCircleOutlined, CloudDownloadOutlined, CheckCircleOutlined,
 } from '@ant-design/icons';
 import { useChatSessionStore } from '../stores/useChatSessionStore';
 import { useThemeStore } from '../stores/useThemeStore';
@@ -50,9 +50,38 @@ interface ChatModelMetadata {
   image_attachments?: number;
 }
 
+type ChatAssistantMode = 'general' | 'research_scout';
+
+interface ResearchScoutCandidate {
+  rank: number;
+  title: string;
+  authors?: string[];
+  abstract?: string;
+  year?: number | null;
+  source?: string;
+  source_url?: string | null;
+  pdf_url?: string | null;
+  arxiv_id?: string | null;
+  doi?: string | null;
+  citation_count?: number;
+  remote_id?: string;
+  ingest_token?: string;
+  why_interesting?: string;
+  why_useful?: string;
+  caveat?: string;
+}
+
+interface ResearchScoutPayload {
+  enabled?: boolean;
+  query?: string;
+  candidate_count?: number;
+  candidates?: ResearchScoutCandidate[];
+}
+
 interface StreamMetaContent {
   references?: any[];
   model?: ChatModelMetadata;
+  research_scout?: ResearchScoutPayload | null;
 }
 
 const formatSessionTime = (value: string) => {
@@ -90,15 +119,19 @@ const referenceTooltip = (ref: any) => {
   if (ref.source === 'web') {
     return `网页检索来源：${ref.provider || 'unknown'}；查询：${ref.retrieval_query || ref.query || 'unknown'}`;
   }
+  if (ref.source === 'research_scout') {
+    return `论文猎手候选：${ref.provider || 'scholarly'}；${ref.why_useful || '可作为后续阅读候选'}`;
+  }
   return ref.arxiv_id ? `知识库论文：${ref.arxiv_id}` : '知识库检索来源';
 };
 
 const referenceLabel = (ref: any) => {
   const title = ref.title || ref.url || ref.arxiv_id || '未命名来源';
-  const source = ref.source === 'web' ? '网页来源' : '知识库';
+  const source = ref.source === 'web' ? '网页来源' : ref.source === 'research_scout' ? '论文猎手' : '知识库';
   const provider = ref.source === 'web' && ref.provider ? ` · ${ref.provider}` : '';
+  const scoutProvider = ref.source === 'research_scout' && ref.provider ? ` · ${ref.provider}` : '';
   const year = ref.year ? ` (${ref.year})` : '';
-  return `${source}${provider} · ${title.slice(0, 40)}${title.length > 40 ? '...' : ''}${year}`;
+  return `${source}${provider}${scoutProvider} · ${title.slice(0, 40)}${title.length > 40 ? '...' : ''}${year}`;
 };
 
 const ChatPage: React.FC = () => {
@@ -125,6 +158,7 @@ const ChatPage: React.FC = () => {
   } = useChatAttachments();
   const [searchDepth, setSearchDepth] = useState<'quick' | 'standard' | 'deep'>('standard');
   const [webSearch, setWebSearch] = useState(false);
+  const [assistantMode, setAssistantMode] = useState<ChatAssistantMode>('general');
   const [convSearch, setConvSearch] = useState('');
   const [pendingMsg, setPendingMsg] = useState<string | null>(null);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
@@ -132,6 +166,8 @@ const ChatPage: React.FC = () => {
   const [sendStartedAt, setSendStartedAt] = useState<number | null>(null);
   const [firstTokenAt, setFirstTokenAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [ingestingScoutKeys, setIngestingScoutKeys] = useState<Set<string>>(new Set());
+  const [ingestedScoutKeys, setIngestedScoutKeys] = useState<Set<string>>(new Set());
   const showThinking = useThemeStore((s) => s.showThinking ?? false);
   const {
     scrollContainerRef: chatScrollRef,
@@ -184,14 +220,14 @@ const ChatPage: React.FC = () => {
     return () => window.clearInterval(timer);
   }, [sending, sendStartedAt]);
 
-  const appendStreamingReply = (content: string, references: any[] = []) => {
+  const appendStreamingReply = (content: string, references: any[] = [], researchScout?: ResearchScoutPayload | null) => {
     useChatSessionStore.setState(s => {
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
       if (last?.role === 'assistant' && last._streaming) {
-        msgs[msgs.length - 1] = { ...last, content: `${last.content}${content}`, references, _reasoningStreaming: false };
+        msgs[msgs.length - 1] = { ...last, content: `${last.content}${content}`, references, research_scout: researchScout || last.research_scout, _reasoningStreaming: false };
       } else {
-        msgs.push({ role: 'assistant', content, references, _streaming: true, created_at: new Date().toISOString() });
+        msgs.push({ role: 'assistant', content, references, research_scout: researchScout || undefined, _streaming: true, created_at: new Date().toISOString() });
       }
       return { messages: msgs };
     });
@@ -252,6 +288,7 @@ const ChatPage: React.FC = () => {
     let buffer = '';
     let finished = false;
     let references: any[] = [];
+    let researchScout: ResearchScoutPayload | null = null;
 
     const handleFrame = (frame: string) => {
       const data = frame
@@ -268,13 +305,14 @@ const ChatPage: React.FC = () => {
           setStreamStatus(typeof event.content === 'string' ? event.content : '正在生成回答...');
         } else if (event.type === 'meta' && event.content && typeof event.content === 'object') {
           references = event.content.references || [];
+          researchScout = event.content.research_scout || null;
           if (event.content.model) setActiveModelInfo(event.content.model);
         } else if (event.type === 'reasoning' && typeof event.content === 'string') {
           markFirstToken();
           appendStreamingReasoning(event.content);
         } else if ((event.type === 'content' || event.type === 'error') && typeof event.content === 'string') {
           markFirstToken();
-          appendStreamingReply(event.content, references);
+          appendStreamingReply(event.content, references, researchScout);
         } else if (event.type === 'done') {
           return true;
         }
@@ -314,11 +352,13 @@ const ChatPage: React.FC = () => {
     sendLock.current = true;
     cancelRequestedRef.current = false;
     const controller = new AbortController();
+    const effectiveWebSearch = assistantMode === 'research_scout' || webSearch;
+    const effectiveSearchDepth = assistantMode === 'research_scout' ? 'deep' : searchDepth;
     abortControllerRef.current = controller;
     setSendStartedAt(Date.now());
     setFirstTokenAt(null);
     setElapsedMs(0);
-    setStreamStatus(webSearch ? '正在检索知识库与网络来源...' : ragEnabled ? '正在检索知识库...' : '正在生成回答...');
+    setStreamStatus(assistantMode === 'research_scout' ? '论文猎手正在联网检索学术来源...' : effectiveWebSearch ? '正在检索知识库与网络来源...' : ragEnabled ? '正在检索知识库...' : '正在生成回答...');
     if (!hasOverride) setInput('');
     enableFollowOutput();
 
@@ -336,7 +376,7 @@ const ChatPage: React.FC = () => {
       try {
         const t = localStorage.getItem('access_token');
         const prompt = text || `请分析文件: ${fileNames}`;
-        const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: prompt, rag_enabled: ragEnabled, extra_context: allText || undefined, attachments: imageAttachments, web_search: webSearch, search_depth: searchDepth, show_thinking: showThinking }) });
+        const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: prompt, rag_enabled: ragEnabled, extra_context: allText || undefined, attachments: imageAttachments, web_search: effectiveWebSearch, search_depth: effectiveSearchDepth, show_thinking: showThinking, assistant_mode: assistantMode }) });
         if (!r.ok) throw new Error(await parseStreamError(r, '上传发送失败'));
         await consumeChatStream(r);
         rememberAttachments(currentFiles);
@@ -351,7 +391,7 @@ const ChatPage: React.FC = () => {
     useChatSessionStore.setState(s => ({ messages: [...s.messages, { role: 'user', content: text, created_at: new Date().toISOString() }], sending: true }));
     try {
       const t = localStorage.getItem('access_token');
-      const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: text, rag_enabled: ragEnabled, web_search: webSearch, search_depth: searchDepth, show_thinking: showThinking }) });
+      const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: text, rag_enabled: ragEnabled, web_search: effectiveWebSearch, search_depth: effectiveSearchDepth, show_thinking: showThinking, assistant_mode: assistantMode }) });
       if (!r.ok) throw new Error(await parseStreamError(r, '发送失败'));
       await consumeChatStream(r);
     } catch (e: any) { if (!cancelRequestedRef.current && e?.name !== 'AbortError') appendAssistantError(getApiErrorMessage(e, { fallback: '发送失败' })); }
@@ -410,6 +450,10 @@ const ChatPage: React.FC = () => {
     });
   };
   const handleWebSearchToggle = () => {
+    if (assistantMode === 'research_scout' && webSearch) {
+      message.info('论文猎手会自动联网检索学术来源，已保持开启');
+      return;
+    }
     const nextWebSearch = !webSearch;
     setWebSearch(nextWebSearch);
     if (nextWebSearch && searchDepth !== 'deep') {
@@ -417,9 +461,47 @@ const ChatPage: React.FC = () => {
       message.info('已开启联网增强，并自动切换为深度检索');
     }
   };
+  const handleAssistantModeChange = (mode: ChatAssistantMode) => {
+    setAssistantMode(mode);
+    if (mode === 'research_scout') {
+      if (!webSearch) setWebSearch(true);
+      if (searchDepth !== 'deep') setSearchDepth('deep');
+      message.info('已切换到论文猎手，并自动开启联网深度学术检索');
+    }
+  };
+  const researchScoutAutoWeb = assistantMode === 'research_scout';
+  const effectiveWebSearchActive = researchScoutAutoWeb || webSearch;
+  const scoutCandidateKey = (paper: ResearchScoutCandidate) => `${paper.source || 'unknown'}:${paper.remote_id || paper.arxiv_id || paper.doi || paper.title}`;
+  const handleResearchScoutIngest = async (paper: ResearchScoutCandidate) => {
+    const source = paper.source;
+    const remoteId = paper.remote_id || paper.arxiv_id || paper.doi || paper.source_url || paper.title;
+    const supportedSources = new Set(['arxiv', 'semantic_scholar', 'openalex', 'google_scholar']);
+    if (!source || !remoteId || !supportedSources.has(source)) {
+      message.warning('这条候选缺少可安全入库的学术源标识，请先打开来源确认');
+      return;
+    }
+    const key = scoutCandidateKey(paper);
+    setIngestingScoutKeys(prev => new Set(prev).add(key));
+    try {
+      const response = await api.post('/papers/ingest-personal', {
+        source,
+        remote_id: remoteId,
+        remote_ingest_token: paper.ingest_token,
+        auto_download: false,
+      });
+      setIngestedScoutKeys(prev => new Set(prev).add(key));
+      const skipped = Number(response.data?.skipped || 0);
+      message.success(skipped ? '这篇论文已在库中，已为你保存到个人论文库' : '已加入你的论文库');
+    } catch (error) {
+      message.error(getApiErrorMessage(error, { fallback: '加入论文库失败' }));
+    } finally {
+      setIngestingScoutKeys(prev => { const next = new Set(prev); next.delete(key); return next; });
+    }
+  };
   const statusRows = [
+    { key: 'assistant-mode', icon: <ExperimentOutlined />, label: '助手模式', active: assistantMode === 'research_scout', detail: assistantMode === 'research_scout' ? '论文猎手：自动联网检索并推荐有用论文' : '普通对话：通用科研问答' },
     { key: 'rag', icon: <DatabaseOutlined />, label: '知识库', active: ragEnabled, detail: ragEnabled ? '参与当前回答检索' : '当前为纯模型或网络回答' },
-    { key: 'web', icon: <GlobalOutlined />, label: '联网', active: webSearch, detail: webSearch ? `启用${searchDepth === 'deep' ? '深度' : searchDepth === 'quick' ? '快速' : '标准'}联网增强` : '不检索网络来源' },
+    { key: 'web', icon: <GlobalOutlined />, label: '联网', active: effectiveWebSearchActive, detail: researchScoutAutoWeb ? '论文猎手已自动启用深度学术联网检索' : webSearch ? `启用${searchDepth === 'deep' ? '深度' : searchDepth === 'quick' ? '快速' : '标准'}联网增强` : '不检索网络来源' },
     { key: 'thinking', icon: <BulbOutlined />, label: '思考', active: !!activeModelInfo?.capabilities?.thinking, detail: activeModelInfo?.capabilities?.thinking ? '当前模型可返回思考摘要' : '当前模型未声明思考展示能力' },
     { key: 'vision', icon: <EyeOutlined />, label: '视觉', active: !!activeModelInfo?.capabilities?.vision, detail: activeModelInfo?.capabilities?.vision ? '当前模型可接收图片输入' : hasImageAttachment ? '当前模型未声明图片输入能力' : '未检测到视觉能力标记' },
   ];
@@ -458,6 +540,83 @@ const ChatPage: React.FC = () => {
       </Text>
     </div>
   );
+  const researchScoutSourceLabel = (source?: string) => ({
+    arxiv: 'arXiv',
+    semantic_scholar: 'Semantic Scholar',
+    openalex: 'OpenAlex',
+    google_scholar: 'Google Scholar',
+  }[source || ''] || source || '学术来源');
+  const continueScoutSearch = (query: string, flavor: string) => {
+    setAssistantMode('research_scout');
+    setWebSearch(true);
+    setSearchDepth('deep');
+    setInput(`请继续用论文猎手模式找 ${flavor} 类型的论文，主题是：${query}`);
+  };
+  const renderResearchScoutCards = (msg: any) => {
+    const candidates = msg.research_scout?.candidates || [];
+    if (!candidates.length) return null;
+    const query = msg.research_scout?.query || '当前研究主题';
+    return (
+      <div className="research-scout-cards">
+        <div className="research-scout-header">
+          <Space size={6}>
+            <ExperimentOutlined />
+            <Text strong>论文猎手候选</Text>
+          </Space>
+          <Space size={6} wrap>
+            <Text type="secondary">{msg.research_scout?.candidate_count || candidates.length} 篇 · {query}</Text>
+            {['baseline', 'survey', 'latest', 'counterexample'].map(flavor => (
+              <Button key={flavor} size="small" type="text" className="research-scout-refine-button" onClick={() => continueScoutSearch(query, flavor)}>
+                继续找 {flavor}
+              </Button>
+            ))}
+          </Space>
+        </div>
+        <div className="research-scout-grid">
+          {candidates.slice(0, 6).map((paper: ResearchScoutCandidate) => {
+            const key = scoutCandidateKey(paper);
+            const ingested = ingestedScoutKeys.has(key);
+            return (
+              <div className="research-scout-card" key={key}>
+                <div className="research-scout-card-title">
+                  <Tag color="geekblue">#{paper.rank}</Tag>
+                  <Text strong ellipsis={{ tooltip: paper.title }}>{paper.title}</Text>
+                </div>
+                <Space wrap size={4} className="research-scout-meta">
+                  {paper.year && <Tag color="blue">{paper.year}</Tag>}
+                  <Tag color="purple">{researchScoutSourceLabel(paper.source)}</Tag>
+                  {!!paper.citation_count && <Tag color="gold">引用 {paper.citation_count}</Tag>}
+                  {paper.pdf_url && <Tag color="green">PDF</Tag>}
+                  {ingested && <Tag color="success" icon={<CheckCircleOutlined />}>已入库</Tag>}
+                </Space>
+                {paper.authors?.length ? <Text type="secondary" className="research-scout-authors" ellipsis>{paper.authors.join(', ')}</Text> : null}
+                <Text className="research-scout-rationale">{paper.why_interesting}</Text>
+                <Text type="secondary" className="research-scout-useful">{paper.why_useful}</Text>
+                {paper.abstract && <Text type="secondary" className="research-scout-abstract">{paper.abstract.slice(0, 220)}{paper.abstract.length > 220 ? '...' : ''}</Text>}
+                <Space wrap size={6} className="research-scout-actions">
+                  <Button
+                    size="small"
+                    type={ingested ? 'default' : 'primary'}
+                    icon={ingested ? <CheckCircleOutlined /> : <CloudDownloadOutlined />}
+                    loading={ingestingScoutKeys.has(key)}
+                    disabled={ingested}
+                    onClick={() => handleResearchScoutIngest(paper)}
+                  >
+                    {ingested ? '已入库' : '加入论文库'}
+                  </Button>
+                  {paper.source_url && <Button size="small" onClick={() => window.open(paper.source_url || '', '_blank', 'noopener,noreferrer')}>来源</Button>}
+                  {paper.pdf_url && <Button size="small" onClick={() => window.open(paper.pdf_url || '', '_blank', 'noopener,noreferrer')}>PDF</Button>}
+                  <Button size="small" type="text" onClick={() => setInput(`请围绕这篇论文继续分析：${paper.title}\n\n重点说明它和我的研究方向有什么关系，适合作为 baseline、inspiration 还是 related work。`)}>
+                    继续分析
+                  </Button>
+                </Space>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
   const toolbarMenuItems = [
     { key: 'export', icon: <ExportOutlined />, label: '导出对话', onClick: handleExport },
     ...(currentSessionId ? [{ key: 'clear', icon: <DeleteOutlined />, label: '清空当前对话', danger: true, onClick: handleClearMessages }] : []),
@@ -514,6 +673,16 @@ const ChatPage: React.FC = () => {
             )}
           </Space>
           <div className="chat-toolbar-actions">
+            <Select
+              className="chat-assistant-mode-select"
+              size="small"
+              value={assistantMode}
+              onChange={handleAssistantModeChange}
+              options={[
+                { value: 'general', label: '普通对话' },
+                { value: 'research_scout', label: '论文猎手' },
+              ]}
+            />
             <Tooltip title={modelDetail}>
               <span className="chat-model-badge">
                 <RobotOutlined />
@@ -524,8 +693,8 @@ const ChatPage: React.FC = () => {
               <Button className={`chat-control-pill ${ragEnabled ? 'is-active' : ''}`} type="text" size="small" icon={<DatabaseOutlined />} onClick={() => handleToggleRag(!ragEnabled)}>
                 <span className="chat-control-label">知识库</span>
               </Button>
-              <Tooltip title="联网增强可以和知识库同时使用">
-                <Button className={`chat-control-pill ${webSearch ? 'is-active' : ''}`} type="text" size="small" icon={<GlobalOutlined />} onClick={handleWebSearchToggle}>
+              <Tooltip title={researchScoutAutoWeb ? '论文猎手会自动联网检索 arXiv、Semantic Scholar、OpenAlex 等学术来源' : '联网增强可以和知识库同时使用'}>
+                <Button className={`chat-control-pill ${effectiveWebSearchActive ? 'is-active' : ''}`} type="text" size="small" icon={<GlobalOutlined />} onClick={handleWebSearchToggle}>
                   <span className="chat-control-label">联网</span>
                 </Button>
               </Tooltip>
@@ -563,17 +732,18 @@ const ChatPage: React.FC = () => {
           ) : (
             <>
               {filteredMessages.map((msg, idx) => (
-                <div key={idx} style={{ display: 'flex', gap: 10, marginBottom: 24, flexDirection: msg.role === 'user' ? 'row-reverse' : 'row', alignItems: 'flex-start' }}>
-                  <Avatar size={32} icon={msg.role === 'user' ? <UserOutlined /> : <RobotOutlined />} style={{ flexShrink: 0, background: msg.role === 'user' ? 'linear-gradient(135deg,#667eea,#764ba2)' : 'linear-gradient(135deg,#12c2e9,#c471ed)' }} />
-                  <div style={{ maxWidth: '72%' }}>
+                <div key={idx} className={`chat-message-row ${msg.role === 'user' ? 'is-user' : 'is-assistant'}`}>
+                  <Avatar className="chat-message-avatar" size={30} icon={msg.role === 'user' ? <UserOutlined /> : <RobotOutlined />} />
+                  <div className={`chat-message-body ${msg.role === 'user' ? 'is-user' : 'is-assistant'}`}>
                     {msg.role === 'assistant' && msg.reasoning && (
                       <ThinkingPanel reasoningText={msg.reasoning} isStreaming={!!msg._reasoningStreaming} startTime={msg.thinking_started_at} />
                     )}
                     {(msg.role === 'user' || msg.content) && (
-                      <div style={{ padding: '12px 16px', borderRadius: msg.role === 'user' ? '16px 4px 16px 16px' : '4px 16px 16px 16px', background: msg.role === 'user' ? 'linear-gradient(135deg,#667eea,#764ba2)' : token.colorBgElevated, color: msg.role === 'user' ? '#fff' : token.colorText, boxShadow: msg.role === 'user' ? '0 2px 12px rgba(102,126,234,.3)' : `0 1px 4px ${token.colorFillSecondary}`, border: msg.role === 'user' ? 'none' : `1px solid ${token.colorBorderSecondary}`, lineHeight: 1.7, fontSize: 14 }}>
+                      <div className={`chat-message-bubble ${msg.role === 'user' ? 'is-user' : 'is-assistant'}`}>
                         {msg.role === 'user' ? <div style={{ whiteSpace: 'pre-wrap', color: '#fff' }}>{msg.content}</div> : <Markdown content={msg.content} />}
                       </div>
                     )}
+                    {msg.role === 'assistant' && renderResearchScoutCards(msg)}
                     <div style={{ display: 'flex', gap: 4, marginTop: 4, paddingLeft: 4, justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
                       {!msg._streaming && <Button type="text" size="small" icon={<span>💬</span>} onClick={() => setInput(`> ${msg.content.slice(0, 100)}${msg.content.length > 100 ? '...' : ''}\n\n`)} title="引用回复" style={{ fontSize: 11, color: token.colorTextQuaternary }} />}
                       {msg.role === 'user' && <Button type="text" size="small" icon={<EditOutlined />} onClick={() => setInput(msg.content)} style={{ fontSize: 11, color: token.colorTextQuaternary }} />}
@@ -590,13 +760,13 @@ const ChatPage: React.FC = () => {
                       <Button type="text" size="small" onClick={async () => { if (msg.id) try { await api.post('/chat/feedback', { message_id: msg.id, rating: 'like' }); message.success('已反馈'); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '反馈提交失败' })); } }} style={{ fontSize: 11, color: token.colorTextQuaternary }}>👍</Button>
                       <Button type="text" size="small" onClick={async () => { if (msg.id) try { await api.post('/chat/feedback', { message_id: msg.id, rating: 'dislike' }); message.success('已反馈'); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '反馈提交失败' })); } }} style={{ fontSize: 11, color: token.colorTextQuaternary }}>👎</Button></>}
                     </div>
-                    {msg.references && msg.references.length > 0 && <div style={{ marginTop: 8, padding: '8px 12px', background: token.colorBgElevated, borderRadius: 12, border: `1px solid ${token.colorBorderSecondary}` }}><Text type="secondary" style={{ fontSize: 11 }}>检索来源：</Text>{(msg.references as any[]).map((ref: any, ri: number) => <Tooltip key={`${ref.url || ref.arxiv_id || ref.title}-${ri}`} title={referenceTooltip(ref)}><Tag color={ref.source === 'web' ? 'cyan' : 'geekblue'} style={{ marginTop: 4, cursor: ref.url || ref.arxiv_id ? 'pointer' : 'default', borderRadius: 8 }} onClick={() => { if (ref.url) window.open(ref.url, '_blank', 'noopener,noreferrer'); else if (ref.arxiv_id) window.open(`https://arxiv.org/abs/${ref.arxiv_id.replace(/v\d+$/, '')}`, '_blank', 'noopener,noreferrer'); }}>[{ri + 1}] {referenceLabel(ref)}</Tag></Tooltip>)}</div>}
+                    {msg.references && msg.references.length > 0 && <div className="chat-reference-strip"><Text type="secondary" style={{ fontSize: 11 }}>检索来源：</Text>{(msg.references as any[]).map((ref: any, ri: number) => <Tooltip key={`${ref.url || ref.arxiv_id || ref.title}-${ri}`} title={referenceTooltip(ref)}><Tag color={ref.source === 'web' ? 'cyan' : ref.source === 'research_scout' ? 'purple' : 'geekblue'} style={{ marginTop: 4, cursor: ref.url || ref.pdf_url || ref.arxiv_id ? 'pointer' : 'default', borderRadius: 8 }} onClick={() => { if (ref.url) window.open(ref.url, '_blank', 'noopener,noreferrer'); else if (ref.pdf_url) window.open(ref.pdf_url, '_blank', 'noopener,noreferrer'); else if (ref.arxiv_id) window.open(`https://arxiv.org/abs/${ref.arxiv_id.replace(/v\d+$/, '')}`, '_blank', 'noopener,noreferrer'); }}>[{ri + 1}] {referenceLabel(ref)}</Tag></Tooltip>)}</div>}
                     <div style={{ fontSize: 11, color: token.colorTextQuaternary, marginTop: 4, textAlign: msg.role === 'user' ? 'right' : 'left', padding: '0 4px' }}>{msg.created_at ? new Date(msg.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : ''}</div>
                   </div>
                 </div>
               ))}
-              {pendingMsg && <div style={{ display: 'flex', gap: 10, marginBottom: 24, flexDirection: 'row-reverse' }}><Avatar size={32} icon={<UserOutlined />} style={{ background: 'linear-gradient(135deg,#667eea,#764ba2)' }} /><div style={{ maxWidth: '72%', padding: '12px 16px', borderRadius: '16px 4px 16px 16px', background: 'linear-gradient(135deg,#667eea,#764ba2)', color: '#fff', boxShadow: '0 2px 12px rgba(102,126,234,.3)', lineHeight: 1.7, fontSize: 14 }}>{pendingMsg}</div></div>}
-              {sending && <div style={{ display: 'flex', gap: 10, marginBottom: 24 }}><Avatar size={32} icon={<RobotOutlined />} style={{ background: 'linear-gradient(135deg,#12c2e9,#c471ed)' }} /><div className="chat-stream-status" style={{ background: token.colorBgElevated, border: `1px solid ${token.colorBorderSecondary}` }}><Space size={8} align="start"><Space size={5} style={{ paddingTop: 5 }}>{[0, 0.2, 0.4].map((d, i) => <div key={i} style={{ width: 7, height: 7, borderRadius: '50%', background: '#c471ed', animation: `bounce 1.4s infinite ease-in-out ${d}s` }} />)}</Space><div className="chat-stream-status-copy">{streamPhaseLabel && <span className="chat-stream-phase"><ClockCircleOutlined />{streamPhaseLabel}</span>}<Text type="secondary" className="chat-stream-status-text">{streamStatus || '正在等待模型响应...'}</Text></div><Button className="chat-stop-inline-button" type="text" size="small" icon={<StopOutlined />} onClick={handleStopGeneration}>停止</Button></Space></div></div>}
+              {pendingMsg && <div className="chat-message-row is-user"><Avatar className="chat-message-avatar" size={30} icon={<UserOutlined />} /><div className="chat-message-body is-user"><div className="chat-message-bubble is-user">{pendingMsg}</div></div></div>}
+              {sending && <div className="chat-message-row is-assistant"><Avatar className="chat-message-avatar" size={30} icon={<RobotOutlined />} /><div className="chat-message-body is-assistant"><div className="chat-stream-status"><Space size={8} align="start"><Space size={5} style={{ paddingTop: 5 }}>{[0, 0.2, 0.4].map((d, i) => <div key={i} style={{ width: 7, height: 7, borderRadius: '50%', background: '#c471ed', animation: `bounce 1.4s infinite ease-in-out ${d}s` }} />)}</Space><div className="chat-stream-status-copy">{streamPhaseLabel && <span className="chat-stream-phase"><ClockCircleOutlined />{streamPhaseLabel}</span>}<Text type="secondary" className="chat-stream-status-text">{streamStatus || '正在等待模型响应...'}</Text></div><Button className="chat-stop-inline-button" type="text" size="small" icon={<StopOutlined />} onClick={handleStopGeneration}>停止</Button></Space></div></div></div>}
             </>
           )}
           <div ref={messagesEndRef} />

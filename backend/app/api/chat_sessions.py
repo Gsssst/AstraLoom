@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import Any, List, Literal, Optional
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
@@ -16,6 +17,7 @@ from app.db.models.user import User
 from app.core.security import get_current_user
 from app.core.config import settings
 from app.services.llm import OPENAI_COMPATIBLE_PROVIDER, llm_service
+from app.services.paper_search import PaperResult, create_remote_ingest_token, search_scholarly_papers
 from app.services.rag_service import RAGService
 from app.services.web_search import format_web_context, search_web_results
 from app.db.session import AsyncSessionLocal
@@ -240,6 +242,7 @@ class SendMessageRequest(BaseModel):
     web_search: Optional[bool] = Field(default=False, description="是否启用联网搜索")
     search_depth: Literal["quick", "standard", "deep"] = Field(default="standard", description="检索深度")
     show_thinking: bool = Field(default=False, description="是否展示思考过程")
+    assistant_mode: Literal["general", "research_scout"] = Field(default="general", description="对话助手模式")
 
 
 RETRIEVAL_DEPTH_LIMITS = {
@@ -247,6 +250,7 @@ RETRIEVAL_DEPTH_LIMITS = {
     "standard": {"rag_papers": 3, "web_results": 5, "web_queries": 3},
     "deep": {"rag_papers": 5, "web_results": 8, "web_queries": 5},
 }
+RESEARCH_SCOUT_LIMITS = {"quick": 5, "standard": 8, "deep": 12}
 
 EMPTY_STREAM_FALLBACK = "⚠️ 模型本轮未返回可展示内容，请重新发送问题或稍后重试。"
 INTERRUPTED_STREAM_FALLBACK = "\n\n> ⚠️ 回答生成中途出现异常，以上内容可能不完整，请重试。"
@@ -336,6 +340,135 @@ def _active_model_stream_metadata(
 
 def _retrieval_limits(search_depth: str) -> dict[str, int]:
     return RETRIEVAL_DEPTH_LIMITS.get(search_depth, RETRIEVAL_DEPTH_LIMITS["standard"])
+
+
+def _compact_author_list(authors: list[str], limit: int = 3) -> list[str]:
+    cleaned = [author for author in authors if author]
+    if len(cleaned) <= limit:
+        return cleaned
+    return [*cleaned[:limit], f"+{len(cleaned) - limit} authors"]
+
+
+def _research_scout_rationale(paper: PaperResult, query: str, rank: int) -> dict[str, str]:
+    abstract = (paper.abstract or "").lower()
+    title = (paper.title or "").lower()
+    query_terms = [term for term in re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}", query.lower()) if term]
+    matched_terms = [term for term in query_terms if term in title or term in abstract][:5]
+    source_label = {
+        "arxiv": "arXiv",
+        "semantic_scholar": "Semantic Scholar",
+        "openalex": "OpenAlex",
+        "google_scholar": "Google Scholar",
+    }.get(paper.source, paper.source or "scholarly source")
+    signals: list[str] = []
+    if matched_terms:
+        signals.append(f"匹配关键词：{', '.join(matched_terms)}")
+    if paper.year:
+        signals.append(f"{paper.year} 年论文")
+    if paper.citation_count:
+        signals.append(f"引用数约 {paper.citation_count}")
+    if paper.pdf_url:
+        signals.append("有开放 PDF")
+    if not signals:
+        signals.append(f"来自 {source_label} 的候选结果")
+
+    return {
+        "why_interesting": f"候选 #{rank} 在题名/摘要中呈现与当前问题相关的线索，{signals[0]}。",
+        "why_useful": "适合先作为快速阅读对象，用来判断该方向的方法、任务或实验设置是否值得纳入后续研究。",
+        "caveat": "推荐理由基于标题、摘要和元数据，关键结论仍需要阅读全文和实验表格确认。",
+    }
+
+
+def _research_scout_candidate(paper: PaperResult, query: str, rank: int) -> dict[str, Any]:
+    metadata = getattr(paper, "metadata", {}) or {}
+    remote_id = metadata.get("remote_id") or paper.arxiv_id or paper.doi or paper.source_url or paper.title
+    rationale = _research_scout_rationale(paper, query, rank)
+    return {
+        "rank": rank,
+        "title": paper.title,
+        "authors": _compact_author_list(paper.authors or []),
+        "abstract": paper.abstract or "",
+        "year": paper.year,
+        "source": paper.source,
+        "source_url": paper.source_url,
+        "pdf_url": paper.pdf_url,
+        "arxiv_id": paper.arxiv_id,
+        "doi": paper.doi,
+        "citation_count": paper.citation_count,
+        "categories": paper.categories or [],
+        "remote_id": remote_id,
+        "ingest_token": create_remote_ingest_token(paper),
+        **rationale,
+    }
+
+
+def _research_scout_reference(candidate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": candidate.get("title"),
+        "arxiv_id": candidate.get("arxiv_id"),
+        "year": candidate.get("year"),
+        "url": candidate.get("source_url"),
+        "pdf_url": candidate.get("pdf_url"),
+        "source": "research_scout",
+        "provider": candidate.get("source"),
+        "rank": candidate.get("rank"),
+        "why_useful": candidate.get("why_useful"),
+    }
+
+
+def _format_research_scout_context(candidates: list[dict[str, Any]]) -> str:
+    if not candidates:
+        return ""
+    blocks = []
+    for item in candidates[:8]:
+        abstract = (item.get("abstract") or "")[:900]
+        blocks.append(
+            "\n".join([
+                f"[PAPER-{item['rank']}] {item.get('title') or 'Untitled'}",
+                f"Source: {item.get('source') or 'unknown'} | Year: {item.get('year') or 'unknown'} | Citations: {item.get('citation_count') or 0}",
+                f"Authors: {', '.join(item.get('authors') or [])}",
+                f"Why interesting: {item.get('why_interesting')}",
+                f"Why useful: {item.get('why_useful')}",
+                f"Abstract: {abstract}",
+            ])
+        )
+    return "\n\n".join(blocks)
+
+
+async def _build_research_scout_context(query: str, search_depth: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, str]]]:
+    limit = RESEARCH_SCOUT_LIMITS.get(search_depth, RESEARCH_SCOUT_LIMITS["standard"])
+    try:
+        papers = await search_scholarly_papers(
+            query,
+            source="scholarly",
+            max_results=limit,
+            sort_by="relevance",
+        )
+    except Exception as exc:
+        logger.warning("Research Scout scholarly discovery failed: %s", exc)
+        papers = []
+
+    candidates = [_research_scout_candidate(paper, query, index + 1) for index, paper in enumerate(papers)]
+    references = [_research_scout_reference(item) for item in candidates]
+    if not candidates:
+        system_context = [{
+            "role": "system",
+            "content": (
+                "当前处于 Research Scout 论文猎手模式，但综合学术检索没有返回可用论文。"
+                "请坦诚说明没有找到候选，并给出 3 个更容易命中的英文检索式。"
+            ),
+        }]
+    else:
+        system_context = [{
+            "role": "system",
+            "content": (
+                "当前处于 Research Scout 论文猎手模式。你不是普通聊天助手，而是科研论文发现助手。"
+                "请基于以下候选论文，推荐最值得用户优先阅读的论文。必须区分：为什么有趣、为什么对用户有用、风险/局限、下一步检索方向。"
+                "引用候选时使用 [PAPER-N] 编号，不要编造候选列表之外的论文。\n\n"
+                f"{_format_research_scout_context(candidates)}"
+            ),
+        }]
+    return candidates, references, system_context
 
 
 async def _retrieval_quality_snapshot(*, rag_enabled: bool) -> dict:
@@ -630,10 +763,19 @@ async def send_message(
         search_depth=req.search_depth,
     )
     references.extend(upload_visual_refs)
+    scout_candidates: list[dict[str, Any]] = []
+    if req.assistant_mode == "research_scout":
+        scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, req.search_depth)
+        context = [*scout_context, *context]
+        references.extend(scout_refs)
 
     # 调用 LLM
     try:
-        reply_content = await llm_service.chat(messages=context, temperature=0.7, max_tokens=4096)
+        reply_content = await llm_service.chat(
+            messages=context,
+            temperature=0.55 if req.assistant_mode == "research_scout" else 0.7,
+            max_tokens=4096,
+        )
 
         # 保存 AI 回复
         reply_msg = ChatMessage(
@@ -713,24 +855,44 @@ async def send_message_stream(
         search_depth=req.search_depth,
     )
     references.extend(upload_visual_refs)
+    scout_candidates: list[dict[str, Any]] = []
+    if req.assistant_mode == "research_scout":
+        scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, req.search_depth)
+        context = [*scout_context, *context]
+        references.extend(scout_refs)
     retrieval_quality = await _retrieval_quality_snapshot(rag_enabled=rag_enabled)
     llm_context = _build_llm_context_for_request(context, req)
 
     # 流式响应
     async def generate():
         full_content = ""
+        if req.assistant_mode == "research_scout":
+            yield _stream_event(
+                "status",
+                f"论文猎手正在检索 arXiv、Semantic Scholar、OpenAlex 等学术来源，已找到 {len(scout_candidates)} 篇候选...",
+            )
         yield _stream_event(
             "status",
-            _retrieval_status(
-                references,
-                web_search_enabled=bool(req.web_search),
-                retrieval_quality=retrieval_quality,
+            (
+                f"论文猎手已整理 {len(scout_candidates)} 篇候选论文，正在生成阅读优先级与推荐理由..."
+                if req.assistant_mode == "research_scout"
+                else _retrieval_status(
+                    references,
+                    web_search_enabled=bool(req.web_search),
+                    retrieval_quality=retrieval_quality,
+                )
             ),
         )
         yield _stream_event(
             "meta",
             {
                 "references": references,
+                "research_scout": {
+                    "enabled": req.assistant_mode == "research_scout",
+                    "query": req.content,
+                    "candidates": scout_candidates,
+                    "candidate_count": len(scout_candidates),
+                } if req.assistant_mode == "research_scout" else None,
                 "model": _active_model_stream_metadata(
                     rag_enabled=rag_enabled,
                     web_search_enabled=bool(req.web_search),

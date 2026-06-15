@@ -20,6 +20,12 @@ interface Message {
   reasoning?: string;
   thinking_started_at?: number;
   _reasoningStreaming?: boolean;
+  research_scout?: {
+    enabled?: boolean;
+    query?: string;
+    candidate_count?: number;
+    candidates?: any[];
+  };
 }
 
 interface Session {
