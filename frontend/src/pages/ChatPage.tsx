@@ -123,6 +123,21 @@ interface ResearchScoutPayload {
   candidates?: ResearchScoutCandidate[];
 }
 
+interface ToolTraceStep {
+  id: string;
+  tool: string;
+  label: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'available' | 'waiting';
+  summary?: string;
+  details?: Record<string, unknown>;
+}
+
+interface ToolTracePayload {
+  enabled?: boolean;
+  workflow?: string;
+  steps?: ToolTraceStep[];
+}
+
 interface PaperCollectionOption {
   id: string;
   name: string;
@@ -141,6 +156,7 @@ interface StreamMetaContent {
   references?: any[];
   model?: ChatModelMetadata;
   research_scout?: ResearchScoutPayload | null;
+  tool_trace?: ToolTracePayload | null;
 }
 
 const formatSessionTime = (value: string) => {
@@ -301,14 +317,14 @@ const ChatPage: React.FC = () => {
     return () => window.clearInterval(timer);
   }, [sending, sendStartedAt]);
 
-  const appendStreamingReply = (content: string, references: any[] = [], researchScout?: ResearchScoutPayload | null) => {
+  const appendStreamingReply = (content: string, references: any[] = [], researchScout?: ResearchScoutPayload | null, toolTrace?: ToolTracePayload | null) => {
     useChatSessionStore.setState(s => {
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
       if (last?.role === 'assistant' && last._streaming) {
-        msgs[msgs.length - 1] = { ...last, content: `${last.content}${content}`, references, research_scout: researchScout || last.research_scout, _reasoningStreaming: false };
+        msgs[msgs.length - 1] = { ...last, content: `${last.content}${content}`, references, research_scout: researchScout || last.research_scout, tool_trace: toolTrace || last.tool_trace, _reasoningStreaming: false };
       } else {
-        msgs.push({ role: 'assistant', content, references, research_scout: researchScout || undefined, _streaming: true, created_at: new Date().toISOString() });
+        msgs.push({ role: 'assistant', content, references, research_scout: researchScout || undefined, tool_trace: toolTrace || undefined, _streaming: true, created_at: new Date().toISOString() });
       }
       return { messages: msgs };
     });
@@ -370,6 +386,7 @@ const ChatPage: React.FC = () => {
     let finished = false;
     let references: any[] = [];
     let researchScout: ResearchScoutPayload | null = null;
+    let toolTrace: ToolTracePayload | null = null;
 
     const handleFrame = (frame: string) => {
       const data = frame
@@ -387,13 +404,14 @@ const ChatPage: React.FC = () => {
         } else if (event.type === 'meta' && event.content && typeof event.content === 'object') {
           references = event.content.references || [];
           researchScout = event.content.research_scout || null;
+          toolTrace = event.content.tool_trace || null;
           if (event.content.model) setActiveModelInfo(event.content.model);
         } else if (event.type === 'reasoning' && typeof event.content === 'string') {
           markFirstToken();
           appendStreamingReasoning(event.content);
         } else if ((event.type === 'content' || event.type === 'error') && typeof event.content === 'string') {
           markFirstToken();
-          appendStreamingReply(event.content, references, researchScout);
+          appendStreamingReply(event.content, references, researchScout, toolTrace);
         } else if (event.type === 'done') {
           return true;
         }
@@ -711,6 +729,24 @@ const ChatPage: React.FC = () => {
     medium: '可候选',
     low: '低优先',
   }[value || ''] || '未排序');
+  const toolTraceStatusLabel = (value?: string) => ({
+    pending: '等待',
+    running: '执行中',
+    completed: '完成',
+    failed: '失败',
+    skipped: '跳过',
+    available: '可操作',
+    waiting: '待确认',
+  }[value || ''] || value || '未知');
+  const toolTraceStatusColor = (value?: string) => ({
+    pending: 'default',
+    running: 'processing',
+    completed: 'success',
+    failed: 'error',
+    skipped: 'default',
+    available: 'blue',
+    waiting: 'warning',
+  }[value || ''] || 'default');
   const continueScoutSearch = (query: string, flavor: string) => {
     setAssistantMode('research_scout');
     setWebSearch(true);
@@ -797,6 +833,36 @@ const ChatPage: React.FC = () => {
             <div className="research-scout-intent-item" key={item.label}>
               <span>{item.label}</span>
               <Text ellipsis={{ tooltip: item.values.join(' / ') }}>{item.values.join(' / ')}</Text>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+  const renderToolTrace = (trace?: ToolTracePayload | null) => {
+    const steps = trace?.steps || [];
+    if (!steps.length) return null;
+    return (
+      <div className="chat-tool-trace">
+        <div className="chat-tool-trace-header">
+          <Space size={6}>
+            <NodeIndexOutlined />
+            <Text strong>工具执行轨迹</Text>
+          </Space>
+          <Tag color="blue">{trace?.workflow === 'research_scout' ? '论文猎手' : trace?.workflow || 'workflow'}</Tag>
+        </div>
+        <div className="chat-tool-trace-steps">
+          {steps.map(step => (
+            <div className={`chat-tool-trace-step is-${step.status}`} key={step.id}>
+              <span className="chat-tool-trace-dot" />
+              <div className="chat-tool-trace-copy">
+                <div className="chat-tool-trace-title">
+                  <Text strong>{step.label}</Text>
+                  <Tag color={toolTraceStatusColor(step.status)}>{toolTraceStatusLabel(step.status)}</Tag>
+                  <Text type="secondary" className="chat-tool-trace-tool">{step.tool}</Text>
+                </div>
+                {step.summary && <Text type="secondary" className="chat-tool-trace-summary">{step.summary}</Text>}
+              </div>
             </div>
           ))}
         </div>
@@ -1060,6 +1126,7 @@ const ChatPage: React.FC = () => {
                         {msg.role === 'user' ? <div style={{ whiteSpace: 'pre-wrap', color: '#fff' }}>{msg.content}</div> : <Markdown content={msg.content} />}
                       </div>
                     )}
+                    {msg.role === 'assistant' && renderToolTrace(msg.tool_trace)}
                     {msg.role === 'assistant' && renderResearchScoutCards(msg)}
                     <div style={{ display: 'flex', gap: 4, marginTop: 4, paddingLeft: 4, justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
                       {!msg._streaming && <Button type="text" size="small" icon={<span>💬</span>} onClick={() => setInput(`> ${msg.content.slice(0, 100)}${msg.content.length > 100 ? '...' : ''}\n\n`)} title="引用回复" style={{ fontSize: 11, color: token.colorTextQuaternary }} />}

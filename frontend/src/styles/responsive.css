@@ -1577,6 +1577,88 @@
   box-shadow: none;
 }
 
+.chat-tool-trace {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 11px;
+  background: #f8fafc;
+}
+
+.chat-tool-trace-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.chat-tool-trace-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-tool-trace-step {
+  display: grid;
+  grid-template-columns: 10px 1fr;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.chat-tool-trace-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.chat-tool-trace-step.is-completed .chat-tool-trace-dot {
+  background: #16a34a;
+}
+
+.chat-tool-trace-step.is-running .chat-tool-trace-dot {
+  background: #2563eb;
+}
+
+.chat-tool-trace-step.is-available .chat-tool-trace-dot,
+.chat-tool-trace-step.is-waiting .chat-tool-trace-dot {
+  background: #d97706;
+}
+
+.chat-tool-trace-step.is-failed .chat-tool-trace-dot {
+  background: #dc2626;
+}
+
+.chat-tool-trace-copy {
+  min-width: 0;
+}
+
+.chat-tool-trace-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.chat-tool-trace-tool {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+}
+
+.chat-tool-trace-summary {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .research-scout-refine-button {
   height: 24px !important;
   padding: 0 8px !important;

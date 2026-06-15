@@ -53,6 +53,18 @@ test('Research Scout cards support ingestion and follow-up search loops', () => 
   assert.match(chatPageSource, /continueScoutSearch/);
 });
 
+test('chat renders tool execution trace metadata', () => {
+  assert.match(chatPageSource, /interface ToolTracePayload/);
+  assert.match(chatPageSource, /tool_trace\?: ToolTracePayload/);
+  assert.match(chatPageSource, /toolTrace = event\.content\.tool_trace/);
+  assert.match(chatPageSource, /renderToolTrace/);
+  assert.match(chatPageSource, /工具执行轨迹/);
+  assert.match(chatPageSource, /chat-tool-trace/);
+  assert.match(chatPageSource, /toolTraceStatusLabel/);
+  assert.match(responsiveSource, /\.chat-tool-trace/);
+  assert.match(responsiveSource, /\.chat-tool-trace-step/);
+});
+
 test('Research Scout cards can route candidates into collections and research projects', () => {
   assert.match(chatPageSource, /ResearchScoutIntent/);
   assert.match(chatPageSource, /renderResearchScoutIntent/);
@@ -148,6 +160,17 @@ test('backend streams Research Scout metadata from scholarly discovery', () => {
   assert.match(backendChatSource, /"intent": scout_intent/);
   assert.match(backendChatSource, /"research_scout": \{/);
   assert.match(backendChatSource, /论文猎手已整理/);
+});
+
+test('backend streams Research Scout tool execution trace', () => {
+  assert.match(backendChatSource, /_tool_trace_step/);
+  assert.match(backendChatSource, /_research_scout_tool_trace/);
+  assert.match(backendChatSource, /"tool_trace": tool_trace/);
+  assert.match(backendChatSource, /"search_papers"/);
+  assert.match(backendChatSource, /"evaluate_papers"/);
+  assert.match(backendChatSource, /"rank_recommendations"/);
+  assert.match(backendChatSource, /"import_paper"/);
+  assert.match(backendChatSource, /不会自动执行副作用操作/);
 });
 
 test('backend builds evidence-bound Research Scout evaluations and constraints', () => {

@@ -927,6 +927,104 @@ def _research_scout_reference(candidate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _tool_trace_step(
+    step_id: str,
+    tool: str,
+    label: str,
+    status: str,
+    summary: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": step_id,
+        "tool": tool,
+        "label": label,
+        "status": status,
+        "summary": summary,
+        "details": details or {},
+    }
+
+
+def _research_scout_tool_trace(
+    query: str,
+    intent: dict[str, Any] | None,
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    candidate_count = len(candidates)
+    llm_evaluated = sum(1 for item in candidates[:6] if (item.get("evaluation") or {}).get("source") == "llm")
+    high_priority = [
+        item.get("title")
+        for item in candidates
+        if (item.get("evaluation") or {}).get("reading_priority") == "high"
+    ][:3]
+    steps = [
+        _tool_trace_step(
+            "parse-intent",
+            "parse_intent",
+            "拆解检索意图",
+            "completed",
+            "已提取主题、任务、方法、数据集、约束和评估重点。",
+            {
+                "topic": (intent or {}).get("topic"),
+                "constraint_mode": (intent or {}).get("constraint_mode"),
+                "venues": (intent or {}).get("venues") or [],
+                "institutions": (intent or {}).get("institutions") or [],
+                "authors": (intent or {}).get("authors") or [],
+                "evaluation_focus": (intent or {}).get("evaluation_focus") or [],
+            },
+        ),
+        _tool_trace_step(
+            "search-papers",
+            "search_papers",
+            "检索论文候选",
+            "completed",
+            f"已检索 arXiv、Semantic Scholar、OpenAlex 等来源，找到 {candidate_count} 篇候选。",
+            {
+                "query": query,
+                "providers": ["arXiv", "Semantic Scholar", "OpenAlex"],
+                "candidate_count": candidate_count,
+            },
+        ),
+        _tool_trace_step(
+            "evaluate-papers",
+            "evaluate_papers",
+            "评估候选论文",
+            "completed",
+            f"已完成 {candidate_count} 篇候选的结构化评估，其中 {llm_evaluated} 篇由 LLM 校准。",
+            {
+                "candidate_count": candidate_count,
+                "llm_evaluated": llm_evaluated,
+                "dimensions": ["novelty", "relevance", "reproducibility", "impact", "experiment_quality", "risk"],
+            },
+        ),
+        _tool_trace_step(
+            "rank-recommendations",
+            "rank_recommendations",
+            "生成阅读优先级",
+            "completed" if candidate_count else "skipped",
+            "已生成优先阅读候选。" if candidate_count else "没有候选，跳过排序。",
+            {
+                "top_candidates": high_priority,
+            },
+        ),
+        _tool_trace_step(
+            "paper-actions",
+            "import_paper",
+            "等待用户确认入库",
+            "available" if candidate_count else "skipped",
+            "候选卡片可一键入库、加入分类或加入研究方向；不会自动执行副作用操作。",
+            {
+                "available_actions": ["import_paper", "add_to_folder", "add_to_project"] if candidate_count else [],
+            },
+        ),
+    ]
+    return {
+        "enabled": True,
+        "workflow": "research_scout",
+        "steps": steps,
+    }
+
+
 def _format_research_scout_intent(intent: dict[str, Any]) -> str:
     fields = []
     labels = {
@@ -1320,9 +1418,11 @@ async def send_message(
     references.extend(upload_visual_refs)
     scout_candidates: list[dict[str, Any]] = []
     scout_intent: dict[str, Any] | None = None
+    tool_trace: dict[str, Any] | None = None
     if req.assistant_mode == "research_scout":
         scout_intent = _research_scout_intent(req.content, req.search_depth)
         scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, req.search_depth, scout_intent)
+        tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates)
         context = [*scout_context, *context]
         references.extend(scout_refs)
 
@@ -1414,9 +1514,11 @@ async def send_message_stream(
     references.extend(upload_visual_refs)
     scout_candidates: list[dict[str, Any]] = []
     scout_intent: dict[str, Any] | None = None
+    tool_trace: dict[str, Any] | None = None
     if req.assistant_mode == "research_scout":
         scout_intent = _research_scout_intent(req.content, req.search_depth)
         scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, req.search_depth, scout_intent)
+        tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates)
         context = [*scout_context, *context]
         references.extend(scout_refs)
     retrieval_quality = await _retrieval_quality_snapshot(rag_enabled=rag_enabled)
@@ -1453,6 +1555,7 @@ async def send_message_stream(
                     "candidates": scout_candidates,
                     "candidate_count": len(scout_candidates),
                 } if req.assistant_mode == "research_scout" else None,
+                "tool_trace": tool_trace,
                 "model": _active_model_stream_metadata(
                     rag_enabled=rag_enabled,
                     web_search_enabled=bool(req.web_search),

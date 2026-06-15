@@ -26,6 +26,18 @@ interface Message {
     candidate_count?: number;
     candidates?: any[];
   };
+  tool_trace?: {
+    enabled?: boolean;
+    workflow?: string;
+    steps?: {
+      id: string;
+      tool: string;
+      label: string;
+      status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'available' | 'waiting';
+      summary?: string;
+      details?: Record<string, unknown>;
+    }[];
+  };
 }
 
 interface Session {

@@ -1,0 +1,5 @@
+- [x] 1. Add backend tool trace helper types/functions and emit Research Scout trace steps in stream metadata.
+- [x] 2. Preserve trace metadata on streamed assistant messages in the chat frontend.
+- [x] 3. Render a compact tool execution trace panel with scoped styles.
+- [x] 4. Extend contract tests for backend trace payload and frontend trace rendering.
+- [x] 5. Validate OpenSpec, backend syntax, frontend contract tests, and frontend build.
