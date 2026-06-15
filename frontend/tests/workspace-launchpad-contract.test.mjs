@@ -28,6 +28,18 @@ test('workspace detail exposes role-aware quick-start launchpad', () => {
   assert.match(detailSource, /workspace-resource-binder/);
 });
 
+test('workspace detail exposes research cockpit loop', () => {
+  assert.match(detailSource, /科研驾驶舱/);
+  assert.match(detailSource, /空间级闭环/);
+  assert.match(detailSource, /证据语料/);
+  assert.match(detailSource, /Idea 推进/);
+  assert.match(detailSource, /写作落地/);
+  assert.match(detailSource, /开放问题/);
+  assert.match(detailSource, /诊断证据缺口/);
+  assert.match(detailSource, /规划下一步 Idea/);
+  assert.match(detailSource, /检查写作落地风险/);
+});
+
 test('workspace detail keeps existing operations reachable', () => {
   assert.match(detailSource, /绑定空间资源/);
   assert.match(detailSource, /手动输入 ID/);

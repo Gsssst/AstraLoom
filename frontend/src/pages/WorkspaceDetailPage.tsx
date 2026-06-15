@@ -909,6 +909,143 @@ const WorkspaceDetailPage: React.FC = () => {
     </Row>
   );
 
+  const renderCockpitResourceLinks = (items: any[] = [], emptyText: string) => (
+    <Space direction="vertical" size={4} style={{ width: '100%', minWidth: 0 }}>
+      {items.length ? items.slice(0, 3).map(item => (
+        <Text
+          key={item.id}
+          type="secondary"
+          ellipsis={{ tooltip: item.title }}
+          style={{ display: 'block', cursor: item.path ? 'pointer' : 'default' }}
+          onClick={() => item.path && navigate(item.path)}
+        >
+          {item.title}
+        </Text>
+      )) : <Text type="secondary">{emptyText}</Text>}
+    </Space>
+  );
+
+  const buildCockpitTracks = () => [
+    {
+      key: 'papers',
+      title: '证据语料',
+      count: (resources.papers || []).length,
+      items: resources.papers || [],
+      emptyText: '还没有绑定论文证据',
+      readyText: '可作为研究语料',
+      missingText: '先补核心论文',
+      actionLabel: canEditResources ? '绑定论文' : '查看论文库',
+      onClick: canEditResources ? () => openResourceBinder('papers') : () => navigate('/papers'),
+      color: '#4f7cff',
+      icon: <BookOutlined />,
+    },
+    {
+      key: 'research_projects',
+      title: 'Idea 推进',
+      count: (resources.research_projects || []).length,
+      items: resources.research_projects || [],
+      emptyText: '还没有绑定研究方向',
+      readyText: '已有方向可推进',
+      missingText: '需要生成/绑定方向',
+      actionLabel: '进入研究方向',
+      onClick: () => navigate('/research'),
+      color: '#8b5cf6',
+      icon: <ExperimentOutlined />,
+    },
+    {
+      key: 'writing_projects',
+      title: '写作落地',
+      count: (resources.writing_projects || []).length,
+      items: resources.writing_projects || [],
+      emptyText: '还没有绑定写作草稿',
+      readyText: '已有草稿可推进',
+      missingText: '待沉淀为草稿',
+      actionLabel: '打开写作',
+      onClick: () => navigate('/writing'),
+      color: '#16a34a',
+      icon: <EditOutlined />,
+    },
+    {
+      key: 'issues',
+      title: '开放问题',
+      count: issueSummary.open,
+      items: issues.filter(issue => issue.status === 'open').map(issue => ({
+        id: issue.id,
+        title: issue.title,
+      })),
+      emptyText: '暂无开放 Issue',
+      readyText: '有问题待处理',
+      missingText: '暂无阻塞',
+      actionLabel: issueSummary.open ? '查看 Issue' : '提交 Issue',
+      onClick: () => setActiveWorkspaceTab('issues'),
+      color: '#f59e0b',
+      icon: <BugOutlined />,
+      reverseReady: true,
+    },
+  ];
+
+  const renderResearchCockpit = () => (
+    <Card
+      title={<Space><RocketOutlined />科研驾驶舱</Space>}
+      style={{ borderRadius: 14, marginBottom: 18 }}
+      extra={<Tag color="geekblue">空间级闭环</Tag>}
+    >
+      <Space direction="vertical" size={14} style={{ width: '100%' }}>
+        <Text type="secondary">
+          把论文证据、Idea 推进、写作草稿和开放问题放到同一个视图里，先看缺口，再决定下一步。
+        </Text>
+        <Row gutter={[12, 12]}>
+          {buildCockpitTracks().map(track => {
+            const ready = track.reverseReady ? track.count === 0 : track.count > 0;
+            return (
+              <Col xs={24} md={12} key={track.key}>
+                <Card
+                  size="small"
+                  style={{ height: '100%', borderRadius: 12, borderTop: `3px solid ${track.color}` }}
+                  styles={{ body: { padding: 14 } }}
+                >
+                  <Space direction="vertical" size={10} style={{ width: '100%', minWidth: 0 }}>
+                    <Space align="center" style={{ width: '100%', justifyContent: 'space-between' }}>
+                      <Space>
+                        <span style={{ color: track.color }}>{track.icon}</span>
+                        <Text strong>{track.title}</Text>
+                      </Space>
+                      <Tag color={ready ? 'green' : 'gold'}>{ready ? track.readyText : track.missingText}</Tag>
+                    </Space>
+                    <Statistic value={track.count} suffix={track.key === 'issues' ? '个 open' : '项'} valueStyle={{ fontSize: 24 }} />
+                    {renderCockpitResourceLinks(track.items, track.emptyText)}
+                    <Button size="small" onClick={track.onClick} style={{ alignSelf: 'flex-start', borderRadius: 8 }}>
+                      {track.actionLabel}
+                    </Button>
+                  </Space>
+                </Card>
+              </Col>
+            );
+          })}
+        </Row>
+        <Alert
+          type="info"
+          showIcon
+          message="空间助手可以基于当前绑定资源做诊断"
+          description={(
+            <Space wrap size={8}>
+              <Button size="small" onClick={() => sendAssistantMessage('请基于当前项目空间，诊断论文证据缺口，并给出最该补的 3 类论文。')} disabled={assistantSending}>
+                诊断证据缺口
+              </Button>
+              <Button size="small" onClick={() => sendAssistantMessage('请基于当前项目空间，规划下一步可以推进的 research idea，并说明需要哪些证据支持。')} disabled={assistantSending}>
+                规划下一步 Idea
+              </Button>
+              <Button size="small" onClick={() => sendAssistantMessage('请检查当前项目空间从 idea 到写作落地还缺什么，按优先级列出行动清单。')} disabled={assistantSending}>
+                检查写作落地风险
+              </Button>
+            </Space>
+          )}
+          style={{ borderRadius: 12 }}
+        />
+      </Space>
+    </Card>
+  );
+
   const renderOverviewTab = () => (
     <Row gutter={[16, 16]}>
       <Col xs={24} xl={16}>
@@ -947,6 +1084,7 @@ const WorkspaceDetailPage: React.FC = () => {
             },
           ]}
         />
+        {renderResearchCockpit()}
         {renderStatusCards()}
         <Alert
           type={dashboard.progress_score >= 70 ? 'success' : dashboard.progress_score >= 35 ? 'info' : 'warning'}
