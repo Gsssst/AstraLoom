@@ -126,6 +126,7 @@ interface ResearchScoutCandidate {
 
 interface ResearchScoutPayload {
   enabled?: boolean;
+  auto_routed?: boolean;
   query?: string;
   intent?: ResearchScoutIntent;
   candidate_count?: number;
@@ -199,6 +200,17 @@ const formatElapsed = (ms: number) => {
   return `${Math.round(seconds)}s`;
 };
 
+const isPaperDiscoveryPrompt = (value: string) => {
+  const text = (value || '').trim();
+  if (!text) return false;
+  const hasDiscoveryVerb = /(找|搜索|检索|推荐|列出|整理|筛选|查找|find|search|recommend|list|scout|shortlist)/i.test(text);
+  if (!hasDiscoveryVerb) return false;
+  const hasPaperSignal = /(论文|paper|papers|arxiv|cvpr|iccv|eccv|neurips|iclr|icml)/i.test(text);
+  const hasCountSignal = /(\b\d+\s*(篇|个|条)?\b|[一二两三四五六七八九十]+\s*篇)/i.test(text);
+  const hasResearchSignal = /(会议|顶会|conference|研究|发表|publication)/i.test(text);
+  return hasPaperSignal || (hasCountSignal && hasResearchSignal);
+};
+
 const referenceTooltip = (ref: any) => {
   if (ref.source === 'web') {
     return `网页检索来源：${ref.provider || 'unknown'}；查询：${ref.retrieval_query || ref.query || 'unknown'}`;
@@ -216,6 +228,14 @@ const referenceLabel = (ref: any) => {
   const scoutProvider = ref.source === 'research_scout' && ref.provider ? ` · ${ref.provider}` : '';
   const year = ref.year ? ` (${ref.year})` : '';
   return `${source}${provider}${scoutProvider} · ${title.slice(0, 40)}${title.length > 40 ? '...' : ''}${year}`;
+};
+
+const visibleReferencesForMessage = (msg: any) => {
+  const references = msg.references || [];
+  if (msg.research_scout?.enabled) {
+    return references.filter((ref: any) => ref.source === 'research_scout');
+  }
+  return references;
 };
 
 const ChatPage: React.FC = () => {
@@ -460,13 +480,15 @@ const ChatPage: React.FC = () => {
     sendLock.current = true;
     cancelRequestedRef.current = false;
     const controller = new AbortController();
-    const effectiveWebSearch = assistantMode === 'research_scout' || webSearch;
-    const effectiveSearchDepth = assistantMode === 'research_scout' ? 'deep' : searchDepth;
+    const effectiveAssistantMode: ChatAssistantMode = assistantMode === 'research_scout' || isPaperDiscoveryPrompt(text) ? 'research_scout' : 'general';
+    const autoRoutedResearchScout = effectiveAssistantMode === 'research_scout' && assistantMode !== 'research_scout';
+    const effectiveWebSearch = effectiveAssistantMode === 'research_scout' || webSearch;
+    const effectiveSearchDepth = effectiveAssistantMode === 'research_scout' ? 'deep' : searchDepth;
     abortControllerRef.current = controller;
     setSendStartedAt(Date.now());
     setFirstTokenAt(null);
     setElapsedMs(0);
-    setStreamStatus(assistantMode === 'research_scout' ? '论文猎手正在联网检索学术来源...' : effectiveWebSearch ? '正在检索知识库与网络来源...' : ragEnabled ? '正在检索知识库...' : '正在生成回答...');
+    setStreamStatus(effectiveAssistantMode === 'research_scout' ? (autoRoutedResearchScout ? '已识别为找论文请求，正在启动论文猎手...' : '论文猎手正在联网检索学术来源...') : effectiveWebSearch ? '正在检索知识库与网络来源...' : ragEnabled ? '正在检索知识库...' : '正在生成回答...');
     if (!hasOverride) setInput('');
     enableFollowOutput();
 
@@ -484,7 +506,7 @@ const ChatPage: React.FC = () => {
       try {
         const t = localStorage.getItem('access_token');
         const prompt = text || `请分析文件: ${fileNames}`;
-        const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: prompt, rag_enabled: ragEnabled, extra_context: allText || undefined, attachments: imageAttachments, web_search: effectiveWebSearch, search_depth: effectiveSearchDepth, show_thinking: showThinking, assistant_mode: assistantMode }) });
+        const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: prompt, rag_enabled: ragEnabled, extra_context: allText || undefined, attachments: imageAttachments, web_search: effectiveWebSearch, search_depth: effectiveSearchDepth, show_thinking: showThinking, assistant_mode: effectiveAssistantMode }) });
         if (!r.ok) throw new Error(await parseStreamError(r, '上传发送失败'));
         await consumeChatStream(r);
         rememberAttachments(currentFiles);
@@ -499,7 +521,7 @@ const ChatPage: React.FC = () => {
     useChatSessionStore.setState(s => ({ messages: [...s.messages, { role: 'user', content: text, created_at: new Date().toISOString() }], sending: true }));
     try {
       const t = localStorage.getItem('access_token');
-      const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: text, rag_enabled: ragEnabled, web_search: effectiveWebSearch, search_depth: effectiveSearchDepth, show_thinking: showThinking, assistant_mode: assistantMode }) });
+      const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: text, rag_enabled: ragEnabled, web_search: effectiveWebSearch, search_depth: effectiveSearchDepth, show_thinking: showThinking, assistant_mode: effectiveAssistantMode }) });
       if (!r.ok) throw new Error(await parseStreamError(r, '发送失败'));
       await consumeChatStream(r);
     } catch (e: any) { if (!cancelRequestedRef.current && e?.name !== 'AbortError') appendAssistantError(getApiErrorMessage(e, { fallback: '发送失败' })); }
@@ -1190,7 +1212,7 @@ const ChatPage: React.FC = () => {
                       <Button type="text" size="small" onClick={async () => { if (msg.id) try { await api.post('/chat/feedback', { message_id: msg.id, rating: 'like' }); message.success('已反馈'); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '反馈提交失败' })); } }} style={{ fontSize: 11, color: token.colorTextQuaternary }}>👍</Button>
                       <Button type="text" size="small" onClick={async () => { if (msg.id) try { await api.post('/chat/feedback', { message_id: msg.id, rating: 'dislike' }); message.success('已反馈'); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '反馈提交失败' })); } }} style={{ fontSize: 11, color: token.colorTextQuaternary }}>👎</Button></>}
                     </div>
-                    {msg.references && msg.references.length > 0 && <div className="chat-reference-strip"><Text type="secondary" style={{ fontSize: 11 }}>检索来源：</Text>{(msg.references as any[]).map((ref: any, ri: number) => <Tooltip key={`${ref.url || ref.arxiv_id || ref.title}-${ri}`} title={referenceTooltip(ref)}><Tag color={ref.source === 'web' ? 'cyan' : ref.source === 'research_scout' ? 'purple' : 'geekblue'} style={{ marginTop: 4, cursor: ref.url || ref.pdf_url || ref.arxiv_id ? 'pointer' : 'default', borderRadius: 8 }} onClick={() => { if (ref.url) window.open(ref.url, '_blank', 'noopener,noreferrer'); else if (ref.pdf_url) window.open(ref.pdf_url, '_blank', 'noopener,noreferrer'); else if (ref.arxiv_id) window.open(`https://arxiv.org/abs/${ref.arxiv_id.replace(/v\d+$/, '')}`, '_blank', 'noopener,noreferrer'); }}>[{ri + 1}] {referenceLabel(ref)}</Tag></Tooltip>)}</div>}
+                    {visibleReferencesForMessage(msg).length > 0 && <div className="chat-reference-strip"><Text type="secondary" style={{ fontSize: 11 }}>{msg.research_scout?.enabled ? '论文候选来源：' : '检索来源：'}</Text>{visibleReferencesForMessage(msg).map((ref: any, ri: number) => <Tooltip key={`${ref.url || ref.arxiv_id || ref.title}-${ri}`} title={referenceTooltip(ref)}><Tag color={ref.source === 'web' ? 'cyan' : ref.source === 'research_scout' ? 'purple' : 'geekblue'} style={{ marginTop: 4, cursor: ref.url || ref.pdf_url || ref.arxiv_id ? 'pointer' : 'default', borderRadius: 8 }} onClick={() => { if (ref.url) window.open(ref.url, '_blank', 'noopener,noreferrer'); else if (ref.pdf_url) window.open(ref.pdf_url, '_blank', 'noopener,noreferrer'); else if (ref.arxiv_id) window.open(`https://arxiv.org/abs/${ref.arxiv_id.replace(/v\d+$/, '')}`, '_blank', 'noopener,noreferrer'); }}>[{ri + 1}] {referenceLabel(ref)}</Tag></Tooltip>)}</div>}
                     <div style={{ fontSize: 11, color: token.colorTextQuaternary, marginTop: 4, textAlign: msg.role === 'user' ? 'right' : 'left', padding: '0 4px' }}>{msg.created_at ? new Date(msg.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : ''}</div>
                   </div>
                 </div>

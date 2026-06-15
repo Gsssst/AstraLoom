@@ -32,9 +32,12 @@ test('chat page exposes Research Scout mode and sends assistant_mode', () => {
   assert.match(chatPageSource, /chat-composer-mode-select/);
   assert.match(chatPageSource, /论文猎手/);
   assert.match(chatPageSource, /handleAssistantModeChange/);
-  assert.match(chatPageSource, /assistant_mode: assistantMode/);
-  assert.match(chatPageSource, /effectiveWebSearch = assistantMode === 'research_scout' \|\| webSearch/);
-  assert.match(chatPageSource, /effectiveSearchDepth = assistantMode === 'research_scout' \? 'deep' : searchDepth/);
+  assert.match(chatPageSource, /isPaperDiscoveryPrompt/);
+  assert.match(chatPageSource, /effectiveAssistantMode: ChatAssistantMode/);
+  assert.match(chatPageSource, /assistant_mode: effectiveAssistantMode/);
+  assert.match(chatPageSource, /effectiveWebSearch = effectiveAssistantMode === 'research_scout' \|\| webSearch/);
+  assert.match(chatPageSource, /effectiveSearchDepth = effectiveAssistantMode === 'research_scout' \? 'deep' : searchDepth/);
+  assert.match(chatPageSource, /已识别为找论文请求，正在启动论文猎手/);
   assert.match(chatPageSource, /论文猎手正在联网检索学术来源/);
   assert.match(chatPageSource, /已切换到论文猎手，并自动开启联网深度学术检索/);
 });
@@ -163,6 +166,13 @@ test('Research Scout styles are scoped', () => {
 
 test('backend streams Research Scout metadata from scholarly discovery', () => {
   assert.match(backendChatSource, /assistant_mode: Literal\["general", "research_scout"\]/);
+  assert.match(backendChatSource, /PAPER_DISCOVERY_TRIGGER_RE/);
+  assert.match(backendChatSource, /_is_paper_discovery_request/);
+  assert.match(backendChatSource, /_effective_assistant_mode/);
+  assert.match(backendChatSource, /_web_search_enabled_for_mode/);
+  assert.match(backendChatSource, /scout_enabled = effective_mode == "research_scout"/);
+  assert.match(backendChatSource, /web_search_enabled=_web_search_enabled_for_mode\(req, effective_mode\)/);
+  assert.match(backendChatSource, /"auto_routed": req\.assistant_mode != "research_scout"/);
   assert.match(backendChatSource, /RESEARCH_SCOUT_LIMITS/);
   assert.match(backendChatSource, /search_scholarly_papers\(/);
   assert.match(backendChatSource, /source="arxiv_enriched"/);
@@ -173,6 +183,14 @@ test('backend streams Research Scout metadata from scholarly discovery', () => {
   assert.match(backendChatSource, /"intent": scout_intent/);
   assert.match(backendChatSource, /"research_scout": \{/);
   assert.match(backendChatSource, /论文猎手已整理/);
+});
+
+test('Research Scout source strip excludes generic web references', () => {
+  assert.match(chatPageSource, /visibleReferencesForMessage/);
+  assert.match(chatPageSource, /msg\.research_scout\?\.enabled/);
+  assert.match(chatPageSource, /ref\.source === 'research_scout'/);
+  assert.match(chatPageSource, /论文候选来源：/);
+  assert.match(chatPageSource, /检索来源：/);
 });
 
 test('backend streams Research Scout tool execution trace', () => {

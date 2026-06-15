@@ -23,6 +23,52 @@ def test_send_message_request_validates_search_depth():
         chat_sessions.SendMessageRequest(content="分析最新研究", search_depth="unbounded")
 
 
+def test_paper_discovery_prompts_auto_route_to_research_scout():
+    request = chat_sessions.SendMessageRequest(
+        content="请帮我找10篇2025年到2026年发表的关于 video grounding 的 CVPR 论文",
+        assistant_mode="general",
+    )
+
+    assert chat_sessions._is_paper_discovery_request(request.content) is True
+    assert chat_sessions._effective_assistant_mode(request) == "research_scout"
+
+
+def test_general_discussion_does_not_auto_route_to_research_scout():
+    request = chat_sessions.SendMessageRequest(
+        content="请解释一下 video grounding 这个任务通常怎么做",
+        assistant_mode="general",
+    )
+
+    assert chat_sessions._is_paper_discovery_request(request.content) is False
+    assert chat_sessions._effective_assistant_mode(request) == "general"
+
+
+def test_research_scout_disables_generic_web_retrieval_even_when_web_search_requested():
+    request = chat_sessions.SendMessageRequest(
+        content="find 10 CVPR 2025 video grounding papers",
+        web_search=True,
+        assistant_mode="general",
+    )
+
+    effective_mode = chat_sessions._effective_assistant_mode(request)
+
+    assert effective_mode == "research_scout"
+    assert chat_sessions._web_search_enabled_for_mode(request, effective_mode) is False
+
+
+def test_general_mode_keeps_requested_web_retrieval():
+    request = chat_sessions.SendMessageRequest(
+        content="请介绍一下 OpenAI API 的最新文档",
+        web_search=True,
+        assistant_mode="general",
+    )
+
+    effective_mode = chat_sessions._effective_assistant_mode(request)
+
+    assert effective_mode == "general"
+    assert chat_sessions._web_search_enabled_for_mode(request, effective_mode) is True
+
+
 @pytest.mark.parametrize(
     ("search_depth", "expected"),
     [

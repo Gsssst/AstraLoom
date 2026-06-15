@@ -37,6 +37,11 @@ export const useChatAutoScroll = (options: UseChatAutoScrollOptions = {}) => {
       followOutputRef.current = false;
       return;
     }
+    if (!nearBottom) {
+      manualPauseRef.current = true;
+      followOutputRef.current = false;
+      return;
+    }
     if (nearBottom && (!manualPauseRef.current || userMovedDown)) {
       manualPauseRef.current = false;
       followOutputRef.current = true;
@@ -99,15 +104,27 @@ export const useChatAutoScroll = (options: UseChatAutoScrollOptions = {}) => {
       }
       settleInteractionIntent(interactionStartScrollTopRef.current);
     };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!container.contains(document.activeElement)) return;
+      if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) {
+        pauseFollowOutput();
+        return;
+      }
+      if (['ArrowDown', 'PageDown', 'End', ' '].includes(event.key)) {
+        settleInteractionIntent(container.scrollTop);
+      }
+    };
     container.addEventListener('scroll', syncFollowState, { passive: true });
     window.addEventListener('wheel', handleWheel, { passive: true, capture: true });
     window.addEventListener('touchstart', handleTouchStart, { passive: true, capture: true });
     window.addEventListener('touchmove', handleTouchMove, { passive: true, capture: true });
+    window.addEventListener('keydown', handleKeyDown, { capture: true });
     return () => {
       container.removeEventListener('scroll', syncFollowState);
       window.removeEventListener('wheel', handleWheel, { capture: true });
       window.removeEventListener('touchstart', handleTouchStart, { capture: true });
       window.removeEventListener('touchmove', handleTouchMove, { capture: true });
+      window.removeEventListener('keydown', handleKeyDown, { capture: true });
     };
   }, [pauseFollowOutput, settleInteractionIntent, syncFollowState]);
 

@@ -29,13 +29,16 @@ test('chat auto-scroll hook tracks bottom proximity and user scroll state', () =
   assert.match(hookSource, /scrollHeight - container\.scrollTop - container\.clientHeight/);
   assert.match(hookSource, /if \(userMovedUp\) \{/);
   assert.match(hookSource, /manualPauseRef\.current = true/);
+  assert.match(hookSource, /if \(!nearBottom\) \{/);
   assert.match(hookSource, /container\.addEventListener\('scroll', syncFollowState, \{ passive: true \}\)/);
   assert.match(hookSource, /window\.addEventListener\('wheel', handleWheel, \{ passive: true, capture: true \}\)/);
   assert.match(hookSource, /window\.addEventListener\('touchstart', handleTouchStart, \{ passive: true, capture: true \}\)/);
   assert.match(hookSource, /window\.addEventListener\('touchmove', handleTouchMove, \{ passive: true, capture: true \}\)/);
+  assert.match(hookSource, /window\.addEventListener\('keydown', handleKeyDown, \{ capture: true \}\)/);
   assert.match(hookSource, /container\.contains\(event\.target as Node \| null\)/);
   assert.match(hookSource, /event\.deltaY < 0/);
   assert.match(hookSource, /currentY > startY/);
+  assert.match(hookSource, /\['ArrowUp', 'PageUp', 'Home'\]/);
   assert.match(hookSource, /settleInteractionIntent/);
   assert.match(hookSource, /manualPauseRef\.current = false/);
   assert.match(hookSource, /if \(!followOutputRef\.current\) return/);

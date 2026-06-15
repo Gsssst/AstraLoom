@@ -1,0 +1,7 @@
+- [x] 1. Add shared paper-discovery intent detection and apply it to stream and non-stream chat requests.
+- [x] 2. Bypass ordinary generic web retrieval for effective Research Scout requests and keep scout references isolated.
+- [x] 3. Ensure Research Scout metadata/card payloads always include candidate actions, evaluation, venue/year intent, and constraint match details.
+- [x] 4. Update chat UI source labels and filtering so Research Scout messages show paper candidate sources, not generic web sources.
+- [x] 5. Re-harden `useChatAutoScroll` against wheel/touch/keyboard/scroll-up regressions during streaming.
+- [x] 6. Add/extend contract tests for routing, source isolation, visible cards/evaluations, and scroll behavior.
+- [x] 7. Validate OpenSpec, backend syntax, frontend tests, frontend build, and commit changes.

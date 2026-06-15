@@ -316,6 +316,38 @@ RESEARCH_SCOUT_INSTITUTION_ALIASES = {
 
 EMPTY_STREAM_FALLBACK = "⚠️ 模型本轮未返回可展示内容，请重新发送问题或稍后重试。"
 INTERRUPTED_STREAM_FALLBACK = "\n\n> ⚠️ 回答生成中途出现异常，以上内容可能不完整，请重试。"
+PAPER_DISCOVERY_TRIGGER_RE = re.compile(
+    r"(?:找|搜索|检索|推荐|列出|整理|筛选|查找|find|search|recommend|list|scout|shortlist)",
+    re.IGNORECASE,
+)
+PAPER_DISCOVERY_PAPER_RE = re.compile(r"(?:论文|paper|papers|arxiv|cvpr|iccv|eccv|neurips|iclr|icml)", re.IGNORECASE)
+PAPER_DISCOVERY_COUNT_RE = re.compile(r"(?:\b\d+\s*(?:篇|个|条)?\b|[一二两三四五六七八九十]+\s*篇)", re.IGNORECASE)
+
+
+def _is_paper_discovery_request(content: str) -> bool:
+    """Detect explicit paper-finding prompts that should use Research Scout."""
+
+    text = (content or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if not PAPER_DISCOVERY_TRIGGER_RE.search(text):
+        return False
+    if PAPER_DISCOVERY_PAPER_RE.search(text):
+        return True
+    if PAPER_DISCOVERY_COUNT_RE.search(text) and any(term in lowered for term in ("arxiv", "conference", "会议", "顶会", "研究", "paper")):
+        return True
+    return False
+
+
+def _effective_assistant_mode(req: SendMessageRequest) -> Literal["general", "research_scout"]:
+    if req.assistant_mode == "research_scout" or _is_paper_discovery_request(req.content):
+        return "research_scout"
+    return "general"
+
+
+def _web_search_enabled_for_mode(req: SendMessageRequest, effective_mode: str) -> bool:
+    return bool(req.web_search) and effective_mode != "research_scout"
 
 
 def _stream_event(event_type: str, content: Any = None) -> str:
@@ -1402,6 +1434,9 @@ async def send_message(
     rag_enabled = req.rag_enabled if req.rag_enabled is not None else session.rag_enabled
     if req.rag_enabled is not None:
         session.rag_enabled = req.rag_enabled
+    effective_mode = _effective_assistant_mode(req)
+    scout_enabled = effective_mode == "research_scout"
+    effective_search_depth = "deep" if scout_enabled else req.search_depth
 
     # 保存用户消息
     user_msg = ChatMessage(session_id=sid, role="user", content=req.content)
@@ -1425,16 +1460,16 @@ async def send_message(
         context,
         req.content,
         rag_enabled=rag_enabled,
-        web_search_enabled=bool(req.web_search),
-        search_depth=req.search_depth,
+        web_search_enabled=_web_search_enabled_for_mode(req, effective_mode),
+        search_depth=effective_search_depth,
     )
     references.extend(upload_visual_refs)
     scout_candidates: list[dict[str, Any]] = []
     scout_intent: dict[str, Any] | None = None
     tool_trace: dict[str, Any] | None = None
-    if req.assistant_mode == "research_scout":
-        scout_intent = _research_scout_intent(req.content, req.search_depth)
-        scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, req.search_depth, scout_intent)
+    if scout_enabled:
+        scout_intent = _research_scout_intent(req.content, effective_search_depth)
+        scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, effective_search_depth, scout_intent)
         tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates)
         context = [*scout_context, *context]
         references.extend(scout_refs)
@@ -1443,7 +1478,7 @@ async def send_message(
     try:
         reply_content = await llm_service.chat(
             messages=context,
-            temperature=0.55 if req.assistant_mode == "research_scout" else 0.7,
+            temperature=0.55 if scout_enabled else 0.7,
             max_tokens=4096,
         )
 
@@ -1503,6 +1538,9 @@ async def send_message_stream(
     rag_enabled = req.rag_enabled if req.rag_enabled is not None else session.rag_enabled
     if req.rag_enabled is not None:
         session.rag_enabled = req.rag_enabled
+    effective_mode = _effective_assistant_mode(req)
+    scout_enabled = effective_mode == "research_scout"
+    effective_search_depth = "deep" if scout_enabled else req.search_depth
 
     # 保存用户消息
     user_msg = ChatMessage(session_id=sid, role="user", content=req.content)
@@ -1521,16 +1559,16 @@ async def send_message_stream(
         context,
         req.content,
         rag_enabled=rag_enabled,
-        web_search_enabled=bool(req.web_search),
-        search_depth=req.search_depth,
+        web_search_enabled=_web_search_enabled_for_mode(req, effective_mode),
+        search_depth=effective_search_depth,
     )
     references.extend(upload_visual_refs)
     scout_candidates: list[dict[str, Any]] = []
     scout_intent: dict[str, Any] | None = None
     tool_trace: dict[str, Any] | None = None
-    if req.assistant_mode == "research_scout":
-        scout_intent = _research_scout_intent(req.content, req.search_depth)
-        scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, req.search_depth, scout_intent)
+    if scout_enabled:
+        scout_intent = _research_scout_intent(req.content, effective_search_depth)
+        scout_candidates, scout_refs, scout_context = await _build_research_scout_context(req.content, effective_search_depth, scout_intent)
         tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates)
         context = [*scout_context, *context]
         references.extend(scout_refs)
@@ -1540,7 +1578,7 @@ async def send_message_stream(
     # 流式响应
     async def generate():
         full_content = ""
-        if req.assistant_mode == "research_scout":
+        if scout_enabled:
             yield _stream_event(
                 "status",
                 f"论文猎手正在检索 arXiv、Semantic Scholar、OpenAlex 等学术来源，已找到 {len(scout_candidates)} 篇候选...",
@@ -1549,7 +1587,7 @@ async def send_message_stream(
             "status",
             (
                 f"论文猎手已整理 {len(scout_candidates)} 篇候选论文，正在生成阅读优先级与推荐理由..."
-                if req.assistant_mode == "research_scout"
+                if scout_enabled
                 else _retrieval_status(
                     references,
                     web_search_enabled=bool(req.web_search),
@@ -1562,17 +1600,18 @@ async def send_message_stream(
             {
                 "references": references,
                 "research_scout": {
-                    "enabled": req.assistant_mode == "research_scout",
+                    "enabled": scout_enabled,
+                    "auto_routed": req.assistant_mode != "research_scout",
                     "query": req.content,
                     "intent": scout_intent,
                     "candidates": scout_candidates,
                     "candidate_count": len(scout_candidates),
-                } if req.assistant_mode == "research_scout" else None,
+                } if scout_enabled else None,
                 "tool_trace": tool_trace,
                 "model": _active_model_stream_metadata(
                     rag_enabled=rag_enabled,
-                    web_search_enabled=bool(req.web_search),
-                    search_depth=req.search_depth,
+                    web_search_enabled=_web_search_enabled_for_mode(req, effective_mode),
+                    search_depth=effective_search_depth,
                     attachments=req.attachments,
                 ),
             },
