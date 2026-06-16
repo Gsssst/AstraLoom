@@ -55,6 +55,19 @@ def test_build_planner_messages_includes_tool_schemas_and_observations():
     assert "Return exactly one JSON object" in combined
 
 
+def test_build_planner_messages_includes_library_action_tools():
+    registry = default_chat_tool_registry()
+    messages = build_planner_messages(
+        user_query="read a local paper and add it to my project",
+        registry=registry,
+    )
+    combined = "\n".join(item["content"] for item in messages)
+
+    assert "read_pdf" in combined
+    assert "add_to_folder" in combined
+    assert "create_research_project" in combined
+
+
 @pytest.mark.asyncio
 async def test_planner_executes_valid_tool_action():
     async def _executor(args, state):

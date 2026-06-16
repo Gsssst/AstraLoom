@@ -32,6 +32,11 @@ const backendPlannerSource = readFileSync(
   'utf8',
 );
 
+const backendAgentToolsSource = readFileSync(
+  new URL('../../backend/app/services/chat_agent_tools.py', import.meta.url),
+  'utf8',
+);
+
 test('chat page exposes Research Scout mode and sends assistant_mode', () => {
   assert.match(chatPageSource, /type ChatAssistantMode = 'general' \| 'research_scout'/);
   assert.match(chatPageSource, /type ChatToolMode = 'auto' \| 'off' \| 'force'/);
@@ -132,18 +137,34 @@ test('generic chat tool traces support waiting confirmation and import actions',
   assert.match(chatPageSource, /handleConfirmToolAction/);
   assert.match(chatPageSource, /\/chat-sessions\/\$\{currentSessionId\}\/tools\/confirm/);
   assert.match(chatPageSource, /confirmation_token/);
+  assert.match(chatPageSource, /confirmableToolLabels/);
   assert.match(chatPageSource, /确认导入/);
+  assert.match(chatPageSource, /确认加入分类/);
+  assert.match(chatPageSource, /确认创建方向/);
   assert.match(chatPageSource, /event\.type === 'saved'/);
   assert.match(chatPageSource, /reply_id/);
   assert.match(chatPageSource, /chat-tool-trace-actions/);
   assert.match(responsiveSource, /\.chat-tool-trace-step\.is-waiting_confirmation \.chat-tool-trace-dot/);
   assert.match(responsiveSource, /\.chat-tool-trace-actions/);
   assert.match(backendChatSource, /ConfirmToolRequest/);
+  assert.match(backendChatSource, /tool: Literal\["import_paper", "add_to_folder", "create_research_project"\]/);
   assert.match(backendChatSource, /@router\.post\("\/\{session_id\}\/tools\/confirm"\)/);
+  assert.match(backendChatSource, /confirmation_arg_models/);
   assert.match(backendChatSource, /CHAT_TOOL_TRACE_REFERENCE_TYPE = "chat_tool_trace"/);
   assert.match(backendChatSource, /_references_with_tool_trace/);
   assert.match(backendChatSource, /_tool_trace_from_references/);
   assert.match(backendChatSource, /chat_tool_confirmation_token/);
+});
+
+test('generic chat tool registry exposes library action tools', () => {
+  assert.match(backendAgentToolsSource, /class ReadPdfArgs/);
+  assert.match(backendAgentToolsSource, /class AddToFolderArgs/);
+  assert.match(backendAgentToolsSource, /class CreateResearchProjectArgs/);
+  assert.match(backendAgentToolsSource, /name="read_pdf"/);
+  assert.match(backendAgentToolsSource, /name="add_to_folder"/);
+  assert.match(backendAgentToolsSource, /name="create_research_project"/);
+  assert.match(backendChatSource, /AddToFolderArgs/);
+  assert.match(backendChatSource, /CreateResearchProjectArgs/);
 });
 
 test('generic chat tool traces support LLM planner workflow metadata', () => {

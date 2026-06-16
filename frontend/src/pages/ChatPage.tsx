@@ -845,6 +845,16 @@ const ChatPage: React.FC = () => {
     waiting_confirmation: 'warning',
     rejected: 'error',
   }[value || ''] || 'default');
+  const confirmableToolLabels: Record<string, string> = {
+    import_paper: '确认导入',
+    add_to_folder: '确认加入分类',
+    create_research_project: '确认创建方向',
+  };
+  const confirmableToolIcons: Record<string, React.ReactNode> = {
+    import_paper: <CloudDownloadOutlined />,
+    add_to_folder: <FolderOutlined />,
+    create_research_project: <ExperimentOutlined />,
+  };
   const continueScoutSearch = (query: string, flavor: string) => {
     setAssistantMode('research_scout');
     setWebSearch(true);
@@ -1062,7 +1072,8 @@ const ChatPage: React.FC = () => {
             const resultCount = typeof step.details?.result_count === 'number' ? step.details.result_count : undefined;
             const excludedCount = typeof step.details?.excluded_count === 'number' ? step.details.excluded_count : undefined;
             const isWaitingConfirmation = step.status === 'waiting_confirmation' || step.status === 'waiting';
-            const canConfirmImport = isWaitingConfirmation && step.tool === 'import_paper' && !!msg?.id;
+            const confirmLabel = confirmableToolLabels[step.tool];
+            const canConfirmTool = isWaitingConfirmation && !!confirmLabel && !!msg?.id;
             const confirmationToken = typeof step.details?.confirmation_token === 'string' ? step.details.confirmation_token : '';
             const actionKey = `${msg?.id || ''}:${step.id}:${confirmationToken}`;
             return (
@@ -1077,16 +1088,16 @@ const ChatPage: React.FC = () => {
                     {!!excludedCount && <Tag color="orange">过滤 {excludedCount}</Tag>}
                   </div>
                   {step.summary && <Text type="secondary" className="chat-tool-trace-summary">{step.summary}</Text>}
-                  {canConfirmImport && (
+                  {canConfirmTool && (
                     <div className="chat-tool-trace-actions">
                       <Button
                         size="small"
                         type="primary"
-                        icon={<CloudDownloadOutlined />}
+                        icon={confirmableToolIcons[step.tool] || <CheckCircleOutlined />}
                         loading={confirmingToolKeys.has(actionKey)}
                         onClick={() => handleConfirmToolAction(String(msg.id), step)}
                       >
-                        确认导入
+                        {confirmLabel}
                       </Button>
                     </div>
                   )}

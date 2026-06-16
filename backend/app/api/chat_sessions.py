@@ -35,6 +35,8 @@ from app.services.chat_agent_tools import (
     ChatAgentRuntimeState,
     ChatAgentToolRuntime,
     ChatToolCall,
+    AddToFolderArgs,
+    CreateResearchProjectArgs,
     ImportPaperArgs,
     chat_tool_confirmation_token,
     chat_tool_trace_payload,
@@ -275,7 +277,7 @@ class SendMessageRequest(BaseModel):
 
 class ConfirmToolRequest(BaseModel):
     message_id: str
-    tool: Literal["import_paper"]
+    tool: Literal["import_paper", "add_to_folder", "create_research_project"]
     arguments: dict[str, Any]
     confirmation_token: str
 
@@ -2792,11 +2794,17 @@ async def confirm_chat_tool(
     if not assistant_message:
         raise HTTPException(status_code=404, detail="消息未找到")
 
-    if req.tool != "import_paper":
+    confirmation_arg_models = {
+        "import_paper": ImportPaperArgs,
+        "add_to_folder": AddToFolderArgs,
+        "create_research_project": CreateResearchProjectArgs,
+    }
+    arg_model = confirmation_arg_models.get(req.tool)
+    if not arg_model:
         raise HTTPException(status_code=400, detail="不支持的确认工具")
 
     try:
-        arguments = ImportPaperArgs.model_validate(req.arguments).model_dump()
+        arguments = arg_model.model_validate(req.arguments).model_dump()
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"工具参数无效: {exc}")
 
@@ -2836,7 +2844,7 @@ async def confirm_chat_tool(
                 tool=req.tool,
                 arguments=arguments,
                 confirmation_token=req.confirmation_token,
-                thought_summary="用户已确认执行导入论文。",
+                thought_summary=f"用户已确认执行 {req.tool}。",
             )
         ],
         allow_side_effects=True,

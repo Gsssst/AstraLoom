@@ -1,34 +1,78 @@
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 from pydantic import BaseModel
 
 from app.services import chat_agent_tools
 from app.services.chat_agent_tools import (
+    AddToFolderArgs,
     ChatAgentRuntimeState,
     ChatAgentToolRuntime,
     ChatToolCall,
     ChatToolDefinition,
     ChatToolObservation,
     ChatToolRegistry,
+    CreateResearchProjectArgs,
     ImportPaperArgs,
     chat_tool_confirmation_token,
     default_chat_tool_registry,
     deterministic_chat_tool_plan,
 )
+from app.db.models.paper import PaperFolderItem, UserPaper
+from app.db.models.research import ResearchProject
 
 
 class EchoArgs(BaseModel):
     text: str
 
 
+class _ScalarResult:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self.rows)
+
+    def scalar_one_or_none(self):
+        return self.rows[0] if self.rows else None
+
+
+class _FakeToolDb:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.added = []
+        self.commit_count = 0
+        self.refresh_count = 0
+
+    async def execute(self, _query):
+        return _ScalarResult(self.responses.pop(0) if self.responses else [])
+
+    def add(self, item):
+        self.added.append(item)
+
+    async def commit(self):
+        self.commit_count += 1
+
+    async def refresh(self, item):
+        self.refresh_count += 1
+        if getattr(item, "id", None) is None:
+            item.id = "project-1"
+
+
 def test_registry_schema_export_includes_side_effect_policy():
     registry = default_chat_tool_registry()
     schemas = {schema["name"]: schema for schema in registry.schemas()}
 
-    assert {"search_papers", "search_library", "import_paper"} <= set(schemas)
+    assert {"search_papers", "search_library", "import_paper", "read_pdf", "add_to_folder", "create_research_project"} <= set(schemas)
     assert schemas["import_paper"]["side_effect"] is True
+    assert schemas["add_to_folder"]["side_effect"] is True
+    assert schemas["create_research_project"]["side_effect"] is True
     assert schemas["search_papers"]["side_effect"] is False
+    assert schemas["read_pdf"]["side_effect"] is False
 
 
 @pytest.mark.asyncio
@@ -103,6 +147,36 @@ async def test_side_effect_tool_waits_for_exact_confirmation():
 
 
 @pytest.mark.asyncio
+async def test_library_side_effect_tools_wait_for_confirmation():
+    registry = default_chat_tool_registry()
+    folder_args = AddToFolderArgs(
+        folder_id="11111111-1111-1111-1111-111111111111",
+        paper_ids=["22222222-2222-2222-2222-222222222222"],
+    ).model_dump()
+    project_args = CreateResearchProjectArgs(
+        name="Video Grounding",
+        description="seed project",
+        paper_ids=["22222222-2222-2222-2222-222222222222"],
+    ).model_dump()
+
+    folder_observation = await registry.execute(
+        ChatToolCall(tool="add_to_folder", arguments=folder_args),
+        ChatAgentRuntimeState(user_query="add to folder"),
+        allow_side_effects=False,
+    )
+    project_observation = await registry.execute(
+        ChatToolCall(tool="create_research_project", arguments=project_args),
+        ChatAgentRuntimeState(user_query="create project"),
+        allow_side_effects=False,
+    )
+
+    assert folder_observation.status == "waiting_confirmation"
+    assert folder_observation.details["confirmation_token"] == chat_tool_confirmation_token("add_to_folder", folder_args)
+    assert project_observation.status == "waiting_confirmation"
+    assert project_observation.details["confirmation_token"] == chat_tool_confirmation_token("create_research_project", project_args)
+
+
+@pytest.mark.asyncio
 async def test_search_papers_returns_references_and_context(monkeypatch):
     async def _fake_search(query, *, source, max_results, **kwargs):
         return [
@@ -166,6 +240,89 @@ async def test_search_library_uses_rag_service(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_read_pdf_uses_full_text_chunks(monkeypatch):
+    paper = SimpleNamespace(
+        id="paper-1",
+        title="Readable Paper",
+        arxiv_id="2601.00004",
+        year=2026,
+        abstract="abstract fallback",
+        full_text="full text " * 200,
+        source_url="https://example.com/readable",
+        metadata_json={"pdf_url": "https://example.com/readable.pdf"},
+    )
+
+    async def _load_paper(db, user_id, paper_id):
+        return paper
+
+    def _retrieve_chunks(full_text, query, top_k=3):
+        return [("method evidence chunk", 0.91), ("experiment evidence chunk", 0.76)], "document"
+
+    monkeypatch.setattr(chat_agent_tools, "_load_user_accessible_paper", _load_paper)
+    monkeypatch.setattr(chat_agent_tools.PaperChunkService, "retrieve_chunks", _retrieve_chunks)
+    runtime_state = ChatAgentRuntimeState(user_query="read method", user=SimpleNamespace(id="user-1"))
+    runtime_state.db = object()
+
+    state = await ChatAgentToolRuntime(default_chat_tool_registry()).run(
+        runtime_state,
+        [ChatToolCall(tool="read_pdf", arguments={"paper_id": "paper-1", "query": "method", "top_k": 2})],
+    )
+
+    assert state.observations[0].status == "completed"
+    assert state.observations[0].details["evidence_coverage"] == "full_text"
+    assert "method evidence chunk" in state.context_blocks[0]
+    assert state.references[0]["source"] == "local_pdf"
+
+
+@pytest.mark.asyncio
+async def test_read_pdf_falls_back_to_abstract(monkeypatch):
+    paper = SimpleNamespace(
+        id="paper-2",
+        title="Abstract Paper",
+        arxiv_id=None,
+        year=2025,
+        abstract="only abstract evidence",
+        full_text=None,
+        source_url=None,
+        metadata_json={},
+    )
+
+    async def _load_paper(db, user_id, paper_id):
+        return paper
+
+    monkeypatch.setattr(chat_agent_tools, "_load_user_accessible_paper", _load_paper)
+    runtime_state = ChatAgentRuntimeState(user_query="read abstract", user=SimpleNamespace(id="user-1"))
+    runtime_state.db = object()
+
+    state = await ChatAgentToolRuntime(default_chat_tool_registry()).run(
+        runtime_state,
+        [ChatToolCall(tool="read_pdf", arguments={"paper_id": "paper-2"})],
+    )
+
+    assert state.observations[0].status == "completed"
+    assert state.observations[0].details["evidence_coverage"] == "abstract_only"
+    assert "only abstract evidence" in state.context_blocks[0]
+
+
+@pytest.mark.asyncio
+async def test_read_pdf_rejects_inaccessible_paper(monkeypatch):
+    async def _load_paper(db, user_id, paper_id):
+        return None
+
+    monkeypatch.setattr(chat_agent_tools, "_load_user_accessible_paper", _load_paper)
+    runtime_state = ChatAgentRuntimeState(user_query="read missing", user=SimpleNamespace(id="user-1"))
+    runtime_state.db = object()
+
+    state = await ChatAgentToolRuntime(default_chat_tool_registry()).run(
+        runtime_state,
+        [ChatToolCall(tool="read_pdf", arguments={"paper_id": "missing"})],
+    )
+
+    assert state.observations[0].status == "rejected"
+    assert "未找到可访问" in state.observations[0].summary
+
+
+@pytest.mark.asyncio
 async def test_confirmed_import_executes_ingest_and_save(monkeypatch):
     paper = SimpleNamespace(
         id="paper-1",
@@ -211,6 +368,66 @@ async def test_confirmed_import_executes_ingest_and_save(monkeypatch):
     assert state.references[0]["paper_id"] == "paper-1"
 
 
+@pytest.mark.asyncio
+async def test_confirmed_add_to_folder_executes_membership_mutation():
+    folder_id = "11111111-1111-1111-1111-111111111111"
+    paper_id = "22222222-2222-2222-2222-222222222222"
+    folder = SimpleNamespace(id=UUID(folder_id), name="Grounding")
+    paper = SimpleNamespace(
+        id=UUID(paper_id),
+        title="Folder Paper",
+        arxiv_id=None,
+        year=2026,
+        source_url=None,
+        metadata_json={},
+    )
+    db = _FakeToolDb([[folder], [paper], [], []])
+    args = AddToFolderArgs(folder_id=folder_id, paper_ids=[paper_id]).model_dump()
+    token = chat_tool_confirmation_token("add_to_folder", args)
+    runtime_state = ChatAgentRuntimeState(user_query="confirm folder", user=SimpleNamespace(id="user-1"))
+    runtime_state.db = db
+
+    state = await ChatAgentToolRuntime(default_chat_tool_registry()).run(
+        runtime_state,
+        [ChatToolCall(tool="add_to_folder", arguments=args, confirmation_token=token)],
+        allow_side_effects=True,
+    )
+
+    assert state.observations[0].status == "completed"
+    assert state.observations[0].details["added"] == 1
+    assert any(isinstance(item, UserPaper) for item in db.added)
+    assert any(isinstance(item, PaperFolderItem) for item in db.added)
+    assert db.commit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_confirmed_create_research_project_executes_project_creation():
+    paper_id = "22222222-2222-2222-2222-222222222222"
+    db = _FakeToolDb([[UUID(paper_id)]])
+    args = CreateResearchProjectArgs(
+        name="Video Grounding",
+        description="Project seed",
+        keywords=["video", "grounding"],
+        paper_ids=[paper_id],
+    ).model_dump()
+    token = chat_tool_confirmation_token("create_research_project", args)
+    runtime_state = ChatAgentRuntimeState(user_query="confirm project", user=SimpleNamespace(id="user-1"), session_id="session-1")
+    runtime_state.db = db
+
+    state = await ChatAgentToolRuntime(default_chat_tool_registry()).run(
+        runtime_state,
+        [ChatToolCall(tool="create_research_project", arguments=args, confirmation_token=token)],
+        allow_side_effects=True,
+    )
+
+    assert state.observations[0].status == "completed"
+    assert any(isinstance(item, ResearchProject) for item in db.added)
+    assert db.added[0].name == "Video Grounding"
+    assert db.added[0].paper_ids == [paper_id]
+    assert db.commit_count == 1
+    assert state.references[0]["source"] == "research_project"
+
+
 def test_deterministic_import_plan_for_explicit_arxiv_id_waits_confirmation():
     calls = deterministic_chat_tool_plan("请导入 arXiv:2601.00003 到论文库")
 
@@ -223,3 +440,23 @@ def test_deterministic_library_plan_prefers_local_library_signal():
     calls = deterministic_chat_tool_plan("请在我的论文库里检索 video grounding")
 
     assert calls[0].tool == "search_library"
+
+
+def test_deterministic_plan_routes_local_pdf_reading():
+    calls = deterministic_chat_tool_plan("请阅读论文 22222222-2222-2222-2222-222222222222 的方法部分")
+
+    assert calls[0].tool == "read_pdf"
+    assert calls[0].arguments["paper_id"] == "22222222-2222-2222-2222-222222222222"
+
+
+def test_deterministic_plan_routes_folder_and_project_actions():
+    folder_calls = deterministic_chat_tool_plan(
+        "请把论文 22222222-2222-2222-2222-222222222222 加入分类 11111111-1111-1111-1111-111111111111"
+    )
+    project_calls = deterministic_chat_tool_plan("创建研究方向 Video Grounding，使用论文 22222222-2222-2222-2222-222222222222")
+
+    assert folder_calls[0].tool == "add_to_folder"
+    assert folder_calls[0].arguments["folder_id"] == "11111111-1111-1111-1111-111111111111"
+    assert folder_calls[0].arguments["paper_ids"] == ["22222222-2222-2222-2222-222222222222"]
+    assert project_calls[0].tool == "create_research_project"
+    assert project_calls[0].arguments["paper_ids"] == ["22222222-2222-2222-2222-222222222222"]
