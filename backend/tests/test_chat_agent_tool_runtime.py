@@ -23,6 +23,7 @@ from app.services.chat_agent_tools import (
 )
 from app.db.models.paper import PaperFolderItem, UserPaper
 from app.db.models.research import ResearchProject
+from app.services.research_skills import ResearchSkillRunResult, get_research_skill
 
 
 class EchoArgs(BaseModel):
@@ -76,6 +77,7 @@ def test_registry_schema_export_includes_side_effect_policy():
         "read_pdf",
         "extract_docx",
         "extract_pptx",
+        "run_skill",
         "add_to_folder",
         "create_research_project",
     } <= set(schemas)
@@ -86,6 +88,7 @@ def test_registry_schema_export_includes_side_effect_policy():
     assert schemas["read_pdf"]["side_effect"] is False
     assert schemas["extract_docx"]["side_effect"] is False
     assert schemas["extract_pptx"]["side_effect"] is False
+    assert schemas["run_skill"]["side_effect"] is False
 
 
 @pytest.mark.asyncio
@@ -384,6 +387,42 @@ async def test_extract_pptx_tool_returns_slide_context():
 
 
 @pytest.mark.asyncio
+async def test_run_skill_tool_returns_structured_context(monkeypatch):
+    async def fake_run_skill(skill_id, *, task, context="", current_query="", max_output_chars=4000):
+        return ResearchSkillRunResult(
+            skill=get_research_skill(skill_id),
+            task=task,
+            output="实验矩阵：baseline + ablation",
+            context_used_chars=len(context),
+        )
+
+    monkeypatch.setattr(chat_agent_tools, "run_research_skill", fake_run_skill)
+
+    state = await ChatAgentToolRuntime(default_chat_tool_registry()).run(
+        ChatAgentRuntimeState(user_query="用 experiment-planner 做实验设计"),
+        [ChatToolCall(tool="run_skill", arguments={"skill_id": "experiment-planner", "task": "设计实验"})],
+    )
+
+    observation = state.observations[0]
+    assert observation.status == "completed"
+    assert observation.details["id"] == "experiment-planner"
+    assert observation.references[0]["source"] == "research_skill"
+    assert "实验矩阵" in state.context_blocks[0]
+
+
+@pytest.mark.asyncio
+async def test_run_skill_tool_rejects_unknown_skill():
+    state = await ChatAgentToolRuntime(default_chat_tool_registry()).run(
+        ChatAgentRuntimeState(user_query="run missing skill"),
+        [ChatToolCall(tool="run_skill", arguments={"skill_id": "missing-skill", "task": "x"})],
+    )
+
+    observation = state.observations[0]
+    assert observation.status == "rejected"
+    assert "paper-scout" in observation.details["available_skill_ids"]
+
+
+@pytest.mark.asyncio
 async def test_confirmed_import_executes_ingest_and_save(monkeypatch):
     paper = SimpleNamespace(
         id="paper-1",
@@ -521,3 +560,10 @@ def test_deterministic_plan_routes_folder_and_project_actions():
     assert folder_calls[0].arguments["paper_ids"] == ["22222222-2222-2222-2222-222222222222"]
     assert project_calls[0].tool == "create_research_project"
     assert project_calls[0].arguments["paper_ids"] == ["22222222-2222-2222-2222-222222222222"]
+
+
+def test_deterministic_plan_routes_explicit_skill_prompt():
+    calls = deterministic_chat_tool_plan("请用 experiment-planner skill 帮我设计 video grounding 实验")
+
+    assert calls[0].tool == "run_skill"
+    assert calls[0].arguments["skill_id"] == "experiment-planner"

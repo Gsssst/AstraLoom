@@ -35,6 +35,11 @@ from app.services.office_extraction import (
     extract_docx_text,
     extract_pptx_text,
 )
+from app.services.research_skills import (
+    ResearchSkillNotFoundError,
+    research_skill_ids,
+    run_research_skill,
+)
 from app.services.paper_chunk_service import PaperChunkService
 from app.services.rag_service import RAGService
 
@@ -137,6 +142,13 @@ class ExtractPptxArgs(BaseModel):
     filename: str = Field(default="slides.pptx", max_length=300)
     content_base64: str = Field(..., min_length=1, description="Base64-encoded .pptx file bytes.")
     max_chars: int = Field(default=50000, ge=500, le=50000)
+
+
+class RunSkillArgs(BaseModel):
+    skill_id: str = Field(..., min_length=2, max_length=80)
+    task: str = Field(..., min_length=1, max_length=3000)
+    context: str | None = Field(default=None, max_length=9000)
+    max_output_chars: int = Field(default=4000, ge=500, le=8000)
 
 
 class AddToFolderArgs(BaseModel):
@@ -323,6 +335,16 @@ def deterministic_chat_tool_plan(query: str) -> list[ChatToolCall]:
     lowered = text.lower()
     if not text:
         return []
+    available_skill_ids = research_skill_ids()
+    skill_pattern = "|".join(re.escape(skill_id) for skill_id in available_skill_ids)
+    skill_match = re.search(rf"\b({skill_pattern})\b", lowered) if skill_pattern else None
+    if skill_match and re.search(r"(skill|技能|使用|用|run|执行)", lowered):
+        skill_id = skill_match.group(1)
+        return [ChatToolCall(
+            tool="run_skill",
+            arguments={"skill_id": skill_id, "task": text, "context": "", "max_output_chars": 4000},
+            thought_summary=f"用户明确要求执行内置科研技能 {skill_id}。",
+        )]
     wants_import = bool(re.search(r"(入库|导入|import|save paper|加入论文库)", lowered))
     paper_signal = bool(re.search(r"(论文|paper|papers|arxiv|semantic scholar|openalex|scholar)", lowered))
     library_signal = bool(re.search(r"(知识库|论文库|library|已入库|本地)", lowered))
@@ -660,6 +682,60 @@ def _tool_extract_pptx(args: ExtractPptxArgs, state: ChatAgentRuntimeState) -> C
     )
 
 
+async def _tool_run_skill(args: RunSkillArgs, state: ChatAgentRuntimeState) -> ChatToolObservation:
+    try:
+        result = await run_research_skill(
+            args.skill_id,
+            task=args.task,
+            context=args.context or "",
+            current_query=state.user_query,
+            max_output_chars=args.max_output_chars,
+        )
+    except ResearchSkillNotFoundError as exc:
+        return ChatToolObservation(
+            tool="run_skill",
+            status="rejected",
+            summary=f"未知科研技能: {exc.skill_id}",
+            details={
+                "skill_id": exc.skill_id,
+                "available_skill_ids": exc.available_skill_ids,
+            },
+        )
+    except ValueError as exc:
+        return ChatToolObservation(
+            tool="run_skill",
+            status="rejected",
+            summary=str(exc),
+            details={"skill_id": args.skill_id},
+        )
+
+    metadata = result.metadata()
+    context = "\n\n".join([
+        f"[TOOL-SKILL] {result.skill.label} ({result.skill.id})",
+        f"Output format: {result.skill.output_format}",
+        f"Evaluation criteria: {', '.join(result.skill.evaluation_criteria)}",
+        result.output,
+    ])
+    reference = {
+        "source": "research_skill",
+        "type": "research_skill",
+        "skill_id": result.skill.id,
+        "title": result.skill.label,
+        "output_format": result.skill.output_format,
+        "evaluation_criteria": list(result.skill.evaluation_criteria),
+    }
+    return ChatToolObservation(
+        tool="run_skill",
+        status="completed",
+        summary=f"已执行科研技能「{result.skill.label}」。",
+        result_count=1,
+        references=[reference],
+        artifacts=[{"type": "research_skill_output", **reference, "output": result.output}],
+        context_blocks=[context[:TOOL_CONTEXT_MAX_CHARS]],
+        details=metadata,
+    )
+
+
 async def _tool_add_to_folder(args: AddToFolderArgs, state: ChatAgentRuntimeState) -> ChatToolObservation:
     if not state.db or not state.user:
         return ChatToolObservation(
@@ -875,6 +951,13 @@ def default_chat_tool_registry() -> ChatToolRegistry:
         description="Extract bounded slide titles and text from a base64 .pptx payload.",
         args_model=ExtractPptxArgs,
         executor=_tool_extract_pptx,
+    ))
+    registry.register(ChatToolDefinition(
+        name="run_skill",
+        label="执行科研技能",
+        description=f"Run one built-in read-only research skill. Available skill ids: {', '.join(research_skill_ids())}.",
+        args_model=RunSkillArgs,
+        executor=_tool_run_skill,
     ))
     registry.register(ChatToolDefinition(
         name="add_to_folder",
