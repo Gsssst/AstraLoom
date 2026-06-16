@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { Button, message } from 'antd';
@@ -9,6 +10,51 @@ import { CopyOutlined, CheckOutlined } from '@ant-design/icons';
 interface MarkdownProps {
   content: string;
 }
+
+const FENCED_CODE_BLOCK_RE = /(```[\s\S]*?```|~~~[\s\S]*?~~~)/g;
+const LATEX_COMMAND_RE = /\\[a-zA-Z]+/;
+const LATEX_STRUCTURE_RE = /(?:[_^{}]|\\[,;! ]|\\[()[\]]|\\[{}]|\\[|]\s*\\|[=<>]\s*\\|\\\||\\&|\\\\)/;
+const LATEX_OPERATOR_RE = /(?:=|\\leq?|\\geq?|\\neq|\\approx|\\sim|\\times|\\cdot|\\pm|\\mp|\\sum|\\prod|\\int|\\frac|\\sqrt)/;
+
+const looksLikeLatexMath = (value: string) => {
+  const expression = value.trim();
+  if (!expression || expression.length < 3) return false;
+  if (/^[A-Za-z]?\d+$/.test(expression)) return false;
+  if (/^E\d+(?:[,;\s]+E\d+)*$/.test(expression)) return false;
+  if (LATEX_COMMAND_RE.test(expression)) return true;
+  if (LATEX_OPERATOR_RE.test(expression)) return true;
+  if (LATEX_STRUCTURE_RE.test(expression) && /[A-Za-z0-9]/.test(expression)) return true;
+  return false;
+};
+
+const normalizeMathInTextSegment = (segment: string) => {
+  const normalizedDelimiters = segment
+    .replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, (_, expression: string) => `\n$$\n${expression.trim()}\n$$\n`)
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_, expression: string) => `$${expression.trim()}$`);
+
+  return normalizedDelimiters
+    .split('\n')
+    .map((line) => {
+      const match = line.match(/^(\s*)\[\s*(.+?)\s*\](\s*)$/);
+      if (!match) return line;
+
+      const [, prefix, expression, suffix] = match;
+      if (!looksLikeLatexMath(expression)) return line;
+      return `${prefix}$$\n${expression.trim()}\n${prefix}$$${suffix}`;
+    })
+    .join('\n');
+};
+
+export const normalizeMarkdownMath = (value: string) => {
+  if (!value) return value;
+  return value
+    .split(FENCED_CODE_BLOCK_RE)
+    .map((segment) => {
+      if (segment.startsWith('```') || segment.startsWith('~~~')) return segment;
+      return normalizeMathInTextSegment(segment);
+    })
+    .join('');
+};
 
 const CodeBlock: React.FC<{ children: string; className?: string }> = ({ children, className }) => {
   const [copied, setCopied] = useState(false);
@@ -38,10 +84,12 @@ const CodeBlock: React.FC<{ children: string; className?: string }> = ({ childre
 
 /** 全局 Markdown 渲染组件，支持 GFM 表格、LaTeX 数学公式 */
 const Markdown: React.FC<MarkdownProps> = ({ content }) => {
+  const normalizedContent = normalizeMarkdownMath(content);
+
   return (
     <div className="markdown-body" style={{ lineHeight: 1.8, fontSize: 14 }}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}
         components={{
           // 代码块渲染
@@ -92,7 +140,7 @@ const Markdown: React.FC<MarkdownProps> = ({ content }) => {
           },
         }}
       >
-        {content}
+        {normalizedContent}
       </ReactMarkdown>
     </div>
   );
