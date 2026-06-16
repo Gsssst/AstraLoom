@@ -244,7 +244,7 @@ const paperImportanceMeta: Record<PaperImportanceLabel, { label: string; color: 
   interesting: { label: '有趣论文', color: 'geekblue', icon: <RocketOutlined /> },
 };
 
-const groundingInstruction = '请严格基于这篇论文的标题、摘要、全文片段和可检索内容回答；如果论文内容不足以支持结论，请明确说明“当前论文内容不足”，不要编造。';
+const groundingInstruction = '请严格基于这篇论文的标题、摘要、全文片段和可检索内容回答；如果某个公式、数值或局部细节没有证据支撑，请说明具体缺口并继续回答可确认的部分，不要编造。';
 
 const paperReadingTemplates: PaperReadingTemplate[] = [
   {

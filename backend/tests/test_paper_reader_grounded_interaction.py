@@ -153,6 +153,75 @@ def test_numbered_section_prefers_full_text_range_over_structured_single_block()
     assert "target-sub-marker" in evidence[0].text
 
 
+def test_formula_query_prioritizes_structured_formula_evidence():
+    full_text = "3 Method\nThe objective combines global and local saliency. " + "method-marker " * 120
+    structured_blocks = [
+        {
+            "type": "formula",
+            "page": 5,
+            "source": "docling",
+            "text": r"Eq. 7: s_j^I = \alpha_s c_j + (1-\alpha_s) l_j",
+            "metadata": {"label": "Eq. 7"},
+        },
+        {
+            "type": "caption",
+            "page": 2,
+            "source": "pdfplumber",
+            "text": "Figure 1. Overview.",
+            "metadata": {"caption_type": "figure_caption"},
+        },
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释 Eq.7 里的 alpha_s 公式和符号",
+        top_k=4,
+        structured_blocks=structured_blocks,
+    )
+
+    assert scope == "formula+structured"
+    assert plan.strategy == "formula_top_k"
+    assert plan.include_formula_evidence is True
+    assert evidence[0].source_type == "formula"
+    assert evidence[0].page_start == 5
+    assert "alpha_s" in evidence[0].text
+
+
+def test_numbered_section_includes_supplemental_formula_evidence():
+    full_text = "\n".join([
+        "3.2 FlexMem Update",
+        "The section defines a context compression score and local saliency. " + "target-marker " * 80,
+        "3.3 Training Objective",
+        "next-marker " * 80,
+    ])
+    page_texts = [
+        "3.1 Overview\n" + "overview-marker " * 80,
+        "3.2 FlexMem Update\nThe section defines a context compression score. " + "target-marker " * 80,
+        "3.3 Training Objective\n" + "next-marker " * 80,
+    ]
+    structured_blocks = [{
+        "type": "formula",
+        "page": 2,
+        "source": "docling",
+        "text": r"Eq. 7: s_j^I = \alpha_s c_j + (1-\alpha_s) l_j",
+        "metadata": {"label": "Eq. 7"},
+    }]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请帮忙拆解第 3.2 节",
+        top_k=4,
+        page_texts=page_texts,
+        structured_blocks=structured_blocks,
+    )
+
+    assert scope == "numbered_section"
+    assert plan.target_section_number == "3.2"
+    assert plan.include_formula_evidence is True
+    assert evidence[0].source_type == "numbered_section"
+    assert any(item.source_type == "formula" and "alpha_s" in item.text for item in evidence)
+
+
 def test_numbered_section_missing_records_targeted_warning():
     full_text = "\n".join([
         "3.1 Overview",
@@ -1262,6 +1331,37 @@ async def test_paper_context_includes_structured_table_and_caption_evidence(monk
     assert "类型: 表格证据包" in context[0]["content"]
     assert "证据类型可能包含正文、表格、视觉证据、视觉表格、图/表标题、OCR 文本或公式" in context[0]["content"]
     assert "不要把局部缺失扩大成整篇论文内容不足" in context[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_paper_context_scopes_missing_formula_details(monkeypatch):
+    from types import SimpleNamespace
+
+    paper = SimpleNamespace(
+        id="paper-1",
+        title="Formula-light paper",
+        authors=["A"],
+        year=2026,
+        abstract="Abstract.",
+        full_text="3 Method\nThe method defines local saliency and context memory. " + "method evidence " * 120,
+        arxiv_id="2606.00002",
+        pdf_path="/tmp/paper.pdf",
+        metadata_json={},
+    )
+
+    monkeypatch.setattr(report_service, "extract_pdf_page_texts", lambda _path: [paper.full_text])
+    monkeypatch.setattr(report_service, "ensure_structured_pdf_content", _identity_ensure_structured_pdf_content)
+
+    context, evidence = await memory_service.build_paper_context_with_evidence(
+        paper,
+        "请解释公式里的 alpha_s 和 objective",
+        history=[],
+    )
+
+    assert evidence
+    assert "该公式细节未在当前证据中定位到" in context[0]["content"]
+    assert "可确认的机制/仍需核对的细节" in context[0]["content"]
+    assert "不要用大段负面标题反复强调不可靠" in context[0]["content"]
 
 
 @pytest.mark.asyncio

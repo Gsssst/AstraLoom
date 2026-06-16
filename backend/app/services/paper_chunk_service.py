@@ -42,10 +42,12 @@ class PaperQuestionEvidencePlan:
     include_all_tables: bool = False
     include_visual_tables: bool = False
     include_visual_evidence: bool = False
+    include_formula_evidence: bool = False
     max_evidence_items: int = 4
     table_budget: int = 0
     visual_table_budget: int = 0
     caption_budget: int = 0
+    formula_budget: int = 0
     text_budget: int = 0
     warnings: Tuple[str, ...] = ()
 
@@ -59,11 +61,13 @@ class PaperQuestionEvidencePlan:
             "include_all_tables": self.include_all_tables,
             "include_visual_tables": self.include_visual_tables,
             "include_visual_evidence": self.include_visual_evidence,
+            "include_formula_evidence": self.include_formula_evidence,
             "max_evidence_items": self.max_evidence_items,
             "budgets": {
                 "tables": self.table_budget,
                 "visual_tables": self.visual_table_budget,
                 "captions": self.caption_budget,
+                "formulas": self.formula_budget,
                 "text": self.text_budget,
             },
             "warnings": list(self.warnings),
@@ -91,6 +95,7 @@ class PaperChunkService:
     EXPERIMENT_COMPLETE_TEXT_BUDGET = 8
     METHOD_VISUAL_EVIDENCE_TOP_K = 16
     METHOD_VISUAL_TEXT_BUDGET = 5
+    FORMULA_EVIDENCE_TOP_K = 2
     TABLE_PACK_CONTEXT_MAX_CHARS = 900
     SECTION_ALIASES = {
         "abstract": ("abstract", "摘要"),
@@ -139,6 +144,12 @@ class PaperChunkService:
         "overview", "explain", "discuss", "compare", "comparison", "overall",
         "分析", "总结", "概括", "说明", "讲解", "比较", "对比", "整体", "全面",
         "综合", "如何", "怎么样",
+    )
+    FORMULA_QUERY_TERMS = (
+        "formula", "formulas", "equation", "equations", "eq.", "eq ", "objective",
+        "loss", "derivation", "derive", "symbol", "symbols", "notation", "alpha",
+        "beta", "lambda", "theta", "公式", "方程", "等式", "式子", "符号",
+        "推导", "损失", "目标函数", "目标式", "变量", "记号",
     )
     SECTION_NUMBER_CONTEXT_RE = re.compile(
         r"(?:第\s*)?(\d{1,2}(?:\.\d{1,2}){1,3})\s*(?:节|小节|章节|部分|section|sec\.?|subsection|subsec\.?)",
@@ -249,6 +260,13 @@ class PaperChunkService:
         return any(term in normalized for term in cls.TABLE_QUERY_TERMS)
 
     @classmethod
+    def is_formula_like_query(cls, query: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (query or "").lower())
+        if any(term in normalized for term in cls.FORMULA_QUERY_TERMS):
+            return True
+        return bool(re.search(r"\\[a-zA-Z]+|[$^_{}]|(?:^|\W)e[qx]\.?\s*\d+", query or "", re.I))
+
+    @classmethod
     def is_broad_experiment_query(cls, query: str) -> bool:
         normalized = re.sub(r"\s+", " ", (query or "").lower())
         if any(term in normalized for term in cls.BROAD_EXPERIMENT_QUERY_TERMS):
@@ -304,6 +322,7 @@ class PaperChunkService:
         strategy = cls.detect_evidence_strategy(query)
         visual_like = cls.is_visual_like_query(query)
         table_like = cls.is_table_like_query(query)
+        formula_like = cls.is_formula_like_query(query)
 
         if target_section_number:
             return PaperQuestionEvidencePlan(
@@ -311,7 +330,9 @@ class PaperChunkService:
                 strategy="numbered_section",
                 requested_sections=requested_sections,
                 target_section_number=target_section_number,
-                max_evidence_items=max(top_k or 0, cls.DEFAULT_EVIDENCE_TOP_K),
+                include_formula_evidence=True,
+                max_evidence_items=max(top_k or 0, cls.DEFAULT_EVIDENCE_TOP_K + cls.FORMULA_EVIDENCE_TOP_K),
+                formula_budget=cls.FORMULA_EVIDENCE_TOP_K,
                 text_budget=top_k or cls.DEFAULT_EVIDENCE_TOP_K,
             )
 
@@ -338,11 +359,23 @@ class PaperChunkService:
                 requested_sections=sections,
                 include_visual_tables=table_like,
                 include_visual_evidence=True,
+                include_formula_evidence=formula_like,
                 max_evidence_items=max(top_k or 0, cls.METHOD_VISUAL_EVIDENCE_TOP_K),
                 table_budget=cls.TABLE_EVIDENCE_TOP_K if table_like else 0,
                 visual_table_budget=cls.TABLE_EVIDENCE_TOP_K if table_like else 0,
                 caption_budget=cls.TABLE_EVIDENCE_TOP_K,
+                formula_budget=cls.FORMULA_EVIDENCE_TOP_K if formula_like else 0,
                 text_budget=cls.METHOD_VISUAL_TEXT_BUDGET,
+            )
+        if formula_like:
+            return PaperQuestionEvidencePlan(
+                intent="formula_lookup",
+                strategy="formula_top_k",
+                requested_sections=requested_sections,
+                include_formula_evidence=True,
+                max_evidence_items=max(top_k or 0, cls.DEFAULT_EVIDENCE_TOP_K + cls.FORMULA_EVIDENCE_TOP_K),
+                formula_budget=cls.FORMULA_EVIDENCE_TOP_K,
+                text_budget=top_k or cls.DEFAULT_EVIDENCE_TOP_K,
             )
         if strategy == "visual":
             return PaperQuestionEvidencePlan(
@@ -385,7 +418,9 @@ class PaperChunkService:
     @classmethod
     def recommended_evidence_top_k(cls, query: str, default: int = DEFAULT_EVIDENCE_TOP_K) -> int:
         if cls.detect_requested_section_number(query):
-            return max(default, cls.DEFAULT_EVIDENCE_TOP_K)
+            return max(default, cls.DEFAULT_EVIDENCE_TOP_K + cls.FORMULA_EVIDENCE_TOP_K)
+        if cls.is_formula_like_query(query):
+            return max(default, cls.DEFAULT_EVIDENCE_TOP_K + cls.FORMULA_EVIDENCE_TOP_K)
         strategy = cls.detect_evidence_strategy(query)
         if strategy == "experiment":
             return cls.EXPERIMENT_COMPLETE_EVIDENCE_TOP_K
@@ -640,6 +675,124 @@ class PaperChunkService:
                 return evidence
         return None
 
+    @staticmethod
+    def _plan_copy(plan: PaperQuestionEvidencePlan, **updates) -> PaperQuestionEvidencePlan:
+        data = {
+            "intent": plan.intent,
+            "strategy": plan.strategy,
+            "requested_sections": plan.requested_sections,
+            "target_section_number": plan.target_section_number,
+            "matched_section_heading": plan.matched_section_heading,
+            "include_all_tables": plan.include_all_tables,
+            "include_visual_tables": plan.include_visual_tables,
+            "include_visual_evidence": plan.include_visual_evidence,
+            "include_formula_evidence": plan.include_formula_evidence,
+            "max_evidence_items": plan.max_evidence_items,
+            "table_budget": plan.table_budget,
+            "visual_table_budget": plan.visual_table_budget,
+            "caption_budget": plan.caption_budget,
+            "formula_budget": plan.formula_budget,
+            "text_budget": plan.text_budget,
+            "warnings": plan.warnings,
+        }
+        data.update(updates)
+        return PaperQuestionEvidencePlan(**data)
+
+    @staticmethod
+    def _is_formula_evidence(item: EvidenceChunk) -> bool:
+        metadata = item.metadata or {}
+        return item.source_type == "formula" or str(metadata.get("kind") or "").lower() == "formula"
+
+    @staticmethod
+    def _page_distance(page: Optional[int], target_pages: set[int]) -> int:
+        if not page or not target_pages:
+            return 99
+        return min(abs(page - target) for target in target_pages)
+
+    @classmethod
+    def _numbered_section_pages(
+        cls,
+        target_number: Optional[str],
+        page_texts: Optional[List[str]],
+    ) -> set[int]:
+        if not target_number:
+            return set()
+        pages = set()
+        for page_index, page_text in enumerate(page_texts or [], 1):
+            if cls._extract_numbered_section_from_text(
+                page_text,
+                target_number,
+                source="pdf_page_text",
+                page_start=page_index,
+                page_end=page_index,
+            ):
+                pages.add(page_index)
+        return pages
+
+    @classmethod
+    def _formula_evidence_score(
+        cls,
+        item: EvidenceChunk,
+        query: str,
+        *,
+        target_pages: Optional[set[int]] = None,
+    ) -> float:
+        text = item.text or ""
+        query_tokens = cls._chunk_tokens(query)
+        text_tokens = cls._chunk_tokens(text)
+        score = 0.62
+        if query_tokens:
+            score += min(0.22, (len(query_tokens & text_tokens) / len(query_tokens)) * 0.22)
+        if re.search(r"\\[a-zA-Z]+|[$^_{}=+\-*/]", text):
+            score += 0.08
+        metadata = item.metadata or {}
+        confidence = metadata.get("confidence")
+        if isinstance(confidence, (int, float)):
+            score += min(0.06, max(0.0, float(confidence)) * 0.06)
+        distance = cls._page_distance(item.page_start, target_pages or set())
+        if distance == 0:
+            score += 0.18
+        elif distance == 1:
+            score += 0.08
+        elif target_pages:
+            score -= 0.08
+        return round(max(0.0, min(1.0, score)), 3)
+
+    @classmethod
+    def _formula_evidence_lane(
+        cls,
+        structured_candidates: List[EvidenceChunk],
+        query: str,
+        *,
+        top_k: int,
+        target_pages: Optional[set[int]] = None,
+    ) -> List[EvidenceChunk]:
+        if top_k <= 0:
+            return []
+        formula_candidates = [item for item in structured_candidates if cls._is_formula_evidence(item)]
+        if not formula_candidates:
+            return []
+        scored = [
+            EvidenceChunk(
+                text=item.text,
+                score=cls._formula_evidence_score(item, query, target_pages=target_pages),
+                section=item.section,
+                page_start=item.page_start,
+                page_end=item.page_end,
+                source_type="formula",
+                source=item.source,
+                metadata={**(item.metadata or {}), "formula_evidence": True},
+            )
+            for item in formula_candidates
+        ]
+        scored.sort(
+            key=lambda item: (
+                cls._page_distance(item.page_start, target_pages or set()),
+                -item.score,
+            )
+        )
+        return cls._suppress_redundant_evidence(scored, top_k=top_k)
+
     @classmethod
     def retrieve_evidence(
         cls,
@@ -658,6 +811,7 @@ class PaperChunkService:
         table_like_query = strategy in {"table", "experiment"} or cls.is_table_like_query(query)
         candidates = [*structured_candidates, *text_candidates]
         requested_sections = set(plan.requested_sections)
+        target_pages = cls._numbered_section_pages(plan.target_section_number, page_texts)
         if plan.target_section_number:
             section_evidence = cls._numbered_section_evidence(
                 full_text,
@@ -666,23 +820,19 @@ class PaperChunkService:
                 structured_blocks=structured_blocks,
             )
             if section_evidence:
-                return [section_evidence], "numbered_section"
-            plan = PaperQuestionEvidencePlan(
-                intent=plan.intent,
-                strategy=plan.strategy,
-                requested_sections=plan.requested_sections,
-                target_section_number=plan.target_section_number,
-                matched_section_heading=plan.matched_section_heading,
-                include_all_tables=plan.include_all_tables,
-                include_visual_tables=plan.include_visual_tables,
-                include_visual_evidence=plan.include_visual_evidence,
-                max_evidence_items=plan.max_evidence_items,
-                table_budget=plan.table_budget,
-                visual_table_budget=plan.visual_table_budget,
-                caption_budget=plan.caption_budget,
-                text_budget=plan.text_budget,
-                warnings=(*plan.warnings, f"numbered_section_not_found:{plan.target_section_number}"),
-            )
+                formula_results = cls._formula_evidence_lane(
+                    structured_candidates,
+                    query,
+                    top_k=plan.formula_budget,
+                    target_pages=target_pages,
+                )
+                return cls._merge_complete_evidence_pack(
+                    [section_evidence],
+                    formula_results,
+                    top_k=max(1, plan.max_evidence_items),
+                ), "numbered_section"
+            warnings = [*plan.warnings, f"numbered_section_not_found:{plan.target_section_number}"]
+            plan = cls._plan_copy(plan, warnings=tuple(dict.fromkeys(warnings)))
         if plan.strategy == "experiment_complete":
             complete_results = cls._experiment_complete_evidence_pack(
                 structured_candidates,
@@ -731,6 +881,21 @@ class PaperChunkService:
                 if visual_results:
                     dossier_results = cls._merge_evidence_lanes(visual_results, dossier_results, top_k=top_k)
                 return dossier_results, "experiment_dossier+structured" if structured_candidates else "experiment_dossier"
+        if plan.include_formula_evidence and structured_candidates:
+            formula_results = cls._formula_evidence_lane(
+                structured_candidates,
+                query,
+                top_k=plan.formula_budget or cls.FORMULA_EVIDENCE_TOP_K,
+                target_pages=target_pages,
+            )
+            if formula_results:
+                document_results = cls.search_evidence_chunks(
+                    [candidate for candidate in candidates if not cls._is_formula_evidence(candidate)],
+                    query,
+                    top_k=max(1, top_k - len(formula_results)),
+                    requested_sections=requested_sections,
+                )
+                return cls._merge_evidence_lanes(formula_results, document_results, top_k=top_k), "formula+structured"
         if requested_sections:
             section_candidates = [item for item in candidates if item.section in requested_sections]
             if section_candidates:
@@ -791,40 +956,20 @@ class PaperChunkService:
         )
         if evidence and scope == "numbered_section":
             metadata = evidence[0].metadata or {}
-            plan = PaperQuestionEvidencePlan(
-                intent=plan.intent,
-                strategy=plan.strategy,
-                requested_sections=plan.requested_sections,
-                target_section_number=plan.target_section_number,
+            plan = cls._plan_copy(
+                plan,
                 matched_section_heading=str(metadata.get("matched_heading") or "") or plan.matched_section_heading,
-                include_all_tables=plan.include_all_tables,
-                include_visual_tables=plan.include_visual_tables,
-                include_visual_evidence=plan.include_visual_evidence,
-                max_evidence_items=plan.max_evidence_items,
-                table_budget=plan.table_budget,
-                visual_table_budget=plan.visual_table_budget,
-                caption_budget=plan.caption_budget,
-                text_budget=plan.text_budget,
-                warnings=plan.warnings,
             )
+            if plan.include_formula_evidence and not any(cls._is_formula_evidence(item) for item in evidence):
+                plan = cls._plan_copy(plan, warnings=(*plan.warnings, "formula_evidence_not_found"))
         elif plan.target_section_number and scope != "numbered_section":
             warning = f"numbered_section_not_found:{plan.target_section_number}"
-            plan = PaperQuestionEvidencePlan(
-                intent=plan.intent,
-                strategy=plan.strategy,
-                requested_sections=plan.requested_sections,
-                target_section_number=plan.target_section_number,
-                matched_section_heading=plan.matched_section_heading,
-                include_all_tables=plan.include_all_tables,
-                include_visual_tables=plan.include_visual_tables,
-                include_visual_evidence=plan.include_visual_evidence,
-                max_evidence_items=plan.max_evidence_items,
-                table_budget=plan.table_budget,
-                visual_table_budget=plan.visual_table_budget,
-                caption_budget=plan.caption_budget,
-                text_budget=plan.text_budget,
-                warnings=(*plan.warnings, warning) if warning not in plan.warnings else plan.warnings,
-            )
+            warnings = (*plan.warnings, warning) if warning not in plan.warnings else plan.warnings
+            if plan.include_formula_evidence and not any(cls._is_formula_evidence(item) for item in evidence):
+                warnings = (*warnings, "formula_evidence_not_found") if "formula_evidence_not_found" not in warnings else warnings
+            plan = cls._plan_copy(plan, warnings=warnings)
+        elif plan.include_formula_evidence and not any(cls._is_formula_evidence(item) for item in evidence):
+            plan = cls._plan_copy(plan, warnings=(*plan.warnings, "formula_evidence_not_found"))
         return evidence, scope, plan
 
     @classmethod
