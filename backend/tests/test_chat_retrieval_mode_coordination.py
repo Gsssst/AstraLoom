@@ -77,8 +77,8 @@ def test_general_chat_agent_tools_enable_only_outside_research_scout():
         assistant_mode="general",
     )
 
-    assert chat_sessions._chat_agent_tools_enabled(request, "general") is True
-    assert chat_sessions._chat_agent_tools_enabled(request, "research_scout") is False
+    assert chat_sessions._chat_tool_planner_enabled(request, "general") is True
+    assert chat_sessions._chat_tool_planner_enabled(request, "research_scout") is False
 
 
 def test_tool_trace_reference_is_hidden_but_reconstructable():
@@ -99,7 +99,9 @@ def test_tool_trace_reference_is_hidden_but_reconstructable():
 def test_streaming_chat_contract_includes_generic_tool_trace_and_saved_reply_id():
     source = chat_sessions.__loader__.get_source(chat_sessions.__name__)
 
-    assert "elif _chat_agent_tools_enabled(req, effective_mode):" in source
+    assert "elif _chat_tool_planner_enabled(req, effective_mode):" in source
+    assert "run_llm_tool_planner(" in source
+    assert "planner_tool_trace_payload" in source
     assert '"tool_trace": tool_trace' in source
     assert 'yield _stream_event(\n            "saved"' in source
     assert '"reply_id": str(reply_msg.id)' in source

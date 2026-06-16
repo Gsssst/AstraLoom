@@ -36,11 +36,14 @@ from app.services.chat_agent_tools import (
     ChatAgentToolRuntime,
     ChatToolCall,
     ImportPaperArgs,
-    chat_tool_context_block,
     chat_tool_confirmation_token,
     chat_tool_trace_payload,
     default_chat_tool_registry,
-    deterministic_chat_tool_plan,
+)
+from app.services.chat_tool_planner import (
+    planner_tool_context_block,
+    planner_tool_trace_payload,
+    run_llm_tool_planner,
 )
 from app.services.web_search import format_web_context, search_web_results
 from app.db.session import AsyncSessionLocal
@@ -454,10 +457,8 @@ def _web_search_enabled_for_mode(req: SendMessageRequest, effective_mode: str) -
 CHAT_TOOL_TRACE_REFERENCE_TYPE = "chat_tool_trace"
 
 
-def _chat_agent_tools_enabled(req: SendMessageRequest, effective_mode: str) -> bool:
-    if effective_mode == "research_scout":
-        return False
-    return bool(deterministic_chat_tool_plan(req.content))
+def _chat_tool_planner_enabled(req: SendMessageRequest, effective_mode: str) -> bool:
+    return effective_mode != "research_scout" and bool((req.content or "").strip())
 
 
 def _tool_trace_reference(tool_trace: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -515,21 +516,24 @@ async def _build_chat_agent_tool_context(
     db: AsyncSession,
     user: User,
     session_id: str,
+    conversation_context: list[dict[str, Any]] | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
     registry = default_chat_tool_registry()
-    actions = deterministic_chat_tool_plan(query)
-    if not actions:
-        return "", [], None
-
     state = ChatAgentRuntimeState(
         user_query=query,
         db=db,
         user=user,
         session_id=session_id,
     )
-    runtime = ChatAgentToolRuntime(registry, max_steps=6)
-    state = await runtime.run(state, actions, allow_side_effects=False)
-    return chat_tool_context_block(state), state.references, chat_tool_trace_payload(state, registry)
+    result = await run_llm_tool_planner(
+        user_query=query,
+        state=state,
+        registry=registry,
+        conversation_context=conversation_context,
+    )
+    if not result.state.trace_events:
+        return "", [], None
+    return planner_tool_context_block(result), result.state.references, planner_tool_trace_payload(result, registry)
 
 
 def _stream_event(event_type: str, content: Any = None) -> str:
@@ -2512,18 +2516,19 @@ async def send_message(
         tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates, scout_planned_queries, scout_retrieval)
         context = [*scout_context, *context]
         references.extend(scout_refs)
-    elif _chat_agent_tools_enabled(req, effective_mode):
+    elif _chat_tool_planner_enabled(req, effective_mode):
         tool_context, tool_refs, tool_trace = await _build_chat_agent_tool_context(
             req.content,
             db=db,
             user=user,
             session_id=session_id,
+            conversation_context=context,
         )
         if tool_context:
             context.insert(0, {
                 "role": "system",
                 "content": (
-                    "以下是本轮通用工具执行得到的结构化观察。回答时请基于这些观察，"
+                    "以下是本轮 Agent 工具规划与执行得到的结构化观察。回答时请基于这些观察，"
                     "不要声称已经执行需要用户确认的副作用操作：\n\n"
                     f"{tool_context}"
                 ),
@@ -2631,18 +2636,19 @@ async def send_message_stream(
         tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates, scout_planned_queries, scout_retrieval)
         context = [*scout_context, *context]
         references.extend(scout_refs)
-    elif _chat_agent_tools_enabled(req, effective_mode):
+    elif _chat_tool_planner_enabled(req, effective_mode):
         tool_context, tool_refs, tool_trace = await _build_chat_agent_tool_context(
             req.content,
             db=db,
             user=user,
             session_id=session_id,
+            conversation_context=context,
         )
         if tool_context:
             context.insert(0, {
                 "role": "system",
                 "content": (
-                    "以下是本轮通用工具执行得到的结构化观察。回答时请基于这些观察，"
+                    "以下是本轮 Agent 工具规划与执行得到的结构化观察。回答时请基于这些观察，"
                     "不要声称已经执行需要用户确认的副作用操作：\n\n"
                     f"{tool_context}"
                 ),

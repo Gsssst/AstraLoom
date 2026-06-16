@@ -27,6 +27,11 @@ const backendPaperSearchSource = readFileSync(
   'utf8',
 );
 
+const backendPlannerSource = readFileSync(
+  new URL('../../backend/app/services/chat_tool_planner.py', import.meta.url),
+  'utf8',
+);
+
 test('chat page exposes Research Scout mode and sends assistant_mode', () => {
   assert.match(chatPageSource, /type ChatAssistantMode = 'general' \| 'research_scout'/);
   assert.match(chatPageSource, /chat-composer-mode-select/);
@@ -121,6 +126,18 @@ test('generic chat tool traces support waiting confirmation and import actions',
   assert.match(backendChatSource, /_references_with_tool_trace/);
   assert.match(backendChatSource, /_tool_trace_from_references/);
   assert.match(backendChatSource, /chat_tool_confirmation_token/);
+});
+
+test('generic chat tool traces support LLM planner workflow metadata', () => {
+  assert.match(backendChatSource, /run_llm_tool_planner/);
+  assert.match(backendChatSource, /planner_tool_context_block/);
+  assert.match(backendChatSource, /planner_tool_trace_payload/);
+  assert.match(backendChatSource, /_chat_tool_planner_enabled/);
+  assert.match(backendPlannerSource, /workflow": "llm_tool_planner"/);
+  assert.match(backendPlannerSource, /parse_planner_decision/);
+  assert.match(backendPlannerSource, /build_planner_messages/);
+  assert.match(chatPageSource, /trace\?\.workflow === 'research_scout'/);
+  assert.match(chatPageSource, /trace\?\.workflow \|\| 'workflow'/);
 });
 
 test('Research Scout cards can route candidates into collections and research projects', () => {
