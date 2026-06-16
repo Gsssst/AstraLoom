@@ -302,6 +302,14 @@ async def build_paper_context_with_evidence(
         f"当前证据计划: intent={plan_metadata.get('intent')}, strategy={plan_metadata.get('strategy')}。"
         "请先判断用户问题需要哪类证据，再基于下方证据作答。"
     )
+    target_section_number = plan_metadata.get("target_section_number")
+    plan_warnings = [str(item) for item in plan_metadata.get("warnings") or []]
+    if target_section_number:
+        matched_heading = plan_metadata.get("matched_section_heading")
+        if matched_heading:
+            plan_instruction += f"用户明确请求第 {target_section_number} 节，当前已定位到标题“{matched_heading}”，请优先围绕该编号小节回答。"
+        else:
+            plan_instruction += f"用户明确请求第 {target_section_number} 节；如果证据没有包含该编号小节正文，必须明确说明未能在当前解析文本中定位到第 {target_section_number} 节。"
     if plan_metadata.get("strategy") == "experiment_complete":
         plan_instruction += (
             "这是完整实验证据包：表格、视觉表格、表格标题和实验正文比普通 top-k 更重要；"
@@ -313,6 +321,8 @@ async def build_paper_context_with_evidence(
         evidence_warning = "当前没有检索到可定位的正文证据。若用户要求 Introduction、Method、Experiments 等章节，请明确说明“当前论文内容不足”，不要仅根据摘要推测。"
     else:
         evidence_warning = f"当前检索到 {len(evidence_refs)} 条正文/结构化证据，引用覆盖率约 {evidence_coverage:.0%}。回答中的关键结论应尽量标注 [E1]、[E2] 这样的证据编号。"
+        if target_section_number and f"numbered_section_not_found:{target_section_number}" in plan_warnings:
+            evidence_warning += f" 本轮未能在解析后的论文文本中精确定位第 {target_section_number} 节；如果使用其他相邻证据回答，必须说明它不是第 {target_section_number} 节的完整正文。"
         if plan_metadata.get("strategy") == "experiment_complete":
             evidence_warning += " 如果部分表格只有标题、摘要或低置信解析，请说明具体缺少表格单元格/OCR 数值，而不是说整篇论文内容不足。"
         else:

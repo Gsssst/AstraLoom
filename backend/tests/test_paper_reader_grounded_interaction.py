@@ -70,6 +70,116 @@ def test_missing_requested_section_falls_back_to_document_retrieval():
     assert "document-marker" in chunks[0][0]
 
 
+def test_numbered_section_question_extracts_exact_subsection_range():
+    full_text = "\n".join([
+        "3.1 Overview",
+        "overview-marker " * 80,
+        "3.2 FlexMem Update",
+        "target-marker memory bank update " * 80,
+        "3.2.1 Implementation Detail",
+        "target-sub-marker implementation detail " * 40,
+        "3.3 Training Objective",
+        "next-marker objective " * 80,
+    ])
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请帮忙拆解第 3.2 节",
+        top_k=3,
+    )
+
+    assert scope == "numbered_section"
+    assert plan.target_section_number == "3.2"
+    assert plan.matched_section_heading == "3.2 FlexMem Update"
+    assert evidence[0].source_type == "numbered_section"
+    assert evidence[0].metadata["requested_section_number"] == "3.2"
+    assert evidence[0].metadata["matched_heading"] == "3.2 FlexMem Update"
+    assert "target-marker" in evidence[0].text
+    assert "target-sub-marker" in evidence[0].text
+    assert "next-marker" not in evidence[0].text
+    assert "overview-marker" not in evidence[0].text
+
+
+def test_numbered_section_range_stops_at_next_top_level_heading():
+    full_text = "\n".join([
+        "3.2 FlexMem Update",
+        "target-marker memory bank update " * 80,
+        "3.2.1 Implementation Detail",
+        "target-sub-marker implementation detail " * 40,
+        "4 Conclusion",
+        "conclusion-marker final remarks " * 80,
+    ])
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请帮忙拆解第 3.2 节",
+        top_k=3,
+    )
+
+    assert scope == "numbered_section"
+    assert plan.matched_section_heading == "3.2 FlexMem Update"
+    assert "target-marker" in evidence[0].text
+    assert "target-sub-marker" in evidence[0].text
+    assert "conclusion-marker" not in evidence[0].text
+
+
+def test_numbered_section_prefers_full_text_range_over_structured_single_block():
+    full_text = "\n".join([
+        "3.2 FlexMem Update",
+        "target-marker complete section body " * 80,
+        "3.2.1 Implementation Detail",
+        "target-sub-marker implementation detail " * 40,
+        "3.3 Training Objective",
+        "next-marker objective " * 80,
+    ])
+    structured_blocks = [{
+        "type": "structured",
+        "page": 4,
+        "source": "docling",
+        "text": "3.2 FlexMem Update\nshort structured heading only " * 4,
+    }]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请帮忙拆解第 3.2 节",
+        top_k=3,
+        structured_blocks=structured_blocks,
+    )
+
+    assert scope == "numbered_section"
+    assert plan.matched_section_heading == "3.2 FlexMem Update"
+    assert evidence[0].source == "full_text"
+    assert "target-marker" in evidence[0].text
+    assert "target-sub-marker" in evidence[0].text
+
+
+def test_numbered_section_missing_records_targeted_warning():
+    full_text = "\n".join([
+        "3.1 Overview",
+        "overview-marker " * 80,
+        "3.3 Training Objective",
+        "objective-marker " * 80,
+    ])
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请帮忙拆解第 3.2 节",
+        top_k=2,
+    )
+
+    assert scope == "document"
+    assert evidence
+    assert plan.strategy == "numbered_section"
+    assert plan.target_section_number == "3.2"
+    assert "numbered_section_not_found:3.2" in plan.warnings
+
+
+def test_bare_metric_number_does_not_trigger_numbered_section_lookup():
+    assert PaperChunkService.detect_requested_section_number("COQA 63.2 的结果说明什么") is None
+    assert PaperChunkService.detect_requested_section_number("section 3.2") == "3.2"
+    assert PaperChunkService.detect_requested_section_number("3.2 节讲什么") == "3.2"
+
+
 def test_page_aware_evidence_preserves_section_and_page_number():
     page_texts = [
         "1 Introduction\n" + _paragraph("intro-marker"),

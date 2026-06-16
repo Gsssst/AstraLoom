@@ -37,6 +37,8 @@ class PaperQuestionEvidencePlan:
     intent: str
     strategy: str
     requested_sections: Tuple[str, ...] = ()
+    target_section_number: Optional[str] = None
+    matched_section_heading: Optional[str] = None
     include_all_tables: bool = False
     include_visual_tables: bool = False
     include_visual_evidence: bool = False
@@ -52,6 +54,8 @@ class PaperQuestionEvidencePlan:
             "intent": self.intent,
             "strategy": self.strategy,
             "requested_sections": list(self.requested_sections),
+            "target_section_number": self.target_section_number,
+            "matched_section_heading": self.matched_section_heading,
             "include_all_tables": self.include_all_tables,
             "include_visual_tables": self.include_visual_tables,
             "include_visual_evidence": self.include_visual_evidence,
@@ -73,6 +77,7 @@ class PaperChunkService:
     CHUNK_MIN_CHARS = 400
     CHUNK_MAX_CHARS = 1000
     CHUNK_OVERLAP = 100  # 重叠字符数，保持上下文连贯
+    NUMBERED_SECTION_MAX_CHARS = 4200
     DEFAULT_EVIDENCE_TOP_K = 4
     TABLE_EVIDENCE_TOP_K = 8
     EXPERIMENT_EVIDENCE_TOP_K = 24
@@ -134,6 +139,18 @@ class PaperChunkService:
         "overview", "explain", "discuss", "compare", "comparison", "overall",
         "分析", "总结", "概括", "说明", "讲解", "比较", "对比", "整体", "全面",
         "综合", "如何", "怎么样",
+    )
+    SECTION_NUMBER_CONTEXT_RE = re.compile(
+        r"(?:第\s*)?(\d{1,2}(?:\.\d{1,2}){1,3})\s*(?:节|小节|章节|部分|section|sec\.?|subsection|subsec\.?)",
+        re.I,
+    )
+    SECTION_NUMBER_PREFIX_RE = re.compile(
+        r"(?:section|sec\.?|subsection|subsec\.?)\s*(\d{1,2}(?:\.\d{1,2}){1,3})",
+        re.I,
+    )
+    SECTION_NUMBER_HEADING_RE = re.compile(
+        r"^\s*(?:section|sec\.?|subsection|subsec\.?)?\s*(\d{1,2}(?:\.\d{1,2}){0,4})\s*[\.)、:：-]?\s+(.{0,160})$",
+        re.I,
     )
 
     @staticmethod
@@ -209,6 +226,24 @@ class PaperChunkService:
         ]
 
     @classmethod
+    def detect_requested_section_number(cls, query: str) -> Optional[str]:
+        """Detect explicit numbered section requests such as 第 3.2 节 or Section 3.2."""
+        normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
+        if not normalized:
+            return None
+        for pattern in (cls.SECTION_NUMBER_PREFIX_RE, cls.SECTION_NUMBER_CONTEXT_RE):
+            match = pattern.search(normalized)
+            if match:
+                return match.group(1)
+        # Bare numbers are only accepted with section-like context to avoid
+        # confusing metric values such as 63.2 with a requested section.
+        if re.search(r"(节|小节|章节|section|sec\.?|subsection|subsec\.?)", normalized, re.I):
+            match = re.search(r"(?<!\d)(\d{1,2}(?:\.\d{1,2}){1,3})(?!\d)", normalized)
+            if match:
+                return match.group(1)
+        return None
+
+    @classmethod
     def is_table_like_query(cls, query: str) -> bool:
         normalized = re.sub(r"\s+", " ", (query or "").lower())
         return any(term in normalized for term in cls.TABLE_QUERY_TERMS)
@@ -265,9 +300,20 @@ class PaperChunkService:
     def plan_evidence(cls, query: str, *, top_k: Optional[int] = None) -> PaperQuestionEvidencePlan:
         """Plan evidence routing before retrieval."""
         requested_sections = tuple(cls.detect_requested_sections(query))
+        target_section_number = cls.detect_requested_section_number(query)
         strategy = cls.detect_evidence_strategy(query)
         visual_like = cls.is_visual_like_query(query)
         table_like = cls.is_table_like_query(query)
+
+        if target_section_number:
+            return PaperQuestionEvidencePlan(
+                intent="numbered_section_lookup",
+                strategy="numbered_section",
+                requested_sections=requested_sections,
+                target_section_number=target_section_number,
+                max_evidence_items=max(top_k or 0, cls.DEFAULT_EVIDENCE_TOP_K),
+                text_budget=top_k or cls.DEFAULT_EVIDENCE_TOP_K,
+            )
 
         if strategy == "experiment":
             sections = tuple(dict.fromkeys([*requested_sections, "experiments"]))
@@ -338,6 +384,8 @@ class PaperChunkService:
 
     @classmethod
     def recommended_evidence_top_k(cls, query: str, default: int = DEFAULT_EVIDENCE_TOP_K) -> int:
+        if cls.detect_requested_section_number(query):
+            return max(default, cls.DEFAULT_EVIDENCE_TOP_K)
         strategy = cls.detect_evidence_strategy(query)
         if strategy == "experiment":
             return cls.EXPERIMENT_COMPLETE_EVIDENCE_TOP_K
@@ -463,6 +511,136 @@ class PaperChunkService:
         return candidates
 
     @classmethod
+    def _parse_numbered_heading(cls, line: str) -> Optional[tuple[str, str]]:
+        text = re.sub(r"\s+", " ", (line or "").strip())
+        if not text or len(text) > 220:
+            return None
+        match = cls.SECTION_NUMBER_HEADING_RE.match(text)
+        if not match:
+            return None
+        number = match.group(1).strip(".")
+        title = (match.group(2) or "").strip(" .:-:：")
+        if "." not in number and not re.search(r"(section|sec\.?|subsection|subsec\.?)", text, re.I):
+            title_words = re.findall(r"[A-Za-z][A-Za-z-]*|[\u4e00-\u9fff]+", title)
+            if not title or len(title) > 90 or len(title_words) > 12 or re.search(r"[。.!?；;]$", title):
+                return None
+        # Headings usually have some title text or an explicit section prefix.
+        if not title and not re.search(r"(section|sec\.?|subsection|subsec\.?)", text, re.I):
+            return None
+        return number, text
+
+    @staticmethod
+    def _numbered_section_same_or_higher_level(current: str, target: str) -> bool:
+        current_parts = current.split(".")
+        target_parts = target.split(".")
+        if not current_parts or not target_parts:
+            return False
+        if current_parts == target_parts:
+            return False
+        if len(current_parts) == 1 and len(target_parts) > 1:
+            try:
+                return int(current_parts[0]) > int(target_parts[0])
+            except ValueError:
+                return False
+        return len(current_parts) <= len(target_parts)
+
+    @classmethod
+    def _numbered_section_source_texts(
+        cls,
+        full_text: str,
+        page_texts: Optional[List[str]],
+        structured_blocks: Optional[List[dict]],
+    ) -> list[tuple[str, str, Optional[int], Optional[int]]]:
+        sources: list[tuple[str, str, Optional[int], Optional[int]]] = []
+        if full_text and full_text.strip():
+            sources.append(("full_text", full_text, None, None))
+        for index, page_text in enumerate(page_texts or [], 1):
+            if page_text and page_text.strip():
+                sources.append(("pdf_page_text", page_text, index, index))
+        for block in structured_blocks or []:
+            if not isinstance(block, dict):
+                continue
+            text = str(block.get("text") or "").strip()
+            if not text:
+                continue
+            page = block.get("page")
+            page_num = page if isinstance(page, int) else None
+            sources.append((str(block.get("source") or "pdf_structured"), text, page_num, page_num))
+        return sources
+
+    @classmethod
+    def _extract_numbered_section_from_text(
+        cls,
+        text: str,
+        target_number: str,
+        *,
+        source: str,
+        page_start: Optional[int] = None,
+        page_end: Optional[int] = None,
+    ) -> Optional[EvidenceChunk]:
+        lines = [line.rstrip() for line in (text or "").splitlines()]
+        start_index: Optional[int] = None
+        matched_heading: Optional[str] = None
+        for index, line in enumerate(lines):
+            parsed = cls._parse_numbered_heading(line)
+            if parsed and parsed[0] == target_number:
+                start_index = index
+                matched_heading = parsed[1]
+                break
+        if start_index is None:
+            return None
+
+        end_index = len(lines)
+        for index in range(start_index + 1, len(lines)):
+            parsed = cls._parse_numbered_heading(lines[index])
+            if not parsed:
+                continue
+            if cls._numbered_section_same_or_higher_level(parsed[0], target_number):
+                end_index = index
+                break
+
+        section_text = "\n".join(line for line in lines[start_index:end_index] if line.strip()).strip()
+        if len(section_text) < 40:
+            return None
+        if len(section_text) > cls.NUMBERED_SECTION_MAX_CHARS:
+            section_text = section_text[:cls.NUMBERED_SECTION_MAX_CHARS].rstrip() + "\n\n[section truncated for context budget]"
+        return EvidenceChunk(
+            text=section_text,
+            score=1.0,
+            section=f"section {target_number}",
+            page_start=page_start,
+            page_end=page_end,
+            source_type="numbered_section",
+            source=source,
+            metadata={
+                "requested_section_number": target_number,
+                "matched_heading": matched_heading,
+                "extraction_strategy": "numbered_section_range",
+            },
+        )
+
+    @classmethod
+    def _numbered_section_evidence(
+        cls,
+        full_text: str,
+        target_number: str,
+        *,
+        page_texts: Optional[List[str]] = None,
+        structured_blocks: Optional[List[dict]] = None,
+    ) -> Optional[EvidenceChunk]:
+        for source, text, page_start, page_end in cls._numbered_section_source_texts(full_text, page_texts, structured_blocks):
+            evidence = cls._extract_numbered_section_from_text(
+                text,
+                target_number,
+                source=source,
+                page_start=page_start,
+                page_end=page_end,
+            )
+            if evidence:
+                return evidence
+        return None
+
+    @classmethod
     def retrieve_evidence(
         cls,
         full_text: str,
@@ -480,6 +658,31 @@ class PaperChunkService:
         table_like_query = strategy in {"table", "experiment"} or cls.is_table_like_query(query)
         candidates = [*structured_candidates, *text_candidates]
         requested_sections = set(plan.requested_sections)
+        if plan.target_section_number:
+            section_evidence = cls._numbered_section_evidence(
+                full_text,
+                plan.target_section_number,
+                page_texts=page_texts,
+                structured_blocks=structured_blocks,
+            )
+            if section_evidence:
+                return [section_evidence], "numbered_section"
+            plan = PaperQuestionEvidencePlan(
+                intent=plan.intent,
+                strategy=plan.strategy,
+                requested_sections=plan.requested_sections,
+                target_section_number=plan.target_section_number,
+                matched_section_heading=plan.matched_section_heading,
+                include_all_tables=plan.include_all_tables,
+                include_visual_tables=plan.include_visual_tables,
+                include_visual_evidence=plan.include_visual_evidence,
+                max_evidence_items=plan.max_evidence_items,
+                table_budget=plan.table_budget,
+                visual_table_budget=plan.visual_table_budget,
+                caption_budget=plan.caption_budget,
+                text_budget=plan.text_budget,
+                warnings=(*plan.warnings, f"numbered_section_not_found:{plan.target_section_number}"),
+            )
         if plan.strategy == "experiment_complete":
             complete_results = cls._experiment_complete_evidence_pack(
                 structured_candidates,
@@ -586,6 +789,42 @@ class PaperChunkService:
             page_texts=page_texts,
             structured_blocks=structured_blocks,
         )
+        if evidence and scope == "numbered_section":
+            metadata = evidence[0].metadata or {}
+            plan = PaperQuestionEvidencePlan(
+                intent=plan.intent,
+                strategy=plan.strategy,
+                requested_sections=plan.requested_sections,
+                target_section_number=plan.target_section_number,
+                matched_section_heading=str(metadata.get("matched_heading") or "") or plan.matched_section_heading,
+                include_all_tables=plan.include_all_tables,
+                include_visual_tables=plan.include_visual_tables,
+                include_visual_evidence=plan.include_visual_evidence,
+                max_evidence_items=plan.max_evidence_items,
+                table_budget=plan.table_budget,
+                visual_table_budget=plan.visual_table_budget,
+                caption_budget=plan.caption_budget,
+                text_budget=plan.text_budget,
+                warnings=plan.warnings,
+            )
+        elif plan.target_section_number and scope != "numbered_section":
+            warning = f"numbered_section_not_found:{plan.target_section_number}"
+            plan = PaperQuestionEvidencePlan(
+                intent=plan.intent,
+                strategy=plan.strategy,
+                requested_sections=plan.requested_sections,
+                target_section_number=plan.target_section_number,
+                matched_section_heading=plan.matched_section_heading,
+                include_all_tables=plan.include_all_tables,
+                include_visual_tables=plan.include_visual_tables,
+                include_visual_evidence=plan.include_visual_evidence,
+                max_evidence_items=plan.max_evidence_items,
+                table_budget=plan.table_budget,
+                visual_table_budget=plan.visual_table_budget,
+                caption_budget=plan.caption_budget,
+                text_budget=plan.text_budget,
+                warnings=(*plan.warnings, warning) if warning not in plan.warnings else plan.warnings,
+            )
         return evidence, scope, plan
 
     @classmethod
