@@ -9,6 +9,7 @@ import {
   EyeOutlined, ClockCircleOutlined, StopOutlined,
   InfoCircleOutlined, CloudDownloadOutlined, CheckCircleOutlined,
   FolderOutlined, NodeIndexOutlined, WarningOutlined, ArrowUpOutlined,
+  DownOutlined, RightOutlined,
 } from '@ant-design/icons';
 import { useChatSessionStore } from '../stores/useChatSessionStore';
 import { useThemeStore } from '../stores/useThemeStore';
@@ -292,6 +293,7 @@ const ChatPage: React.FC = () => {
   const [ingestingScoutKeys, setIngestingScoutKeys] = useState<Set<string>>(new Set());
   const [ingestedScoutKeys, setIngestedScoutKeys] = useState<Set<string>>(new Set());
   const [expandedScoutMessages, setExpandedScoutMessages] = useState<Set<string>>(new Set());
+  const [expandedToolTraces, setExpandedToolTraces] = useState<Set<string>>(new Set());
   const [scoutLocalPaperIds, setScoutLocalPaperIds] = useState<Record<string, string>>({});
   const [collections, setCollections] = useState<PaperCollectionOption[]>([]);
   const [researchProjects, setResearchProjects] = useState<ResearchProjectOption[]>([]);
@@ -931,22 +933,50 @@ const ChatPage: React.FC = () => {
       </div>
     );
   };
-  const renderToolTrace = (trace?: ToolTracePayload | null) => {
+  const renderToolTrace = (trace?: ToolTracePayload | null, messageKey?: string) => {
     const steps = trace?.steps || [];
     if (!steps.length) return null;
+    const traceKey = messageKey || `${trace?.workflow || 'trace'}-${steps.length}-${trace?.stop_reason || ''}`;
+    const expanded = expandedToolTraces.has(traceKey);
+    const latestStep = [...steps].reverse().find(step => step.status !== 'running') || steps[steps.length - 1];
+    const completedCount = steps.filter(step => step.status === 'completed').length;
+    const toggleTrace = () => {
+      setExpandedToolTraces(previous => {
+        const next = new Set(previous);
+        if (next.has(traceKey)) next.delete(traceKey);
+        else next.add(traceKey);
+        return next;
+      });
+    };
     return (
-      <div className="chat-tool-trace">
+      <div className={`chat-tool-trace ${expanded ? 'is-expanded' : 'is-collapsed'}`}>
         <div className="chat-tool-trace-header">
           <Space size={6}>
             <NodeIndexOutlined />
             <Text strong>工具执行轨迹</Text>
           </Space>
-          <Space size={4}>
+          <Space size={4} wrap>
             <Tag color="blue">{trace?.workflow === 'research_scout' || trace?.workflow === 'research_scout_agent' ? '论文猎手 Agent' : trace?.workflow || 'workflow'}</Tag>
+            <Tag color="default">{steps.length} 步</Tag>
+            <Tag color="green">{completedCount} 完成</Tag>
             {trace?.stop_reason && <Tag color={trace.stop_reason === 'completed' ? 'green' : 'orange'}>{trace.stop_reason}</Tag>}
+            <Button
+              size="small"
+              type="text"
+              className="chat-tool-trace-toggle"
+              icon={expanded ? <DownOutlined /> : <RightOutlined />}
+              onClick={toggleTrace}
+            >
+              {expanded ? '收起' : '展开'}
+            </Button>
           </Space>
         </div>
-        <div className="chat-tool-trace-steps">
+        <div className="chat-tool-trace-compact">
+          <Text type="secondary" ellipsis={{ tooltip: latestStep?.summary || latestStep?.label }}>
+            {latestStep ? `${toolTraceStatusLabel(latestStep.status)}：${latestStep.label}${latestStep.summary ? ` · ${latestStep.summary}` : ''}` : '已记录工具执行轨迹'}
+          </Text>
+        </div>
+        {expanded && <div className="chat-tool-trace-steps">
           {steps.map(step => {
             const resultCount = typeof step.details?.result_count === 'number' ? step.details.result_count : undefined;
             const excludedCount = typeof step.details?.excluded_count === 'number' ? step.details.excluded_count : undefined;
@@ -966,7 +996,7 @@ const ChatPage: React.FC = () => {
               </div>
             );
           })}
-        </div>
+        </div>}
       </div>
     );
   };
@@ -1256,7 +1286,7 @@ const ChatPage: React.FC = () => {
                         {msg.role === 'user' ? <div style={{ whiteSpace: 'pre-wrap', color: '#fff' }}>{msg.content}</div> : <Markdown content={msg.content} />}
                       </div>
                     )}
-                    {msg.role === 'assistant' && renderToolTrace(msg.tool_trace)}
+                    {msg.role === 'assistant' && renderToolTrace(msg.tool_trace, String(msg.id || msg.created_at || `assistant-${idx}`))}
                     {msg.role === 'assistant' && renderResearchScoutCards(msg)}
                     <div style={{ display: 'flex', gap: 4, marginTop: 4, paddingLeft: 4, justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
                       {!msg._streaming && <Button type="text" size="small" icon={<span>💬</span>} onClick={() => setInput(`> ${msg.content.slice(0, 100)}${msg.content.length > 100 ? '...' : ''}\n\n`)} title="引用回复" style={{ fontSize: 11, color: token.colorTextQuaternary }} />}

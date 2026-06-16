@@ -1586,7 +1586,7 @@
 
 .chat-tool-trace {
   margin-top: 10px;
-  padding: 10px;
+  padding: 8px 10px;
   border: 1px solid #e2e8f0;
   border-radius: 11px;
   background: #f8fafc;
@@ -1597,6 +1597,23 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  margin-bottom: 4px;
+}
+
+.chat-tool-trace-toggle {
+  height: 23px !important;
+  padding: 0 6px !important;
+  border-radius: 7px !important;
+  color: #475569 !important;
+}
+
+.chat-tool-trace-compact {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.chat-tool-trace.is-expanded .chat-tool-trace-compact {
   margin-bottom: 8px;
 }
 

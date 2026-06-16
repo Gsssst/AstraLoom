@@ -92,6 +92,18 @@ test('chat renders tool execution trace metadata', () => {
   assert.match(responsiveSource, /\.chat-tool-trace-step/);
 });
 
+test('chat tool execution traces are collapsed by default', () => {
+  assert.match(chatPageSource, /expandedToolTraces/);
+  assert.match(chatPageSource, /setExpandedToolTraces/);
+  assert.match(chatPageSource, /chat-tool-trace-compact/);
+  assert.match(chatPageSource, /chat-tool-trace-toggle/);
+  assert.match(chatPageSource, /expanded && <div className="chat-tool-trace-steps">/);
+  assert.match(chatPageSource, /展开/);
+  assert.match(chatPageSource, /收起/);
+  assert.match(responsiveSource, /\.chat-tool-trace-compact/);
+  assert.match(responsiveSource, /\.chat-tool-trace-toggle/);
+});
+
 test('Research Scout cards can route candidates into collections and research projects', () => {
   assert.match(chatPageSource, /ResearchScoutIntent/);
   assert.match(chatPageSource, /renderResearchScoutIntent/);
