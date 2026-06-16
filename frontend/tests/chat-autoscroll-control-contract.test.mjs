@@ -27,9 +27,9 @@ test('chat auto-scroll hook tracks bottom proximity and user scroll state', () =
   assert.match(hookSource, /manualPauseRef = useRef\(false\)/);
   assert.match(hookSource, /lastScrollTopRef = useRef\(0\)/);
   assert.match(hookSource, /scrollHeight - container\.scrollTop - container\.clientHeight/);
-  assert.match(hookSource, /if \(userMovedUp\) \{/);
+  assert.match(hookSource, /if \(userMovedUp \|\| !nearBottom\) \{/);
   assert.match(hookSource, /manualPauseRef\.current = true/);
-  assert.match(hookSource, /if \(!nearBottom\) \{/);
+  assert.match(hookSource, /if \(!isNearBottom\(\)\) \{/);
   assert.match(hookSource, /container\.addEventListener\('scroll', syncFollowState, \{ passive: true \}\)/);
   assert.match(hookSource, /window\.addEventListener\('wheel', handleWheel, \{ passive: true, capture: true \}\)/);
   assert.match(hookSource, /window\.addEventListener\('touchstart', handleTouchStart, \{ passive: true, capture: true \}\)/);
@@ -41,7 +41,8 @@ test('chat auto-scroll hook tracks bottom proximity and user scroll state', () =
   assert.match(hookSource, /\['ArrowUp', 'PageUp', 'Home'\]/);
   assert.match(hookSource, /settleInteractionIntent/);
   assert.match(hookSource, /manualPauseRef\.current = false/);
-  assert.match(hookSource, /if \(!followOutputRef\.current\) return/);
+  assert.match(hookSource, /pauseFollowOutputIfAwayFromBottom/);
+  assert.match(hookSource, /if \(manualPauseRef\.current \|\| !followOutputRef\.current\) return/);
   assert.match(hookSource, /container\.scrollTop = container\.scrollHeight/);
   assert.doesNotMatch(hookSource, /scrollEndRef\.current\?\.scrollIntoView\(\{ block: 'end', behavior: 'auto' \}\)/);
 });
@@ -52,9 +53,10 @@ test('main chat streams only follow bottom while user remains near bottom', () =
   assert.match(chatPageSource, /scrollEndRef: messagesEndRef/);
   assert.match(chatPageSource, /scrollToBottomIfFollowing/);
   assert.match(chatPageSource, /enableFollowOutput/);
+  assert.match(chatPageSource, /pauseFollowOutputIfAwayFromBottom/);
   assert.match(chatPageSource, /useEffect\(\(\) => \{ scrollToBottomIfFollowing\(\); \}, \[messages, pendingMsg, scrollToBottomIfFollowing\]\)/);
   assert.match(chatPageSource, /enableFollowOutput\(\);[\s\S]*setState\(s => \(\{ messages:/);
-  assert.match(chatPageSource, /<div ref=\{chatScrollRef\} className="chat-message-list"/);
+  assert.match(chatPageSource, /<div ref=\{chatScrollRef\} className="chat-message-list"[\s\S]*onScroll=\{pauseFollowOutputIfAwayFromBottom\}/);
   assert.doesNotMatch(chatPageSource, /messagesEndRef\.current\?\.scrollIntoView\(\{ behavior: 'smooth' \}\)/);
 });
 
@@ -64,9 +66,10 @@ test('paper detail chat uses the same manual-scroll-aware streaming behavior', (
   assert.match(paperDetailSource, /scrollEndRef: chatEndRef/);
   assert.match(paperDetailSource, /scrollPaperChatToBottomIfFollowing/);
   assert.match(paperDetailSource, /enablePaperChatFollowOutput/);
+  assert.match(paperDetailSource, /pausePaperChatFollowOutputIfAwayFromBottom/);
   assert.match(paperDetailSource, /useEffect\(\(\) => \{ scrollPaperChatToBottomIfFollowing\(\); \}, \[chatMsgs, scrollPaperChatToBottomIfFollowing\]\)/);
   assert.match(paperDetailSource, /enablePaperChatFollowOutput\(\);[\s\S]*setChatMsgs\(prev => \[\.\.\.prev, userMessage\]\)/);
-  assert.match(paperDetailSource, /<div ref=\{paperChatScrollRef\} className="paper-detail-chat-scroll"/);
+  assert.match(paperDetailSource, /<div ref=\{paperChatScrollRef\} className="paper-detail-chat-scroll"[\s\S]*onScroll=\{pausePaperChatFollowOutputIfAwayFromBottom\}/);
   assert.doesNotMatch(paperDetailSource, /chatEndRef\.current\?\.scrollIntoView\(\{ behavior: 'smooth' \}\)/);
 });
 

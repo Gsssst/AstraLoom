@@ -296,6 +296,7 @@ const ChatPage: React.FC = () => {
     scrollEndRef: messagesEndRef,
     scrollToBottomIfFollowing,
     enableFollowOutput,
+    pauseFollowOutputIfAwayFromBottom,
   } = useChatAutoScroll();
   const sendLock = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -1173,7 +1174,7 @@ const ChatPage: React.FC = () => {
             </Dropdown>
           </div>
         </div>
-        <div ref={chatScrollRef} className="chat-message-list" style={{ flex: 1, overflowY: 'auto', padding: '24px 20px' }}>
+        <div ref={chatScrollRef} className="chat-message-list" style={{ flex: 1, overflowY: 'auto', padding: '24px 20px' }} onScroll={pauseFollowOutputIfAwayFromBottom}>
           {messages.length === 0 && !pendingMsg ? (
             <div className="chat-empty-state">
               <div className="chat-empty-logo">✦</div>

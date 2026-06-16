@@ -433,6 +433,7 @@ const PaperDetailPage: React.FC = () => {
     scrollEndRef: chatEndRef,
     scrollToBottomIfFollowing: scrollPaperChatToBottomIfFollowing,
     enableFollowOutput: enablePaperChatFollowOutput,
+    pauseFollowOutputIfAwayFromBottom: pausePaperChatFollowOutputIfAwayFromBottom,
   } = useChatAutoScroll();
   const retrievalStrategy = webSearch && paperRagEnabled
     ? '混合检索'
@@ -1627,7 +1628,7 @@ const PaperDetailPage: React.FC = () => {
               </Tooltip>
               <Select className="chat-depth-select" size="small" value={searchDepth} onChange={setSearchDepth} variant="borderless" style={{ width: 66, fontSize: 12 }} options={[{ value: 'quick', label: '快速' }, { value: 'standard', label: '标准' }, { value: 'deep', label: '深度' }]} />
             </div>
-            <div ref={paperChatScrollRef} className="paper-detail-chat-scroll">
+            <div ref={paperChatScrollRef} className="paper-detail-chat-scroll" onScroll={pausePaperChatFollowOutputIfAwayFromBottom}>
               {chatMsgs.length === 0 ? (
                 <div style={{ padding: '24px 16px', textAlign: 'center', height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                   <div style={{

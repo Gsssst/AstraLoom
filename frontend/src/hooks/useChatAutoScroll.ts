@@ -32,32 +32,41 @@ export const useChatAutoScroll = (options: UseChatAutoScrollOptions = {}) => {
     const nearBottom = isNearBottom();
     lastScrollTopRef.current = currentScrollTop;
 
-    if (userMovedUp) {
+    if (userMovedUp || !nearBottom) {
       manualPauseRef.current = true;
       followOutputRef.current = false;
       return;
     }
-    if (!nearBottom) {
-      manualPauseRef.current = true;
-      followOutputRef.current = false;
-      return;
-    }
-    if (nearBottom && (!manualPauseRef.current || userMovedDown)) {
+    if (nearBottom && (manualPauseRef.current || userMovedDown)) {
       manualPauseRef.current = false;
       followOutputRef.current = true;
       return;
     }
-    if (manualPauseRef.current) followOutputRef.current = false;
+  }, [isNearBottom]);
+
+  const pauseFollowOutput = useCallback(() => {
+    manualPauseRef.current = true;
+    followOutputRef.current = false;
+  }, []);
+
+  const pauseFollowOutputIfAwayFromBottom = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    lastScrollTopRef.current = container.scrollTop;
+    if (!isNearBottom()) {
+      manualPauseRef.current = true;
+      followOutputRef.current = false;
+      return;
+    }
+    if (manualPauseRef.current) {
+      manualPauseRef.current = false;
+      followOutputRef.current = true;
+    }
   }, [isNearBottom]);
 
   const resumeFollowOutput = useCallback(() => {
     manualPauseRef.current = false;
     followOutputRef.current = true;
-  }, []);
-
-  const pauseFollowOutput = useCallback(() => {
-    manualPauseRef.current = true;
-    followOutputRef.current = false;
   }, []);
 
   const settleInteractionIntent = useCallback((startingScrollTop: number) => {
@@ -136,7 +145,7 @@ export const useChatAutoScroll = (options: UseChatAutoScrollOptions = {}) => {
   }, []);
 
   const scrollToBottomIfFollowing = useCallback(() => {
-    if (!followOutputRef.current) return;
+    if (manualPauseRef.current || !followOutputRef.current) return;
     scrollToBottom();
   }, [scrollToBottom]);
 
@@ -150,6 +159,7 @@ export const useChatAutoScroll = (options: UseChatAutoScrollOptions = {}) => {
     scrollEndRef,
     scrollToBottomIfFollowing,
     enableFollowOutput,
+    pauseFollowOutputIfAwayFromBottom,
   };
 };
 
