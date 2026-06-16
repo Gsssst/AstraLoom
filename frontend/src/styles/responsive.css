@@ -1701,7 +1701,8 @@
 }
 
 .chat-tool-trace-step.is-available .chat-tool-trace-dot,
-.chat-tool-trace-step.is-waiting .chat-tool-trace-dot {
+.chat-tool-trace-step.is-waiting .chat-tool-trace-dot,
+.chat-tool-trace-step.is-waiting_confirmation .chat-tool-trace-dot {
   background: #d97706;
 }
 
@@ -1731,6 +1732,18 @@
   margin-top: 3px;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.chat-tool-trace-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.chat-tool-trace-actions .ant-btn {
+  height: 26px;
+  border-radius: 7px;
+  font-size: 12px;
 }
 
 .research-scout-refine-button {

@@ -156,7 +156,7 @@ interface ToolTraceStep {
   id: string;
   tool: string;
   label: string;
-  status: 'pending' | 'planned' | 'running' | 'completed' | 'failed' | 'skipped' | 'available' | 'waiting' | 'rejected';
+  status: 'pending' | 'planned' | 'running' | 'completed' | 'failed' | 'skipped' | 'available' | 'waiting' | 'waiting_confirmation' | 'rejected';
   summary?: string;
   details?: Record<string, unknown>;
 }
@@ -187,6 +187,8 @@ interface StreamMetaContent {
   model?: ChatModelMetadata;
   research_scout?: ResearchScoutPayload | null;
   tool_trace?: ToolTracePayload | null;
+  reply_id?: string;
+  created_at?: string;
 }
 
 const formatSessionTime = (value: string) => {
@@ -295,6 +297,7 @@ const ChatPage: React.FC = () => {
   const [expandedScoutMessages, setExpandedScoutMessages] = useState<Set<string>>(new Set());
   const [expandedToolTraces, setExpandedToolTraces] = useState<Set<string>>(new Set());
   const [expandedReferenceStrips, setExpandedReferenceStrips] = useState<Set<string>>(new Set());
+  const [confirmingToolKeys, setConfirmingToolKeys] = useState<Set<string>>(new Set());
   const [scoutLocalPaperIds, setScoutLocalPaperIds] = useState<Record<string, string>>({});
   const [collections, setCollections] = useState<PaperCollectionOption[]>([]);
   const [researchProjects, setResearchProjects] = useState<ResearchProjectOption[]>([]);
@@ -459,6 +462,15 @@ const ChatPage: React.FC = () => {
           researchScout = event.content.research_scout || null;
           toolTrace = event.content.tool_trace || null;
           if (event.content.model) setActiveModelInfo(event.content.model);
+        } else if (event.type === 'saved' && event.content && typeof event.content === 'object') {
+          const saved = event.content;
+          useChatSessionStore.setState(s => ({
+            messages: s.messages.map(m => (
+              m.role === 'assistant' && m._streaming
+                ? { ...m, id: saved.reply_id, created_at: saved.created_at || m.created_at }
+                : m
+            )),
+          }));
         } else if (event.type === 'reasoning' && typeof event.content === 'string') {
           markFirstToken();
           appendStreamingReasoning(event.content);
@@ -800,6 +812,7 @@ const ChatPage: React.FC = () => {
     skipped: '跳过',
     available: '可操作',
     waiting: '待确认',
+    waiting_confirmation: '待确认',
     rejected: '已拒绝',
   }[value || ''] || value || '未知');
   const toolTraceStatusColor = (value?: string) => ({
@@ -811,6 +824,7 @@ const ChatPage: React.FC = () => {
     skipped: 'default',
     available: 'blue',
     waiting: 'warning',
+    waiting_confirmation: 'warning',
     rejected: 'error',
   }[value || ''] || 'default');
   const continueScoutSearch = (query: string, flavor: string) => {
@@ -818,6 +832,54 @@ const ChatPage: React.FC = () => {
     setWebSearch(true);
     setSearchDepth('deep');
     setInput(`请继续用论文猎手模式找 ${flavor} 类型的论文，主题是：${query}`);
+  };
+  const handleConfirmToolAction = async (messageId: string, step: ToolTraceStep) => {
+    if (!currentSessionId) return;
+    const details = step.details || {};
+    const confirmationToken = typeof details.confirmation_token === 'string' ? details.confirmation_token : '';
+    const argumentsPayload = details.arguments && typeof details.arguments === 'object' ? details.arguments : null;
+    if (!messageId || !confirmationToken || !argumentsPayload) {
+      message.warning('缺少确认信息，请重新生成该工具动作');
+      return;
+    }
+    const actionKey = `${messageId}:${step.id}:${confirmationToken}`;
+    setConfirmingToolKeys(previous => new Set(previous).add(actionKey));
+    try {
+      const response = await api.post(`/chat-sessions/${currentSessionId}/tools/confirm`, {
+        message_id: messageId,
+        tool: step.tool,
+        arguments: argumentsPayload,
+        confirmation_token: confirmationToken,
+      });
+      const nextTrace = response.data?.tool_trace as ToolTracePayload | undefined;
+      const nextReferences = response.data?.references || [];
+      useChatSessionStore.setState(s => ({
+        messages: s.messages.map(item => {
+          if (item.id !== messageId) return item;
+          return {
+            ...item,
+            references: [...(item.references || []), ...nextReferences],
+            tool_trace: nextTrace?.steps?.length
+              ? {
+                  ...(item.tool_trace || {}),
+                  stop_reason: nextTrace.stop_reason || item.tool_trace?.stop_reason,
+                  steps: [...(item.tool_trace?.steps || []), ...nextTrace.steps],
+                }
+              : item.tool_trace,
+          };
+        }),
+      }));
+      if (response.data?.ok) message.success('论文已导入你的论文库');
+      else message.warning(response.data?.observation?.summary || '工具执行未完成');
+    } catch (error) {
+      message.error(getApiErrorMessage(error, { fallback: '确认执行失败' }));
+    } finally {
+      setConfirmingToolKeys(previous => {
+        const next = new Set(previous);
+        next.delete(actionKey);
+        return next;
+      });
+    }
   };
   const renderResearchScoutEvaluation = (evaluation?: ResearchScoutEvaluation) => {
     if (!evaluation) return null;
@@ -934,7 +996,7 @@ const ChatPage: React.FC = () => {
       </div>
     );
   };
-  const renderToolTrace = (trace?: ToolTracePayload | null, messageKey?: string) => {
+  const renderToolTrace = (trace?: ToolTracePayload | null, messageKey?: string, msg?: any) => {
     const steps = trace?.steps || [];
     if (!steps.length) return null;
     const traceKey = messageKey || `${trace?.workflow || 'trace'}-${steps.length}-${trace?.stop_reason || ''}`;
@@ -981,6 +1043,10 @@ const ChatPage: React.FC = () => {
           {steps.map(step => {
             const resultCount = typeof step.details?.result_count === 'number' ? step.details.result_count : undefined;
             const excludedCount = typeof step.details?.excluded_count === 'number' ? step.details.excluded_count : undefined;
+            const isWaitingConfirmation = step.status === 'waiting_confirmation' || step.status === 'waiting';
+            const canConfirmImport = isWaitingConfirmation && step.tool === 'import_paper' && !!msg?.id;
+            const confirmationToken = typeof step.details?.confirmation_token === 'string' ? step.details.confirmation_token : '';
+            const actionKey = `${msg?.id || ''}:${step.id}:${confirmationToken}`;
             return (
               <div className={`chat-tool-trace-step is-${step.status}`} key={step.id}>
                 <span className="chat-tool-trace-dot" />
@@ -993,6 +1059,19 @@ const ChatPage: React.FC = () => {
                     {!!excludedCount && <Tag color="orange">过滤 {excludedCount}</Tag>}
                   </div>
                   {step.summary && <Text type="secondary" className="chat-tool-trace-summary">{step.summary}</Text>}
+                  {canConfirmImport && (
+                    <div className="chat-tool-trace-actions">
+                      <Button
+                        size="small"
+                        type="primary"
+                        icon={<CloudDownloadOutlined />}
+                        loading={confirmingToolKeys.has(actionKey)}
+                        onClick={() => handleConfirmToolAction(String(msg.id), step)}
+                      >
+                        确认导入
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -1345,7 +1424,7 @@ const ChatPage: React.FC = () => {
                         {msg.role === 'user' ? <div style={{ whiteSpace: 'pre-wrap', color: '#fff' }}>{msg.content}</div> : <Markdown content={msg.content} />}
                       </div>
                     )}
-                    {msg.role === 'assistant' && renderToolTrace(msg.tool_trace, String(msg.id || msg.created_at || `assistant-${idx}`))}
+                    {msg.role === 'assistant' && renderToolTrace(msg.tool_trace, String(msg.id || msg.created_at || `assistant-${idx}`), msg)}
                     {msg.role === 'assistant' && renderResearchScoutCards(msg)}
                     <div style={{ display: 'flex', gap: 4, marginTop: 4, paddingLeft: 4, justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
                       {!msg._streaming && <Button type="text" size="small" icon={<span>💬</span>} onClick={() => setInput(`> ${msg.content.slice(0, 100)}${msg.content.length > 100 ? '...' : ''}\n\n`)} title="引用回复" style={{ fontSize: 11, color: token.colorTextQuaternary }} />}

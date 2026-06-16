@@ -31,6 +31,17 @@ from app.services.research_scout_agent import (
     ResearchScoutToolObservation,
     ResearchScoutToolRegistry,
 )
+from app.services.chat_agent_tools import (
+    ChatAgentRuntimeState,
+    ChatAgentToolRuntime,
+    ChatToolCall,
+    ImportPaperArgs,
+    chat_tool_context_block,
+    chat_tool_confirmation_token,
+    chat_tool_trace_payload,
+    default_chat_tool_registry,
+    deterministic_chat_tool_plan,
+)
 from app.services.web_search import format_web_context, search_web_results
 from app.db.session import AsyncSessionLocal
 
@@ -230,6 +241,7 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     references: Optional[list] = None
+    tool_trace: Optional[dict] = None
     created_at: str
 
 
@@ -255,6 +267,13 @@ class SendMessageRequest(BaseModel):
     search_depth: Literal["quick", "standard", "deep"] = Field(default="standard", description="检索深度")
     show_thinking: bool = Field(default=False, description="是否展示思考过程")
     assistant_mode: Literal["general", "research_scout"] = Field(default="general", description="对话助手模式")
+
+
+class ConfirmToolRequest(BaseModel):
+    message_id: str
+    tool: Literal["import_paper"]
+    arguments: dict[str, Any]
+    confirmation_token: str
 
 
 RETRIEVAL_DEPTH_LIMITS = {
@@ -430,6 +449,87 @@ def _effective_assistant_mode(req: SendMessageRequest) -> Literal["general", "re
 
 def _web_search_enabled_for_mode(req: SendMessageRequest, effective_mode: str) -> bool:
     return bool(req.web_search) and effective_mode != "research_scout"
+
+
+CHAT_TOOL_TRACE_REFERENCE_TYPE = "chat_tool_trace"
+
+
+def _chat_agent_tools_enabled(req: SendMessageRequest, effective_mode: str) -> bool:
+    if effective_mode == "research_scout":
+        return False
+    return bool(deterministic_chat_tool_plan(req.content))
+
+
+def _tool_trace_reference(tool_trace: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not tool_trace:
+        return None
+    return {
+        "source": CHAT_TOOL_TRACE_REFERENCE_TYPE,
+        "type": CHAT_TOOL_TRACE_REFERENCE_TYPE,
+        "tool_trace": tool_trace,
+    }
+
+
+def _references_with_tool_trace(
+    references: list[dict[str, Any]],
+    tool_trace: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    visible = [
+        ref
+        for ref in references
+        if not (
+            isinstance(ref, dict)
+            and ref.get("source") == CHAT_TOOL_TRACE_REFERENCE_TYPE
+            and ref.get("type") == CHAT_TOOL_TRACE_REFERENCE_TYPE
+        )
+    ]
+    trace_ref = _tool_trace_reference(tool_trace)
+    return [*visible, trace_ref] if trace_ref else visible
+
+
+def _tool_trace_from_references(references: list | None) -> dict[str, Any] | None:
+    for ref in references or []:
+        if not isinstance(ref, dict):
+            continue
+        if ref.get("source") == CHAT_TOOL_TRACE_REFERENCE_TYPE and ref.get("type") == CHAT_TOOL_TRACE_REFERENCE_TYPE:
+            payload = ref.get("tool_trace")
+            return payload if isinstance(payload, dict) else None
+    return None
+
+
+def _visible_chat_references(references: list | None) -> list:
+    return [
+        ref
+        for ref in references or []
+        if not (
+            isinstance(ref, dict)
+            and ref.get("source") == CHAT_TOOL_TRACE_REFERENCE_TYPE
+            and ref.get("type") == CHAT_TOOL_TRACE_REFERENCE_TYPE
+        )
+    ]
+
+
+async def _build_chat_agent_tool_context(
+    query: str,
+    *,
+    db: AsyncSession,
+    user: User,
+    session_id: str,
+) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
+    registry = default_chat_tool_registry()
+    actions = deterministic_chat_tool_plan(query)
+    if not actions:
+        return "", [], None
+
+    state = ChatAgentRuntimeState(
+        user_query=query,
+        db=db,
+        user=user,
+        session_id=session_id,
+    )
+    runtime = ChatAgentToolRuntime(registry, max_steps=6)
+    state = await runtime.run(state, actions, allow_side_effects=False)
+    return chat_tool_context_block(state), state.references, chat_tool_trace_payload(state, registry)
 
 
 def _stream_event(event_type: str, content: Any = None) -> str:
@@ -2335,7 +2435,11 @@ async def get_messages(session_id: str, user: User = Depends(get_current_user), 
 
     return [
         MessageResponse(
-            id=str(m.id), role=m.role, content=m.content, references=m.references,
+            id=str(m.id),
+            role=m.role,
+            content=m.content,
+            references=_visible_chat_references(m.references),
+            tool_trace=_tool_trace_from_references(m.references),
             created_at=m.created_at.isoformat() if m.created_at else "",
         )
         for m in messages
@@ -2408,6 +2512,23 @@ async def send_message(
         tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates, scout_planned_queries, scout_retrieval)
         context = [*scout_context, *context]
         references.extend(scout_refs)
+    elif _chat_agent_tools_enabled(req, effective_mode):
+        tool_context, tool_refs, tool_trace = await _build_chat_agent_tool_context(
+            req.content,
+            db=db,
+            user=user,
+            session_id=session_id,
+        )
+        if tool_context:
+            context.insert(0, {
+                "role": "system",
+                "content": (
+                    "以下是本轮通用工具执行得到的结构化观察。回答时请基于这些观察，"
+                    "不要声称已经执行需要用户确认的副作用操作：\n\n"
+                    f"{tool_context}"
+                ),
+            })
+        references.extend(tool_refs)
 
     # 调用 LLM
     try:
@@ -2420,7 +2541,7 @@ async def send_message(
         # 保存 AI 回复
         reply_msg = ChatMessage(
             session_id=sid, role="assistant",
-            content=reply_content, references=references,
+            content=reply_content, references=_references_with_tool_trace(references, tool_trace),
         )
         db.add(reply_msg)
 
@@ -2438,7 +2559,8 @@ async def send_message(
             ),
             reply=MessageResponse(
                 id=str(reply_msg.id), role="assistant", content=reply_msg.content,
-                references=reply_msg.references,
+                references=_visible_chat_references(reply_msg.references),
+                tool_trace=tool_trace,
                 created_at=reply_msg.created_at.isoformat() if reply_msg.created_at else "",
             ),
             session_title=session.title,
@@ -2509,6 +2631,23 @@ async def send_message_stream(
         tool_trace = _research_scout_tool_trace(req.content, scout_intent, scout_candidates, scout_planned_queries, scout_retrieval)
         context = [*scout_context, *context]
         references.extend(scout_refs)
+    elif _chat_agent_tools_enabled(req, effective_mode):
+        tool_context, tool_refs, tool_trace = await _build_chat_agent_tool_context(
+            req.content,
+            db=db,
+            user=user,
+            session_id=session_id,
+        )
+        if tool_context:
+            context.insert(0, {
+                "role": "system",
+                "content": (
+                    "以下是本轮通用工具执行得到的结构化观察。回答时请基于这些观察，"
+                    "不要声称已经执行需要用户确认的副作用操作：\n\n"
+                    f"{tool_context}"
+                ),
+            })
+        references.extend(tool_refs)
     retrieval_quality = await _retrieval_quality_snapshot(rag_enabled=rag_enabled)
     llm_context = _build_llm_context_for_request(context, req)
 
@@ -2579,11 +2718,24 @@ async def send_message_stream(
             yield _stream_event("error", full_content)
 
         # 保存 AI 回复
-        reply_msg = ChatMessage(session_id=sid, role="assistant", content=full_content, references=references)
+        reply_msg = ChatMessage(
+            session_id=sid,
+            role="assistant",
+            content=full_content,
+            references=_references_with_tool_trace(references, tool_trace),
+        )
         db.add(reply_msg)
         if session.title == "新对话":
             session.title = req.content[:30]
         await db.commit()
+        await db.refresh(reply_msg)
+        yield _stream_event(
+            "saved",
+            {
+                "reply_id": str(reply_msg.id),
+                "created_at": reply_msg.created_at.isoformat() if reply_msg.created_at else "",
+            },
+        )
         yield _stream_event("done")
 
     return StreamingResponse(
@@ -2591,6 +2743,99 @@ async def send_message_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/{session_id}/tools/confirm")
+async def confirm_chat_tool(
+    session_id: str,
+    req: ConfirmToolRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """确认并执行需要用户授权的对话工具。"""
+    from uuid import UUID
+
+    try:
+        sid = UUID(session_id)
+        mid = UUID(req.message_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID")
+
+    result = await db.execute(
+        select(ChatSession).where(ChatSession.id == sid, ChatSession.user_id == user.id)
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="会话未找到")
+
+    result = await db.execute(
+        select(ChatMessage).where(
+            ChatMessage.id == mid,
+            ChatMessage.session_id == sid,
+            ChatMessage.role == "assistant",
+        )
+    )
+    assistant_message = result.scalar_one_or_none()
+    if not assistant_message:
+        raise HTTPException(status_code=404, detail="消息未找到")
+
+    if req.tool != "import_paper":
+        raise HTTPException(status_code=400, detail="不支持的确认工具")
+
+    try:
+        arguments = ImportPaperArgs.model_validate(req.arguments).model_dump()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"工具参数无效: {exc}")
+
+    expected_token = chat_tool_confirmation_token(req.tool, arguments)
+    if req.confirmation_token != expected_token:
+        raise HTTPException(status_code=400, detail="确认令牌不匹配")
+
+    trace = _tool_trace_from_references(assistant_message.references)
+    pending_steps = (trace or {}).get("steps") if isinstance(trace, dict) else []
+    pending_found = False
+    for step in pending_steps or []:
+        if not isinstance(step, dict):
+            continue
+        details = step.get("details") if isinstance(step.get("details"), dict) else {}
+        if (
+            step.get("tool") == req.tool
+            and step.get("status") == "waiting_confirmation"
+            and details.get("confirmation_token") == req.confirmation_token
+        ):
+            pending_found = True
+            break
+    if not pending_found:
+        raise HTTPException(status_code=409, detail="未找到可确认的待执行工具动作")
+
+    registry = default_chat_tool_registry()
+    state = ChatAgentRuntimeState(
+        user_query=f"confirm {req.tool}",
+        db=db,
+        user=user,
+        session_id=session_id,
+    )
+    runtime = ChatAgentToolRuntime(registry, max_steps=1)
+    state = await runtime.run(
+        state,
+        [
+            ChatToolCall(
+                tool=req.tool,
+                arguments=arguments,
+                confirmation_token=req.confirmation_token,
+                thought_summary="用户已确认执行导入论文。",
+            )
+        ],
+        allow_side_effects=True,
+    )
+    observation = state.observations[-1] if state.observations else None
+    confirmed_trace = chat_tool_trace_payload(state, registry)
+    return {
+        "ok": bool(observation and observation.status == "completed"),
+        "observation": observation.model_dump() if observation else None,
+        "tool_trace": confirmed_trace,
+        "references": state.references,
+    }
 
 
 # --- 文件上传 ---

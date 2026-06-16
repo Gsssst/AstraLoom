@@ -34,7 +34,7 @@ interface Message {
       id: string;
       tool: string;
       label: string;
-      status: 'pending' | 'planned' | 'running' | 'completed' | 'failed' | 'skipped' | 'available' | 'waiting' | 'rejected';
+      status: 'pending' | 'planned' | 'running' | 'completed' | 'failed' | 'skipped' | 'available' | 'waiting' | 'waiting_confirmation' | 'rejected';
       summary?: string;
       details?: Record<string, unknown>;
     }[];

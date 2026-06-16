@@ -104,6 +104,25 @@ test('chat tool execution traces are collapsed by default', () => {
   assert.match(responsiveSource, /\.chat-tool-trace-toggle/);
 });
 
+test('generic chat tool traces support waiting confirmation and import actions', () => {
+  assert.match(chatPageSource, /waiting_confirmation/);
+  assert.match(chatPageSource, /handleConfirmToolAction/);
+  assert.match(chatPageSource, /\/chat-sessions\/\$\{currentSessionId\}\/tools\/confirm/);
+  assert.match(chatPageSource, /confirmation_token/);
+  assert.match(chatPageSource, /确认导入/);
+  assert.match(chatPageSource, /event\.type === 'saved'/);
+  assert.match(chatPageSource, /reply_id/);
+  assert.match(chatPageSource, /chat-tool-trace-actions/);
+  assert.match(responsiveSource, /\.chat-tool-trace-step\.is-waiting_confirmation \.chat-tool-trace-dot/);
+  assert.match(responsiveSource, /\.chat-tool-trace-actions/);
+  assert.match(backendChatSource, /ConfirmToolRequest/);
+  assert.match(backendChatSource, /@router\.post\("\/\{session_id\}\/tools\/confirm"\)/);
+  assert.match(backendChatSource, /CHAT_TOOL_TRACE_REFERENCE_TYPE = "chat_tool_trace"/);
+  assert.match(backendChatSource, /_references_with_tool_trace/);
+  assert.match(backendChatSource, /_tool_trace_from_references/);
+  assert.match(backendChatSource, /chat_tool_confirmation_token/);
+});
+
 test('Research Scout cards can route candidates into collections and research projects', () => {
   assert.match(chatPageSource, /ResearchScoutIntent/);
   assert.match(chatPageSource, /renderResearchScoutIntent/);

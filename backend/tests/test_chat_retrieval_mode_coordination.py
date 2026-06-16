@@ -71,6 +71,40 @@ def test_general_mode_keeps_requested_web_retrieval():
     assert chat_sessions._web_search_enabled_for_mode(request, effective_mode) is True
 
 
+def test_general_chat_agent_tools_enable_only_outside_research_scout():
+    request = chat_sessions.SendMessageRequest(
+        content="请在我的论文库里检索 video grounding",
+        assistant_mode="general",
+    )
+
+    assert chat_sessions._chat_agent_tools_enabled(request, "general") is True
+    assert chat_sessions._chat_agent_tools_enabled(request, "research_scout") is False
+
+
+def test_tool_trace_reference_is_hidden_but_reconstructable():
+    trace = {
+        "enabled": True,
+        "workflow": "chat_agent_tools",
+        "steps": [{"id": "s1", "tool": "search_library", "label": "检索论文库", "status": "completed"}],
+    }
+    references = chat_sessions._references_with_tool_trace(
+        [{"source": "local_library", "title": "Paper"}],
+        trace,
+    )
+
+    assert chat_sessions._tool_trace_from_references(references) == trace
+    assert chat_sessions._visible_chat_references(references) == [{"source": "local_library", "title": "Paper"}]
+
+
+def test_streaming_chat_contract_includes_generic_tool_trace_and_saved_reply_id():
+    source = chat_sessions.__loader__.get_source(chat_sessions.__name__)
+
+    assert "elif _chat_agent_tools_enabled(req, effective_mode):" in source
+    assert '"tool_trace": tool_trace' in source
+    assert 'yield _stream_event(\n            "saved"' in source
+    assert '"reply_id": str(reply_msg.id)' in source
+
+
 def test_research_scout_fallback_queries_expand_chinese_mllm_memory_prompt():
     intent = chat_sessions._research_scout_intent("请帮我找10篇关于多模态大模型memory的论文", "deep")
 
