@@ -61,6 +61,25 @@ test('Research Scout cards support ingestion and follow-up search loops', () => 
   assert.match(chatPageSource, /continueScoutSearch/);
 });
 
+test('Research Scout cards display returned candidates progressively without six-card hard cap', () => {
+  assert.match(chatPageSource, /RESEARCH_SCOUT_INITIAL_CARD_LIMIT = 10/);
+  assert.match(chatPageSource, /expandedScoutMessages/);
+  assert.match(chatPageSource, /visibleCandidates = expanded \? candidates : candidates\.slice\(0, RESEARCH_SCOUT_INITIAL_CARD_LIMIT\)/);
+  assert.doesNotMatch(chatPageSource, /candidates\.slice\(0, 6\)/);
+  assert.match(chatPageSource, /展开全部/);
+  assert.match(chatPageSource, /收起候选/);
+});
+
+test('Research Scout metadata tags are bounded inside candidate cards', () => {
+  assert.match(chatPageSource, /className="research-scout-meta-tag"/);
+  assert.match(chatPageSource, /<Tooltip title=\{paper\.venue\}>/);
+  assert.match(responsiveSource, /\.research-scout-meta \.ant-space-item/);
+  assert.match(responsiveSource, /\.research-scout-meta \.ant-tag,\s*\.research-scout-meta-tag,\s*\.research-scout-provenance \.ant-tag,\s*\.research-scout-constraints \.ant-tag/);
+  assert.match(responsiveSource, /max-width: min\(100%, 260px\);/);
+  assert.match(responsiveSource, /white-space: nowrap;/);
+  assert.match(responsiveSource, /\.research-scout-expand-row/);
+});
+
 test('chat renders tool execution trace metadata', () => {
   assert.match(chatPageSource, /interface ToolTracePayload/);
   assert.match(chatPageSource, /tool_trace\?: ToolTracePayload/);
@@ -193,8 +212,16 @@ test('backend streams Research Scout metadata from scholarly discovery', () => {
   assert.match(backendChatSource, /source="arxiv_enriched"/);
   assert.match(backendChatSource, /source="scholarly"/);
   assert.match(backendChatSource, /_retrieve_research_scout_papers/);
+  assert.match(backendChatSource, /_research_scout_requested_count/);
+  assert.match(backendChatSource, /_research_scout_final_limit/);
+  assert.match(backendChatSource, /RESEARCH_SCOUT_MAX_FINAL_RESULTS/);
+  assert.match(backendChatSource, /RESEARCH_SCOUT_POOL_MULTIPLIER/);
   assert.match(backendChatSource, /_rank_research_scout_papers/);
   assert.match(backendChatSource, /arxiv_first_then_scholarly_fallback/);
+  assert.match(backendChatSource, /natural language video localization/);
+  assert.match(backendChatSource, /text-to-video moment retrieval/);
+  assert.match(backendChatSource, /pool_target/);
+  assert.match(backendChatSource, /underfilled_by/);
   assert.match(backendChatSource, /_build_research_scout_context/);
   assert.match(backendChatSource, /_research_scout_intent/);
   assert.match(backendChatSource, /library_relation/);

@@ -83,6 +83,38 @@ def test_research_scout_fallback_queries_expand_chinese_mllm_memory_prompt():
     assert all("请帮我" not in query and "论文" not in query for query in queries)
 
 
+def test_research_scout_requested_count_overrides_depth_default():
+    count_info = chat_sessions._research_scout_final_limit("请帮我找10篇关于 video grounding 的论文", "standard")
+
+    assert count_info["requested_count"] == 10
+    assert count_info["default_count"] == 8
+    assert count_info["final_limit"] == 10
+    assert count_info["capped"] is False
+
+
+def test_research_scout_requested_count_is_capped_for_large_surveys():
+    count_info = chat_sessions._research_scout_final_limit("请调研80篇关于 video grounding 的论文", "deep")
+
+    assert count_info["requested_count"] == 80
+    assert count_info["final_limit"] == chat_sessions.RESEARCH_SCOUT_MAX_FINAL_RESULTS
+    assert count_info["capped"] is True
+
+
+def test_research_scout_fallback_queries_expand_video_grounding_aliases():
+    intent = chat_sessions._research_scout_intent("请帮我找10篇关于 video grounding 的论文", "deep")
+
+    queries = chat_sessions._fallback_research_scout_queries(
+        "请帮我找10篇关于 video grounding 的论文",
+        intent,
+        limit=8,
+    )
+
+    assert "video grounding" in queries
+    assert "natural language video localization" in queries
+    assert "temporal sentence grounding" in queries
+    assert "text-to-video moment retrieval" in queries
+
+
 def test_research_scout_planned_query_coercion_prefers_llm_queries_with_fallback():
     fallback = ["multimodal large language model memory", "MLLM memory"]
 
@@ -176,12 +208,69 @@ async def test_research_scout_retrieval_falls_back_to_broad_scholarly_sources(mo
         limit=10,
     )
 
-    assert [call[1] for call in calls] == ["arxiv_enriched", "scholarly"]
+    assert [call[1] for call in calls][:2] == ["arxiv_enriched", "scholarly"]
+    assert any(call[1] == "scholarly" for call in calls[2:])
     assert metadata["fallback_used"] is True
     assert metadata["strategy"] == "arxiv_first_then_scholarly_fallback"
     assert metadata["stage_counts"]["arxiv_enriched"] == 0
     assert metadata["stage_counts"]["scholarly_fallback"] == 2
     assert {paper.source for paper in papers} == {"semantic_scholar", "openalex"}
+    assert metadata["final_limit"] == 10
+    assert metadata["pool_target"] > metadata["final_limit"]
+    assert metadata["per_query_limit"] >= 12
+    assert metadata["unique_pool_count"] == 2
+    assert metadata["underfilled_by"] == 8
+
+
+@pytest.mark.asyncio
+async def test_research_scout_retrieval_uses_expanded_aliases_when_underfilled(monkeypatch):
+    calls = []
+    intent = chat_sessions._research_scout_intent("请帮我找10篇关于 video grounding 的论文", "deep")
+
+    async def _fake_search_scholarly_papers(query, *, source, max_results, sort_by="relevance", **kwargs):
+        calls.append((query, source, max_results, sort_by))
+        if query == "video grounding" and source == "arxiv_enriched":
+            return [
+                chat_sessions.PaperResult(
+                    title="Video Grounding Seed",
+                    authors=["A"],
+                    abstract="video grounding",
+                    year=2025,
+                    arxiv_id="2501.00001",
+                    source="arxiv",
+                    pdf_url="https://arxiv.org/pdf/2501.00001",
+                    metadata={"remote_id": "2501.00001"},
+                )
+            ]
+        if query == "natural language video localization" and source == "scholarly":
+            return [
+                chat_sessions.PaperResult(
+                    title="Natural Language Video Localization",
+                    authors=["B"],
+                    abstract="natural language video localization",
+                    year=2021,
+                    source="openalex",
+                    source_url="https://openalex.org/W1",
+                    metadata={"remote_id": "W1"},
+                )
+            ]
+        return []
+
+    monkeypatch.setattr(chat_sessions, "search_scholarly_papers", _fake_search_scholarly_papers)
+
+    papers, metadata = await chat_sessions._retrieve_research_scout_papers(
+        "请帮我找10篇关于 video grounding 的论文",
+        ["video grounding"],
+        intent,
+        limit=10,
+        count_info={"requested_count": 10, "default_count": 8, "max_final_limit": 50, "capped": False},
+    )
+
+    assert {paper.title for paper in papers} == {"Video Grounding Seed", "Natural Language Video Localization"}
+    assert "natural language video localization" in metadata["expanded_queries"]
+    assert metadata["stage_counts"]["expanded_fallback"] == 1
+    assert metadata["stage_counts"]["pool"] == 2
+    assert metadata["underfilled_by"] == 8
 
 
 def test_research_scout_tool_trace_reports_broad_fallback():

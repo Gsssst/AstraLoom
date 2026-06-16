@@ -1757,6 +1757,24 @@
   min-width: 0;
 }
 
+.research-scout-meta .ant-space-item {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.research-scout-meta .ant-tag,
+.research-scout-meta-tag,
+.research-scout-provenance .ant-tag,
+.research-scout-constraints .ant-tag {
+  display: inline-block;
+  max-width: min(100%, 260px);
+  margin-inline-end: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
 .research-scout-authors,
 .research-scout-institutions,
 .research-scout-rationale,
@@ -1787,18 +1805,10 @@
   min-width: 0;
 }
 
-.research-scout-provenance .ant-tag {
-  max-width: 100%;
-  margin-inline-end: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.research-scout-constraints .ant-tag {
-  max-width: 100%;
-  margin-inline-end: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.research-scout-expand-row {
+  display: flex;
+  justify-content: center;
+  padding-top: 10px;
 }
 
 .research-scout-evaluation {

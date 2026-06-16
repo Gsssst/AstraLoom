@@ -20,6 +20,7 @@ import useChatAutoScroll from '../hooks/useChatAutoScroll';
 import useChatAttachments from '../hooks/useChatAttachments';
 
 const { Text } = Typography;
+const RESEARCH_SCOUT_INITIAL_CARD_LIMIT = 10;
 
 const emptySuggestions = [
   { icon: <MessageOutlined />, label: '提问讨论', text: '请帮我分析当前研究问题，并给出可以继续深入的方向' },
@@ -134,6 +135,14 @@ interface ResearchScoutPayload {
     fallback_used?: boolean;
     providers?: string[];
     fallback_providers?: string[];
+    requested_count?: number | null;
+    final_limit?: number;
+    max_final_limit?: number;
+    count_capped?: boolean;
+    pool_target?: number;
+    per_query_limit?: number;
+    unique_pool_count?: number;
+    underfilled_by?: number;
     stage_counts?: Record<string, number>;
     candidate_count?: number;
   };
@@ -281,6 +290,7 @@ const ChatPage: React.FC = () => {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [ingestingScoutKeys, setIngestingScoutKeys] = useState<Set<string>>(new Set());
   const [ingestedScoutKeys, setIngestedScoutKeys] = useState<Set<string>>(new Set());
+  const [expandedScoutMessages, setExpandedScoutMessages] = useState<Set<string>>(new Set());
   const [scoutLocalPaperIds, setScoutLocalPaperIds] = useState<Record<string, string>>({});
   const [collections, setCollections] = useState<PaperCollectionOption[]>([]);
   const [researchProjects, setResearchProjects] = useState<ResearchProjectOption[]>([]);
@@ -950,6 +960,11 @@ const ChatPage: React.FC = () => {
     const candidates = msg.research_scout?.candidates || [];
     if (!candidates.length) return null;
     const query = msg.research_scout?.query || '当前研究主题';
+    const messageKey = String(msg.id || msg.created_at || `${query}-${candidates.length}`);
+    const expanded = expandedScoutMessages.has(messageKey);
+    const visibleCandidates = expanded ? candidates : candidates.slice(0, RESEARCH_SCOUT_INITIAL_CARD_LIMIT);
+    const hiddenCount = Math.max(0, candidates.length - visibleCandidates.length);
+    const retrieval = msg.research_scout?.retrieval || {};
     return (
       <div className="research-scout-cards">
         <div className="research-scout-header">
@@ -958,7 +973,11 @@ const ChatPage: React.FC = () => {
             <Text strong>论文猎手候选</Text>
           </Space>
           <Space size={6} wrap>
-            <Text type="secondary">{msg.research_scout?.candidate_count || candidates.length} 篇 · {query}</Text>
+            <Text type="secondary">
+              {msg.research_scout?.candidate_count || candidates.length} 篇 · {query}
+              {retrieval.final_limit && retrieval.final_limit !== (msg.research_scout?.candidate_count || candidates.length) ? ` · 目标 ${retrieval.final_limit}` : ''}
+              {retrieval.count_capped ? ` · 已按上限 ${retrieval.max_final_limit || ''} 截断` : ''}
+            </Text>
             {['baseline', 'survey', 'latest', 'counterexample'].map(flavor => (
               <Button key={flavor} size="small" type="text" className="research-scout-refine-button" onClick={() => continueScoutSearch(query, flavor)}>
                 继续找 {flavor}
@@ -968,7 +987,7 @@ const ChatPage: React.FC = () => {
         </div>
         {renderResearchScoutIntent(msg.research_scout?.intent)}
         <div className="research-scout-grid">
-          {candidates.slice(0, 6).map((paper: ResearchScoutCandidate) => {
+          {visibleCandidates.map((paper: ResearchScoutCandidate) => {
             const key = scoutCandidateKey(paper);
             const ingested = ingestedScoutKeys.has(key);
             return (
@@ -979,8 +998,8 @@ const ChatPage: React.FC = () => {
                 </div>
                 <Space wrap size={4} className="research-scout-meta">
                   {paper.year && <Tag color="blue">{paper.year}</Tag>}
-                  {paper.venue && <Tag color="cyan">{paper.venue}</Tag>}
-                  <Tag color="purple">{researchScoutSourceLabel(paper.source)}</Tag>
+                  {paper.venue && <Tooltip title={paper.venue}><Tag color="cyan" className="research-scout-meta-tag">{paper.venue}</Tag></Tooltip>}
+                  <Tag color="purple" className="research-scout-meta-tag">{researchScoutSourceLabel(paper.source)}</Tag>
                   {!!paper.citation_count && <Tag color="gold">引用 {paper.citation_count}</Tag>}
                   {paper.pdf_url && <Tag color="green">{paper.metadata_provenance?.pdf === 'arxiv' ? 'arXiv PDF' : 'PDF'}</Tag>}
                   {ingested && <Tag color="success" icon={<CheckCircleOutlined />}>已入库</Tag>}
@@ -1022,6 +1041,25 @@ const ChatPage: React.FC = () => {
             );
           })}
         </div>
+        {candidates.length > RESEARCH_SCOUT_INITIAL_CARD_LIMIT && (
+          <div className="research-scout-expand-row">
+            <Button
+              size="small"
+              type="text"
+              className="research-scout-refine-button"
+              onClick={() => {
+                setExpandedScoutMessages(previous => {
+                  const next = new Set(previous);
+                  if (expanded) next.delete(messageKey);
+                  else next.add(messageKey);
+                  return next;
+                });
+              }}
+            >
+              {expanded ? '收起候选' : `展开全部 ${candidates.length} 篇${hiddenCount ? `（还有 ${hiddenCount} 篇）` : ''}`}
+            </Button>
+          </div>
+        )}
       </div>
     );
   };

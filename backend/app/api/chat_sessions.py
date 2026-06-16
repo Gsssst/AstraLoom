@@ -252,6 +252,9 @@ RETRIEVAL_DEPTH_LIMITS = {
     "deep": {"rag_papers": 5, "web_results": 8, "web_queries": 5},
 }
 RESEARCH_SCOUT_LIMITS = {"quick": 5, "standard": 8, "deep": 12}
+RESEARCH_SCOUT_MAX_FINAL_RESULTS = 50
+RESEARCH_SCOUT_MAX_PER_QUERY_RESULTS = 60
+RESEARCH_SCOUT_POOL_MULTIPLIER = 4
 RESEARCH_SCOUT_INTENT_YEAR_RE = re.compile(r"\b(20\d{2}|19\d{2})\b")
 RESEARCH_SCOUT_RECENT_HINTS = {"recent", "latest", "new", "newest", "sota", "2024", "2025", "2026", "近", "最新", "近期", "近年"}
 RESEARCH_SCOUT_REPRO_HINTS = {"reproducible", "replication", "code", "github", "可复现", "复现", "代码"}
@@ -323,6 +326,73 @@ PAPER_DISCOVERY_TRIGGER_RE = re.compile(
 )
 PAPER_DISCOVERY_PAPER_RE = re.compile(r"(?:论文|paper|papers|arxiv|cvpr|iccv|eccv|neurips|iclr|icml)", re.IGNORECASE)
 PAPER_DISCOVERY_COUNT_RE = re.compile(r"(?:\b\d+\s*(?:篇|个|条)?\b|[一二两三四五六七八九十]+\s*篇)", re.IGNORECASE)
+RESEARCH_SCOUT_COUNT_RE = re.compile(
+    r"(?:(?<!\d)(\d{1,3})(?!\d)\s*(?:篇|个|条|papers?|articles?|works?)?|([一二两三四五六七八九十百两]+)\s*(?:篇|个|条|篇论文|papers?)?)",
+    re.IGNORECASE,
+)
+RESEARCH_SCOUT_CHINESE_NUMERALS = {
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+
+
+def _parse_chinese_count(value: str) -> int | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    if text == "十":
+        return 10
+    if "百" in text:
+        before, _, after = text.partition("百")
+        hundreds = _parse_chinese_count(before) if before else 1
+        tail = _parse_chinese_count(after) if after else 0
+        if hundreds is not None and tail is not None:
+            return hundreds * 100 + tail
+    if "十" in text:
+        before, _, after = text.partition("十")
+        tens = _parse_chinese_count(before) if before else 1
+        ones = _parse_chinese_count(after) if after else 0
+        if tens is not None and ones is not None:
+            return tens * 10 + ones
+    return RESEARCH_SCOUT_CHINESE_NUMERALS.get(text)
+
+
+def _research_scout_requested_count(query: str) -> int | None:
+    candidates: list[int] = []
+    for match in RESEARCH_SCOUT_COUNT_RE.finditer(query or ""):
+        if match.group(1):
+            try:
+                candidates.append(int(match.group(1)))
+            except ValueError:
+                continue
+        elif match.group(2):
+            parsed = _parse_chinese_count(match.group(2))
+            if parsed:
+                candidates.append(parsed)
+    meaningful = [count for count in candidates if 0 < count <= 500]
+    return max(meaningful) if meaningful else None
+
+
+def _research_scout_final_limit(query: str, search_depth: str) -> dict[str, Any]:
+    requested = _research_scout_requested_count(query)
+    default_limit = RESEARCH_SCOUT_LIMITS.get(search_depth, RESEARCH_SCOUT_LIMITS["standard"])
+    raw_limit = requested or default_limit
+    final_limit = max(1, min(raw_limit, RESEARCH_SCOUT_MAX_FINAL_RESULTS))
+    return {
+        "requested_count": requested,
+        "default_count": default_limit,
+        "final_limit": final_limit,
+        "max_final_limit": RESEARCH_SCOUT_MAX_FINAL_RESULTS,
+        "capped": bool(requested and requested > RESEARCH_SCOUT_MAX_FINAL_RESULTS),
+    }
 
 
 def _is_paper_discovery_request(content: str) -> bool:
@@ -613,7 +683,7 @@ def _research_scout_intent(query: str, search_depth: str) -> dict[str, Any]:
     }
 
 
-RESEARCH_SCOUT_QUERY_LIMITS = {"quick": 2, "standard": 3, "deep": 4}
+RESEARCH_SCOUT_QUERY_LIMITS = {"quick": 2, "standard": 4, "deep": 6}
 RESEARCH_SCOUT_QUERY_NOISE_RE = re.compile(
     r"(请帮我|帮我|请|找|搜索|检索|推荐|列出|整理|论文|几篇|一些|关于|有关|的|paper|papers|find|search|recommend|list)",
     re.IGNORECASE,
@@ -652,8 +722,24 @@ def _fallback_research_scout_queries(query: str, intent: dict[str, Any], limit: 
             variants.append("memory augmented multimodal large language model")
         else:
             variants.extend(memory_variants)
-    if "video grounding" in lowered or "视频定位" in query or "视频 grounding" in lowered:
-        variants.extend(["video grounding", "temporal video grounding", "video moment retrieval"])
+    if (
+        "video grounding" in lowered
+        or "视频定位" in query
+        or "视频 grounding" in lowered
+        or "temporal grounding" in lowered
+        or "moment retrieval" in lowered
+    ):
+        variants.extend([
+            "video grounding",
+            "temporal video grounding",
+            "video moment retrieval",
+            "natural language video localization",
+            "temporal sentence grounding",
+            "moment localization",
+            "text-to-video moment retrieval",
+            "video temporal localization",
+            "video-language grounding",
+        ])
     methods = intent.get("methods") or []
     tasks = intent.get("tasks") or []
     topic_terms = [str(item) for item in [raw, *methods, *tasks] if item]
@@ -681,12 +767,13 @@ def _coerce_research_scout_planned_queries(parsed: Any, fallback: list[str], lim
     return _dedupe_preserve([*cleaned, *fallback])[:limit]
 
 
-async def _plan_research_scout_queries(query: str, intent: dict[str, Any], search_depth: str) -> list[str]:
-    limit = RESEARCH_SCOUT_QUERY_LIMITS.get(search_depth, RESEARCH_SCOUT_QUERY_LIMITS["standard"])
+async def _plan_research_scout_queries(query: str, intent: dict[str, Any], search_depth: str, final_limit: int | None = None) -> list[str]:
+    base_limit = RESEARCH_SCOUT_QUERY_LIMITS.get(search_depth, RESEARCH_SCOUT_QUERY_LIMITS["standard"])
+    limit = min(8, max(base_limit, 6 if (final_limit or 0) >= 20 else base_limit))
     fallback = _fallback_research_scout_queries(query, intent, limit=limit)
     prompt = (
         "你是学术论文检索 query planner。请根据用户问题生成适合 arXiv、Semantic Scholar、OpenAlex 的英文检索关键词。"
-        "要求：只输出 JSON；queries 是 2-4 个英文短 query；优先使用学术常用术语、缩写、同义任务名；不要包含中文礼貌请求、数量词或无关解释。"
+        "要求：只输出 JSON；queries 是 2-8 个英文短 query；优先使用学术常用术语、缩写、同义任务名；不要包含中文礼貌请求、数量词或无关解释。"
         "如果用户问题是中文，先理解研究方向再翻译/扩展。"
         "\n输出格式：{\"queries\":[\"query 1\",\"query 2\"],\"aliases\":[\"...\"],\"rationale\":\"...\"}"
         "\n\n用户问题："
@@ -1095,8 +1182,16 @@ async def _retrieve_research_scout_papers(
     planned_queries: list[str],
     intent: dict[str, Any],
     limit: int,
+    count_info: dict[str, Any] | None = None,
 ) -> tuple[list[PaperResult], dict[str, Any]]:
-    per_query_limit = max(limit, 8)
+    pool_target = min(
+        max(limit * RESEARCH_SCOUT_POOL_MULTIPLIER, limit + 12, 24),
+        max(limit, RESEARCH_SCOUT_MAX_FINAL_RESULTS) * 5,
+    )
+    per_query_limit = min(
+        RESEARCH_SCOUT_MAX_PER_QUERY_RESULTS,
+        max(12, (pool_target + max(len(planned_queries), 1) - 1) // max(len(planned_queries), 1)),
+    )
     arxiv_papers = await _run_research_scout_search_stage(
         planned_queries,
         source="arxiv_enriched",
@@ -1115,17 +1210,46 @@ async def _retrieve_research_scout_papers(
 
     merged = [*arxiv_unique, *fallback_papers]
     ranked = _rank_research_scout_papers(merged, query, planned_queries, intent, limit)
+    expanded_queries: list[str] = []
+    expanded_papers: list[PaperResult] = []
+    if len(ranked) < limit:
+        expanded_queries = [
+            item for item in _fallback_research_scout_queries(query, intent, limit=8)
+            if item not in planned_queries
+        ]
+        if expanded_queries:
+            expanded_papers = await _run_research_scout_search_stage(
+                expanded_queries,
+                source="scholarly",
+                max_results=min(RESEARCH_SCOUT_MAX_PER_QUERY_RESULTS, max(per_query_limit, limit)),
+            )
+            merged = [*merged, *expanded_papers]
+            ranked = _rank_research_scout_papers(merged, query, [*planned_queries, *expanded_queries], intent, limit)
     provider_labels = list(dict.fromkeys(_research_scout_provider_label(paper.source) for paper in ranked))
     fallback_labels = list(dict.fromkeys(_research_scout_provider_label(paper.source) for paper in fallback_papers))
+    unique_pool_count = len(deduplicate_papers(merged))
+    underfilled_by = max(0, limit - len(ranked))
     metadata = {
         "strategy": "arxiv_first_then_scholarly_fallback" if fallback_used else "arxiv_first_enriched",
         "fallback_used": fallback_used,
         "planned_queries": planned_queries,
+        "expanded_queries": expanded_queries,
         "providers": provider_labels or ["arXiv PDF", "Semantic Scholar", "OpenAlex"],
         "fallback_providers": fallback_labels,
+        "requested_count": (count_info or {}).get("requested_count"),
+        "default_count": (count_info or {}).get("default_count"),
+        "final_limit": limit,
+        "max_final_limit": (count_info or {}).get("max_final_limit", RESEARCH_SCOUT_MAX_FINAL_RESULTS),
+        "count_capped": bool((count_info or {}).get("capped")),
+        "pool_target": pool_target,
+        "per_query_limit": per_query_limit,
+        "unique_pool_count": unique_pool_count,
+        "underfilled_by": underfilled_by,
         "stage_counts": {
             "arxiv_enriched": len(arxiv_unique),
             "scholarly_fallback": len(deduplicate_papers(fallback_papers)) if fallback_used else 0,
+            "expanded_fallback": len(deduplicate_papers(expanded_papers)) if expanded_papers else 0,
+            "pool": unique_pool_count,
             "ranked": len(ranked),
         },
         "candidate_count": len(ranked),
@@ -1258,10 +1382,15 @@ def _research_scout_tool_trace(
     fallback_used = bool(retrieval.get("fallback_used"))
     providers = retrieval.get("providers") or ["arXiv PDF", "Semantic Scholar enrichment", "OpenAlex enrichment"]
     stage_counts = retrieval.get("stage_counts") or {}
+    final_limit = retrieval.get("final_limit") or candidate_count
+    requested_count = retrieval.get("requested_count")
+    pool_count = retrieval.get("unique_pool_count")
+    capped_note = "；请求数量已按系统上限截断" if retrieval.get("count_capped") else ""
+    underfilled_note = f"；仍缺 {retrieval.get('underfilled_by')} 篇" if retrieval.get("underfilled_by") else ""
     search_summary = (
-        f"arXiv-first 检索候选不足，已扩展到 Semantic Scholar/OpenAlex/Google Scholar 等学术来源，找到 {candidate_count} 篇候选。"
+        f"arXiv-first 检索候选不足，已扩展到 Semantic Scholar/OpenAlex/Google Scholar 等学术来源，目标 {final_limit} 篇，候选池 {pool_count or candidate_count} 篇，最终找到 {candidate_count} 篇{capped_note}{underfilled_note}。"
         if fallback_used
-        else f"已优先检索 arXiv PDF，并用 Semantic Scholar/OpenAlex 增强元数据，找到 {candidate_count} 篇候选。"
+        else f"已优先检索 arXiv PDF，并用 Semantic Scholar/OpenAlex 增强元数据，目标 {final_limit} 篇，候选池 {pool_count or candidate_count} 篇，最终找到 {candidate_count} 篇{capped_note}{underfilled_note}。"
     )
     steps = [
         _tool_trace_step(
@@ -1288,6 +1417,15 @@ def _research_scout_tool_trace(
             {
                 "query": query,
                 "planned_queries": retrieval.get("planned_queries") or planned_queries or [query],
+                "expanded_queries": retrieval.get("expanded_queries") or [],
+                "requested_count": requested_count,
+                "final_limit": final_limit,
+                "max_final_limit": retrieval.get("max_final_limit"),
+                "count_capped": bool(retrieval.get("count_capped")),
+                "pool_target": retrieval.get("pool_target"),
+                "per_query_limit": retrieval.get("per_query_limit"),
+                "unique_pool_count": retrieval.get("unique_pool_count"),
+                "underfilled_by": retrieval.get("underfilled_by") or 0,
                 "providers": providers,
                 "strategy": retrieval.get("strategy") or "arxiv_first_enriched",
                 "fallback_used": fallback_used,
@@ -1394,11 +1532,36 @@ def _format_research_scout_context(candidates: list[dict[str, Any]], intent: dic
     return f"Parsed user intent:\n{_format_research_scout_intent(intent)}\n\nCandidate papers:\n" + "\n\n".join(blocks)
 
 
+def _format_research_scout_retrieval_note(retrieval: dict[str, Any]) -> str:
+    if not retrieval:
+        return ""
+    requested = retrieval.get("requested_count")
+    final_limit = retrieval.get("final_limit")
+    candidate_count = retrieval.get("candidate_count")
+    pool_count = retrieval.get("unique_pool_count")
+    pool_target = retrieval.get("pool_target")
+    capped = bool(retrieval.get("count_capped"))
+    underfilled_by = int(retrieval.get("underfilled_by") or 0)
+    parts = [
+        f"requested_count={requested if requested else 'not specified'}",
+        f"final_limit={final_limit}",
+        f"ranked_candidates={candidate_count}",
+        f"unique_pool_count={pool_count}",
+        f"pool_target={pool_target}",
+    ]
+    if capped:
+        parts.append(f"requested count capped at {retrieval.get('max_final_limit')}")
+    if underfilled_by:
+        parts.append(f"underfilled_by={underfilled_by}")
+    return "Retrieval diagnostics: " + " | ".join(parts)
+
+
 async def _build_research_scout_context(query: str, search_depth: str, intent: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, str]], list[str], dict[str, Any]]:
-    limit = RESEARCH_SCOUT_LIMITS.get(search_depth, RESEARCH_SCOUT_LIMITS["standard"])
-    planned_queries = await _plan_research_scout_queries(query, intent, search_depth)
+    count_info = _research_scout_final_limit(query, search_depth)
+    limit = int(count_info["final_limit"])
+    planned_queries = await _plan_research_scout_queries(query, intent, search_depth, final_limit=limit)
     try:
-        papers, retrieval = await _retrieve_research_scout_papers(query, planned_queries, intent, limit)
+        papers, retrieval = await _retrieve_research_scout_papers(query, planned_queries, intent, limit, count_info)
     except Exception as exc:
         logger.warning("Research Scout scholarly discovery failed: %s", exc)
         papers = []
@@ -1408,7 +1571,16 @@ async def _build_research_scout_context(query: str, search_depth: str, intent: d
             "planned_queries": planned_queries,
             "providers": [],
             "fallback_providers": [],
-            "stage_counts": {"arxiv_enriched": 0, "scholarly_fallback": 0, "ranked": 0},
+            "requested_count": count_info.get("requested_count"),
+            "default_count": count_info.get("default_count"),
+            "final_limit": limit,
+            "max_final_limit": count_info.get("max_final_limit"),
+            "count_capped": count_info.get("capped"),
+            "pool_target": 0,
+            "per_query_limit": 0,
+            "unique_pool_count": 0,
+            "underfilled_by": limit,
+            "stage_counts": {"arxiv_enriched": 0, "scholarly_fallback": 0, "expanded_fallback": 0, "pool": 0, "ranked": 0},
             "candidate_count": 0,
         }
 
@@ -1434,6 +1606,7 @@ async def _build_research_scout_context(query: str, search_depth: str, intent: d
                 "评价创新性、可复现性、影响力和实验质量时只能依据 Evaluation 中的分数、证据和置信度。"
                 "回答末尾必须给出“优先阅读 Top 3”，每项用 [PAPER-N] 编号并说明先读原因。"
                 "引用候选时使用 [PAPER-N] 编号，不要编造候选列表之外的论文。\n\n"
+                f"{_format_research_scout_retrieval_note(retrieval)}\n\n"
                 f"{_format_research_scout_context(candidates, intent)}"
             ),
         }]
