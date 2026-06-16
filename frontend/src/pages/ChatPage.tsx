@@ -294,6 +294,7 @@ const ChatPage: React.FC = () => {
   const [ingestedScoutKeys, setIngestedScoutKeys] = useState<Set<string>>(new Set());
   const [expandedScoutMessages, setExpandedScoutMessages] = useState<Set<string>>(new Set());
   const [expandedToolTraces, setExpandedToolTraces] = useState<Set<string>>(new Set());
+  const [expandedReferenceStrips, setExpandedReferenceStrips] = useState<Set<string>>(new Set());
   const [scoutLocalPaperIds, setScoutLocalPaperIds] = useState<Record<string, string>>({});
   const [collections, setCollections] = useState<PaperCollectionOption[]>([]);
   const [researchProjects, setResearchProjects] = useState<ResearchProjectOption[]>([]);
@@ -1000,6 +1001,62 @@ const ChatPage: React.FC = () => {
       </div>
     );
   };
+  const openReference = (ref: any) => {
+    if (ref.url) window.open(ref.url, '_blank', 'noopener,noreferrer');
+    else if (ref.pdf_url) window.open(ref.pdf_url, '_blank', 'noopener,noreferrer');
+    else if (ref.arxiv_id) window.open(`https://arxiv.org/abs/${ref.arxiv_id.replace(/v\d+$/, '')}`, '_blank', 'noopener,noreferrer');
+  };
+  const renderReferenceStrip = (msg: any, messageKey: string) => {
+    const references = visibleReferencesForMessage(msg);
+    if (!references.length) return null;
+    const expanded = expandedReferenceStrips.has(messageKey);
+    const sourceLabel = msg.research_scout?.enabled ? '论文候选来源' : '检索来源';
+    const firstLabel = referenceLabel(references[0]);
+    const toggleReferenceStrip = () => {
+      setExpandedReferenceStrips(previous => {
+        const next = new Set(previous);
+        if (next.has(messageKey)) next.delete(messageKey);
+        else next.add(messageKey);
+        return next;
+      });
+    };
+    return (
+      <div className={`chat-reference-strip ${expanded ? 'is-expanded' : 'is-collapsed'}`}>
+        <div className="chat-reference-strip-header">
+          <Space size={6} className="chat-reference-strip-summary">
+            <GlobalOutlined />
+            <Text type="secondary" className="chat-reference-strip-title">{sourceLabel}</Text>
+            <Tag color={msg.research_scout?.enabled ? 'purple' : 'blue'}>{references.length} 条</Tag>
+            <Text type="secondary" className="chat-reference-strip-first" ellipsis={{ tooltip: firstLabel }}>{firstLabel}</Text>
+          </Space>
+          <Button
+            size="small"
+            type="text"
+            className="chat-reference-strip-toggle"
+            icon={expanded ? <DownOutlined /> : <RightOutlined />}
+            onClick={toggleReferenceStrip}
+          >
+            {expanded ? '收起' : '展开'}
+          </Button>
+        </div>
+        {expanded && (
+          <div className="chat-reference-strip-tags">
+            {references.map((ref: any, ri: number) => (
+              <Tooltip key={`${ref.url || ref.pdf_url || ref.arxiv_id || ref.title}-${ri}`} title={referenceTooltip(ref)}>
+                <Tag
+                  color={ref.source === 'web' ? 'cyan' : ref.source === 'research_scout' ? 'purple' : 'geekblue'}
+                  className="chat-reference-tag"
+                  onClick={() => openReference(ref)}
+                >
+                  [{ri + 1}] {referenceLabel(ref)}
+                </Tag>
+              </Tooltip>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
   const renderResearchScoutCards = (msg: any) => {
     const candidates = msg.research_scout?.candidates || [];
     if (!candidates.length) return null;
@@ -1274,7 +1331,9 @@ const ChatPage: React.FC = () => {
             </div>
           ) : (
             <>
-              {filteredMessages.map((msg, idx) => (
+              {filteredMessages.map((msg, idx) => {
+                const messageKey = String(msg.id || msg.created_at || `${msg.role}-${idx}`);
+                return (
                 <div key={idx} className={`chat-message-row ${msg.role === 'user' ? 'is-user' : 'is-assistant'}`}>
                   <Avatar className="chat-message-avatar" size={30} icon={msg.role === 'user' ? <UserOutlined /> : <RobotOutlined />} />
                   <div className={`chat-message-body ${msg.role === 'user' ? 'is-user' : 'is-assistant'}`}>
@@ -1304,11 +1363,11 @@ const ChatPage: React.FC = () => {
                       <Button type="text" size="small" onClick={async () => { if (msg.id) try { await api.post('/chat/feedback', { message_id: msg.id, rating: 'like' }); message.success('已反馈'); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '反馈提交失败' })); } }} style={{ fontSize: 11, color: token.colorTextQuaternary }}>👍</Button>
                       <Button type="text" size="small" onClick={async () => { if (msg.id) try { await api.post('/chat/feedback', { message_id: msg.id, rating: 'dislike' }); message.success('已反馈'); } catch (error) { message.error(getApiErrorMessage(error, { fallback: '反馈提交失败' })); } }} style={{ fontSize: 11, color: token.colorTextQuaternary }}>👎</Button></>}
                     </div>
-                    {visibleReferencesForMessage(msg).length > 0 && <div className="chat-reference-strip"><Text type="secondary" style={{ fontSize: 11 }}>{msg.research_scout?.enabled ? '论文候选来源：' : '检索来源：'}</Text>{visibleReferencesForMessage(msg).map((ref: any, ri: number) => <Tooltip key={`${ref.url || ref.arxiv_id || ref.title}-${ri}`} title={referenceTooltip(ref)}><Tag color={ref.source === 'web' ? 'cyan' : ref.source === 'research_scout' ? 'purple' : 'geekblue'} style={{ marginTop: 4, cursor: ref.url || ref.pdf_url || ref.arxiv_id ? 'pointer' : 'default', borderRadius: 8 }} onClick={() => { if (ref.url) window.open(ref.url, '_blank', 'noopener,noreferrer'); else if (ref.pdf_url) window.open(ref.pdf_url, '_blank', 'noopener,noreferrer'); else if (ref.arxiv_id) window.open(`https://arxiv.org/abs/${ref.arxiv_id.replace(/v\d+$/, '')}`, '_blank', 'noopener,noreferrer'); }}>[{ri + 1}] {referenceLabel(ref)}</Tag></Tooltip>)}</div>}
+                    {renderReferenceStrip(msg, messageKey)}
                     <div style={{ fontSize: 11, color: token.colorTextQuaternary, marginTop: 4, textAlign: msg.role === 'user' ? 'right' : 'left', padding: '0 4px' }}>{msg.created_at ? new Date(msg.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : ''}</div>
                   </div>
                 </div>
-              ))}
+              );})}
               {pendingMsg && <div className="chat-message-row is-user"><Avatar className="chat-message-avatar" size={30} icon={<UserOutlined />} /><div className="chat-message-body is-user"><div className="chat-message-bubble is-user">{pendingMsg}</div></div></div>}
               {sending && <div className="chat-message-row is-assistant"><Avatar className="chat-message-avatar" size={30} icon={<RobotOutlined />} /><div className="chat-message-body is-assistant"><div className="chat-stream-status"><Space size={8} align="start"><Space size={5} style={{ paddingTop: 5 }}>{[0, 0.2, 0.4].map((d, i) => <div key={i} style={{ width: 7, height: 7, borderRadius: '50%', background: '#2563eb', animation: `bounce 1.4s infinite ease-in-out ${d}s` }} />)}</Space><div className="chat-stream-status-copy">{streamPhaseLabel && <span className="chat-stream-phase"><ClockCircleOutlined />{streamPhaseLabel}</span>}<Text type="secondary" className="chat-stream-status-text">{streamStatus || '正在等待模型响应...'}</Text></div><Button className="chat-stop-inline-button" type="text" size="small" icon={<StopOutlined />} onClick={handleStopGeneration}>停止</Button></Space></div></div></div>}
             </>

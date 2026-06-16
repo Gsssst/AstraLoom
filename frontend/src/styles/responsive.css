@@ -1488,14 +1488,64 @@
 
 .chat-reference-strip {
   margin-top: 8px;
-  padding: 7px 10px;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  background: #ffffff;
+  padding: 7px 9px;
+  border: 1px solid #e2e8f0;
+  border-radius: 11px;
+  background: #f8fafc;
 }
 
-.chat-reference-strip .ant-tag {
+.chat-reference-strip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-reference-strip-summary {
+  min-width: 0;
+  flex: 1;
+}
+
+.chat-reference-strip-title {
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.chat-reference-strip-first {
+  min-width: 0;
+  max-width: min(620px, 56vw);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.chat-reference-strip-toggle {
+  height: 23px !important;
+  padding: 0 6px !important;
   border-radius: 7px !important;
+  color: #475569 !important;
+}
+
+.chat-reference-strip-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.chat-reference-strip .ant-tag,
+.chat-reference-tag {
+  border-radius: 7px !important;
+}
+
+.chat-reference-tag {
+  max-width: min(100%, 520px);
+  margin: 0 !important;
+  overflow: hidden;
+  cursor: pointer;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-stream-status {

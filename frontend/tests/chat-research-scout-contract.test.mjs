@@ -250,8 +250,26 @@ test('Research Scout source strip excludes generic web references', () => {
   assert.match(chatPageSource, /visibleReferencesForMessage/);
   assert.match(chatPageSource, /msg\.research_scout\?\.enabled/);
   assert.match(chatPageSource, /ref\.source === 'research_scout'/);
-  assert.match(chatPageSource, /论文候选来源：/);
-  assert.match(chatPageSource, /检索来源：/);
+  assert.match(chatPageSource, /论文候选来源/);
+  assert.match(chatPageSource, /检索来源/);
+});
+
+test('chat reference strips are collapsed by default with expandable full tags', () => {
+  assert.match(chatPageSource, /expandedReferenceStrips/);
+  assert.match(chatPageSource, /setExpandedReferenceStrips/);
+  assert.match(chatPageSource, /renderReferenceStrip/);
+  assert.match(chatPageSource, /chat-reference-strip-header/);
+  assert.match(chatPageSource, /chat-reference-strip-first/);
+  assert.match(chatPageSource, /chat-reference-strip-toggle/);
+  assert.match(chatPageSource, /expanded && \(/);
+  assert.match(chatPageSource, /chat-reference-strip-tags/);
+  assert.match(chatPageSource, /openReference\(ref\)/);
+  assert.match(chatPageSource, /references\.length\} 条/);
+  assert.match(responsiveSource, /\.chat-reference-strip-header/);
+  assert.match(responsiveSource, /\.chat-reference-strip-first/);
+  assert.match(responsiveSource, /\.chat-reference-strip-toggle/);
+  assert.match(responsiveSource, /\.chat-reference-strip-tags/);
+  assert.match(responsiveSource, /\.chat-reference-tag/);
 });
 
 test('backend streams Research Scout tool execution trace', () => {
