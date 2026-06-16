@@ -20,6 +20,11 @@ The system SHALL provide a dedicated Toolbox space where authenticated users can
 - **WHEN** an authenticated user updates a toolbox entry
 - **THEN** the system persists the changed fields without removing linked paper evidence
 
+#### Scenario: Toolbox tools are eligible for agent runtime exposure
+- **WHEN** a toolbox entry or future skill is marked as callable by chat
+- **THEN** it is exposed through the shared chat agent tool runtime with a typed schema and side-effect policy
+- **AND** it does not bypass tool validation or confirmation requirements
+
 ### Requirement: Toolbox entries can cite source papers
 The system SHALL allow toolbox entries to link to source papers with relation labels and concise evidence notes.
 
