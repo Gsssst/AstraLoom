@@ -64,6 +64,9 @@ export interface EvidenceMetaLike {
   evidence_count?: number | null;
   evidence_coverage?: number | null;
   evidence_insufficient?: boolean | null;
+  section_evidence_match?: boolean | null;
+  target_section_number?: string | null;
+  matched_section_heading?: string | null;
 }
 
 export interface EvidenceConfidenceInput {
@@ -71,7 +74,7 @@ export interface EvidenceConfidenceInput {
   evidence?: EvidenceMetaLike | null;
 }
 
-export type EvidenceConfidenceStatus = 'strong' | 'partial' | 'weak';
+export type EvidenceConfidenceStatus = 'section' | 'strong' | 'partial' | 'weak';
 
 export interface EvidenceConfidenceResult {
   references: EvidenceReferenceLike[];
@@ -81,6 +84,9 @@ export interface EvidenceConfidenceResult {
   sourceDiversity: number;
   weightedScore: number;
   status: EvidenceConfidenceStatus;
+  sectionMatch: boolean;
+  targetSectionNumber?: string | null;
+  matchedSectionHeading?: string | null;
 }
 
 const STOPWORDS = new Set([
@@ -195,18 +201,20 @@ export const computeEvidenceConfidence = (input: EvidenceConfidenceInput): Evide
   const references = input.references || [];
   const currentPaperRefs = references.filter(ref => ref.type === 'paper_evidence' || ref.source === 'current_paper');
   const evidenceCount = input.evidence?.evidence_count ?? currentPaperRefs.length;
-  const coverage = Math.max(0, Math.min(1, input.evidence?.evidence_coverage ?? Math.min(1, evidenceCount / 3)));
+  const sectionMatch = Boolean(input.evidence?.section_evidence_match);
+  const coverage = sectionMatch ? 1 : Math.max(0, Math.min(1, input.evidence?.evidence_coverage ?? Math.min(1, evidenceCount / 3)));
   const sourceDiversity = new Set(references.map(ref => ref.source || ref.type || 'unknown')).size;
   const avgCurrentScore = currentPaperRefs.length
     ? currentPaperRefs.reduce((sum, ref) => sum + Number(ref.score || 0.65), 0) / currentPaperRefs.length
     : 0;
-  const weightedScore = Math.max(0, Math.min(1,
+  const genericWeightedScore = Math.max(0, Math.min(1,
     coverage * 0.45
     + Math.min(evidenceCount, 4) / 4 * 0.25
     + Math.min(sourceDiversity, 3) / 3 * 0.1
     + avgCurrentScore * 0.2
     - (input.evidence?.evidence_insufficient ? 0.35 : 0),
   ));
+  const weightedScore = sectionMatch ? Math.max(genericWeightedScore, 0.86) : genericWeightedScore;
   return {
     references,
     currentPaperRefs,
@@ -214,7 +222,10 @@ export const computeEvidenceConfidence = (input: EvidenceConfidenceInput): Evide
     coverage,
     sourceDiversity,
     weightedScore,
-    status: weightedScore >= 0.68 ? 'strong' : weightedScore >= 0.34 ? 'partial' : 'weak',
+    status: sectionMatch ? 'section' : weightedScore >= 0.68 ? 'strong' : weightedScore >= 0.34 ? 'partial' : 'weak',
+    sectionMatch,
+    targetSectionNumber: input.evidence?.target_section_number,
+    matchedSectionHeading: input.evidence?.matched_section_heading,
   };
 };
 

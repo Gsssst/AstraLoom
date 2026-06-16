@@ -140,6 +140,9 @@ def test_paper_evidence_meta_reports_coverage_and_insufficient_state():
         "evidence_insufficient": True,
         "visual_evidence_available": False,
         "evidence_plan": None,
+        "section_evidence_match": False,
+        "target_section_number": None,
+        "matched_section_heading": None,
     }
 
     meta = papers._paper_evidence_meta([
@@ -152,6 +155,56 @@ def test_paper_evidence_meta_reports_coverage_and_insufficient_state():
     assert meta["evidence_coverage"] == 0.6667
     assert meta["evidence_insufficient"] is False
     assert meta["evidence_plan"]["strategy"] == "experiment_complete"
+    assert meta["section_evidence_match"] is False
+
+
+def test_paper_evidence_meta_treats_matched_numbered_section_as_sufficient():
+    meta = papers._paper_evidence_meta([
+        {
+            "type": "paper_evidence",
+            "id": "E1",
+            "evidence_type": "numbered_section",
+            "metadata": {
+                "evidence_plan": {
+                    "intent": "numbered_section_lookup",
+                    "strategy": "numbered_section",
+                    "target_section_number": "3.2",
+                    "matched_section_heading": "3.2 ALVTS Framework",
+                },
+            },
+        },
+    ])
+
+    assert meta["evidence_count"] == 1
+    assert meta["evidence_coverage"] == 1.0
+    assert meta["evidence_insufficient"] is False
+    assert meta["section_evidence_match"] is True
+    assert meta["target_section_number"] == "3.2"
+    assert meta["matched_section_heading"] == "3.2 ALVTS Framework"
+
+
+def test_paper_evidence_meta_keeps_generic_coverage_when_numbered_section_missing():
+    meta = papers._paper_evidence_meta([
+        {
+            "type": "paper_evidence",
+            "id": "E1",
+            "metadata": {
+                "evidence_plan": {
+                    "intent": "numbered_section_lookup",
+                    "strategy": "numbered_section",
+                    "target_section_number": "3.2",
+                    "matched_section_heading": None,
+                    "warnings": ["numbered_section_not_found:3.2"],
+                },
+            },
+        },
+    ])
+
+    assert meta["evidence_count"] == 1
+    assert meta["evidence_coverage"] == 0.3333
+    assert meta["section_evidence_match"] is False
+    assert meta["target_section_number"] == "3.2"
+    assert meta["matched_section_heading"] is None
 
 
 @pytest.mark.asyncio

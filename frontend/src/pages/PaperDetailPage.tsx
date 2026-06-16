@@ -207,10 +207,15 @@ interface PaperChatEvidenceMeta {
   evidence_insufficient: boolean;
   visual_evidence_count?: number;
   visual_evidence_available?: boolean;
+  section_evidence_match?: boolean;
+  target_section_number?: string | null;
+  matched_section_heading?: string | null;
   evidence_plan?: {
     intent?: string;
     strategy?: string;
     requested_sections?: string[];
+    target_section_number?: string | null;
+    matched_section_heading?: string | null;
     warnings?: string[];
     budgets?: Record<string, number>;
   } | null;
@@ -292,6 +297,7 @@ const paperReadingTemplates: PaperReadingTemplate[] = [
 ];
 
 const paperEvidenceConfidenceMeta = {
+  section: { label: '章节命中', color: 'green' },
   strong: { label: '证据较充分', color: 'green' },
   partial: { label: '部分支撑', color: 'gold' },
   weak: { label: '证据不足', color: 'orange' },
@@ -1722,7 +1728,9 @@ const PaperDetailPage: React.FC = () => {
                                       ))}
                                     </Space>
                                     <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 11 }}>
-                                      PaperQA 风格证据检查：优先依据当前论文片段和显式引用判断回答可信度。
+                                      {confidence.sectionMatch
+                                        ? `已定位${confidence.targetSectionNumber ? `第 ${confidence.targetSectionNumber} 节` : '目标章节'}，按章节范围而非证据条数判断。`
+                                        : 'PaperQA 风格证据检查：优先依据当前论文片段和显式引用判断回答可信度。'}
                                     </Text>
                                   </div>
                                   {((msg.references && msg.references.length > 0) || msg.evidence) && (
@@ -1748,7 +1756,9 @@ const PaperDetailPage: React.FC = () => {
                                     {msg.evidence.evidence_insufficient ? '证据不足' : `引用覆盖率 ${Math.round((msg.evidence.evidence_coverage || 0) * 100)}%`}
                                   </Tag>
                                   <Text type="secondary" style={{ fontSize: 11 }}>
-                                    当前回答关联 {msg.evidence.evidence_count || 0} 条证据
+                                    {msg.evidence.section_evidence_match
+                                      ? `已命中章节：${msg.evidence.matched_section_heading || msg.evidence.target_section_number || '目标章节'}`
+                                      : `当前回答关联 ${msg.evidence.evidence_count || 0} 条证据`}
                                     {msg.evidence.visual_evidence_count ? `，其中 ${msg.evidence.visual_evidence_count} 条视觉证据` : ''}
                                   </Text>
                                 </div>
@@ -1845,8 +1855,10 @@ const PaperDetailPage: React.FC = () => {
                 </Space>
                 {drawerMessage.evidence && (
                   <Text type="secondary" className="paper-evidence-drawer-copy">
-                    当前回答关联 {drawerMessage.evidence.evidence_count || 0} 条证据
-                    {drawerMessage.evidence.evidence_insufficient ? '，证据覆盖不足' : ''}
+                    {drawerMessage.evidence.section_evidence_match
+                      ? `已命中章节：${drawerMessage.evidence.matched_section_heading || drawerMessage.evidence.target_section_number || '目标章节'}`
+                      : `当前回答关联 ${drawerMessage.evidence.evidence_count || 0} 条证据`}
+                    {!drawerMessage.evidence.section_evidence_match && drawerMessage.evidence.evidence_insufficient ? '，证据覆盖不足' : ''}
                     {drawerMessage.evidence.visual_evidence_count ? `，其中 ${drawerMessage.evidence.visual_evidence_count} 条视觉证据` : ''}
                   </Text>
                 )}

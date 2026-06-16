@@ -2319,21 +2319,29 @@ def _paper_evidence_meta(references: list[dict]) -> dict:
         if str(ref.get("evidence_type") or "").startswith("visual") or (ref.get("metadata") or {}).get("visual_evidence")
     ]
     visual_ready = bool(visual_evidence)
-    coverage = min(1.0, len(evidence) / 3)
     evidence_plan = None
+    target_section_number = None
+    matched_section_heading = None
     for ref in evidence:
         metadata = ref.get("metadata") if isinstance(ref.get("metadata"), dict) else {}
         plan = metadata.get("evidence_plan")
         if isinstance(plan, dict):
             evidence_plan = plan
+            target_section_number = plan.get("target_section_number")
+            matched_section_heading = plan.get("matched_section_heading")
             break
+    section_evidence_match = bool(target_section_number and matched_section_heading)
+    coverage = 1.0 if section_evidence_match else min(1.0, len(evidence) / 3)
     return {
         "evidence_count": len(evidence),
         "visual_evidence_count": len(visual_evidence),
         "evidence_coverage": round(coverage, 4),
-        "evidence_insufficient": len(evidence) == 0,
+        "evidence_insufficient": len(evidence) == 0 and not section_evidence_match,
         "visual_evidence_available": visual_ready,
         "evidence_plan": evidence_plan,
+        "section_evidence_match": section_evidence_match,
+        "target_section_number": target_section_number,
+        "matched_section_heading": matched_section_heading,
     }
 
 

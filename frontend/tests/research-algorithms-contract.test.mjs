@@ -85,6 +85,38 @@ test('evidence confidence penalizes insufficient evidence and rewards grounded r
   assert.ok(grounded.weightedScore > insufficient.weightedScore);
 });
 
+test('evidence confidence treats matched numbered sections as targeted support', async () => {
+  const { computeEvidenceConfidence } = await loadAlgorithms();
+  const sectionMatched = computeEvidenceConfidence({
+    references: [{ type: 'paper_evidence', source: 'current_paper', score: 1 }],
+    evidence: {
+      evidence_count: 1,
+      evidence_coverage: 1,
+      evidence_insufficient: false,
+      section_evidence_match: true,
+      target_section_number: '3.2',
+      matched_section_heading: '3.2 ALVTS Framework',
+    },
+  });
+  const sectionMissing = computeEvidenceConfidence({
+    references: [{ type: 'paper_evidence', source: 'current_paper', score: 0.7 }],
+    evidence: {
+      evidence_count: 1,
+      evidence_coverage: 0.3333,
+      evidence_insufficient: false,
+      section_evidence_match: false,
+      target_section_number: '3.2',
+    },
+  });
+
+  assert.equal(sectionMatched.status, 'section');
+  assert.equal(sectionMatched.coverage, 1);
+  assert.equal(sectionMatched.targetSectionNumber, '3.2');
+  assert.equal(sectionMatched.matchedSectionHeading, '3.2 ALVTS Framework');
+  assert.equal(sectionMissing.status, 'partial');
+  assert.ok(sectionMatched.weightedScore > sectionMissing.weightedScore);
+});
+
 test('graph edge strength uses relation metadata, scores, and counts', async () => {
   const { scoreGraphEdgeStrength } = await loadAlgorithms();
   assert.equal(scoreGraphEdgeStrength({ relation: 'evidence', score: 0.9 }), 'strong');
