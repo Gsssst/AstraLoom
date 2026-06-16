@@ -47,6 +47,12 @@ from app.services.chat_tool_planner import (
     planner_tool_trace_payload,
     run_llm_tool_planner,
 )
+from app.services.office_extraction import (
+    OfficeExtractionError,
+    UnsupportedOfficeFormatError,
+    extract_office_document,
+    is_office_document_candidate,
+)
 from app.services.web_search import format_web_context, search_web_results
 from app.db.session import AsyncSessionLocal
 
@@ -2877,6 +2883,7 @@ async def extract_file_text(
     extracted_text = ""
     file_type = "unknown"
     data_url: str | None = None
+    office_metadata: dict[str, Any] | None = None
 
     if "image" in content_type or filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
         file_type = "image"
@@ -2893,11 +2900,22 @@ async def extract_file_text(
         if visual_blocks:
             extracted_text = f"{extracted_text}\n{_format_uploaded_pdf_visual_context(filename, visual_blocks)}"
 
+    elif is_office_document_candidate(filename, content_type):
+        try:
+            office_result = extract_office_document(file_bytes, filename, content_type)
+        except UnsupportedOfficeFormatError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except OfficeExtractionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        file_type = office_result.file_type
+        extracted_text = office_result.text
+        office_metadata = office_result.metadata
+
     else:
         try:
             extracted_text = file_bytes.decode("utf-8")[:50000]
             file_type = "text"
-        except:
+        except UnicodeDecodeError:
             raise HTTPException(status_code=400, detail="不支持的文件类型")
 
     return {
@@ -2909,6 +2927,7 @@ async def extract_file_text(
         "mime_type": content_type or None,
         "text_length": len(extracted_text),
         "visual_evidence": visual_payload if file_type == "pdf" else None,
+        "office_metadata": office_metadata,
     }
 
 
@@ -2966,12 +2985,23 @@ async def upload_file(
                 file_desc = f"[用户上传了 PDF: {filename}，无法提取文本，可能是扫描图片版]"
                 extracted_text = f"[PDF: {filename}] 内容无法提取，请上传可选中文字的原生 PDF。{visual_context}"
 
+        elif is_office_document_candidate(filename, content_type):
+            try:
+                office_result = extract_office_document(file_bytes, filename, content_type, max_chars=4000)
+            except UnsupportedOfficeFormatError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            except OfficeExtractionError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            extracted_text = office_result.text
+            office_label = "Word" if office_result.file_type == "docx" else "PowerPoint"
+            file_desc = f"[用户上传了 {office_label}: {filename}，已提取文本 ({len(extracted_text)} 字符)]"
+
         else:
             # 其他文件：尝试当作文本读取
             try:
                 extracted_text = file_bytes.decode("utf-8")[:4000]
                 file_desc = f"[用户上传了文件: {filename}]"
-            except:
+            except UnicodeDecodeError:
                 raise HTTPException(status_code=400, detail=f"不支持的文件类型: {content_type}")
 
     except HTTPException:

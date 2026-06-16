@@ -27,7 +27,8 @@ test('shared chat attachment workflow enforces a 50MB file limit', () => {
   assert.match(attachmentHookSource, /file\.size > CHAT_ATTACHMENT_MAX_BYTES/);
   assert.match(attachmentHookSource, /超过\$\{CHAT_ATTACHMENT_MAX_MB\}MB/);
   assert.match(attachmentHookSource, /\/chat-sessions\/extract-file/);
-  assert.match(attachmentHookSource, /input\.accept = 'image\/\*,\.pdf'/);
+  assert.match(attachmentHookSource, /CHAT_ATTACHMENT_ACCEPT = 'image\/\*,\.pdf,\.docx,\.doc,\.pptx,\.ppt'/);
+  assert.match(attachmentHookSource, /input\.accept = CHAT_ATTACHMENT_ACCEPT/);
   assert.match(attachmentHookSource, /input\.multiple = true/);
   assert.match(attachmentHookSource, /attachedTextContext/);
   assert.match(attachmentHookSource, /imageAttachmentPayloads/);

@@ -1,5 +1,7 @@
+from io import BytesIO
 from types import SimpleNamespace
 from uuid import UUID
+import base64
 
 import pytest
 from pydantic import BaseModel
@@ -67,12 +69,23 @@ def test_registry_schema_export_includes_side_effect_policy():
     registry = default_chat_tool_registry()
     schemas = {schema["name"]: schema for schema in registry.schemas()}
 
-    assert {"search_papers", "search_library", "import_paper", "read_pdf", "add_to_folder", "create_research_project"} <= set(schemas)
+    assert {
+        "search_papers",
+        "search_library",
+        "import_paper",
+        "read_pdf",
+        "extract_docx",
+        "extract_pptx",
+        "add_to_folder",
+        "create_research_project",
+    } <= set(schemas)
     assert schemas["import_paper"]["side_effect"] is True
     assert schemas["add_to_folder"]["side_effect"] is True
     assert schemas["create_research_project"]["side_effect"] is True
     assert schemas["search_papers"]["side_effect"] is False
     assert schemas["read_pdf"]["side_effect"] is False
+    assert schemas["extract_docx"]["side_effect"] is False
+    assert schemas["extract_pptx"]["side_effect"] is False
 
 
 @pytest.mark.asyncio
@@ -320,6 +333,54 @@ async def test_read_pdf_rejects_inaccessible_paper(monkeypatch):
 
     assert state.observations[0].status == "rejected"
     assert "未找到可访问" in state.observations[0].summary
+
+
+@pytest.mark.asyncio
+async def test_extract_docx_tool_returns_bounded_context():
+    from docx import Document
+
+    document = Document()
+    document.add_heading("Tool Word Notes", level=1)
+    document.add_paragraph("Agent can inspect Word content.")
+    buffer = BytesIO()
+    document.save(buffer)
+    payload = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    state = await ChatAgentToolRuntime(default_chat_tool_registry()).run(
+        ChatAgentRuntimeState(user_query="extract word"),
+        [ChatToolCall(tool="extract_docx", arguments={"filename": "notes.docx", "content_base64": payload})],
+    )
+
+    observation = state.observations[0]
+    assert observation.status == "completed"
+    assert observation.details["file_type"] == "docx"
+    assert "Tool Word Notes" in state.context_blocks[0]
+    assert state.references[0]["source"] == "uploaded_office"
+
+
+@pytest.mark.asyncio
+async def test_extract_pptx_tool_returns_slide_context():
+    pytest.importorskip("pptx")
+    from pptx import Presentation
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+    slide.shapes.title.text = "Tool Slides"
+    slide.placeholders[1].text = "First evidence line"
+    buffer = BytesIO()
+    presentation.save(buffer)
+    payload = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    state = await ChatAgentToolRuntime(default_chat_tool_registry()).run(
+        ChatAgentRuntimeState(user_query="extract slides"),
+        [ChatToolCall(tool="extract_pptx", arguments={"filename": "slides.pptx", "content_base64": payload})],
+    )
+
+    observation = state.observations[0]
+    assert observation.status == "completed"
+    assert observation.details["file_type"] == "pptx"
+    assert observation.details["slide_count"] == 1
+    assert "Tool Slides" in state.context_blocks[0]
 
 
 @pytest.mark.asyncio

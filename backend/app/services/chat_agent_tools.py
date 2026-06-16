@@ -30,6 +30,11 @@ from app.services.paper_search import (
     read_remote_ingest_token,
     search_scholarly_papers,
 )
+from app.services.office_extraction import (
+    OfficeExtractionError,
+    extract_docx_text,
+    extract_pptx_text,
+)
 from app.services.paper_chunk_service import PaperChunkService
 from app.services.rag_service import RAGService
 
@@ -120,6 +125,18 @@ class ReadPdfArgs(BaseModel):
     query: str | None = Field(default=None, max_length=500)
     top_k: int = Field(default=3, ge=1, le=5)
     max_chars: int = Field(default=3500, ge=500, le=6000)
+
+
+class ExtractDocxArgs(BaseModel):
+    filename: str = Field(default="document.docx", max_length=300)
+    content_base64: str = Field(..., min_length=1, description="Base64-encoded .docx file bytes.")
+    max_chars: int = Field(default=50000, ge=500, le=50000)
+
+
+class ExtractPptxArgs(BaseModel):
+    filename: str = Field(default="slides.pptx", max_length=300)
+    content_base64: str = Field(..., min_length=1, description="Base64-encoded .pptx file bytes.")
+    max_chars: int = Field(default=50000, ge=500, le=50000)
 
 
 class AddToFolderArgs(BaseModel):
@@ -449,6 +466,16 @@ def local_paper_context(paper: Paper, score: float, rank: int) -> str:
     ])
 
 
+def _decode_tool_file_bytes(content_base64: str) -> bytes:
+    import base64
+    import binascii
+
+    try:
+        return base64.b64decode(content_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("content_base64 must be valid base64 file bytes.") from exc
+
+
 async def _tool_search_papers(args: SearchPapersArgs, state: ChatAgentRuntimeState) -> ChatToolObservation:
     papers = await search_scholarly_papers(
         args.query,
@@ -590,6 +617,46 @@ async def _tool_read_pdf(args: ReadPdfArgs, state: ChatAgentRuntimeState) -> Cha
             "scores": evidence_scores,
             "has_full_text": has_full_text,
         },
+    )
+
+
+def _tool_extract_docx(args: ExtractDocxArgs, state: ChatAgentRuntimeState) -> ChatToolObservation:
+    try:
+        file_bytes = _decode_tool_file_bytes(args.content_base64)
+        result = extract_docx_text(file_bytes, args.filename, max_chars=args.max_chars)
+    except OfficeExtractionError as exc:
+        return ChatToolObservation(tool="extract_docx", status="rejected", summary=str(exc), details=args.model_dump(exclude={"content_base64"}))
+    except ValueError as exc:
+        return ChatToolObservation(tool="extract_docx", status="rejected", summary=str(exc), details=args.model_dump(exclude={"content_base64"}))
+
+    return ChatToolObservation(
+        tool="extract_docx",
+        status="completed",
+        summary=f"已从 Word 文档「{args.filename}」提取 {result.text_length} 字符。",
+        result_count=1,
+        references=[{"source": "uploaded_office", "type": "docx", **result.metadata}],
+        context_blocks=[result.text],
+        details=result.metadata,
+    )
+
+
+def _tool_extract_pptx(args: ExtractPptxArgs, state: ChatAgentRuntimeState) -> ChatToolObservation:
+    try:
+        file_bytes = _decode_tool_file_bytes(args.content_base64)
+        result = extract_pptx_text(file_bytes, args.filename, max_chars=args.max_chars)
+    except OfficeExtractionError as exc:
+        return ChatToolObservation(tool="extract_pptx", status="rejected", summary=str(exc), details=args.model_dump(exclude={"content_base64"}))
+    except ValueError as exc:
+        return ChatToolObservation(tool="extract_pptx", status="rejected", summary=str(exc), details=args.model_dump(exclude={"content_base64"}))
+
+    return ChatToolObservation(
+        tool="extract_pptx",
+        status="completed",
+        summary=f"已从 PowerPoint 文档「{args.filename}」提取 {result.text_length} 字符。",
+        result_count=1,
+        references=[{"source": "uploaded_office", "type": "pptx", **result.metadata}],
+        context_blocks=[result.text],
+        details=result.metadata,
     )
 
 
@@ -794,6 +861,20 @@ def default_chat_tool_registry() -> ChatToolRegistry:
         description="Read bounded evidence from a local paper's stored full text or abstract.",
         args_model=ReadPdfArgs,
         executor=_tool_read_pdf,
+    ))
+    registry.register(ChatToolDefinition(
+        name="extract_docx",
+        label="解析 Word",
+        description="Extract bounded paragraphs, headings, and table text from a base64 .docx payload.",
+        args_model=ExtractDocxArgs,
+        executor=_tool_extract_docx,
+    ))
+    registry.register(ChatToolDefinition(
+        name="extract_pptx",
+        label="解析 PowerPoint",
+        description="Extract bounded slide titles and text from a base64 .pptx payload.",
+        args_model=ExtractPptxArgs,
+        executor=_tool_extract_pptx,
     ))
     registry.register(ChatToolDefinition(
         name="add_to_folder",

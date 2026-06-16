@@ -7,6 +7,7 @@ export const CHAT_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024;
 export const CHAT_ATTACHMENT_MAX_MB = 50;
 export const CHAT_IMAGE_OPTIMIZED_MAX_EDGE = 1600;
 export const CHAT_IMAGE_OPTIMIZED_QUALITY = 0.82;
+export const CHAT_ATTACHMENT_ACCEPT = 'image/*,.pdf,.docx,.doc,.pptx,.ppt';
 
 export interface ChatAttachment {
   file: File;
@@ -146,7 +147,7 @@ export const useChatAttachments = () => {
   const openAttachmentPicker = useCallback(() => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = 'image/*,.pdf';
+    input.accept = CHAT_ATTACHMENT_ACCEPT;
     input.multiple = true;
     input.onchange = async () => {
       await extractFiles(Array.from(input.files || []));

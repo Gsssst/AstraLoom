@@ -40,6 +40,7 @@ rank-bm25>=0.2.0,<1.0.0
 
 # Document Generation
 python-docx>=1.1.0,<2.0.0
+python-pptx>=1.0.2,<2.0.0
 
 # Web Search
 duckduckgo-search>=6.0.0,<7.0.0
