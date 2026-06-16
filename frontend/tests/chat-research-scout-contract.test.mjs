@@ -34,17 +34,35 @@ const backendPlannerSource = readFileSync(
 
 test('chat page exposes Research Scout mode and sends assistant_mode', () => {
   assert.match(chatPageSource, /type ChatAssistantMode = 'general' \| 'research_scout'/);
+  assert.match(chatPageSource, /type ChatToolMode = 'auto' \| 'off' \| 'force'/);
   assert.match(chatPageSource, /chat-composer-mode-select/);
   assert.match(chatPageSource, /论文猎手/);
   assert.match(chatPageSource, /handleAssistantModeChange/);
   assert.match(chatPageSource, /isPaperDiscoveryPrompt/);
   assert.match(chatPageSource, /effectiveAssistantMode: ChatAssistantMode/);
   assert.match(chatPageSource, /assistant_mode: effectiveAssistantMode/);
+  assert.match(chatPageSource, /tool_mode: toolMode/);
   assert.match(chatPageSource, /effectiveWebSearch = effectiveAssistantMode === 'research_scout' \|\| webSearch/);
   assert.match(chatPageSource, /effectiveSearchDepth = effectiveAssistantMode === 'research_scout' \? 'deep' : searchDepth/);
   assert.match(chatPageSource, /已识别为找论文请求，正在启动论文猎手/);
   assert.match(chatPageSource, /论文猎手正在联网检索学术来源/);
   assert.match(chatPageSource, /已切换到论文猎手，并自动开启联网深度学术检索/);
+});
+
+test('chat composer exposes per-turn generic tool mode control', () => {
+  assert.match(chatPageSource, /const \[toolMode, setToolMode\] = useState<ChatToolMode>\('auto'\)/);
+  assert.match(chatPageSource, /toolModeOptions/);
+  assert.match(chatPageSource, /自动工具/);
+  assert.match(chatPageSource, /禁用工具/);
+  assert.match(chatPageSource, /强制工具/);
+  assert.match(chatPageSource, /chat-composer-tool-select/);
+  assert.match(chatPageSource, /onChange=\{setToolMode\}/);
+  assert.match(chatPageSource, /toolModeRuntimeLabel/);
+  assert.match(chatPageSource, /论文猎手使用专用检索 Agent，不受通用工具模式影响/);
+  assert.match(responsiveSource, /\.chat-composer-tool-select/);
+  assert.match(responsiveSource, /\.chat-composer-mode\.is-tool-auto/);
+  assert.match(responsiveSource, /\.chat-composer-mode\.is-tool-off/);
+  assert.match(responsiveSource, /\.chat-composer-mode\.is-tool-force/);
 });
 
 test('chat page renders Research Scout candidate cards', () => {
@@ -133,7 +151,13 @@ test('generic chat tool traces support LLM planner workflow metadata', () => {
   assert.match(backendChatSource, /planner_tool_context_block/);
   assert.match(backendChatSource, /planner_tool_trace_payload/);
   assert.match(backendChatSource, /_chat_tool_planner_enabled/);
+  assert.match(backendChatSource, /tool_mode: Literal\["auto", "off", "force"\]/);
+  assert.match(backendChatSource, /req\.tool_mode != "off"/);
+  assert.match(backendChatSource, /tool_mode="force" if req\.tool_mode == "force" else "auto"/);
   assert.match(backendPlannerSource, /workflow": "llm_tool_planner"/);
+  assert.match(backendPlannerSource, /force_fallback: bool = False/);
+  assert.match(backendPlannerSource, /force_fallback_used/);
+  assert.match(backendPlannerSource, /"tool_mode": result\.tool_mode/);
   assert.match(backendPlannerSource, /parse_planner_decision/);
   assert.match(backendPlannerSource, /build_planner_messages/);
   assert.match(chatPageSource, /trace\?\.workflow === 'research_scout'/);

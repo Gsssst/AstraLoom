@@ -9,7 +9,7 @@ import {
   EyeOutlined, ClockCircleOutlined, StopOutlined,
   InfoCircleOutlined, CloudDownloadOutlined, CheckCircleOutlined,
   FolderOutlined, NodeIndexOutlined, WarningOutlined, ArrowUpOutlined,
-  DownOutlined, RightOutlined,
+  DownOutlined, RightOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import { useChatSessionStore } from '../stores/useChatSessionStore';
 import { useThemeStore } from '../stores/useThemeStore';
@@ -46,6 +46,7 @@ interface ChatModelMetadata {
 }
 
 type ChatAssistantMode = 'general' | 'research_scout';
+type ChatToolMode = 'auto' | 'off' | 'force';
 
 interface ResearchScoutIntent {
   topic?: string;
@@ -164,7 +165,10 @@ interface ToolTraceStep {
 interface ToolTracePayload {
   enabled?: boolean;
   workflow?: string;
+  tool_mode?: ChatToolMode;
   stop_reason?: string;
+  fallback_used?: boolean;
+  force_fallback_used?: boolean;
   steps?: ToolTraceStep[];
 }
 
@@ -285,6 +289,7 @@ const ChatPage: React.FC = () => {
   const [searchDepth, setSearchDepth] = useState<'quick' | 'standard' | 'deep'>('standard');
   const [webSearch, setWebSearch] = useState(false);
   const [assistantMode, setAssistantMode] = useState<ChatAssistantMode>('general');
+  const [toolMode, setToolMode] = useState<ChatToolMode>('auto');
   const [convSearch, setConvSearch] = useState('');
   const [pendingMsg, setPendingMsg] = useState<string | null>(null);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
@@ -542,7 +547,7 @@ const ChatPage: React.FC = () => {
       try {
         const t = localStorage.getItem('access_token');
         const prompt = text || `请分析文件: ${fileNames}`;
-        const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: prompt, rag_enabled: ragEnabled, extra_context: allText || undefined, attachments: imageAttachments, web_search: effectiveWebSearch, search_depth: effectiveSearchDepth, show_thinking: showThinking, assistant_mode: effectiveAssistantMode }) });
+        const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: prompt, rag_enabled: ragEnabled, extra_context: allText || undefined, attachments: imageAttachments, web_search: effectiveWebSearch, search_depth: effectiveSearchDepth, show_thinking: showThinking, assistant_mode: effectiveAssistantMode, tool_mode: toolMode }) });
         if (!r.ok) throw new Error(await parseStreamError(r, '上传发送失败'));
         await consumeChatStream(r);
         rememberAttachments(currentFiles);
@@ -557,7 +562,7 @@ const ChatPage: React.FC = () => {
     useChatSessionStore.setState(s => ({ messages: [...s.messages, { role: 'user', content: text, created_at: new Date().toISOString() }], sending: true }));
     try {
       const t = localStorage.getItem('access_token');
-      const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: text, rag_enabled: ragEnabled, web_search: effectiveWebSearch, search_depth: effectiveSearchDepth, show_thinking: showThinking, assistant_mode: effectiveAssistantMode }) });
+      const r = await fetch(`/api/chat-sessions/${sid}/send-stream`, { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${t}` }, body: JSON.stringify({ content: text, rag_enabled: ragEnabled, web_search: effectiveWebSearch, search_depth: effectiveSearchDepth, show_thinking: showThinking, assistant_mode: effectiveAssistantMode, tool_mode: toolMode }) });
       if (!r.ok) throw new Error(await parseStreamError(r, '发送失败'));
       await consumeChatStream(r);
     } catch (e: any) { if (!cancelRequestedRef.current && e?.name !== 'AbortError') appendAssistantError(getApiErrorMessage(e, { fallback: '发送失败' })); }
@@ -645,8 +650,20 @@ const ChatPage: React.FC = () => {
       label: <span className="chat-composer-mode-option"><ExperimentOutlined /><span className="chat-composer-mode-label">论文猎手</span></span>,
     },
   ];
+  const toolModeOptions = [
+    { value: 'auto', label: <span className="chat-composer-mode-option"><NodeIndexOutlined /><span className="chat-composer-mode-label">自动工具</span></span> },
+    { value: 'off', label: <span className="chat-composer-mode-option"><StopOutlined /><span className="chat-composer-mode-label">禁用工具</span></span> },
+    { value: 'force', label: <span className="chat-composer-mode-option"><ThunderboltOutlined /><span className="chat-composer-mode-label">强制工具</span></span> },
+  ];
   const researchScoutAutoWeb = assistantMode === 'research_scout';
   const effectiveWebSearchActive = researchScoutAutoWeb || webSearch;
+  const toolModeRuntimeLabel = assistantMode === 'research_scout'
+    ? '深度检索'
+    : toolMode === 'force'
+      ? '强制工具'
+      : toolMode === 'off'
+        ? '禁用工具'
+        : '自动工具';
   const scoutCandidateKey = (paper: ResearchScoutCandidate) => `${paper.source || 'unknown'}:${paper.remote_id || paper.arxiv_id || paper.doi || paper.title}`;
   const ensureResearchScoutIngested = async (paper: ResearchScoutCandidate) => {
     const key = scoutCandidateKey(paper);
@@ -720,6 +737,7 @@ const ChatPage: React.FC = () => {
   };
   const statusRows = [
     { key: 'assistant-mode', icon: <ExperimentOutlined />, label: '助手模式', active: assistantMode === 'research_scout', detail: assistantMode === 'research_scout' ? '论文猎手：自动联网检索并推荐有用论文' : '普通对话：通用科研问答' },
+    { key: 'tool-mode', icon: <NodeIndexOutlined />, label: '通用工具', active: assistantMode !== 'research_scout' && toolMode !== 'off', detail: assistantMode === 'research_scout' ? '论文猎手使用专用检索 Agent，不受通用工具模式影响' : toolMode === 'force' ? '强制尝试工具规划，并在空动作时回退确定性规划' : toolMode === 'off' ? '本轮跳过通用 Agent 工具' : '由模型自动判断是否需要工具' },
     { key: 'rag', icon: <DatabaseOutlined />, label: '知识库', active: ragEnabled, detail: ragEnabled ? '参与当前回答检索' : '当前为纯模型或网络回答' },
     { key: 'web', icon: <GlobalOutlined />, label: '联网', active: effectiveWebSearchActive, detail: researchScoutAutoWeb ? '论文猎手已自动启用深度学术联网检索' : webSearch ? `启用${searchDepth === 'deep' ? '深度' : searchDepth === 'quick' ? '快速' : '标准'}联网增强` : '不检索网络来源' },
     { key: 'thinking', icon: <BulbOutlined />, label: '思考', active: !!activeModelInfo?.capabilities?.thinking, detail: activeModelInfo?.capabilities?.thinking ? '当前模型可返回思考摘要' : '当前模型未声明思考展示能力' },
@@ -1506,9 +1524,20 @@ const ChatPage: React.FC = () => {
                     optionLabelProp="label"
                     popupMatchSelectWidth={false}
                   />
+                  <Tooltip title={assistantMode === 'research_scout' ? '论文猎手使用专用检索 Agent，通用工具模式不影响本轮找论文' : '控制通用 Agent 工具是否自动、禁用或强制尝试'}>
+                    <Select
+                      className={`chat-composer-tool-select chat-composer-mode is-tool-${toolMode}`}
+                      size="small"
+                      value={toolMode}
+                      onChange={setToolMode}
+                      options={toolModeOptions}
+                      optionLabelProp="label"
+                      popupMatchSelectWidth={false}
+                    />
+                  </Tooltip>
                 </div>
                 <div className="chat-editor-actions">
-                  <span className="chat-composer-runtime">{assistantMode === 'research_scout' ? '深度检索' : webSearch ? '联网' : ragEnabled ? '知识库' : '标准'}</span>
+                  <span className="chat-composer-runtime">{toolModeRuntimeLabel}</span>
                   {sending ? (
                     <Tooltip title="停止生成"><Button className="chat-stop-button chat-tool-button" type="text" icon={<StopOutlined />} onClick={handleStopGeneration} /></Tooltip>
                   ) : (

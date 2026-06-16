@@ -270,6 +270,7 @@ class SendMessageRequest(BaseModel):
     search_depth: Literal["quick", "standard", "deep"] = Field(default="standard", description="检索深度")
     show_thinking: bool = Field(default=False, description="是否展示思考过程")
     assistant_mode: Literal["general", "research_scout"] = Field(default="general", description="对话助手模式")
+    tool_mode: Literal["auto", "off", "force"] = Field(default="auto", description="通用 Agent 工具模式")
 
 
 class ConfirmToolRequest(BaseModel):
@@ -458,7 +459,7 @@ CHAT_TOOL_TRACE_REFERENCE_TYPE = "chat_tool_trace"
 
 
 def _chat_tool_planner_enabled(req: SendMessageRequest, effective_mode: str) -> bool:
-    return effective_mode != "research_scout" and bool((req.content or "").strip())
+    return effective_mode != "research_scout" and req.tool_mode != "off" and bool((req.content or "").strip())
 
 
 def _tool_trace_reference(tool_trace: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -517,6 +518,7 @@ async def _build_chat_agent_tool_context(
     user: User,
     session_id: str,
     conversation_context: list[dict[str, Any]] | None = None,
+    tool_mode: Literal["auto", "force"] = "auto",
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
     registry = default_chat_tool_registry()
     state = ChatAgentRuntimeState(
@@ -530,10 +532,13 @@ async def _build_chat_agent_tool_context(
         state=state,
         registry=registry,
         conversation_context=conversation_context,
+        force_fallback=tool_mode == "force",
     )
     if not result.state.trace_events:
         return "", [], None
-    return planner_tool_context_block(result), result.state.references, planner_tool_trace_payload(result, registry)
+    tool_trace = planner_tool_trace_payload(result, registry)
+    tool_trace["tool_mode"] = tool_mode
+    return planner_tool_context_block(result), result.state.references, tool_trace
 
 
 def _stream_event(event_type: str, content: Any = None) -> str:
@@ -2523,6 +2528,7 @@ async def send_message(
             user=user,
             session_id=session_id,
             conversation_context=context,
+            tool_mode="force" if req.tool_mode == "force" else "auto",
         )
         if tool_context:
             context.insert(0, {
@@ -2643,6 +2649,7 @@ async def send_message_stream(
             user=user,
             session_id=session_id,
             conversation_context=context,
+            tool_mode="force" if req.tool_mode == "force" else "auto",
         )
         if tool_context:
             context.insert(0, {

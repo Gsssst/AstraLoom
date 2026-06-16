@@ -118,6 +118,72 @@ async def test_planner_malformed_output_falls_back_to_deterministic_plan(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_planner_force_mode_falls_back_when_model_returns_no_actions(monkeypatch):
+    async def _fake_search(query, *, source, max_results, **kwargs):
+        return [
+            chat_agent_tools.PaperResult(
+                title="Forced Fallback Paper",
+                authors=["A"],
+                abstract="force fallback",
+                year=2026,
+                arxiv_id="2601.00002",
+                source="arxiv",
+                metadata={"remote_id": "2601.00002"},
+            )
+        ]
+
+    async def _planner_llm(messages):
+        return '{"actions":[],"final":true,"final_context_summary":"answer directly"}'
+
+    monkeypatch.setattr(chat_agent_tools, "search_scholarly_papers", _fake_search)
+    result = await run_llm_tool_planner(
+        user_query="检索 arxiv 上 video grounding 论文",
+        state=ChatAgentRuntimeState(user_query="检索 arxiv 上 video grounding 论文"),
+        registry=default_chat_tool_registry(),
+        planner_llm=_planner_llm,
+        max_rounds=1,
+        force_fallback=True,
+    )
+    trace = planner_tool_trace_payload(result, default_chat_tool_registry())
+
+    assert result.fallback_used is True
+    assert result.force_fallback_used is True
+    assert result.tool_mode == "force"
+    assert result.stop_reason == "fallback_used"
+    assert trace["tool_mode"] == "force"
+    assert trace["force_fallback_used"] is True
+    assert any(ref["title"] == "Forced Fallback Paper" for ref in result.state.references)
+
+
+@pytest.mark.asyncio
+async def test_planner_auto_mode_does_not_fallback_when_model_returns_final_no_actions(monkeypatch):
+    called = False
+
+    async def _fake_search(query, *, source, max_results, **kwargs):
+        nonlocal called
+        called = True
+        return []
+
+    async def _planner_llm(messages):
+        return '{"actions":[],"final":true,"final_context_summary":"answer directly"}'
+
+    monkeypatch.setattr(chat_agent_tools, "search_scholarly_papers", _fake_search)
+    result = await run_llm_tool_planner(
+        user_query="检索 arxiv 上 video grounding 论文",
+        state=ChatAgentRuntimeState(user_query="检索 arxiv 上 video grounding 论文"),
+        registry=default_chat_tool_registry(),
+        planner_llm=_planner_llm,
+        max_rounds=1,
+    )
+
+    assert called is False
+    assert result.fallback_used is False
+    assert result.force_fallback_used is False
+    assert result.tool_mode == "auto"
+    assert result.stop_reason == "completed"
+
+
+@pytest.mark.asyncio
 async def test_planner_unknown_tool_is_rejected_without_fallback():
     async def _planner_llm(messages):
         return '{"actions":[{"tool":"missing","arguments":{},"thought_summary":"bad"}],"final":false}'

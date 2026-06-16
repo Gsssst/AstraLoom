@@ -25,6 +25,14 @@ def test_send_message_request_validates_search_depth():
         chat_sessions.SendMessageRequest(content="分析最新研究", search_depth="unbounded")
 
 
+def test_send_message_request_validates_tool_mode():
+    request = chat_sessions.SendMessageRequest(content="分析最新研究", tool_mode="force")
+
+    assert request.tool_mode == "force"
+    with pytest.raises(ValidationError):
+        chat_sessions.SendMessageRequest(content="分析最新研究", tool_mode="manual")
+
+
 def test_paper_discovery_prompts_auto_route_to_research_scout():
     request = chat_sessions.SendMessageRequest(
         content="请帮我找10篇2025年到2026年发表的关于 video grounding 的 CVPR 论文",
@@ -81,6 +89,34 @@ def test_general_chat_agent_tools_enable_only_outside_research_scout():
     assert chat_sessions._chat_tool_planner_enabled(request, "research_scout") is False
 
 
+def test_chat_agent_tool_mode_controls_generic_planner_only():
+    auto_request = chat_sessions.SendMessageRequest(
+        content="请在我的论文库里检索 video grounding",
+        assistant_mode="general",
+        tool_mode="auto",
+    )
+    force_request = chat_sessions.SendMessageRequest(
+        content="请在我的论文库里检索 video grounding",
+        assistant_mode="general",
+        tool_mode="force",
+    )
+    off_request = chat_sessions.SendMessageRequest(
+        content="请在我的论文库里检索 video grounding",
+        assistant_mode="general",
+        tool_mode="off",
+    )
+    scout_request = chat_sessions.SendMessageRequest(
+        content="找10篇 video grounding 论文",
+        assistant_mode="research_scout",
+        tool_mode="off",
+    )
+
+    assert chat_sessions._chat_tool_planner_enabled(auto_request, "general") is True
+    assert chat_sessions._chat_tool_planner_enabled(force_request, "general") is True
+    assert chat_sessions._chat_tool_planner_enabled(off_request, "general") is False
+    assert chat_sessions._chat_tool_planner_enabled(scout_request, "research_scout") is False
+
+
 def test_tool_trace_reference_is_hidden_but_reconstructable():
     trace = {
         "enabled": True,
@@ -99,8 +135,11 @@ def test_tool_trace_reference_is_hidden_but_reconstructable():
 def test_streaming_chat_contract_includes_generic_tool_trace_and_saved_reply_id():
     source = chat_sessions.__loader__.get_source(chat_sessions.__name__)
 
+    assert 'tool_mode: Literal["auto", "off", "force"]' in source
     assert "elif _chat_tool_planner_enabled(req, effective_mode):" in source
     assert "run_llm_tool_planner(" in source
+    assert "force_fallback=tool_mode == \"force\"" in source
+    assert '"tool_mode"] = tool_mode' in source
     assert "planner_tool_trace_payload" in source
     assert '"tool_trace": tool_trace' in source
     assert 'yield _stream_event(\n            "saved"' in source

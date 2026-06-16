@@ -71,6 +71,8 @@ class ChatToolPlannerResult(BaseModel):
     state: ChatAgentRuntimeState
     rounds: list[ChatToolPlannerRound] = Field(default_factory=list)
     fallback_used: bool = False
+    force_fallback_used: bool = False
+    tool_mode: Literal["auto", "force"] = "auto"
     stop_reason: PlannerStopReason = "completed"
     final_context_summary: str = ""
     planner_failed: bool = False
@@ -192,7 +194,7 @@ def _planner_trace_event(
     )
 
 
-def _should_use_fallback(rounds: list[ChatToolPlannerRound], state: ChatAgentRuntimeState) -> bool:
+def _should_use_fallback(rounds: list[ChatToolPlannerRound], state: ChatAgentRuntimeState, *, force_fallback: bool = False) -> bool:
     if state.observations:
         return all(item.status == "rejected" for item in state.observations)
     if any(item.parse_error for item in rounds):
@@ -200,6 +202,8 @@ def _should_use_fallback(rounds: list[ChatToolPlannerRound], state: ChatAgentRun
     if not rounds:
         return False
     latest = rounds[-1].decision
+    if force_fallback and latest and not latest.actions:
+        return True
     return bool(latest and not latest.final and not latest.actions)
 
 
@@ -209,6 +213,7 @@ async def _run_deterministic_fallback(
     registry: ChatToolRegistry,
     user_query: str,
     max_tool_steps: int,
+    forced: bool = False,
 ) -> bool:
     actions = deterministic_chat_tool_plan(user_query)
     if not actions:
@@ -216,8 +221,8 @@ async def _run_deterministic_fallback(
     state.trace_events.append(_planner_trace_event(
         round_index=0,
         status="planned",
-        summary="LLM 工具规划不可用，已回退到确定性工具规划。",
-        details={"action_count": len(actions), "fallback_used": True},
+        summary="强制工具模式已回退到确定性工具规划。" if forced else "LLM 工具规划不可用，已回退到确定性工具规划。",
+        details={"action_count": len(actions), "fallback_used": True, "force_fallback_used": forced},
     ))
     runtime = ChatAgentToolRuntime(registry, max_steps=max_tool_steps)
     await runtime.run(state, actions[:max_tool_steps], allow_side_effects=False)
@@ -235,12 +240,13 @@ async def run_llm_tool_planner(
     max_rounds: int = PLANNER_DEFAULT_MAX_ROUNDS,
     max_tool_steps: int = PLANNER_DEFAULT_MAX_TOOL_STEPS,
     enable_fallback: bool = True,
+    force_fallback: bool = False,
 ) -> ChatToolPlannerResult:
     registry = registry or default_chat_tool_registry()
     planner_llm = planner_llm or _default_planner_llm
     max_rounds = max(1, max_rounds)
     max_tool_steps = max(1, max_tool_steps)
-    result = ChatToolPlannerResult(state=state)
+    result = ChatToolPlannerResult(state=state, tool_mode="force" if force_fallback else "auto")
     executed_steps = 0
 
     for round_index in range(1, max_rounds + 1):
@@ -327,14 +333,17 @@ async def run_llm_tool_planner(
         result.stop_reason = "max_rounds"
         state.stop_reason = "max_rounds"
 
-    if enable_fallback and _should_use_fallback(result.rounds, state):
+    should_fallback = enable_fallback and _should_use_fallback(result.rounds, state, force_fallback=force_fallback)
+    if should_fallback:
         fallback_used = await _run_deterministic_fallback(
             state=state,
             registry=registry,
             user_query=user_query,
             max_tool_steps=max_tool_steps,
+            forced=force_fallback,
         )
         result.fallback_used = fallback_used
+        result.force_fallback_used = bool(fallback_used and force_fallback)
         if fallback_used:
             result.stop_reason = "fallback_used"
             state.stop_reason = "fallback_used"
@@ -353,8 +362,10 @@ def planner_tool_trace_payload(result: ChatToolPlannerResult, registry: ChatTool
     return {
         "enabled": bool(result.state.trace_events),
         "workflow": "llm_tool_planner",
+        "tool_mode": result.tool_mode,
         "stop_reason": result.stop_reason,
         "fallback_used": result.fallback_used,
+        "force_fallback_used": result.force_fallback_used,
         "planner_rounds": [item.model_dump() for item in result.rounds],
         "tools": registry.schemas(),
         "steps": [event.model_dump() for event in result.state.trace_events],

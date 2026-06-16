@@ -2241,11 +2241,34 @@
   background: #dbeafe;
 }
 
+.chat-composer-mode.is-tool-auto {
+  color: #0f766e;
+  border-color: #ccfbf1;
+  background: #f0fdfa;
+}
+
+.chat-composer-mode.is-tool-off {
+  color: #475569;
+  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+
+.chat-composer-mode.is-tool-force {
+  color: #7c2d12;
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
 .chat-composer-mode-select {
   width: 124px;
 }
 
-.chat-composer-mode-select .ant-select-selector {
+.chat-composer-tool-select {
+  width: 120px;
+}
+
+.chat-composer-mode-select .ant-select-selector,
+.chat-composer-tool-select .ant-select-selector {
   height: 30px !important;
   padding: 0 9px !important;
   border: 0 !important;
@@ -2254,13 +2277,15 @@
   box-shadow: none !important;
 }
 
-.chat-composer-mode-select .ant-select-selection-item {
+.chat-composer-mode-select .ant-select-selection-item,
+.chat-composer-tool-select .ant-select-selection-item {
   display: flex;
   align-items: center;
   line-height: 28px !important;
 }
 
-.chat-composer-mode-select .ant-select-arrow {
+.chat-composer-mode-select .ant-select-arrow,
+.chat-composer-tool-select .ant-select-arrow {
   color: #64748b;
 }
 
@@ -2406,11 +2431,17 @@
     height: 30px;
   }
 
-  .chat-composer-mode-select .ant-select-selector {
+  .chat-composer-tool-select {
+    width: 44px;
+  }
+
+  .chat-composer-mode-select .ant-select-selector,
+  .chat-composer-tool-select .ant-select-selector {
     padding: 0 6px !important;
   }
 
-  .chat-composer-mode-select .chat-composer-mode-option {
+  .chat-composer-mode-select .chat-composer-mode-option,
+  .chat-composer-tool-select .chat-composer-mode-option {
     justify-content: center;
   }
 
