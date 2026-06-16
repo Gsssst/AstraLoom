@@ -41,6 +41,11 @@ The backend SHALL add both knowledge-base and web context when both sources are 
 - **THEN** the backend may include those observations as bounded context for the final language-model answer
 - **AND** the message metadata includes the corresponding tool trace
 
+#### Scenario: Planner observations add context
+- **WHEN** the LLM tool planner returns completed tool observations
+- **THEN** the backend includes bounded planner observation context for the final language-model answer
+- **AND** preserves ordinary knowledge-base and web context behavior for the same request
+
 ### Requirement: Active retrieval strategy is visible
 The chat toolbar SHALL display a concise retrieval-strategy label derived from the active sources.
 
@@ -51,3 +56,7 @@ The chat toolbar SHALL display a concise retrieval-strategy label derived from t
 #### Scenario: View tool execution trace
 - **WHEN** a chat answer used the generic chat tool runtime
 - **THEN** the chat message displays a collapsible tool execution trace with tool statuses and result counts
+
+#### Scenario: View planner execution trace
+- **WHEN** a chat answer used the LLM tool planner
+- **THEN** the chat message displays planner decisions, fallback usage, tool statuses, and stop reason in the collapsible tool execution trace

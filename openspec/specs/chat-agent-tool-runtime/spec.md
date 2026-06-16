@@ -67,12 +67,17 @@ The runtime SHALL provide `search_papers`, `search_library`, and `import_paper` 
 - **THEN** the selected remote paper is added to the user's paper library using existing ingest behavior
 
 ### Requirement: Tool runtime is bounded
-The runtime SHALL enforce bounded steps, bounded result counts, and graceful failure behavior.
+The runtime SHALL enforce bounded steps, bounded result counts, bounded planner-driven iterations, and graceful failure behavior.
 
 #### Scenario: Planner returns too many calls
 - **WHEN** the planner returns more tool calls than the runtime step limit
 - **THEN** the runtime executes only the allowed number
 - **AND** records a stop reason indicating the limit
+
+#### Scenario: Planner loop reaches round limit
+- **WHEN** the planner-driven action/observation loop reaches its configured round limit
+- **THEN** the runtime stops additional planning
+- **AND** preserves completed observations for the final answer context
 
 #### Scenario: Tool executor fails
 - **WHEN** a tool executor raises an exception
