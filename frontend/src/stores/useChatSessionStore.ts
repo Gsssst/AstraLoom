@@ -29,11 +29,12 @@ interface Message {
   tool_trace?: {
     enabled?: boolean;
     workflow?: string;
+    stop_reason?: string;
     steps?: {
       id: string;
       tool: string;
       label: string;
-      status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'available' | 'waiting';
+      status: 'pending' | 'planned' | 'running' | 'completed' | 'failed' | 'skipped' | 'available' | 'waiting' | 'rejected';
       summary?: string;
       details?: Record<string, unknown>;
     }[];

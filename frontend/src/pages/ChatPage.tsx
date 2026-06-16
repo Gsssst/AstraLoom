@@ -155,7 +155,7 @@ interface ToolTraceStep {
   id: string;
   tool: string;
   label: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'available' | 'waiting';
+  status: 'pending' | 'planned' | 'running' | 'completed' | 'failed' | 'skipped' | 'available' | 'waiting' | 'rejected';
   summary?: string;
   details?: Record<string, unknown>;
 }
@@ -163,6 +163,7 @@ interface ToolTraceStep {
 interface ToolTracePayload {
   enabled?: boolean;
   workflow?: string;
+  stop_reason?: string;
   steps?: ToolTraceStep[];
 }
 
@@ -789,21 +790,25 @@ const ChatPage: React.FC = () => {
   }[value || ''] || '未排序');
   const toolTraceStatusLabel = (value?: string) => ({
     pending: '等待',
+    planned: '已计划',
     running: '执行中',
     completed: '完成',
     failed: '失败',
     skipped: '跳过',
     available: '可操作',
     waiting: '待确认',
+    rejected: '已拒绝',
   }[value || ''] || value || '未知');
   const toolTraceStatusColor = (value?: string) => ({
     pending: 'default',
+    planned: 'blue',
     running: 'processing',
     completed: 'success',
     failed: 'error',
     skipped: 'default',
     available: 'blue',
     waiting: 'warning',
+    rejected: 'error',
   }[value || ''] || 'default');
   const continueScoutSearch = (query: string, flavor: string) => {
     setAssistantMode('research_scout');
@@ -936,22 +941,31 @@ const ChatPage: React.FC = () => {
             <NodeIndexOutlined />
             <Text strong>工具执行轨迹</Text>
           </Space>
-          <Tag color="blue">{trace?.workflow === 'research_scout' ? '论文猎手' : trace?.workflow || 'workflow'}</Tag>
+          <Space size={4}>
+            <Tag color="blue">{trace?.workflow === 'research_scout' || trace?.workflow === 'research_scout_agent' ? '论文猎手 Agent' : trace?.workflow || 'workflow'}</Tag>
+            {trace?.stop_reason && <Tag color={trace.stop_reason === 'completed' ? 'green' : 'orange'}>{trace.stop_reason}</Tag>}
+          </Space>
         </div>
         <div className="chat-tool-trace-steps">
-          {steps.map(step => (
-            <div className={`chat-tool-trace-step is-${step.status}`} key={step.id}>
-              <span className="chat-tool-trace-dot" />
-              <div className="chat-tool-trace-copy">
-                <div className="chat-tool-trace-title">
-                  <Text strong>{step.label}</Text>
-                  <Tag color={toolTraceStatusColor(step.status)}>{toolTraceStatusLabel(step.status)}</Tag>
-                  <Text type="secondary" className="chat-tool-trace-tool">{step.tool}</Text>
+          {steps.map(step => {
+            const resultCount = typeof step.details?.result_count === 'number' ? step.details.result_count : undefined;
+            const excludedCount = typeof step.details?.excluded_count === 'number' ? step.details.excluded_count : undefined;
+            return (
+              <div className={`chat-tool-trace-step is-${step.status}`} key={step.id}>
+                <span className="chat-tool-trace-dot" />
+                <div className="chat-tool-trace-copy">
+                  <div className="chat-tool-trace-title">
+                    <Text strong>{step.label}</Text>
+                    <Tag color={toolTraceStatusColor(step.status)}>{toolTraceStatusLabel(step.status)}</Tag>
+                    <Text type="secondary" className="chat-tool-trace-tool">{step.tool}</Text>
+                    {resultCount !== undefined && <Tag color="default">{resultCount} 条</Tag>}
+                    {!!excludedCount && <Tag color="orange">过滤 {excludedCount}</Tag>}
+                  </div>
+                  {step.summary && <Text type="secondary" className="chat-tool-trace-summary">{step.summary}</Text>}
                 </div>
-                {step.summary && <Text type="secondary" className="chat-tool-trace-summary">{step.summary}</Text>}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     );

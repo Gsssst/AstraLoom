@@ -843,9 +843,39 @@ async def search_scholarly_papers(
     category: Optional[str] = None,
     year_from: Optional[int] = None,
     year_to: Optional[int] = None,
+    venue: Optional[str] = None,
     sort_by: str = "relevance",
 ) -> List[PaperResult]:
     """Search scholarly providers with bounded fallback and canonical de-duplication."""
+
+    def annotate_venue_filter(papers: List[PaperResult], provider: str, *, filtered: bool = False) -> List[PaperResult]:
+        if not venue:
+            return papers
+        annotated: List[PaperResult] = []
+        requested = [venue]
+        for paper in papers:
+            metadata = dict(getattr(paper, "metadata", {}) or {})
+            metadata.setdefault("venue_filter", {
+                "requested": requested,
+                "provider": provider,
+                "filtered": filtered,
+            })
+            annotated.append(PaperResult(
+                title=paper.title,
+                authors=paper.authors,
+                abstract=paper.abstract,
+                year=paper.year,
+                published_at=paper.published_at,
+                arxiv_id=paper.arxiv_id,
+                doi=paper.doi,
+                source=paper.source,
+                source_url=paper.source_url,
+                pdf_url=paper.pdf_url,
+                categories=paper.categories,
+                citation_count=paper.citation_count,
+                metadata=metadata,
+            ))
+        return annotated
 
     async def arxiv_results() -> List[PaperResult]:
         try:
@@ -873,11 +903,27 @@ async def search_scholarly_papers(
         )
 
     if source == "openalex":
-        return deduplicate_papers(await openalex_results(), max_results)
+        return annotate_venue_filter(deduplicate_papers(await openalex_results(), max_results), "openalex")
     if source == "semantic_scholar":
-        return deduplicate_papers(await semantic_results(), max_results)
+        return annotate_venue_filter(deduplicate_papers(await semantic_results(), max_results), "semantic_scholar")
     if source == "google_scholar":
-        return deduplicate_papers(await google_scholar_results(), max_results)
+        return annotate_venue_filter(deduplicate_papers(await google_scholar_results(), max_results), "google_scholar")
+    if source == "cvf_openaccess":
+        if not venue:
+            return []
+        from app.services.cvf_openaccess import normalize_cvf_venue, search_cvf_openaccess
+
+        normalized_venue = normalize_cvf_venue(venue)
+        if not normalized_venue:
+            return []
+        years = [year for year in range(year_from or year_to or 0, (year_to or year_from or 0) + 1) if year]
+        if not years:
+            return []
+        groups = await asyncio.gather(*[
+            search_cvf_openaccess(venue=normalized_venue, year=year, query=query, max_results=max_results)
+            for year in years
+        ])
+        return deduplicate_papers([paper for group in groups for paper in group], max_results)
     if source == "arxiv_enriched":
         arxiv_group, semantic_group, openalex_group = await asyncio.gather(
             arxiv_results(),
@@ -885,14 +931,14 @@ async def search_scholarly_papers(
             openalex_results(),
         )
         enriched = merge_arxiv_enriched_results(arxiv_group, [semantic_group, openalex_group], max_results)
-        return await enrich_arxiv_pdf_first_page_affiliations(enriched)
+        return annotate_venue_filter(await enrich_arxiv_pdf_first_page_affiliations(enriched), "arxiv_enriched")
     if source in ("all", "scholarly"):
         groups = await asyncio.gather(arxiv_results(), semantic_results(), openalex_results(), google_scholar_results())
-        return merge_provider_results(groups, max_results)
+        return annotate_venue_filter(merge_provider_results(groups, max_results), "scholarly")
     if source != "arxiv":
         raise ValueError(f"Unknown scholarly source: {source}")
 
-    return deduplicate_papers(await arxiv_results(), max_results)
+    return annotate_venue_filter(deduplicate_papers(await arxiv_results(), max_results), "arxiv")
 
 
 async def resolve_remote_paper(source: str, remote_id: str) -> Optional[PaperResult]:

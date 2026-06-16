@@ -4,6 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.api import chat_sessions
+from app.services.cvf_openaccess import parse_cvf_openaccess_html
+from app.services.research_scout_agent import ResearchScoutAgentState, ResearchScoutToolCall
 from app.services.web_search import WebSearchResult
 
 
@@ -200,6 +202,7 @@ async def test_research_scout_retrieval_falls_back_to_broad_scholarly_sources(mo
         ]
 
     monkeypatch.setattr(chat_sessions, "search_scholarly_papers", _fake_search_scholarly_papers)
+    monkeypatch.setattr(chat_sessions, "search_cvf_openaccess", lambda **kwargs: [])
 
     papers, metadata = await chat_sessions._retrieve_research_scout_papers(
         "请帮我找10篇关于多模态大模型memory的论文",
@@ -220,6 +223,168 @@ async def test_research_scout_retrieval_falls_back_to_broad_scholarly_sources(mo
     assert metadata["per_query_limit"] >= 12
     assert metadata["unique_pool_count"] == 2
     assert metadata["underfilled_by"] == 8
+
+
+@pytest.mark.asyncio
+async def test_research_scout_retrieval_passes_year_filters_to_providers(monkeypatch):
+    calls = []
+    intent = chat_sessions._research_scout_intent("找10篇2025到2026 video grounding论文", "deep")
+
+    async def _fake_search_scholarly_papers(query, *, source, max_results, sort_by="relevance", **kwargs):
+        calls.append((source, kwargs.get("year_from"), kwargs.get("year_to")))
+        return [
+            chat_sessions.PaperResult(
+                title="Video Grounding 2025",
+                authors=["A"],
+                abstract="video grounding",
+                year=2025,
+                source="arxiv" if source == "arxiv_enriched" else "openalex",
+                arxiv_id="2501.00001" if source == "arxiv_enriched" else None,
+                pdf_url="https://arxiv.org/pdf/2501.00001" if source == "arxiv_enriched" else None,
+                metadata={"remote_id": f"{source}-1"},
+            )
+        ]
+
+    monkeypatch.setattr(chat_sessions, "search_scholarly_papers", _fake_search_scholarly_papers)
+    monkeypatch.setattr(chat_sessions, "search_cvf_openaccess", lambda **kwargs: [])
+
+    papers, metadata = await chat_sessions._retrieve_research_scout_papers(
+        "找10篇2025到2026 video grounding论文",
+        ["video grounding"],
+        intent,
+        limit=10,
+    )
+
+    assert papers
+    assert set(calls) == {("arxiv_enriched", 2025, 2026), ("scholarly", 2025, 2026)}
+    assert metadata["year_from"] == 2025
+    assert metadata["year_to"] == 2026
+
+
+@pytest.mark.asyncio
+async def test_research_scout_retrieval_routes_cvf_venue_requests_first(monkeypatch):
+    scholarly_calls = []
+    cvf_calls = []
+    intent = chat_sessions._research_scout_intent("找10篇CVPR 2026多模态大模型视频理解论文", "deep")
+
+    async def _fake_cvf_search(**kwargs):
+        cvf_calls.append(kwargs)
+        return [
+            chat_sessions.PaperResult(
+                title="Multimodal Large Language Models for Video Understanding",
+                authors=["A"],
+                abstract="",
+                year=2026,
+                source="cvf_openaccess",
+                source_url="https://openaccess.thecvf.com/content/CVPR2026/html/example.html",
+                pdf_url="https://openaccess.thecvf.com/content/CVPR2026/papers/example.pdf",
+                metadata={
+                    "remote_id": "CVPR2026:example",
+                    "venue": "CVPR",
+                    "metadata_provenance": {"venue": "cvf_openaccess", "pdf": "cvf_openaccess"},
+                },
+            )
+        ]
+
+    async def _fake_search_scholarly_papers(query, *, source, max_results, sort_by="relevance", **kwargs):
+        scholarly_calls.append((source, kwargs))
+        return []
+
+    monkeypatch.setattr(chat_sessions, "search_cvf_openaccess", _fake_cvf_search)
+    monkeypatch.setattr(chat_sessions, "search_scholarly_papers", _fake_search_scholarly_papers)
+
+    papers, metadata = await chat_sessions._retrieve_research_scout_papers(
+        "找10篇CVPR 2026多模态大模型视频理解论文",
+        ["multimodal large language model video understanding"],
+        intent,
+        limit=10,
+    )
+
+    assert cvf_calls
+    assert cvf_calls[0]["venue"] == "CVPR"
+    assert cvf_calls[0]["year"] == 2026
+    assert papers[0].source == "cvf_openaccess"
+    assert papers[0].metadata["metadata_provenance"]["venue"] == "cvf_openaccess"
+    assert metadata["stage_counts"]["cvf_openaccess"] == 1
+    assert all(call[1]["venue"] == "CVPR" for call in scholarly_calls)
+
+
+def test_research_scout_constraint_filter_excludes_out_of_range_and_unmatched_venue():
+    intent = chat_sessions._research_scout_intent("只要2025到2026 CVPR video grounding论文", "deep")
+    in_range = chat_sessions.PaperResult(
+        title="Video Grounding at CVPR",
+        authors=["A"],
+        abstract="video grounding",
+        year=2025,
+        source="cvf_openaccess",
+        metadata={"remote_id": "1", "venue": "CVPR"},
+    )
+    old = chat_sessions.PaperResult(
+        title="Old CVPR Video Grounding",
+        authors=["B"],
+        abstract="video grounding",
+        year=2022,
+        source="cvf_openaccess",
+        metadata={"remote_id": "2", "venue": "CVPR"},
+    )
+    no_venue = chat_sessions.PaperResult(
+        title="Video Grounding",
+        authors=["C"],
+        abstract="video grounding",
+        year=2026,
+        source="openalex",
+        metadata={"remote_id": "3"},
+    )
+
+    filtered, stats = chat_sessions._research_scout_constraint_filter([in_range, old, no_venue], intent)
+
+    assert filtered == [in_range]
+    assert stats["year"] == 1
+    assert stats["venue"] == 1
+
+
+@pytest.mark.asyncio
+async def test_research_scout_agent_registry_rejects_invalid_and_side_effect_tools():
+    registry = chat_sessions._research_scout_agent_registry()
+    state = ResearchScoutAgentState(
+        constraints=chat_sessions._research_scout_constraints(
+            "找10篇 video grounding 论文",
+            "deep",
+            chat_sessions._research_scout_intent("找10篇 video grounding 论文", "deep"),
+            chat_sessions._research_scout_final_limit("找10篇 video grounding 论文", "deep"),
+        )
+    )
+
+    invalid = await registry.execute(ResearchScoutToolCall(tool="run_shell", arguments={}), state)
+    side_effect = await registry.execute(ResearchScoutToolCall(tool="import_paper", arguments={}), state)
+
+    assert invalid.status == "rejected"
+    assert "allowed_tools" in invalid.details
+    assert side_effect.status == "rejected"
+    assert side_effect.details["side_effect"] is True
+
+
+def test_cvf_openaccess_parser_preserves_official_venue_provenance():
+    html = """
+    <html><body>
+      <dt class="ptitle"><br><a href="content/CVPR2026/html/foo.html">A Video Grounding Paper</a></dt>
+      <dd>Jane Doe, John Smith</dd>
+      <dd><a href="content/CVPR2026/papers/foo.pdf">pdf</a></dd>
+    </body></html>
+    """
+
+    papers = parse_cvf_openaccess_html(
+        html,
+        venue="CVPR",
+        year=2026,
+        page_url="https://openaccess.thecvf.com/CVPR2026",
+    )
+
+    assert len(papers) == 1
+    assert papers[0].title == "A Video Grounding Paper"
+    assert papers[0].year == 2026
+    assert papers[0].metadata["venue"] == "CVPR"
+    assert papers[0].metadata["metadata_provenance"]["venue"] == "cvf_openaccess"
 
 
 @pytest.mark.asyncio

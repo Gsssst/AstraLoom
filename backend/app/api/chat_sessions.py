@@ -18,8 +18,19 @@ from app.db.models.user import User
 from app.core.security import get_current_user
 from app.core.config import settings
 from app.services.llm import OPENAI_COMPATIBLE_PROVIDER, llm_service
+from app.services.cvf_openaccess import normalize_cvf_venue, search_cvf_openaccess
 from app.services.paper_search import PaperResult, create_remote_ingest_token, deduplicate_papers, search_scholarly_papers
 from app.services.rag_service import RAGService
+from app.services.research_scout_agent import (
+    EmptyToolArgs,
+    ResearchScoutAgent,
+    ResearchScoutAgentState,
+    ResearchScoutConstraints,
+    ResearchScoutToolCall,
+    ResearchScoutToolDefinition,
+    ResearchScoutToolObservation,
+    ResearchScoutToolRegistry,
+)
 from app.services.web_search import format_web_context, search_web_results
 from app.db.session import AsyncSessionLocal
 
@@ -255,7 +266,7 @@ RESEARCH_SCOUT_LIMITS = {"quick": 5, "standard": 8, "deep": 12}
 RESEARCH_SCOUT_MAX_FINAL_RESULTS = 50
 RESEARCH_SCOUT_MAX_PER_QUERY_RESULTS = 60
 RESEARCH_SCOUT_POOL_MULTIPLIER = 4
-RESEARCH_SCOUT_INTENT_YEAR_RE = re.compile(r"\b(20\d{2}|19\d{2})\b")
+RESEARCH_SCOUT_INTENT_YEAR_RE = re.compile(r"(?<!\d)(20\d{2}|19\d{2})(?!\d)")
 RESEARCH_SCOUT_RECENT_HINTS = {"recent", "latest", "new", "newest", "sota", "2024", "2025", "2026", "近", "最新", "近期", "近年"}
 RESEARCH_SCOUT_REPRO_HINTS = {"reproducible", "replication", "code", "github", "可复现", "复现", "代码"}
 RESEARCH_SCOUT_CITATION_HINTS = {"high citation", "highly cited", "经典", "高引用", "seminal", "survey"}
@@ -564,6 +575,29 @@ def _research_scout_venue_from_metadata(metadata: dict[str, Any]) -> str | None:
     return None
 
 
+def _research_scout_year_range(intent: dict[str, Any]) -> tuple[int | None, int | None]:
+    years = sorted({int(year) for year in intent.get("years") or [] if str(year).isdigit()})
+    if not years:
+        return None, None
+    return years[0], years[-1]
+
+
+def _research_scout_cvf_venues(intent: dict[str, Any]) -> list[str]:
+    return _dedupe_preserve([
+        normalized
+        for venue in intent.get("venues") or []
+        if (normalized := normalize_cvf_venue(str(venue)))
+    ])
+
+
+def _research_scout_constraint_mode(intent: dict[str, Any]) -> str:
+    if intent.get("constraint_mode") == "hard":
+        return "hard"
+    if intent.get("venues") or intent.get("years") or intent.get("institutions") or intent.get("authors"):
+        return "hard"
+    return "soft"
+
+
 def _research_scout_institutions_from_metadata(metadata: dict[str, Any]) -> list[str]:
     institutions = metadata.get("institutions") or []
     if not isinstance(institutions, list):
@@ -666,7 +700,8 @@ def _research_scout_intent(query: str, search_depth: str) -> dict[str, Any]:
         for key, hints in RESEARCH_SCOUT_EVALUATION_FOCUS.items()
         if any(hint in lowered for hint in hints)
     ]
-    constraint_mode = "hard" if any(hint in lowered for hint in RESEARCH_SCOUT_HARD_CONSTRAINT_HINTS) else "soft"
+    explicit_hard = any(hint in lowered for hint in RESEARCH_SCOUT_HARD_CONSTRAINT_HINTS)
+    constraint_mode = "hard" if explicit_hard or years or venues or institutions or authors else "soft"
     return {
         "topic": " ".join(tokens[:8]) or query,
         "years": years,
@@ -1074,18 +1109,21 @@ def _research_scout_provider_label(source: str | None) -> str:
         "semantic_scholar": "Semantic Scholar",
         "openalex": "OpenAlex",
         "google_scholar": "Google Scholar/SerpApi",
+        "cvf_openaccess": "CVF OpenAccess",
     }
     return labels.get(source or "", source or "scholarly")
 
 
 def _research_scout_result_source_order(paper: PaperResult) -> int:
-    if paper.source == "arxiv" or paper.arxiv_id:
+    if paper.source == "cvf_openaccess":
         return 0
-    if paper.pdf_url:
+    if paper.source == "arxiv" or paper.arxiv_id:
         return 1
-    if paper.source in {"semantic_scholar", "openalex"}:
+    if paper.pdf_url:
         return 2
-    return 3
+    if paper.source in {"semantic_scholar", "openalex"}:
+        return 3
+    return 4
 
 
 def _score_research_scout_paper(
@@ -1099,6 +1137,8 @@ def _score_research_scout_paper(
     query_matches = _research_scout_query_matches(paper, retrieval_query)
     score += min(len(query_matches), 6) * 10
 
+    if paper.source == "cvf_openaccess":
+        score += 18
     if paper.source == "arxiv":
         score += 16
     if paper.arxiv_id:
@@ -1111,6 +1151,11 @@ def _score_research_scout_paper(
         score += min(18, citation_count ** 0.5)
 
     year = int(paper.year or 0)
+    year_from, year_to = _research_scout_year_range(intent)
+    if year and year_from and year < year_from:
+        score -= 80
+    if year and year_to and year > year_to:
+        score -= 80
     if year >= 2025:
         score += 7
     elif year >= 2023:
@@ -1151,12 +1196,85 @@ def _rank_research_scout_papers(
     return [paper for _, paper in ranked[:limit]]
 
 
+def _research_scout_constraint_filter(
+    papers: list[PaperResult],
+    intent: dict[str, Any],
+) -> tuple[list[PaperResult], dict[str, int]]:
+    year_from, year_to = _research_scout_year_range(intent)
+    hard_mode = _research_scout_constraint_mode(intent) == "hard"
+    stats = {
+        "year": 0,
+        "venue": 0,
+        "institution": 0,
+        "author": 0,
+        "unknown": 0,
+    }
+    filtered: list[PaperResult] = []
+    for paper in papers:
+        if paper.year and year_from and paper.year < year_from:
+            stats["year"] += 1
+            continue
+        if paper.year and year_to and paper.year > year_to:
+            stats["year"] += 1
+            continue
+        matches = _research_scout_constraint_matches(paper, intent)
+        excluded = False
+        if hard_mode:
+            for group in ("venue", "institution", "author"):
+                requested = matches.get(group, {}).get("requested") or []
+                status = matches.get(group, {}).get("status")
+                if requested and status != "matched":
+                    stats[group] += 1
+                    excluded = True
+                    break
+        if excluded:
+            continue
+        filtered.append(paper)
+    return filtered, stats
+
+
+async def _search_research_scout_cvf_stage(
+    query: str,
+    planned_queries: list[str],
+    intent: dict[str, Any],
+    max_results: int,
+) -> list[PaperResult]:
+    venues = _research_scout_cvf_venues(intent)
+    if not venues:
+        return []
+    year_from, year_to = _research_scout_year_range(intent)
+    if not year_from or not year_to:
+        return []
+    years = list(range(year_from, year_to + 1))
+    tasks = []
+    for venue in venues:
+        for year in years:
+            for planned_query in planned_queries or [query]:
+                tasks.append(search_cvf_openaccess(
+                    venue=venue,
+                    year=year,
+                    query=planned_query,
+                    max_results=max_results,
+                ))
+    groups = await asyncio.gather(*tasks, return_exceptions=True)
+    papers: list[PaperResult] = []
+    for group in groups:
+        if isinstance(group, Exception):
+            logger.warning("Research Scout CVF query failed: %s", group)
+            continue
+        papers.extend(group)
+    return deduplicate_papers(papers)
+
+
 async def _run_research_scout_search_stage(
     planned_queries: list[str],
     *,
     source: str,
     max_results: int,
     sort_by: str = "relevance",
+    year_from: int | None = None,
+    year_to: int | None = None,
+    venue: str | None = None,
 ) -> list[PaperResult]:
     groups = await asyncio.gather(*[
         search_scholarly_papers(
@@ -1164,6 +1282,9 @@ async def _run_research_scout_search_stage(
             source=source,
             max_results=max_results,
             sort_by=sort_by,
+            year_from=year_from,
+            year_to=year_to,
+            venue=venue,
         )
         for planned_query in planned_queries
     ], return_exceptions=True)
@@ -1192,24 +1313,40 @@ async def _retrieve_research_scout_papers(
         RESEARCH_SCOUT_MAX_PER_QUERY_RESULTS,
         max(12, (pool_target + max(len(planned_queries), 1) - 1) // max(len(planned_queries), 1)),
     )
+    year_from, year_to = _research_scout_year_range(intent)
+    primary_venue = (intent.get("venues") or [None])[0]
+    cvf_papers = await _search_research_scout_cvf_stage(
+        query,
+        planned_queries,
+        intent,
+        max_results=per_query_limit,
+    )
+    cvf_unique = deduplicate_papers(cvf_papers)
     arxiv_papers = await _run_research_scout_search_stage(
         planned_queries,
         source="arxiv_enriched",
         max_results=per_query_limit,
+        year_from=year_from,
+        year_to=year_to,
+        venue=primary_venue,
     )
     arxiv_unique = deduplicate_papers(arxiv_papers)
 
-    fallback_used = len(arxiv_unique) < limit
+    fallback_used = len(deduplicate_papers([*cvf_unique, *arxiv_unique])) < limit
     fallback_papers: list[PaperResult] = []
     if fallback_used:
         fallback_papers = await _run_research_scout_search_stage(
             planned_queries,
             source="scholarly",
             max_results=per_query_limit,
+            year_from=year_from,
+            year_to=year_to,
+            venue=primary_venue,
         )
 
-    merged = [*arxiv_unique, *fallback_papers]
-    ranked = _rank_research_scout_papers(merged, query, planned_queries, intent, limit)
+    merged = [*cvf_unique, *arxiv_unique, *fallback_papers]
+    filtered, exclusion_stats = _research_scout_constraint_filter(merged, intent)
+    ranked = _rank_research_scout_papers(filtered, query, planned_queries, intent, limit)
     expanded_queries: list[str] = []
     expanded_papers: list[PaperResult] = []
     if len(ranked) < limit:
@@ -1222,9 +1359,13 @@ async def _retrieve_research_scout_papers(
                 expanded_queries,
                 source="scholarly",
                 max_results=min(RESEARCH_SCOUT_MAX_PER_QUERY_RESULTS, max(per_query_limit, limit)),
+                year_from=year_from,
+                year_to=year_to,
+                venue=primary_venue,
             )
             merged = [*merged, *expanded_papers]
-            ranked = _rank_research_scout_papers(merged, query, [*planned_queries, *expanded_queries], intent, limit)
+            filtered, exclusion_stats = _research_scout_constraint_filter(merged, intent)
+            ranked = _rank_research_scout_papers(filtered, query, [*planned_queries, *expanded_queries], intent, limit)
     provider_labels = list(dict.fromkeys(_research_scout_provider_label(paper.source) for paper in ranked))
     fallback_labels = list(dict.fromkeys(_research_scout_provider_label(paper.source) for paper in fallback_papers))
     unique_pool_count = len(deduplicate_papers(merged))
@@ -1236,6 +1377,11 @@ async def _retrieve_research_scout_papers(
         "expanded_queries": expanded_queries,
         "providers": provider_labels or ["arXiv PDF", "Semantic Scholar", "OpenAlex"],
         "fallback_providers": fallback_labels,
+        "year_from": year_from,
+        "year_to": year_to,
+        "venues": intent.get("venues") or [],
+        "constraint_mode": _research_scout_constraint_mode(intent),
+        "constraint_exclusions": exclusion_stats,
         "requested_count": (count_info or {}).get("requested_count"),
         "default_count": (count_info or {}).get("default_count"),
         "final_limit": limit,
@@ -1246,10 +1392,12 @@ async def _retrieve_research_scout_papers(
         "unique_pool_count": unique_pool_count,
         "underfilled_by": underfilled_by,
         "stage_counts": {
+            "cvf_openaccess": len(cvf_unique),
             "arxiv_enriched": len(arxiv_unique),
             "scholarly_fallback": len(deduplicate_papers(fallback_papers)) if fallback_used else 0,
             "expanded_fallback": len(deduplicate_papers(expanded_papers)) if expanded_papers else 0,
             "pool": unique_pool_count,
+            "filtered": len(filtered),
             "ranked": len(ranked),
         },
         "candidate_count": len(ranked),
@@ -1371,6 +1519,8 @@ def _research_scout_tool_trace(
     planned_queries: list[str] | None = None,
     retrieval: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if isinstance(retrieval, dict) and isinstance(retrieval.get("agent_trace"), dict):
+        return retrieval["agent_trace"]
     candidate_count = len(candidates)
     llm_evaluated = sum(1 for item in candidates[:6] if (item.get("evaluation") or {}).get("source") == "llm")
     high_priority = [
@@ -1556,16 +1706,333 @@ def _format_research_scout_retrieval_note(retrieval: dict[str, Any]) -> str:
     return "Retrieval diagnostics: " + " | ".join(parts)
 
 
+def _research_scout_constraints(
+    query: str,
+    search_depth: str,
+    intent: dict[str, Any],
+    count_info: dict[str, Any],
+) -> ResearchScoutConstraints:
+    year_from, year_to = _research_scout_year_range(intent)
+    return ResearchScoutConstraints(
+        original_query=query,
+        search_depth=search_depth,
+        requested_count=count_info.get("requested_count"),
+        final_limit=int(count_info.get("final_limit") or RESEARCH_SCOUT_LIMITS.get(search_depth, 8)),
+        year_from=year_from,
+        year_to=year_to,
+        venues=[str(item) for item in intent.get("venues") or []],
+        institutions=[str(item) for item in intent.get("institutions") or []],
+        authors=[str(item) for item in intent.get("authors") or []],
+        datasets=[str(item) for item in intent.get("datasets") or []],
+        tasks=[str(item) for item in intent.get("tasks") or []],
+        methods=[str(item) for item in intent.get("methods") or []],
+        preferences=[str(item) for item in intent.get("preferences") or []],
+        constraint_mode=_research_scout_constraint_mode(intent),  # type: ignore[arg-type]
+    )
+
+
+async def _research_scout_tool_analyze_query(
+    args: EmptyToolArgs,
+    state: ResearchScoutAgentState,
+) -> ResearchScoutToolObservation:
+    state.intent = _research_scout_intent(state.constraints.original_query, state.constraints.search_depth)
+    return ResearchScoutToolObservation(
+        tool="analyze_research_query",
+        summary="已分析 query，并抽取主题、年份、会议、机构、任务和评估偏好。",
+        result_count=1,
+        details={
+            "intent": state.intent,
+            "constraints": state.constraints.model_dump(),
+        },
+    )
+
+
+async def _research_scout_tool_expand_queries(
+    args: EmptyToolArgs,
+    state: ResearchScoutAgentState,
+) -> ResearchScoutToolObservation:
+    state.planned_queries = await _plan_research_scout_queries(
+        state.constraints.original_query,
+        state.intent,
+        state.constraints.search_depth,
+        final_limit=state.constraints.final_limit,
+    )
+    return ResearchScoutToolObservation(
+        tool="expand_paper_queries",
+        summary=f"已生成 {len(state.planned_queries)} 个学术检索 query。",
+        result_count=len(state.planned_queries),
+        details={"planned_queries": state.planned_queries},
+    )
+
+
+async def _research_scout_tool_search_papers(
+    args: EmptyToolArgs,
+    state: ResearchScoutAgentState,
+) -> ResearchScoutToolObservation:
+    count_info = {
+        "requested_count": state.constraints.requested_count,
+        "default_count": RESEARCH_SCOUT_LIMITS.get(state.constraints.search_depth, RESEARCH_SCOUT_LIMITS["standard"]),
+        "final_limit": state.constraints.final_limit,
+        "max_final_limit": RESEARCH_SCOUT_MAX_FINAL_RESULTS,
+        "capped": bool(state.constraints.requested_count and state.constraints.requested_count > RESEARCH_SCOUT_MAX_FINAL_RESULTS),
+    }
+    papers, retrieval = await _retrieve_research_scout_papers(
+        state.constraints.original_query,
+        state.planned_queries or [state.constraints.original_query],
+        state.intent,
+        state.constraints.final_limit,
+        count_info,
+    )
+    state.papers = papers
+    state.filtered_papers = papers
+    state.retrieval = retrieval
+    state.expanded_queries = retrieval.get("expanded_queries") or []
+    exclusions = retrieval.get("constraint_exclusions") or {}
+    return ResearchScoutToolObservation(
+        tool="search_papers",
+        summary=(
+            f"已执行 CVF/arXiv/学术源检索，目标 {state.constraints.final_limit} 篇，"
+            f"候选池 {retrieval.get('unique_pool_count') or len(papers)} 篇，最终 {len(papers)} 篇。"
+        ),
+        result_count=len(papers),
+        excluded_count=sum(int(value or 0) for value in exclusions.values()),
+        details={
+            "retrieval": retrieval,
+            "year_from": state.constraints.year_from,
+            "year_to": state.constraints.year_to,
+            "venues": state.constraints.venues,
+        },
+    )
+
+
+async def _research_scout_tool_filter_candidates(
+    args: EmptyToolArgs,
+    state: ResearchScoutAgentState,
+) -> ResearchScoutToolObservation:
+    state.filtered_papers, exclusions = _research_scout_constraint_filter(state.papers, state.intent)
+    state.retrieval["constraint_exclusions"] = exclusions
+    return ResearchScoutToolObservation(
+        tool="filter_candidates",
+        summary=f"已按年份、会议、机构和作者约束过滤，保留 {len(state.filtered_papers)} 篇。",
+        result_count=len(state.filtered_papers),
+        excluded_count=sum(int(value or 0) for value in exclusions.values()),
+        details={"constraint_exclusions": exclusions, "constraint_mode": state.constraints.constraint_mode},
+    )
+
+
+async def _research_scout_tool_rank_candidates(
+    args: EmptyToolArgs,
+    state: ResearchScoutAgentState,
+) -> ResearchScoutToolObservation:
+    state.filtered_papers = _rank_research_scout_papers(
+        state.filtered_papers or state.papers,
+        state.constraints.original_query,
+        [*state.planned_queries, *state.expanded_queries],
+        state.intent,
+        state.constraints.final_limit,
+    )
+    state.retrieval["candidate_count"] = len(state.filtered_papers)
+    state.retrieval.setdefault("stage_counts", {})["ranked"] = len(state.filtered_papers)
+    return ResearchScoutToolObservation(
+        tool="rank_candidates",
+        summary=f"已排序并截取 {len(state.filtered_papers)} 篇候选。",
+        result_count=len(state.filtered_papers),
+        details={"top_titles": [paper.title for paper in state.filtered_papers[:5]]},
+    )
+
+
+async def _research_scout_tool_prepare_cards(
+    args: EmptyToolArgs,
+    state: ResearchScoutAgentState,
+) -> ResearchScoutToolObservation:
+    candidates = [
+        _research_scout_candidate(paper, state.constraints.original_query, index + 1, state.intent)
+        for index, paper in enumerate(state.filtered_papers or state.papers)
+    ]
+    state.candidates = await _apply_llm_research_scout_evaluations(candidates, state.constraints.original_query, state.intent)
+    state.references = [_research_scout_reference(item) for item in state.candidates]
+    if not state.candidates:
+        state.system_context = [{
+            "role": "system",
+            "content": (
+                "当前处于 Research Scout 论文猎手模式，但综合学术检索没有返回可用论文。"
+                "请坦诚说明没有找到候选，并给出 3 个更容易命中的英文检索式。"
+            ),
+        }]
+    else:
+        state.system_context = [{
+            "role": "system",
+            "content": (
+                "当前处于 Research Scout 论文猎手模式。你不是普通聊天助手，而是科研论文发现助手。"
+                "请基于以下候选论文和结构化评估，推荐最值得用户优先阅读的论文。"
+                "必须区分：为什么有趣、为什么对用户有用、风险/局限、下一步检索方向。"
+                "如果单位、作者或 venue 约束没有证据确认，必须明确说“当前元数据无法确认”，不要编造 affiliation。"
+                "评价创新性、可复现性、影响力和实验质量时只能依据 Evaluation 中的分数、证据和置信度。"
+                "回答末尾必须给出“优先阅读 Top 3”，每项用 [PAPER-N] 编号并说明先读原因。"
+                "引用候选时使用 [PAPER-N] 编号，不要编造候选列表之外的论文。\n\n"
+                f"{_format_research_scout_retrieval_note(state.retrieval)}\n\n"
+                f"{_format_research_scout_context(state.candidates, state.intent)}"
+            ),
+        }]
+    return ResearchScoutToolObservation(
+        tool="prepare_candidate_cards",
+        summary=f"已准备 {len(state.candidates)} 张候选卡片和用户确认操作。",
+        result_count=len(state.candidates),
+        details={"candidate_count": len(state.candidates), "side_effects": "confirmation_required"},
+    )
+
+
+def _research_scout_agent_registry() -> ResearchScoutToolRegistry:
+    registry = ResearchScoutToolRegistry()
+    registry.register(ResearchScoutToolDefinition(
+        name="analyze_research_query",
+        label="分析检索意图",
+        args_model=EmptyToolArgs,
+        executor=_research_scout_tool_analyze_query,
+    ))
+    registry.register(ResearchScoutToolDefinition(
+        name="expand_paper_queries",
+        label="拓展检索关键词",
+        args_model=EmptyToolArgs,
+        executor=_research_scout_tool_expand_queries,
+    ))
+    registry.register(ResearchScoutToolDefinition(
+        name="search_papers",
+        label="调用论文检索工具",
+        args_model=EmptyToolArgs,
+        executor=_research_scout_tool_search_papers,
+    ))
+    registry.register(ResearchScoutToolDefinition(
+        name="filter_candidates",
+        label="过滤约束不匹配候选",
+        args_model=EmptyToolArgs,
+        executor=_research_scout_tool_filter_candidates,
+    ))
+    registry.register(ResearchScoutToolDefinition(
+        name="rank_candidates",
+        label="排序候选论文",
+        args_model=EmptyToolArgs,
+        executor=_research_scout_tool_rank_candidates,
+    ))
+    registry.register(ResearchScoutToolDefinition(
+        name="prepare_candidate_cards",
+        label="生成候选卡片",
+        args_model=EmptyToolArgs,
+        executor=_research_scout_tool_prepare_cards,
+    ))
+    registry.register(ResearchScoutToolDefinition(
+        name="import_paper",
+        label="等待用户确认入库",
+        args_model=EmptyToolArgs,
+        executor=lambda args, state: ResearchScoutToolObservation(
+            tool="import_paper",
+            status="available",
+            summary="候选卡片可一键入库、加入分类或加入研究方向；不会自动执行副作用操作。",
+            details={"available_actions": ["import_paper", "add_to_folder", "add_to_project"]},
+        ),
+        side_effect=True,
+    ))
+    return registry
+
+
+def _research_scout_default_actions() -> list[ResearchScoutToolCall]:
+    return [
+        ResearchScoutToolCall(tool="analyze_research_query", thought_summary="先拆解 query 和硬约束。"),
+        ResearchScoutToolCall(tool="expand_paper_queries", thought_summary="让 AI 拓展英文检索关键词和任务别名。"),
+        ResearchScoutToolCall(tool="search_papers", thought_summary="按结构化约束调用 CVF/arXiv/学术源检索。"),
+        ResearchScoutToolCall(tool="filter_candidates", thought_summary="排除年份、会议或机构不匹配候选。"),
+        ResearchScoutToolCall(tool="rank_candidates", thought_summary="根据相关性、PDF、venue 和引用排序。"),
+        ResearchScoutToolCall(tool="prepare_candidate_cards", thought_summary="生成候选卡片和最终回答上下文。"),
+    ]
+
+
+def _research_scout_complete_action_plan(actions: list[ResearchScoutToolCall]) -> list[ResearchScoutToolCall]:
+    required = _research_scout_default_actions()
+    seen: set[str] = set()
+    completed: list[ResearchScoutToolCall] = []
+    for action in actions:
+        if action.tool in seen:
+            continue
+        seen.add(action.tool)
+        completed.append(action)
+    for action in required:
+        if action.tool not in seen:
+            completed.append(action)
+            seen.add(action.tool)
+    return completed[:8]
+
+
+async def _plan_research_scout_agent_actions(state: ResearchScoutAgentState, registry: ResearchScoutToolRegistry) -> list[ResearchScoutToolCall]:
+    prompt = (
+        "你是 Research Scout 的受控工具规划器。请根据用户找论文请求，选择工具执行顺序。"
+        "只能使用给定工具名；不要编造工具；不要执行 import_paper 等副作用工具。"
+        "通常需要 analyze_research_query -> expand_paper_queries -> search_papers -> filter_candidates -> rank_candidates -> prepare_candidate_cards。"
+        "如果用户要求 CVPR/ICCV/ECCV 或年份，仍然通过 search_papers 工具传递结构化约束。"
+        "只输出 JSON：{\"actions\":[{\"tool\":\"...\",\"arguments\":{},\"thought_summary\":\"...\"}]}"
+        "\n\n用户请求："
+        f"{state.constraints.original_query}"
+        "\n\n约束："
+        + json.dumps(state.constraints.model_dump(), ensure_ascii=False)
+        + "\n\n可用工具："
+        + json.dumps(registry.schemas(), ensure_ascii=False)
+    )
+    try:
+        from app.services.research_scout_agent import parse_research_scout_action_json
+
+        raw = await llm_service.chat(
+            messages=[
+                {"role": "system", "content": "你只返回可解析 JSON。不要 Markdown。不要输出未注册工具。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.05,
+            max_tokens=1200,
+        )
+        actions = parse_research_scout_action_json(raw)
+        allowed = {item["name"] for item in registry.schemas()}
+        safe_actions = [
+            action for action in actions
+            if action.tool in allowed and action.tool != "import_paper"
+        ]
+        if safe_actions:
+            return _research_scout_complete_action_plan(safe_actions)
+    except Exception as exc:
+        logger.warning("Research Scout agent action planning failed, using default tool loop: %s", exc)
+    return _research_scout_default_actions()
+
+
+def _research_scout_trace_from_agent(state: ResearchScoutAgentState) -> dict[str, Any]:
+    steps = [event.model_dump() for event in state.trace_events]
+    steps.append(_tool_trace_step(
+        "paper-actions",
+        "import_paper",
+        "等待用户确认入库",
+        "available" if state.candidates else "skipped",
+        "候选卡片可一键入库、加入分类或加入研究方向；不会自动执行副作用操作。",
+        {"available_actions": ["import_paper", "add_to_folder", "add_to_project"] if state.candidates else []},
+    ))
+    return {
+        "enabled": True,
+        "workflow": "research_scout_agent",
+        "stop_reason": state.stop_reason,
+        "tools": _research_scout_agent_registry().schemas(),
+        "steps": steps,
+    }
+
+
 async def _build_research_scout_context(query: str, search_depth: str, intent: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, str]], list[str], dict[str, Any]]:
     count_info = _research_scout_final_limit(query, search_depth)
     limit = int(count_info["final_limit"])
-    planned_queries = await _plan_research_scout_queries(query, intent, search_depth, final_limit=limit)
+    constraints = _research_scout_constraints(query, search_depth, intent, count_info)
+    state = ResearchScoutAgentState(constraints=constraints, intent=intent)
+    registry = _research_scout_agent_registry()
+    agent = ResearchScoutAgent(registry, max_steps=8)
+    actions = await _plan_research_scout_agent_actions(state, registry)
     try:
-        papers, retrieval = await _retrieve_research_scout_papers(query, planned_queries, intent, limit, count_info)
+        state = await agent.run(state, actions)
     except Exception as exc:
-        logger.warning("Research Scout scholarly discovery failed: %s", exc)
-        papers = []
-        retrieval = {
+        logger.warning("Research Scout agent discovery failed: %s", exc)
+        planned_queries = await _plan_research_scout_queries(query, intent, search_depth, final_limit=limit)
+        papers, retrieval = [], {
             "strategy": "arxiv_first_then_scholarly_fallback",
             "fallback_used": True,
             "planned_queries": planned_queries,
@@ -1583,34 +2050,12 @@ async def _build_research_scout_context(query: str, search_depth: str, intent: d
             "stage_counts": {"arxiv_enriched": 0, "scholarly_fallback": 0, "expanded_fallback": 0, "pool": 0, "ranked": 0},
             "candidate_count": 0,
         }
-
-    candidates = [_research_scout_candidate(paper, query, index + 1, intent) for index, paper in enumerate(papers)]
-    candidates = await _apply_llm_research_scout_evaluations(candidates, query, intent)
-    references = [_research_scout_reference(item) for item in candidates]
-    if not candidates:
-        system_context = [{
-            "role": "system",
-            "content": (
-                "当前处于 Research Scout 论文猎手模式，但综合学术检索没有返回可用论文。"
-                "请坦诚说明没有找到候选，并给出 3 个更容易命中的英文检索式。"
-            ),
-        }]
-    else:
-        system_context = [{
-            "role": "system",
-            "content": (
-                "当前处于 Research Scout 论文猎手模式。你不是普通聊天助手，而是科研论文发现助手。"
-                "请基于以下候选论文和结构化评估，推荐最值得用户优先阅读的论文。"
-                "必须区分：为什么有趣、为什么对用户有用、风险/局限、下一步检索方向。"
-                "如果单位、作者或 venue 约束没有证据确认，必须明确说“当前元数据无法确认”，不要编造 affiliation。"
-                "评价创新性、可复现性、影响力和实验质量时只能依据 Evaluation 中的分数、证据和置信度。"
-                "回答末尾必须给出“优先阅读 Top 3”，每项用 [PAPER-N] 编号并说明先读原因。"
-                "引用候选时使用 [PAPER-N] 编号，不要编造候选列表之外的论文。\n\n"
-                f"{_format_research_scout_retrieval_note(retrieval)}\n\n"
-                f"{_format_research_scout_context(candidates, intent)}"
-            ),
-        }]
-    return candidates, references, system_context, planned_queries, retrieval
+        state.planned_queries = planned_queries
+        state.retrieval = retrieval
+        state.stop_reason = "fallback_after_agent_failure"
+    state.retrieval["agent_stop_reason"] = state.stop_reason
+    state.retrieval["agent_trace"] = _research_scout_trace_from_agent(state)
+    return state.candidates, state.references, state.system_context, state.planned_queries, state.retrieval
 
 
 async def _retrieval_quality_snapshot(*, rag_enabled: bool) -> dict:
