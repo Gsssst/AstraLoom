@@ -317,6 +317,16 @@ async def build_paper_context_with_evidence(
             "这是完整实验证据包：表格、视觉表格、表格标题和实验正文比普通 top-k 更重要；"
             "请综合所有表格证据回答实验设置、指标、主结果、消融/对比和局限。"
         )
+    elif plan_metadata.get("strategy") == "dataset_experiment":
+        plan_instruction += (
+            "这是数据集/基准问题证据包：请优先从实验表格、表格标题、实验正文中提取 dataset/benchmark 名称、"
+            "对应实验用途和指标；如果证据只有模型名或框架名，必须明确它不是数据集。"
+        )
+    elif plan_metadata.get("strategy") == "novelty_evaluation":
+        plan_instruction += (
+            "这是创新性评价证据包：请同时使用方法证据、实验表格/消融证据和局限/讨论证据，"
+            "从问题设定、方法设计、实验支撑三个角度评价，不要只基于摘要或单一片段下结论。"
+        )
     elif plan_metadata.get("strategy") == "method_visual":
         plan_instruction += "这是方法/视觉证据包：请优先结合方法章节、架构图/标题和视觉证据解释方法。"
     if formula_needed:

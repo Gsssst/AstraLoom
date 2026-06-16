@@ -16,6 +16,7 @@ import {
   BookOutlined, NodeIndexOutlined, FileSearchOutlined,
   ToolOutlined, DownOutlined, UpOutlined,
   UploadOutlined, FilePdfOutlined,
+  StopOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import Markdown from '../components/Markdown';
@@ -407,6 +408,8 @@ const PaperDetailPage: React.FC = () => {
   const [pdfQuote, setPdfQuote] = useState<PaperPdfQuote | null>(null);
   const [asking, setAsking] = useState(false);
   const [askStatus, setAskStatus] = useState<string | null>(null);
+  const paperChatAbortControllerRef = useRef<AbortController | null>(null);
+  const paperChatCancelRequestedRef = useRef(false);
   const [paperRagEnabled, setPaperRagEnabled] = useState(true);
   const [webSearch, setWebSearch] = useState(false);
   const [searchDepth, setSearchDepth] = useState<'quick' | 'standard' | 'deep'>('standard');
@@ -614,6 +617,20 @@ const PaperDetailPage: React.FC = () => {
     });
   };
 
+  const finishPaperChatStreamingMessages = () => {
+    setChatMsgs(prev => prev.map(msg => msg._streaming ? { ...msg, _streaming: false, _reasoningStreaming: false } : msg));
+  };
+
+  const handleStopPaperChatGeneration = () => {
+    if (!asking || !paperChatAbortControllerRef.current) return;
+    paperChatCancelRequestedRef.current = true;
+    setAskStatus('已停止生成');
+    paperChatAbortControllerRef.current.abort();
+    finishPaperChatStreamingMessages();
+    setAsking(false);
+    setAskStatus(null);
+  };
+
   const consumePaperChatStream = async (response: Response) => {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
@@ -676,7 +693,7 @@ const PaperDetailPage: React.FC = () => {
         break;
       }
     }
-    setChatMsgs(prev => prev.map(msg => msg._streaming ? { ...msg, _streaming: false, _reasoningStreaming: false } : msg));
+    finishPaperChatStreamingMessages();
     return { content: full, references, reasoning, evidence, warning };
   };
 
@@ -836,10 +853,14 @@ const PaperDetailPage: React.FC = () => {
     enablePaperChatFollowOutput();
     setChatMsgs(prev => [...prev, userMessage]);
     setAsking(true);
+    paperChatCancelRequestedRef.current = false;
+    const controller = new AbortController();
+    paperChatAbortControllerRef.current = controller;
     setAskStatus(webSearch ? '正在检索当前论文、论文库与网络来源...' : paperRagEnabled ? '正在检索当前论文与相关论文...' : '正在阅读当前论文...');
     try {
       const token = localStorage.getItem('access_token');
       const response = await fetch(`/api/papers/${paperId}/ask-stream`, {
+        signal: controller.signal,
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ question: q, history: chatMsgs.slice(-6), rag_enabled: paperRagEnabled, web_search: webSearch, search_depth: searchDepth, show_thinking: showThinking, attachments: imageAttachments }),
       });
@@ -849,7 +870,10 @@ const PaperDetailPage: React.FC = () => {
       // Save to DB
       const allMsgs = [...chatMsgs, userMessage, { role: 'assistant', content: reply.content, references: reply.references, reasoning: reply.reasoning, evidence: reply.evidence, warning: reply.warning }];
       api.post(`/papers/${paperId}/chat-history`, { messages: allMsgs }).catch(()=>{});
-    } catch {
+    } catch (error: any) {
+      if (paperChatCancelRequestedRef.current || error?.name === 'AbortError') {
+        return;
+      }
       if (!templateMode) {
         setQuestion(current => current || visibleQuestion);
         setPdfQuote(current => current || activeQuote);
@@ -857,7 +881,13 @@ const PaperDetailPage: React.FC = () => {
       setPaperChatAttachments(current => current.length > 0 ? current : attachedFiles);
       setChatMsgs(prev => [...prev, { role: 'assistant', content: '❌ 问答失败，请稍后重试。' }]);
     }
-    finally { setAsking(false); setAskStatus(null); }
+    finally {
+      finishPaperChatStreamingMessages();
+      paperChatAbortControllerRef.current = null;
+      paperChatCancelRequestedRef.current = false;
+      setAsking(false);
+      setAskStatus(null);
+    }
   };
 
   const handleAsk = async () => {
@@ -1775,7 +1805,7 @@ const PaperDetailPage: React.FC = () => {
                   </div>
                 ))
               )}
-              {asking && <div style={{display:'flex',gap:8,alignItems:'flex-start'}}><Avatar size={28} icon={<RobotOutlined/>} style={{background:'linear-gradient(135deg,#12c2e9,#c471ed)'}}/><div style={{padding:'10px 14px',borderRadius:'4px 14px 14px 14px',background:'#fff',border:'1px solid #f0f0f0'}}><Space size={8}><Space size={5}>{[0,0.2,0.4].map((delay,i)=><div key={i} style={{width:6,height:6,borderRadius:'50%',background:'#c471ed',animation:`bounce 1.4s infinite ease-in-out ${delay}s`}}/>)}</Space><Text type="secondary" style={{fontSize:12}}>{askStatus || '正在生成回答...'}</Text></Space></div></div>}
+              {asking && <div style={{display:'flex',gap:8,alignItems:'flex-start'}}><Avatar size={28} icon={<RobotOutlined/>} style={{background:'linear-gradient(135deg,#12c2e9,#c471ed)'}}/><div style={{padding:'10px 14px',borderRadius:'4px 14px 14px 14px',background:'#fff',border:'1px solid #f0f0f0'}}><Space size={8}><Space size={5}>{[0,0.2,0.4].map((delay,i)=><div key={i} style={{width:6,height:6,borderRadius:'50%',background:'#c471ed',animation:`bounce 1.4s infinite ease-in-out ${delay}s`}}/>)}</Space><Text type="secondary" style={{fontSize:12}}>{askStatus || '正在生成回答...'}</Text><Button type="text" size="small" icon={<StopOutlined />} onClick={handleStopPaperChatGeneration} style={{ color: '#d4380d', fontSize: 12 }}>停止</Button></Space></div></div>}
               <div ref={chatEndRef} />
             </div>
             <div className="paper-detail-chat-composer">
@@ -1823,7 +1853,9 @@ const PaperDetailPage: React.FC = () => {
                 onPressEnter={e=>{if(!e.shiftKey){e.preventDefault();handleAsk();}}}
                 placeholder={pdfQuote ? '围绕引用内容提问，Enter 发送，Shift+Enter 换行' : '基于论文提问，Enter 发送，Shift+Enter 换行'}
                 autoSize={{ minRows: 1, maxRows: 6 }} disabled={asking}/>
-                <Button className="paper-detail-chat-send" type="primary" shape="circle" icon={<SendOutlined/>} loading={asking} disabled={(!question.trim() && !pdfQuote && paperChatAttachments.length === 0 && rememberedPaperChatAttachments.length === 0) || hasExtractingPaperChatAttachments} onClick={handleAsk}/>
+                {asking
+                  ? <Tooltip title="停止生成"><Button className="paper-detail-chat-send" danger shape="circle" icon={<StopOutlined/>} onClick={handleStopPaperChatGeneration}/></Tooltip>
+                  : <Button className="paper-detail-chat-send" type="primary" shape="circle" icon={<SendOutlined/>} disabled={(!question.trim() && !pdfQuote && paperChatAttachments.length === 0 && rememberedPaperChatAttachments.length === 0) || hasExtractingPaperChatAttachments} onClick={handleAsk}/>}
               </div>
             </div>
           </Card>

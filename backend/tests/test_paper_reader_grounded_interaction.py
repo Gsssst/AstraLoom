@@ -207,11 +207,50 @@ def test_formula_query_prioritizes_structured_formula_evidence():
     )
 
     assert scope == "formula+structured"
-    assert plan.strategy == "formula_top_k"
+    assert plan.strategy == "formula_number"
     assert plan.include_formula_evidence is True
     assert evidence[0].source_type == "formula"
+    assert evidence[0].metadata["requested_formula_number"] == 7
     assert evidence[0].page_start == 5
     assert "alpha_s" in evidence[0].text
+
+
+def test_formula_number_query_targets_labelled_formula_not_first_math_like_text():
+    full_text = (
+        "3 Preliminary\n"
+        "The model converts text and images into token sequences x_t and x_i before generation. "
+        + "prelim-marker " * 80
+    )
+    structured_blocks = [
+        {
+            "type": "formula",
+            "page": 2,
+            "source": "docling",
+            "text": r"Eq. 2: S_j = \alpha c_j + (1-\alpha) l_j",
+            "metadata": {"label": "Eq. 2"},
+        },
+        {
+            "type": "formula",
+            "page": 1,
+            "source": "docling",
+            "text": r"Formula (1): P(y_t | y_{<t}, X_v, X_q)",
+            "metadata": {"label": "Formula (1)"},
+        },
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释公式 1 的含义，每个变量分别代表什么",
+        top_k=4,
+        structured_blocks=structured_blocks,
+    )
+
+    assert scope == "formula+structured"
+    assert plan.strategy == "formula_number"
+    assert evidence[0].source_type == "formula"
+    assert evidence[0].metadata["requested_formula_number"] == 1
+    assert "Formula (1)" in evidence[0].text
+    assert "Eq. 2" not in evidence[0].text
 
 
 def test_numbered_section_includes_supplemental_formula_evidence():
@@ -247,6 +286,73 @@ def test_numbered_section_includes_supplemental_formula_evidence():
     assert plan.include_formula_evidence is True
     assert evidence[0].source_type == "numbered_section"
     assert any(item.source_type == "formula" and "alpha_s" in item.text for item in evidence)
+
+
+def test_dataset_question_routes_to_experiment_tables_and_captions():
+    full_text = "\n\n".join([
+        "3 Experiments",
+        "We evaluate on COCO, TextVQA, and ScienceQA benchmarks. dataset-marker " * 50,
+        "4 Conclusion",
+        "The method improves deployment efficiency. conclusion-marker " * 50,
+    ])
+    structured_blocks = [
+        {
+            "type": "caption",
+            "page": 7,
+            "source": "pdfplumber",
+            "text": "Table 1. Results on COCO, TextVQA and ScienceQA datasets.",
+            "metadata": {"caption_type": "table_caption"},
+        },
+        {
+            "type": "table",
+            "page": 7,
+            "source": "pdfplumber",
+            "text": "| Dataset | Experiment | Metric |\n| --- | --- | --- |\n| COCO | captioning | CIDEr |\n| TextVQA | visual QA | Accuracy |",
+            "metadata": {"table_index": 1},
+        },
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "这篇论文用了哪些数据集？每个数据集分别用于什么实验？",
+        top_k=4,
+        structured_blocks=structured_blocks,
+    )
+
+    assert scope == "dataset_experiment"
+    assert plan.strategy == "dataset_experiment"
+    assert any("Dataset" in item.text or "COCO" in item.text for item in evidence)
+    assert any((item.metadata or {}).get("dataset_evidence") for item in evidence)
+
+
+def test_novelty_question_includes_method_and_experiment_evidence():
+    full_text = "\n\n".join([
+        "2 Method",
+        "Our contribution is adaptive layer-wise visual token selection with selector reuse. method-novelty-marker " * 45,
+        "3 Experiments",
+        "Ablation study shows the selector and layer-wise policy improve accuracy. experiment-ablation-marker " * 45,
+        "4 Limitations",
+        "The method may need more evaluation on long video settings. limitation-marker " * 45,
+    ])
+    structured_blocks = [{
+        "type": "table",
+        "page": 8,
+        "source": "pdfplumber",
+        "text": "| Ablation | Accuracy |\n| --- | --- |\n| without selector | 70.1 |\n| full method | 78.4 |",
+        "metadata": {"table_index": 2},
+    }]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "这篇论文的创新性强吗？请从方法、实验、问题设定三个角度评价。",
+        top_k=6,
+        structured_blocks=structured_blocks,
+    )
+
+    assert scope == "novelty_evaluation"
+    assert plan.strategy == "novelty_evaluation"
+    assert any("method-novelty-marker" in item.text for item in evidence)
+    assert any("Ablation" in item.text or "experiment-ablation-marker" in item.text for item in evidence)
 
 
 def test_numbered_section_missing_records_targeted_warning():

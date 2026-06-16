@@ -151,6 +151,38 @@ class PaperChunkService:
         "beta", "lambda", "theta", "公式", "方程", "等式", "式子", "符号",
         "推导", "损失", "目标函数", "目标式", "变量", "记号",
     )
+    DATASET_QUERY_TERMS = (
+        "dataset", "datasets", "benchmark", "benchmarks", "data set", "data sets",
+        "corpus", "corpora", "evaluation data", "training data", "validation data",
+        "test set", "数据集", "基准", "评测集", "训练集", "验证集", "测试集",
+        "用了哪些数据", "哪些数据集",
+    )
+    NOVELTY_QUERY_TERMS = (
+        "novelty", "innovative", "innovation", "originality",
+        "创新", "创新性", "新颖性", "原创性",
+    )
+    ORDINAL_FORMULA_WORDS = {
+        "first": 1,
+        "1st": 1,
+        "second": 2,
+        "2nd": 2,
+        "third": 3,
+        "3rd": 3,
+        "fourth": 4,
+        "4th": 4,
+        "fifth": 5,
+        "5th": 5,
+        "第一个": 1,
+        "第一": 1,
+        "第二个": 2,
+        "第二": 2,
+        "第三个": 3,
+        "第三": 3,
+        "第四个": 4,
+        "第四": 4,
+        "第五个": 5,
+        "第五": 5,
+    }
     SECTION_NUMBER_CONTEXT_RE = re.compile(
         r"(?:第\s*)?(\d{1,2}(?:\.\d{1,2}){1,3})\s*(?:节|小节|章节|部分|section|sec\.?|subsection|subsec\.?)",
         re.I,
@@ -271,6 +303,37 @@ class PaperChunkService:
         return bool(re.search(r"\\[a-zA-Z]+|[$^_{}]|(?:^|\W)e[qx]\.?\s*\d+", query or "", re.I))
 
     @classmethod
+    def detect_requested_formula_number(cls, query: str) -> Optional[int]:
+        normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
+        if not normalized or not cls.is_formula_like_query(query):
+            return None
+        patterns = (
+            r"(?:公式|方程|等式|式子|式)\s*\(?\s*(\d{1,2})\s*\)?",
+            r"(?:第\s*)?(\d{1,2})\s*(?:个|条)?\s*(?:公式|方程|等式|式子|式)",
+            r"(?:eq(?:uation)?\.?|formula)\s*\(?\s*(\d{1,2})\s*\)?",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, normalized, re.I)
+            if match:
+                return int(match.group(1))
+        for word, number in cls.ORDINAL_FORMULA_WORDS.items():
+            if word in normalized and re.search(r"formula|equation|公式|方程|等式|式子|式", normalized, re.I):
+                return number
+        return None
+
+    @classmethod
+    def is_dataset_query(cls, query: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (query or "").lower())
+        return any(term in normalized for term in cls.DATASET_QUERY_TERMS)
+
+    @classmethod
+    def is_novelty_query(cls, query: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (query or "").lower())
+        if any(term in normalized for term in cls.NOVELTY_QUERY_TERMS):
+            return True
+        return bool(re.search(r"(novel|new)\s+(?:contribution|method|approach|idea)|是否.*创新|创新.*强|新意", normalized, re.I))
+
+    @classmethod
     def is_broad_experiment_query(cls, query: str) -> bool:
         normalized = re.sub(r"\s+", " ", (query or "").lower())
         if any(term in normalized for term in cls.BROAD_EXPERIMENT_QUERY_TERMS):
@@ -308,6 +371,10 @@ class PaperChunkService:
 
     @classmethod
     def detect_evidence_strategy(cls, query: str) -> str:
+        if cls.is_novelty_query(query):
+            return "novelty"
+        if cls.is_dataset_query(query):
+            return "dataset"
         if cls.is_broad_experiment_query(query):
             return "experiment"
         if cls.is_broad_method_query(query):
@@ -327,6 +394,7 @@ class PaperChunkService:
         visual_like = cls.is_visual_like_query(query)
         table_like = cls.is_table_like_query(query)
         formula_like = cls.is_formula_like_query(query)
+        formula_number = cls.detect_requested_formula_number(query)
 
         if target_section_number:
             return PaperQuestionEvidencePlan(
@@ -340,6 +408,34 @@ class PaperChunkService:
                 text_budget=top_k or cls.DEFAULT_EVIDENCE_TOP_K,
             )
 
+        if strategy == "novelty":
+            sections = tuple(dict.fromkeys([*requested_sections, "method", "experiments", "conclusion"]))
+            return PaperQuestionEvidencePlan(
+                intent="novelty_evaluation",
+                strategy="novelty_evaluation",
+                requested_sections=sections,
+                include_all_tables=True,
+                include_visual_tables=True,
+                include_visual_evidence=True,
+                max_evidence_items=max(top_k or 0, cls.EXPERIMENT_COMPLETE_EVIDENCE_TOP_K),
+                caption_budget=cls.EXPERIMENT_COMPLETE_CAPTION_BUDGET,
+                text_budget=max(cls.EXPERIMENT_COMPLETE_TEXT_BUDGET, cls.METHOD_VISUAL_TEXT_BUDGET),
+            )
+        if strategy == "dataset":
+            sections = tuple(dict.fromkeys([*requested_sections, "experiments"]))
+            return PaperQuestionEvidencePlan(
+                intent="dataset_lookup",
+                strategy="dataset_experiment",
+                requested_sections=sections,
+                include_all_tables=True,
+                include_visual_tables=True,
+                include_visual_evidence=False,
+                max_evidence_items=max(top_k or 0, cls.EXPERIMENT_COMPLETE_EVIDENCE_TOP_K),
+                table_budget=cls.EXPERIMENT_COMPLETE_TABLE_BUDGET,
+                visual_table_budget=cls.EXPERIMENT_COMPLETE_VISUAL_TABLE_BUDGET,
+                caption_budget=cls.EXPERIMENT_COMPLETE_CAPTION_BUDGET,
+                text_budget=cls.EXPERIMENT_COMPLETE_TEXT_BUDGET,
+            )
         if strategy == "experiment":
             sections = tuple(dict.fromkeys([*requested_sections, "experiments"]))
             return PaperQuestionEvidencePlan(
@@ -373,12 +469,12 @@ class PaperChunkService:
             )
         if formula_like:
             return PaperQuestionEvidencePlan(
-                intent="formula_lookup",
-                strategy="formula_top_k",
+                intent="formula_number_lookup" if formula_number else "formula_lookup",
+                strategy="formula_number" if formula_number else "formula_top_k",
                 requested_sections=requested_sections,
                 include_formula_evidence=True,
                 max_evidence_items=max(top_k or 0, cls.DEFAULT_EVIDENCE_TOP_K + cls.FORMULA_EVIDENCE_TOP_K),
-                formula_budget=cls.FORMULA_EVIDENCE_TOP_K,
+                formula_budget=max(cls.FORMULA_EVIDENCE_TOP_K, 3) if formula_number else cls.FORMULA_EVIDENCE_TOP_K,
                 text_budget=top_k or cls.DEFAULT_EVIDENCE_TOP_K,
             )
         if strategy == "visual":
@@ -423,6 +519,10 @@ class PaperChunkService:
     def recommended_evidence_top_k(cls, query: str, default: int = DEFAULT_EVIDENCE_TOP_K) -> int:
         if cls.detect_requested_section_number(query):
             return max(default, cls.DEFAULT_EVIDENCE_TOP_K + cls.FORMULA_EVIDENCE_TOP_K)
+        if cls.is_novelty_query(query):
+            return cls.EXPERIMENT_COMPLETE_EVIDENCE_TOP_K
+        if cls.is_dataset_query(query):
+            return cls.EXPERIMENT_COMPLETE_EVIDENCE_TOP_K
         if cls.is_formula_like_query(query):
             return max(default, cls.DEFAULT_EVIDENCE_TOP_K + cls.FORMULA_EVIDENCE_TOP_K)
         strategy = cls.detect_evidence_strategy(query)
@@ -714,6 +814,73 @@ class PaperChunkService:
         return item.source_type == "formula" or str(metadata.get("kind") or "").lower() == "formula"
 
     @staticmethod
+    def _formula_label_text(item: EvidenceChunk) -> str:
+        metadata = item.metadata or {}
+        values = [
+            item.text,
+            metadata.get("label"),
+            metadata.get("caption"),
+            metadata.get("name"),
+            metadata.get("formula_id"),
+            metadata.get("number"),
+        ]
+        return " ".join(str(value) for value in values if value is not None)
+
+    @classmethod
+    def _formula_matches_number(cls, item: EvidenceChunk, number: int) -> bool:
+        text = cls._formula_label_text(item)
+        if not text:
+            return False
+        patterns = (
+            rf"\b(?:eq(?:uation)?|formula)\s*\.?\s*\(?\s*{number}\s*\)?\b",
+            rf"(?:公式|方程|等式|式子|式)\s*\(?\s*{number}\s*\)?",
+            rf"^\s*\(?\s*{number}\s*\)?\s*[:：.]",
+            rf"\(\s*{number}\s*\)",
+        )
+        return any(re.search(pattern, text, re.I) for pattern in patterns)
+
+    @classmethod
+    def _formula_number_evidence_lane(
+        cls,
+        structured_candidates: List[EvidenceChunk],
+        query: str,
+        *,
+        top_k: int,
+        target_pages: Optional[set[int]] = None,
+    ) -> List[EvidenceChunk]:
+        number = cls.detect_requested_formula_number(query)
+        if not number:
+            return []
+        formula_candidates = [item for item in structured_candidates if cls._is_formula_evidence(item)]
+        if not formula_candidates:
+            return []
+        matched = [item for item in formula_candidates if cls._formula_matches_number(item, number)]
+        if not matched and 1 <= number <= len(formula_candidates):
+            matched = [formula_candidates[number - 1]]
+        if not matched:
+            return []
+        scored = [
+            EvidenceChunk(
+                text=item.text,
+                score=max(0.94, cls._formula_evidence_score(item, query, target_pages=target_pages)),
+                section=item.section,
+                page_start=item.page_start,
+                page_end=item.page_end,
+                source_type="formula",
+                source=item.source,
+                metadata={
+                    **(item.metadata or {}),
+                    "formula_evidence": True,
+                    "requested_formula_number": number,
+                    "formula_number_match": cls._formula_matches_number(item, number),
+                    "formula_order_match": not cls._formula_matches_number(item, number),
+                },
+            )
+            for item in matched[:max(1, top_k)]
+        ]
+        return cls._suppress_redundant_evidence(scored, top_k=max(1, top_k))
+
+    @staticmethod
     def _page_distance(page: Optional[int], target_pages: set[int]) -> int:
         if not page or not target_pages:
             return 99
@@ -804,6 +971,86 @@ class PaperChunkService:
         return cls._suppress_redundant_evidence(scored, top_k=top_k)
 
     @classmethod
+    def _dataset_evidence_pack(
+        cls,
+        structured_candidates: List[EvidenceChunk],
+        text_candidates: List[EvidenceChunk],
+        query: str,
+        plan: PaperQuestionEvidencePlan,
+    ) -> List[EvidenceChunk]:
+        dataset_terms = re.compile(
+            r"dataset|benchmark|data set|corpus|training set|validation set|test set|数据集|基准|评测集|训练集|验证集|测试集",
+            re.I,
+        )
+        experiment_pack = cls._experiment_complete_evidence_pack(structured_candidates, text_candidates, query, plan)
+        dataset_text_candidates = [
+            item for item in [*structured_candidates, *text_candidates]
+            if dataset_terms.search(item.text or "")
+        ]
+        dataset_hits = cls.search_evidence_chunks(
+            dataset_text_candidates,
+            query,
+            top_k=min(8, plan.max_evidence_items),
+            requested_sections=set(plan.requested_sections),
+        ) if dataset_text_candidates else []
+        boosted = [
+            EvidenceChunk(
+                text=item.text,
+                score=max(item.score, 0.86),
+                section=item.section,
+                page_start=item.page_start,
+                page_end=item.page_end,
+                source_type=item.source_type,
+                source=item.source,
+                metadata={**(item.metadata or {}), "dataset_evidence": True, "evidence_plan_strategy": plan.strategy},
+            )
+            for item in dataset_hits
+        ]
+        return cls._merge_complete_evidence_pack(
+            boosted,
+            experiment_pack,
+            top_k=plan.max_evidence_items,
+        )
+
+    @classmethod
+    def _novelty_evidence_pack(
+        cls,
+        structured_candidates: List[EvidenceChunk],
+        text_candidates: List[EvidenceChunk],
+        query: str,
+        plan: PaperQuestionEvidencePlan,
+    ) -> List[EvidenceChunk]:
+        experiment_pack = cls._experiment_complete_evidence_pack(structured_candidates, text_candidates, query, plan)
+        method_candidates = [
+            item for item in text_candidates
+            if item.section == "method" or re.search(r"method|approach|architecture|framework|pipeline|contribution|novel|算法|方法|架构|框架|流程|贡献|创新", item.text or "", re.I)
+        ] or text_candidates
+        limitation_candidates = [
+            item for item in text_candidates
+            if item.section == "conclusion" or re.search(r"limitation|future work|discussion|ablation|局限|不足|未来|讨论|消融", item.text or "", re.I)
+        ]
+        method_hits = cls.search_evidence_chunks(method_candidates, query, top_k=plan.text_budget) if method_candidates else []
+        limitation_hits = cls.search_evidence_chunks(limitation_candidates, query, top_k=3) if limitation_candidates else []
+        method_results = [
+            EvidenceChunk(
+                text=item.text,
+                score=max(item.score, 0.84),
+                section=item.section,
+                page_start=item.page_start,
+                page_end=item.page_end,
+                source_type=item.source_type,
+                source=item.source,
+                metadata={**(item.metadata or {}), "novelty_method_evidence": True, "evidence_plan_strategy": plan.strategy},
+            )
+            for item in [*method_hits, *limitation_hits]
+        ]
+        return cls._merge_complete_evidence_pack(
+            method_results,
+            experiment_pack,
+            top_k=plan.max_evidence_items,
+        )
+
+    @classmethod
     def retrieve_evidence(
         cls,
         full_text: str,
@@ -852,6 +1099,24 @@ class PaperChunkService:
             )
             if complete_results:
                 return complete_results, "experiment_complete"
+        if plan.strategy == "dataset_experiment":
+            dataset_results = cls._dataset_evidence_pack(
+                structured_candidates,
+                text_candidates,
+                query,
+                plan,
+            )
+            if dataset_results:
+                return dataset_results, "dataset_experiment"
+        if plan.strategy == "novelty_evaluation":
+            novelty_results = cls._novelty_evidence_pack(
+                structured_candidates,
+                text_candidates,
+                query,
+                plan,
+            )
+            if novelty_results:
+                return novelty_results, "novelty_evaluation"
         if plan.strategy == "method_visual":
             method_results = cls._method_visual_evidence_pack(
                 structured_candidates,
@@ -892,7 +1157,13 @@ class PaperChunkService:
                     dossier_results = cls._merge_evidence_lanes(visual_results, dossier_results, top_k=top_k)
                 return dossier_results, "experiment_dossier+structured" if structured_candidates else "experiment_dossier"
         if plan.include_formula_evidence and structured_candidates:
-            formula_results = cls._formula_evidence_lane(
+            formula_results = cls._formula_number_evidence_lane(
+                structured_candidates,
+                query,
+                top_k=plan.formula_budget or cls.FORMULA_EVIDENCE_TOP_K,
+                target_pages=target_pages,
+            ) if plan.strategy == "formula_number" else []
+            formula_results = formula_results or cls._formula_evidence_lane(
                 structured_candidates,
                 query,
                 top_k=plan.formula_budget or cls.FORMULA_EVIDENCE_TOP_K,
