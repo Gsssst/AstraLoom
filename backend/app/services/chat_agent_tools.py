@@ -35,6 +35,12 @@ from app.services.office_extraction import (
     extract_docx_text,
     extract_pptx_text,
 )
+from app.services.image_generation import (
+    ImageGenerationConfigurationError,
+    ImageGenerationError,
+    ImageGenerationRequest,
+    generate_image,
+)
 from app.services.research_skills import (
     ResearchSkillNotFoundError,
     research_skill_ids,
@@ -149,6 +155,15 @@ class RunSkillArgs(BaseModel):
     task: str = Field(..., min_length=1, max_length=3000)
     context: str | None = Field(default=None, max_length=9000)
     max_output_chars: int = Field(default=4000, ge=500, le=8000)
+
+
+class GenerateImageArgs(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=4000)
+    purpose: str = Field(default="research_visual_draft", max_length=120)
+    style: str = Field(default="clean academic diagram", max_length=300)
+    size: Literal["1024x1024", "1024x1536", "1536x1024"] = "1024x1024"
+    quality: Literal["auto", "low", "medium", "high"] = "auto"
+    count: int = Field(default=1, ge=1, le=2)
 
 
 class AddToFolderArgs(BaseModel):
@@ -335,6 +350,19 @@ def deterministic_chat_tool_plan(query: str) -> list[ChatToolCall]:
     lowered = text.lower()
     if not text:
         return []
+    if re.search(r"(生成|画|绘制|create|generate|draw).*(图片|图像|插图|配图|流程图|示意图|figure|image|diagram)", lowered):
+        return [ChatToolCall(
+            tool="generate_image",
+            arguments={
+                "prompt": text,
+                "purpose": "research_visual_draft",
+                "style": "clean academic diagram",
+                "size": "1024x1024",
+                "quality": "auto",
+                "count": 1,
+            },
+            thought_summary="用户明确要求生成研究视觉草稿。",
+        )]
     available_skill_ids = research_skill_ids()
     skill_pattern = "|".join(re.escape(skill_id) for skill_id in available_skill_ids)
     skill_match = re.search(rf"\b({skill_pattern})\b", lowered) if skill_pattern else None
@@ -736,6 +764,59 @@ async def _tool_run_skill(args: RunSkillArgs, state: ChatAgentRuntimeState) -> C
     )
 
 
+async def _tool_generate_image(args: GenerateImageArgs, state: ChatAgentRuntimeState) -> ChatToolObservation:
+    try:
+        result = await generate_image(ImageGenerationRequest(**args.model_dump()))
+    except ImageGenerationConfigurationError as exc:
+        return ChatToolObservation(
+            tool="generate_image",
+            status="rejected",
+            summary=str(exc),
+            details={"configuration_error": True, **args.model_dump()},
+        )
+    except ImageGenerationError as exc:
+        return ChatToolObservation(
+            tool="generate_image",
+            status="failed",
+            summary=str(exc),
+            details=args.model_dump(),
+        )
+
+    metadata = result.metadata()
+    artifacts = [item.model_dump() for item in result.artifacts]
+    references = [
+        {
+            "source": "generated_image",
+            "type": "generated_image",
+            "rank": index + 1,
+            "provider": item.provider,
+            "model": item.model,
+            "size": item.size,
+            "url": item.source_url,
+            "revised_prompt": item.revised_prompt,
+        }
+        for index, item in enumerate(result.artifacts)
+    ]
+    context = "\n".join([
+        f"[TOOL-GENERATED-IMAGE] 已生成 {len(result.artifacts)} 张研究视觉草稿。",
+        f"Prompt: {result.prompt}",
+        f"Purpose: {result.purpose}",
+        f"Style: {result.style}",
+        f"Provider: {result.provider} | Model: {result.model} | Size: {result.size}",
+        "These images are draft visual aids, not scientific evidence.",
+    ])
+    return ChatToolObservation(
+        tool="generate_image",
+        status="completed",
+        summary=f"已生成 {len(result.artifacts)} 张图片草稿。",
+        result_count=len(result.artifacts),
+        references=references,
+        artifacts=artifacts,
+        context_blocks=[context],
+        details=metadata,
+    )
+
+
 async def _tool_add_to_folder(args: AddToFolderArgs, state: ChatAgentRuntimeState) -> ChatToolObservation:
     if not state.db or not state.user:
         return ChatToolObservation(
@@ -958,6 +1039,13 @@ def default_chat_tool_registry() -> ChatToolRegistry:
         description=f"Run one built-in read-only research skill. Available skill ids: {', '.join(research_skill_ids())}.",
         args_model=RunSkillArgs,
         executor=_tool_run_skill,
+    ))
+    registry.register(ChatToolDefinition(
+        name="generate_image",
+        label="生成图片",
+        description="Generate bounded draft research visuals such as method diagrams, figure concepts, or presentation illustrations.",
+        args_model=GenerateImageArgs,
+        executor=_tool_generate_image,
     ))
     registry.register(ChatToolDefinition(
         name="add_to_folder",

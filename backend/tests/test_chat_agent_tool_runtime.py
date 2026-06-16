@@ -24,6 +24,11 @@ from app.services.chat_agent_tools import (
 from app.db.models.paper import PaperFolderItem, UserPaper
 from app.db.models.research import ResearchProject
 from app.services.research_skills import ResearchSkillRunResult, get_research_skill
+from app.services.image_generation import (
+    GeneratedImageArtifact,
+    ImageGenerationConfigurationError,
+    ImageGenerationResult,
+)
 
 
 class EchoArgs(BaseModel):
@@ -78,6 +83,7 @@ def test_registry_schema_export_includes_side_effect_policy():
         "extract_docx",
         "extract_pptx",
         "run_skill",
+        "generate_image",
         "add_to_folder",
         "create_research_project",
     } <= set(schemas)
@@ -89,6 +95,7 @@ def test_registry_schema_export_includes_side_effect_policy():
     assert schemas["extract_docx"]["side_effect"] is False
     assert schemas["extract_pptx"]["side_effect"] is False
     assert schemas["run_skill"]["side_effect"] is False
+    assert schemas["generate_image"]["side_effect"] is False
 
 
 @pytest.mark.asyncio
@@ -423,6 +430,59 @@ async def test_run_skill_tool_rejects_unknown_skill():
 
 
 @pytest.mark.asyncio
+async def test_generate_image_tool_returns_artifacts(monkeypatch):
+    async def fake_generate_image(request):
+        return ImageGenerationResult(
+            prompt=request.prompt,
+            purpose=request.purpose,
+            style=request.style,
+            provider="openai-compatible",
+            model="gpt-image-1",
+            size=request.size,
+            quality=request.quality,
+            artifacts=[
+                GeneratedImageArtifact(
+                    data_url="data:image/png;base64,aGVsbG8=",
+                    provider="openai-compatible",
+                    model="gpt-image-1",
+                    size=request.size,
+                    revised_prompt="clean diagram",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(chat_agent_tools, "generate_image", fake_generate_image)
+
+    state = await ChatAgentToolRuntime(default_chat_tool_registry()).run(
+        ChatAgentRuntimeState(user_query="生成一张方法流程图"),
+        [ChatToolCall(tool="generate_image", arguments={"prompt": "生成一张方法流程图"})],
+    )
+
+    observation = state.observations[0]
+    assert observation.status == "completed"
+    assert observation.details["model"] == "gpt-image-1"
+    assert observation.artifacts[0]["data_url"].startswith("data:image/png;base64,")
+    assert observation.references[0]["source"] == "generated_image"
+
+
+@pytest.mark.asyncio
+async def test_generate_image_tool_rejects_missing_configuration(monkeypatch):
+    async def fake_generate_image(_request):
+        raise ImageGenerationConfigurationError("missing image config")
+
+    monkeypatch.setattr(chat_agent_tools, "generate_image", fake_generate_image)
+
+    state = await ChatAgentToolRuntime(default_chat_tool_registry()).run(
+        ChatAgentRuntimeState(user_query="generate image"),
+        [ChatToolCall(tool="generate_image", arguments={"prompt": "draw"})],
+    )
+
+    observation = state.observations[0]
+    assert observation.status == "rejected"
+    assert observation.details["configuration_error"] is True
+
+
+@pytest.mark.asyncio
 async def test_confirmed_import_executes_ingest_and_save(monkeypatch):
     paper = SimpleNamespace(
         id="paper-1",
@@ -567,3 +627,10 @@ def test_deterministic_plan_routes_explicit_skill_prompt():
 
     assert calls[0].tool == "run_skill"
     assert calls[0].arguments["skill_id"] == "experiment-planner"
+
+
+def test_deterministic_plan_routes_explicit_image_generation_prompt():
+    calls = deterministic_chat_tool_plan("请生成一张 video grounding 方法流程图")
+
+    assert calls[0].tool == "generate_image"
+    assert calls[0].arguments["prompt"].startswith("请生成")

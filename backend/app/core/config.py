@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     OPENAI_COMPATIBLE_API_KEY: str = ""
     OPENAI_COMPATIBLE_API_BASE: str = ""
     OPENAI_COMPATIBLE_MODEL: str = "gpt-5.5"
+    IMAGE_GENERATION_PROVIDER: str = "openai-compatible"
+    IMAGE_GENERATION_MODEL: str = "gpt-image-1"
     LLM_RUNTIME_CONFIG_PATH: str = "./uploads/llm-runtime-config.json"
     USAGE_DEEPSEEK_INPUT_CNY_PER_1M: float = 3.0
     USAGE_DEEPSEEK_OUTPUT_CNY_PER_1M: float = 6.0
