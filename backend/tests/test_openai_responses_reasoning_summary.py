@@ -48,6 +48,49 @@ class FakeAsyncClient:
         return FakeStreamResponse()
 
 
+class FakeChatCompletionClient:
+    captured = {}
+
+    async def post(self, url, headers=None, json=None):
+        self.__class__.captured = {
+            "url": url,
+            "headers": headers,
+            "json": json,
+        }
+        return SimpleResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "{\"ok\":true}",
+                            "annotations": [
+                                {
+                                    "type": "url_citation",
+                                    "url_citation": {
+                                        "title": "Source",
+                                        "url": "https://example.com/source",
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
+            }
+        )
+
+
+class SimpleResponse:
+    status_code = 200
+    text = ""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
 def test_responses_input_converts_multimodal_chat_parts():
     result = llm_module._responses_input([
         {"role": "user", "content": [
@@ -116,3 +159,28 @@ async def test_openai_compatible_thinking_routes_to_responses(monkeypatch, tmp_p
         {"type": "reasoning", "content": "摘要"},
         {"type": "content", "content": "回答"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_direct_chat_completion_accepts_daya_extension_body(monkeypatch, tmp_path):
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_KEY", "sk-compatible")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_BASE", "https://llm.example.com/v1")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_MODEL", "gpt-5.5")
+    monkeypatch.setattr(llm_module.settings, "LLM_RUNTIME_CONFIG_PATH", str(tmp_path / "llm.json"))
+
+    service = llm_module.LLMService()
+    service.select_model("openai-compatible", "gpt-5.5")
+    result = await service.chat_completion_direct(
+        messages=[{"role": "user", "content": "return json"}],
+        response_format={"type": "json_object"},
+        web_search_options={"search_context_size": "medium"},
+        client=FakeChatCompletionClient(),
+    )
+
+    assert FakeChatCompletionClient.captured["url"] == "https://llm.example.com/v1/chat/completions"
+    assert FakeChatCompletionClient.captured["headers"]["Authorization"] == "Bearer sk-compatible"
+    assert FakeChatCompletionClient.captured["json"]["model"] == "gpt-5.5"
+    assert FakeChatCompletionClient.captured["json"]["response_format"] == {"type": "json_object"}
+    assert FakeChatCompletionClient.captured["json"]["web_search_options"] == {"search_context_size": "medium"}
+    assert result.content == "{\"ok\":true}"
+    assert result.annotations[0]["url_citation"]["url"] == "https://example.com/source"

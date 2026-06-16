@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+from dataclasses import dataclass, field
 from typing import AsyncIterator, Dict, Any, Optional, Union
 
 import httpx
@@ -46,6 +47,14 @@ def _litellm_model(model: str) -> str:
 
 def _responses_model(model: str) -> str:
     return model.removeprefix("openai/")
+
+
+@dataclass(frozen=True)
+class ChatCompletionResult:
+    content: str
+    raw: dict[str, Any]
+    annotations: list[dict[str, Any]] = field(default_factory=list)
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 def _responses_content(content: Any) -> Any:
@@ -205,6 +214,9 @@ class LLMService:
     def _responses_api_url(self) -> str:
         return f"{self.api_base.rstrip('/')}/responses"
 
+    def _chat_completions_api_url(self) -> str:
+        return f"{self.api_base.rstrip('/')}/chat/completions"
+
     def max_output_tokens(self) -> int:
         """Return the active provider's hard output-token ceiling."""
         if self.active_provider == OPENAI_COMPATIBLE_PROVIDER:
@@ -278,6 +290,91 @@ class LLMService:
                     import asyncio; await asyncio.sleep(2)
                 else:
                     raise last_error
+
+    async def chat_completion_direct(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        temperature: float = 0.7,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        response_format: dict[str, Any] | None = None,
+        web_search_options: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> ChatCompletionResult:
+        """Call the OpenAI-compatible Chat Completions API directly.
+
+        This path is used for provider extension fields such as Daya's
+        `response_format` and `web_search_options`, which should not be routed
+        through LiteLLM's parameter filtering.
+        """
+        if self.active_provider != OPENAI_COMPATIBLE_PROVIDER:
+            raise ValueError("direct Chat Completions requires the OpenAI-compatible provider")
+        if not self.api_key or not self.api_base:
+            raise ValueError("OpenAI-compatible API key or base URL is not configured")
+
+        payload: dict[str, Any] = {
+            "model": _responses_model(self.model),
+            "messages": messages,
+            "temperature": temperature,
+            "max_completion_tokens": self._clamp_output_tokens(max_tokens),
+        }
+        if response_format:
+            payload["response_format"] = response_format
+        if web_search_options:
+            payload["web_search_options"] = web_search_options
+        if extra_body:
+            payload.update(extra_body)
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        owns_client = client is None
+        active_client = client or httpx.AsyncClient(timeout=60)
+        try:
+            response = await active_client.post(self._chat_completions_api_url(), headers=headers, json=payload)
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"Chat Completions API 调用失败 ({response.status_code}): {response.text[:500]}"
+                )
+            raw_payload = response.json()
+        finally:
+            if owns_client:
+                await active_client.aclose()
+
+        choices = raw_payload.get("choices") if isinstance(raw_payload, dict) else None
+        first_choice = choices[0] if isinstance(choices, list) and choices else {}
+        message = first_choice.get("message") if isinstance(first_choice, dict) else {}
+        content = ""
+        annotations: list[dict[str, Any]] = []
+        if isinstance(message, dict):
+            raw_content = message.get("content")
+            if isinstance(raw_content, str):
+                content = raw_content
+            elif raw_content is not None:
+                content = json.dumps(raw_content, ensure_ascii=False)
+            raw_annotations = message.get("annotations")
+            if isinstance(raw_annotations, list):
+                annotations = [item for item in raw_annotations if isinstance(item, dict)]
+        usage = raw_payload.get("usage") if isinstance(raw_payload, dict) else {}
+        if isinstance(usage, dict):
+            await self._log_usage(
+                prompt_tokens=int(usage.get("prompt_tokens") or 0),
+                completion_tokens=int(usage.get("completion_tokens") or 0),
+                total_tokens=int(usage.get("total_tokens") or 0),
+                model=self.model,
+            )
+        else:
+            usage = {}
+
+        return ChatCompletionResult(
+            content=content,
+            raw=raw_payload if isinstance(raw_payload, dict) else {},
+            annotations=annotations,
+            usage=usage,
+        )
 
     async def _log_usage(
         self,

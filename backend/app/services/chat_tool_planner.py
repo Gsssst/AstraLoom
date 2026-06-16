@@ -174,6 +174,21 @@ def build_planner_messages(
 
 
 async def _default_planner_llm(messages: list[dict[str, str]]) -> str:
+    if llm_service.active_provider == "openai-compatible":
+        response = await llm_service.chat_completion_direct(
+            messages=messages,
+            temperature=0.1,
+            max_tokens=1200,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "chat_tool_planner_decision",
+                    "description": "Validated tool-planning decision for the research chat runtime.",
+                    "schema": ChatToolPlannerDecision.model_json_schema(),
+                },
+            },
+        )
+        return response.content
     return await llm_service.chat(messages=messages, temperature=0.1, max_tokens=1200)
 
 

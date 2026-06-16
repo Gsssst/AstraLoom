@@ -12,6 +12,7 @@ from app.services.chat_agent_tools import (
     default_chat_tool_registry,
 )
 from app.services.chat_tool_planner import (
+    _default_planner_llm,
     build_planner_messages,
     parse_planner_decision,
     planner_tool_context_block,
@@ -66,6 +67,27 @@ def test_build_planner_messages_includes_library_action_tools():
     assert "read_pdf" in combined
     assert "add_to_folder" in combined
     assert "create_research_project" in combined
+
+
+@pytest.mark.asyncio
+async def test_default_planner_llm_uses_structured_output_for_openai_compatible(monkeypatch):
+    captured = {}
+
+    class FakeLLMService:
+        active_provider = "openai-compatible"
+
+        async def chat_completion_direct(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(content='{"actions":[],"final":true,"final_context_summary":"done"}')
+
+    monkeypatch.setattr("app.services.chat_tool_planner.llm_service", FakeLLMService())
+
+    raw = await _default_planner_llm([{"role": "user", "content": "plan"}])
+
+    assert raw == '{"actions":[],"final":true,"final_context_summary":"done"}'
+    assert captured["response_format"]["type"] == "json_schema"
+    assert captured["response_format"]["json_schema"]["name"] == "chat_tool_planner_decision"
+    assert "actions" in captured["response_format"]["json_schema"]["schema"]["properties"]
 
 
 @pytest.mark.asyncio
