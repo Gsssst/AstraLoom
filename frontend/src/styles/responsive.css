@@ -1123,8 +1123,12 @@
 }
 
 .chat-workspace {
+  --chat-content-rail: min(1320px, calc(100vw - 160px));
+  --chat-assistant-width: min(1040px, calc(100% - 44px));
+  --chat-user-width: min(780px, calc(100% - 46px));
   display: flex;
-  height: calc(100vh - 96px);
+  height: calc(100vh - 72px);
+  min-height: 0;
   margin: -24px;
   color: #111827;
   background: #f5f6f8;
@@ -1132,11 +1136,13 @@
 
 .chat-main {
   min-width: 0;
+  min-height: 0;
 }
 
 .chat-toolbar {
   gap: 8px;
-  min-height: 56px;
+  min-height: 44px;
+  padding: 6px 16px;
   border-bottom-color: #e5e7eb !important;
   background: rgba(248, 250, 252, 0.96) !important;
   backdrop-filter: blur(12px);
@@ -1417,6 +1423,7 @@
 }
 
 .chat-message-list {
+  padding: 16px 20px 10px;
   background: #f6f7f9 !important;
   overflow-anchor: none;
   overscroll-behavior: contain;
@@ -1425,8 +1432,8 @@
 .chat-message-row {
   display: flex;
   gap: 10px;
-  max-width: 1040px;
-  margin: 0 auto 22px;
+  max-width: var(--chat-content-rail);
+  margin: 0 auto 16px;
   align-items: flex-start;
 }
 
@@ -1451,11 +1458,11 @@
 
 .chat-message-body {
   min-width: 0;
-  max-width: min(860px, calc(100% - 44px));
+  max-width: var(--chat-assistant-width);
 }
 
 .chat-message-body.is-user {
-  max-width: min(720px, calc(100% - 46px));
+  max-width: var(--chat-user-width);
 }
 
 .chat-message-bubble {
@@ -1962,13 +1969,13 @@
 }
 
 .chat-composer {
-  padding: 12px 20px 14px;
+  padding: 8px 20px 8px;
   background: #f6f7f9;
   border-top: 1px solid #e5e7eb;
 }
 
 .chat-composer-panel {
-  max-width: 1040px;
+  max-width: var(--chat-content-rail);
   margin: 0 auto;
   padding: 0;
   border: 1px solid #d1d5db;
@@ -2055,8 +2062,8 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 112px;
-  padding: 14px 16px 12px;
+  min-height: 96px;
+  padding: 12px 14px 10px;
   border: 0;
   border-radius: 14px;
   background: #ffffff;
@@ -2115,8 +2122,8 @@
 }
 
 .chat-input {
-  min-height: 44px !important;
-  padding: 6px 0 !important;
+  min-height: 38px !important;
+  padding: 4px 0 !important;
   border: 0 !important;
   border-radius: 0 !important;
   background: transparent !important;
@@ -2516,11 +2523,11 @@
   }
 
   .chat-message-list {
-    padding: 16px 12px !important;
+    padding: 12px 10px 6px !important;
   }
 
   .chat-composer {
-    padding: 8px 8px 10px !important;
+    padding: 6px 8px 8px !important;
   }
 
   .chat-empty-state {

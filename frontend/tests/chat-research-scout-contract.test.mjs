@@ -151,6 +151,17 @@ test('chat workbench visual polish avoids glossy plastic treatment', () => {
   assert.doesNotMatch(responsiveSource, /\.chat-send-button\s*\{[\s\S]*linear-gradient/);
 });
 
+test('chat viewport layout keeps composer low and expands reading rail', () => {
+  assert.match(responsiveSource, /--chat-content-rail: min\(1320px, calc\(100vw - 160px\)\)/);
+  assert.match(responsiveSource, /\.chat-workspace\s*\{[\s\S]*height: calc\(100vh - 72px\);/);
+  assert.match(responsiveSource, /\.chat-toolbar\s*\{[\s\S]*min-height: 44px;[\s\S]*padding: 6px 16px;/);
+  assert.match(responsiveSource, /\.chat-message-list\s*\{[\s\S]*padding: 16px 20px 10px;/);
+  assert.match(responsiveSource, /\.chat-message-row\s*\{[\s\S]*max-width: var\(--chat-content-rail\);/);
+  assert.match(responsiveSource, /\.chat-composer\s*\{[\s\S]*padding: 8px 20px 8px;/);
+  assert.match(responsiveSource, /\.chat-composer-panel\s*\{[\s\S]*max-width: var\(--chat-content-rail\);/);
+  assert.match(responsiveSource, /\.chat-editor\s*\{[\s\S]*min-height: 96px;/);
+});
+
 test('Research Scout styles are scoped', () => {
   assert.match(responsiveSource, /\.chat-composer-mode-select/);
   assert.match(responsiveSource, /\.research-scout-cards/);

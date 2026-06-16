@@ -1130,7 +1130,7 @@ const ChatPage: React.FC = () => {
         <div className="chat-session-panel">{sessionList}</div>
       </div>}
       <div className="chat-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 1 }}>
-        <div className="chat-toolbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 20px' }}>
+        <div className="chat-toolbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Space size={4} className="chat-toolbar-title">
             <Button type="text" icon={<MenuOutlined />} onClick={() => setDrawerOpen(!drawerOpen)} />
             <Text strong className="chat-toolbar-title-text">{currentSession?.title || '新对话'}</Text>
@@ -1174,7 +1174,7 @@ const ChatPage: React.FC = () => {
             </Dropdown>
           </div>
         </div>
-        <div ref={chatScrollRef} className="chat-message-list" style={{ flex: 1, overflowY: 'auto', padding: '24px 20px' }} onScroll={pauseFollowOutputIfAwayFromBottom}>
+        <div ref={chatScrollRef} className="chat-message-list" style={{ flex: 1, overflowY: 'auto' }} onScroll={pauseFollowOutputIfAwayFromBottom}>
           {messages.length === 0 && !pendingMsg ? (
             <div className="chat-empty-state">
               <div className="chat-empty-logo">✦</div>
