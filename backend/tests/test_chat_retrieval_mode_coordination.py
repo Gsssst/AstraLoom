@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from app.api import chat_sessions
 from app.services.cvf_openaccess import parse_cvf_openaccess_html
+from app.services.llm import ChatCompletionResult
 from app.services.research_scout_agent import ResearchScoutAgentState, ResearchScoutToolCall
 from app.services.web_search import WebSearchResult
 
@@ -79,6 +80,145 @@ def test_general_mode_keeps_requested_web_retrieval():
     assert chat_sessions._web_search_enabled_for_mode(request, effective_mode) is True
 
 
+def test_native_web_search_only_runs_for_compatible_general_chat(monkeypatch):
+    monkeypatch.setattr(
+        type(chat_sessions.llm_service),
+        "active_provider",
+        property(lambda self: chat_sessions.OPENAI_COMPATIBLE_PROVIDER),
+    )
+
+    assert chat_sessions._native_web_search_enabled(True, "general") is True
+    assert chat_sessions._native_web_search_enabled(False, "general") is False
+    assert chat_sessions._native_web_search_enabled(True, "research_scout") is False
+
+
+def test_native_web_search_options_follow_search_depth():
+    assert chat_sessions._native_web_search_options("quick") == {"search_context_size": "low"}
+    assert chat_sessions._native_web_search_options("standard") == {"search_context_size": "medium"}
+    assert chat_sessions._native_web_search_options("deep") == {"search_context_size": "high"}
+
+
+def test_native_web_annotation_references_are_deduped_and_labeled(monkeypatch):
+    monkeypatch.setattr(
+        chat_sessions.llm_service,
+        "get_active_option",
+        lambda: {"api_base": "https://api.dayaai.com/v1", "provider": chat_sessions.OPENAI_COMPATIBLE_PROVIDER},
+    )
+    annotations = [
+        {
+            "type": "url_citation",
+            "url_citation": {
+                "title": "Daya Search",
+                "url": "https://example.com/source",
+                "start_index": 0,
+                "end_index": 10,
+            },
+        },
+        {
+            "type": "url_citation",
+            "url_citation": {
+                "title": "Duplicate",
+                "url": "https://example.com/source/",
+            },
+        },
+    ]
+
+    references = chat_sessions._native_web_annotation_references(annotations, query="latest APIs")
+
+    assert references == [
+        {
+            "title": "Daya Search",
+            "url": "https://example.com/source",
+            "source": "web",
+            "provider": "Daya",
+            "citation_source": "model_annotation",
+            "query": "latest APIs",
+            "retrieval_query": "latest APIs",
+            "rank": 1,
+            "snippet": "",
+            "start_index": 0,
+            "end_index": 10,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_native_web_reply_uses_model_annotations_without_local_web(monkeypatch):
+    async def _fake_direct(**kwargs):
+        assert kwargs["web_search_options"] == {"search_context_size": "high"}
+        return ChatCompletionResult(
+            content="Answer with citation.",
+            raw={},
+            annotations=[{"url_citation": {"title": "Used source", "url": "https://used.example.com"}}],
+        )
+
+    async def _unexpected_search_web_results(*args, **kwargs):
+        raise AssertionError("local web search should not run when native citations are available")
+
+    monkeypatch.setattr(chat_sessions.llm_service, "chat_completion_direct", _fake_direct)
+    monkeypatch.setattr(chat_sessions, "search_web_results", _unexpected_search_web_results)
+
+    context = [{"role": "user", "content": "latest research"}]
+    content, references, used_native = await chat_sessions._generate_reply_with_web_fallback(
+        context=context,
+        query="latest research",
+        search_depth="deep",
+        use_native_web_search=True,
+    )
+
+    assert content == "Answer with citation."
+    assert used_native is True
+    assert references[0]["citation_source"] == "model_annotation"
+    assert references[0]["url"] == "https://used.example.com"
+    assert context == [{"role": "user", "content": "latest research"}]
+
+
+@pytest.mark.asyncio
+async def test_native_web_reply_falls_back_to_local_web_when_annotations_missing(monkeypatch):
+    async def _fake_direct(**kwargs):
+        return ChatCompletionResult(content="No citations", raw={}, annotations=[])
+
+    async def _fake_search_web_results(query, max_results, search_depth):
+        return [WebSearchResult(
+            title="Fallback source",
+            snippet="retrieved evidence",
+            url="https://fallback.example.com",
+            provider="bing",
+            query=query,
+            rank=1,
+        )]
+
+    async def _fake_chat(**kwargs):
+        assert "联网检索获得的网页来源" in kwargs["messages"][0]["content"]
+        return "Fallback answer."
+
+    monkeypatch.setattr(chat_sessions.llm_service, "chat_completion_direct", _fake_direct)
+    monkeypatch.setattr(chat_sessions.llm_service, "chat", _fake_chat)
+    monkeypatch.setattr(chat_sessions, "search_web_results", _fake_search_web_results)
+
+    context = [{"role": "user", "content": "latest research"}]
+    content, references, used_native = await chat_sessions._generate_reply_with_web_fallback(
+        context=context,
+        query="latest research",
+        search_depth="standard",
+        use_native_web_search=True,
+    )
+
+    assert content == "Fallback answer."
+    assert used_native is False
+    assert references == [{
+        "title": "Fallback source",
+        "url": "https://fallback.example.com",
+        "source": "web",
+        "provider": "bing",
+        "query": "latest research",
+        "retrieval_query": "latest research",
+        "rank": 1,
+        "snippet": "retrieved evidence",
+    }]
+    assert references[0].get("citation_source") is None
+
+
 def test_general_chat_agent_tools_enable_only_outside_research_scout():
     request = chat_sessions.SendMessageRequest(
         content="请在我的论文库里检索 video grounding",
@@ -144,6 +284,16 @@ def test_streaming_chat_contract_includes_generic_tool_trace_and_saved_reply_id(
     assert '"tool_trace": tool_trace' in source
     assert 'yield _stream_event(\n            "saved"' in source
     assert '"reply_id": str(reply_msg.id)' in source
+
+
+def test_streaming_chat_contract_updates_native_web_references_after_generation():
+    source = chat_sessions.__loader__.get_source(chat_sessions.__name__)
+
+    assert "if native_web_search and not scout_enabled:" in source
+    assert "_generate_reply_with_web_fallback(" in source
+    assert "模型原生联网检索中，完成后会展示模型实际引用来源" in source
+    assert '"citation_source": "model_annotation"' in source
+    assert 'yield _stream_event(\n                    "meta"' in source
 
 
 def test_research_scout_fallback_queries_expand_chinese_mllm_memory_prompt():

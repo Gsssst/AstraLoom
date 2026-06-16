@@ -239,6 +239,9 @@ const isPaperDiscoveryPrompt = (value: string) => {
 
 const referenceTooltip = (ref: any) => {
   if (ref.source === 'web') {
+    if (ref.citation_source === 'model_annotation') {
+      return `模型实际引用来源：${ref.provider || 'OpenAI-compatible'}；来自回答返回的 citation annotation`;
+    }
     return `网页检索来源：${ref.provider || 'unknown'}；查询：${ref.retrieval_query || ref.query || 'unknown'}`;
   }
   if (ref.source === 'research_scout') {
@@ -249,7 +252,9 @@ const referenceTooltip = (ref: any) => {
 
 const referenceLabel = (ref: any) => {
   const title = ref.title || ref.url || ref.arxiv_id || '未命名来源';
-  const source = ref.source === 'web' ? '网页来源' : ref.source === 'research_scout' ? '论文猎手' : '知识库';
+  const source = ref.source === 'web'
+    ? ref.citation_source === 'model_annotation' ? '模型实际引用' : '网页来源'
+    : ref.source === 'research_scout' ? '论文猎手' : '知识库';
   const provider = ref.source === 'web' && ref.provider ? ` · ${ref.provider}` : '';
   const scoutProvider = ref.source === 'research_scout' && ref.provider ? ` · ${ref.provider}` : '';
   const year = ref.year ? ` (${ref.year})` : '';
@@ -390,6 +395,21 @@ const ChatPage: React.FC = () => {
       return { messages: msgs };
     });
   };
+  const updateStreamingReplyMeta = (references: any[] = [], researchScout?: ResearchScoutPayload | null, toolTrace?: ToolTracePayload | null) => {
+    useChatSessionStore.setState(s => {
+      const msgs = [...s.messages];
+      const last = msgs[msgs.length - 1];
+      if (last?.role === 'assistant' && last._streaming) {
+        msgs[msgs.length - 1] = {
+          ...last,
+          references,
+          research_scout: researchScout || last.research_scout,
+          tool_trace: toolTrace || last.tool_trace,
+        };
+      }
+      return { messages: msgs };
+    });
+  };
   const appendStreamingReasoning = (content: string) => {
     useChatSessionStore.setState(s => {
       const msgs = [...s.messages];
@@ -466,6 +486,7 @@ const ChatPage: React.FC = () => {
           references = event.content.references || [];
           researchScout = event.content.research_scout || null;
           toolTrace = event.content.tool_trace || null;
+          updateStreamingReplyMeta(references, researchScout, toolTrace);
           if (event.content.model) setActiveModelInfo(event.content.model);
         } else if (event.type === 'saved' && event.content && typeof event.content === 'object') {
           const saved = event.content;

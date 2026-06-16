@@ -635,6 +635,70 @@ def _retrieval_limits(search_depth: str) -> dict[str, int]:
     return RETRIEVAL_DEPTH_LIMITS.get(search_depth, RETRIEVAL_DEPTH_LIMITS["standard"])
 
 
+def _native_web_search_enabled(web_search_enabled: bool, effective_mode: str) -> bool:
+    return (
+        bool(web_search_enabled)
+        and effective_mode == "general"
+        and llm_service.active_provider == OPENAI_COMPATIBLE_PROVIDER
+    )
+
+
+def _native_web_search_options(search_depth: str) -> dict[str, Any]:
+    context_size = {
+        "quick": "low",
+        "standard": "medium",
+        "deep": "high",
+    }.get(search_depth, "medium")
+    return {"search_context_size": context_size}
+
+
+def _native_web_provider_label() -> str:
+    api_base = str(llm_service.get_active_option().get("api_base") or "").lower()
+    if "dayaai.com" in api_base:
+        return "Daya"
+    return "OpenAI-compatible"
+
+
+def _native_web_annotation_references(
+    annotations: list[dict[str, Any]] | None,
+    *,
+    query: str,
+) -> list[dict[str, Any]]:
+    references: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    provider = _native_web_provider_label()
+
+    for annotation in annotations or []:
+        if not isinstance(annotation, dict):
+            continue
+        citation = annotation.get("url_citation") if isinstance(annotation.get("url_citation"), dict) else annotation
+        if not isinstance(citation, dict):
+            continue
+        url = str(citation.get("url") or "").strip()
+        if not url:
+            continue
+        dedupe_key = url.rstrip("/").lower()
+        if dedupe_key in seen_urls:
+            continue
+        seen_urls.add(dedupe_key)
+        title = str(citation.get("title") or url).strip()
+        references.append({
+            "title": title,
+            "url": url,
+            "source": "web",
+            "provider": provider,
+            "citation_source": "model_annotation",
+            "query": query,
+            "retrieval_query": query,
+            "rank": len(references) + 1,
+            "snippet": "",
+            "start_index": citation.get("start_index"),
+            "end_index": citation.get("end_index"),
+        })
+
+    return references
+
+
 def _compact_author_list(authors: list[str], limit: int = 3) -> list[str]:
     cleaned = [author for author in authors if author]
     if len(cleaned) <= limit:
@@ -2327,6 +2391,63 @@ async def _append_retrieval_context(
     return references
 
 
+async def _generate_native_web_reply(
+    *,
+    context: list[dict[str, Any]],
+    query: str,
+    search_depth: str,
+    temperature: float = 0.7,
+    max_tokens: int = 4096,
+) -> tuple[str, list[dict[str, Any]]]:
+    result = await llm_service.chat_completion_direct(
+        messages=context,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        web_search_options=_native_web_search_options(search_depth),
+    )
+    citation_refs = _native_web_annotation_references(result.annotations, query=query)
+    if not citation_refs:
+        raise RuntimeError("native web search returned no url_citation annotations")
+    return result.content, citation_refs
+
+
+async def _generate_reply_with_web_fallback(
+    *,
+    context: list[dict[str, Any]],
+    query: str,
+    search_depth: str,
+    use_native_web_search: bool,
+    temperature: float = 0.7,
+    max_tokens: int = 4096,
+) -> tuple[str, list[dict[str, Any]], bool]:
+    if use_native_web_search:
+        try:
+            reply_content, citation_refs = await _generate_native_web_reply(
+                context=context,
+                query=query,
+                search_depth=search_depth,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return reply_content, citation_refs, True
+        except Exception as exc:
+            logger.warning("Provider-native web search failed, falling back to local retrieval: %s", exc)
+
+    fallback_refs = await _append_retrieval_context(
+        context,
+        query,
+        rag_enabled=False,
+        web_search_enabled=use_native_web_search,
+        search_depth=search_depth,
+    )
+    reply_content = await llm_service.chat(
+        messages=context,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    return reply_content, fallback_refs, False
+
+
 class SendMessageResponse(BaseModel):
     message: MessageResponse
     reply: MessageResponse
@@ -2491,6 +2612,8 @@ async def send_message(
     effective_mode = _effective_assistant_mode(req)
     scout_enabled = effective_mode == "research_scout"
     effective_search_depth = "deep" if scout_enabled else req.search_depth
+    web_search_enabled = _web_search_enabled_for_mode(req, effective_mode)
+    native_web_search = _native_web_search_enabled(web_search_enabled, effective_mode)
 
     # 保存用户消息
     user_msg = ChatMessage(session_id=sid, role="user", content=req.content)
@@ -2514,7 +2637,7 @@ async def send_message(
         context,
         req.content,
         rag_enabled=rag_enabled,
-        web_search_enabled=_web_search_enabled_for_mode(req, effective_mode),
+        web_search_enabled=web_search_enabled and not native_web_search,
         search_depth=effective_search_depth,
     )
     references.extend(upload_visual_refs)
@@ -2551,11 +2674,22 @@ async def send_message(
 
     # 调用 LLM
     try:
-        reply_content = await llm_service.chat(
-            messages=context,
-            temperature=0.55 if scout_enabled else 0.7,
-            max_tokens=4096,
-        )
+        if native_web_search and not scout_enabled:
+            reply_content, web_refs, _used_native_web = await _generate_reply_with_web_fallback(
+                context=context,
+                query=req.content,
+                search_depth=effective_search_depth,
+                use_native_web_search=True,
+                temperature=0.7,
+                max_tokens=4096,
+            )
+            references.extend(web_refs)
+        else:
+            reply_content = await llm_service.chat(
+                messages=context,
+                temperature=0.55 if scout_enabled else 0.7,
+                max_tokens=4096,
+            )
 
         # 保存 AI 回复
         reply_msg = ChatMessage(
@@ -2617,6 +2751,8 @@ async def send_message_stream(
     effective_mode = _effective_assistant_mode(req)
     scout_enabled = effective_mode == "research_scout"
     effective_search_depth = "deep" if scout_enabled else req.search_depth
+    web_search_enabled = _web_search_enabled_for_mode(req, effective_mode)
+    native_web_search = _native_web_search_enabled(web_search_enabled, effective_mode)
 
     # 保存用户消息
     user_msg = ChatMessage(session_id=sid, role="user", content=req.content)
@@ -2635,7 +2771,7 @@ async def send_message_stream(
         context,
         req.content,
         rag_enabled=rag_enabled,
-        web_search_enabled=_web_search_enabled_for_mode(req, effective_mode),
+        web_search_enabled=web_search_enabled and not native_web_search,
         search_depth=effective_search_depth,
     )
     references.extend(upload_visual_refs)
@@ -2680,11 +2816,15 @@ async def send_message_stream(
                 "status",
                 f"论文猎手正在检索 arXiv、Semantic Scholar、OpenAlex 等学术来源，已找到 {len(scout_candidates)} 篇候选...",
             )
+        elif native_web_search:
+            yield _stream_event("status", "正在使用模型原生联网检索，并等待模型返回实际引用来源...")
         yield _stream_event(
             "status",
             (
                 f"论文猎手已整理 {len(scout_candidates)} 篇候选论文，正在生成阅读优先级与推荐理由..."
                 if scout_enabled
+                else "模型原生联网检索中，完成后会展示模型实际引用来源..."
+                if native_web_search
                 else _retrieval_status(
                     references,
                     web_search_enabled=bool(req.web_search),
@@ -2709,14 +2849,43 @@ async def send_message_stream(
                 "tool_trace": tool_trace,
                 "model": _active_model_stream_metadata(
                     rag_enabled=rag_enabled,
-                    web_search_enabled=_web_search_enabled_for_mode(req, effective_mode),
+                    web_search_enabled=web_search_enabled,
                     search_depth=effective_search_depth,
                     attachments=req.attachments,
                 ),
             },
         )
         try:
-            if req.show_thinking:
+            if native_web_search and not scout_enabled:
+                reply_content, web_refs, used_native_web = await _generate_reply_with_web_fallback(
+                    context=llm_context,
+                    query=req.content,
+                    search_depth=effective_search_depth,
+                    use_native_web_search=True,
+                    temperature=0.7,
+                    max_tokens=4096,
+                )
+                references.extend(web_refs)
+                full_content += reply_content
+                if not used_native_web:
+                    yield _stream_event("status", "模型原生联网未返回可用引用，已回退到本地网页检索证据...")
+                yield _stream_event(
+                    "meta",
+                    {
+                        "references": references,
+                        "research_scout": None,
+                        "tool_trace": tool_trace,
+                        "model": _active_model_stream_metadata(
+                            rag_enabled=rag_enabled,
+                            web_search_enabled=web_search_enabled,
+                            search_depth=effective_search_depth,
+                            attachments=req.attachments,
+                        ),
+                    },
+                )
+                if reply_content:
+                    yield _stream_event("content", reply_content)
+            elif req.show_thinking:
                 async for event in llm_service.chat_stream_with_thinking(messages=llm_context):
                     if event["type"] == "reasoning":
                         yield _stream_event("reasoning", event["content"])
