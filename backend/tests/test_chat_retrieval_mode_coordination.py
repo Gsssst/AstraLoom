@@ -102,6 +102,66 @@ def test_research_scout_requested_count_is_capped_for_large_surveys():
     assert count_info["capped"] is True
 
 
+def test_research_scout_final_answer_context_includes_requested_ten_candidates():
+    candidates = [
+        {
+            "rank": index,
+            "title": f"Paper {index}",
+            "authors": ["Author"],
+            "institutions": ["Lab"],
+            "abstract": "multimodal large language model memory",
+            "source": "arxiv",
+            "venue": "arXiv",
+            "year": 2026,
+            "citation_count": 0,
+            "why_interesting": "Relevant to the requested topic.",
+            "why_useful": "Useful for literature review.",
+            "evaluation": {"reading_priority": "medium"},
+        }
+        for index in range(1, 11)
+    ]
+
+    context = chat_sessions._format_research_scout_context(
+        candidates,
+        {"topic": "multimodal large language model memory"},
+        retrieval={"requested_count": 10, "final_limit": 10, "candidate_count": 10},
+    )
+
+    assert "ranked_candidates=10" in context
+    assert "included_candidates=10" in context
+    assert "[PAPER-10] Paper 10" in context
+
+
+def test_research_scout_final_answer_context_caps_at_configured_maximum():
+    candidates = [
+        {
+            "rank": index,
+            "title": f"Paper {index}",
+            "authors": ["Author"],
+            "institutions": ["Lab"],
+            "abstract": "video grounding",
+            "source": "arxiv",
+            "venue": "arXiv",
+            "year": 2026,
+            "citation_count": 0,
+            "why_interesting": "Relevant to the requested topic.",
+            "why_useful": "Useful for literature review.",
+            "evaluation": {"reading_priority": "medium"},
+        }
+        for index in range(1, 61)
+    ]
+
+    context = chat_sessions._format_research_scout_context(
+        candidates,
+        {"topic": "video grounding"},
+        retrieval={"requested_count": 80, "final_limit": chat_sessions.RESEARCH_SCOUT_MAX_FINAL_RESULTS, "candidate_count": 60},
+    )
+
+    assert f"included_candidates={chat_sessions.RESEARCH_SCOUT_MAX_FINAL_RESULTS}" in context
+    assert "[PAPER-50] Paper 50" in context
+    assert "[PAPER-51] Paper 51" not in context
+
+
 def test_research_scout_fallback_queries_expand_video_grounding_aliases():
     intent = chat_sessions._research_scout_intent("请帮我找10篇关于 video grounding 的论文", "deep")
 

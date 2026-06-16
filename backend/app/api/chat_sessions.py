@@ -1648,11 +1648,45 @@ def _format_research_scout_intent(intent: dict[str, Any]) -> str:
     return "\n".join(fields)
 
 
-def _format_research_scout_context(candidates: list[dict[str, Any]], intent: dict[str, Any]) -> str:
+def _research_scout_context_candidate_limit(candidate_count: int, retrieval: dict[str, Any] | None = None) -> int:
+    if candidate_count <= 0:
+        return 0
+    retrieval = retrieval or {}
+    raw_limit = retrieval.get("final_limit") or retrieval.get("requested_count") or candidate_count
+    try:
+        requested_limit = int(raw_limit)
+    except (TypeError, ValueError):
+        requested_limit = candidate_count
+    bounded_limit = max(1, min(requested_limit, RESEARCH_SCOUT_MAX_FINAL_RESULTS))
+    return min(candidate_count, bounded_limit)
+
+
+def _format_research_scout_context(
+    candidates: list[dict[str, Any]],
+    intent: dict[str, Any],
+    *,
+    context_limit: int | None = None,
+    retrieval: dict[str, Any] | None = None,
+) -> str:
     if not candidates:
         return ""
+    retrieval = retrieval or {}
+    total_candidates = len(candidates)
+    if context_limit is None:
+        context_limit = _research_scout_context_candidate_limit(total_candidates, retrieval)
+    safe_context_limit = max(0, min(int(context_limit or 0), total_candidates, RESEARCH_SCOUT_MAX_FINAL_RESULTS))
+    context_diagnostics = [
+        f"ranked_candidates={total_candidates}",
+        f"included_candidates={safe_context_limit}",
+    ]
+    if retrieval.get("requested_count"):
+        context_diagnostics.append(f"requested_count={retrieval.get('requested_count')}")
+    if retrieval.get("final_limit"):
+        context_diagnostics.append(f"final_limit={retrieval.get('final_limit')}")
+    if retrieval.get("underfilled_by"):
+        context_diagnostics.append(f"underfilled_by={retrieval.get('underfilled_by')}")
     blocks = []
-    for item in candidates[:8]:
+    for item in candidates[:safe_context_limit]:
         abstract = (item.get("abstract") or "")[:900]
         evaluation = item.get("evaluation") or {}
         constraint_matches = item.get("constraint_matches") or {}
@@ -1679,7 +1713,11 @@ def _format_research_scout_context(candidates: list[dict[str, Any]], intent: dic
                 f"Abstract: {abstract}",
             ])
         )
-    return f"Parsed user intent:\n{_format_research_scout_intent(intent)}\n\nCandidate papers:\n" + "\n\n".join(blocks)
+    return (
+        f"Parsed user intent:\n{_format_research_scout_intent(intent)}\n\n"
+        f"Context diagnostics: {' | '.join(context_diagnostics)}\n\n"
+        "Candidate papers:\n" + "\n\n".join(blocks)
+    )
 
 
 def _format_research_scout_retrieval_note(retrieval: dict[str, Any]) -> str:
@@ -1851,6 +1889,8 @@ async def _research_scout_tool_prepare_cards(
     ]
     state.candidates = await _apply_llm_research_scout_evaluations(candidates, state.constraints.original_query, state.intent)
     state.references = [_research_scout_reference(item) for item in state.candidates]
+    context_limit = _research_scout_context_candidate_limit(len(state.candidates), state.retrieval)
+    state.retrieval["context_candidate_limit"] = context_limit
     if not state.candidates:
         state.system_context = [{
             "role": "system",
@@ -1871,14 +1911,18 @@ async def _research_scout_tool_prepare_cards(
                 "回答末尾必须给出“优先阅读 Top 3”，每项用 [PAPER-N] 编号并说明先读原因。"
                 "引用候选时使用 [PAPER-N] 编号，不要编造候选列表之外的论文。\n\n"
                 f"{_format_research_scout_retrieval_note(state.retrieval)}\n\n"
-                f"{_format_research_scout_context(state.candidates, state.intent)}"
+                f"{_format_research_scout_context(state.candidates, state.intent, context_limit=context_limit, retrieval=state.retrieval)}"
             ),
         }]
     return ResearchScoutToolObservation(
         tool="prepare_candidate_cards",
         summary=f"已准备 {len(state.candidates)} 张候选卡片和用户确认操作。",
         result_count=len(state.candidates),
-        details={"candidate_count": len(state.candidates), "side_effects": "confirmation_required"},
+        details={
+            "candidate_count": len(state.candidates),
+            "context_candidate_limit": context_limit,
+            "side_effects": "confirmation_required",
+        },
     )
 
 
