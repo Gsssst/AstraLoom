@@ -123,6 +123,33 @@ def test_numbered_section_range_stops_at_next_top_level_heading():
     assert "conclusion-marker" not in evidence[0].text
 
 
+def test_numbered_section_matches_compact_pdf_heading_without_space():
+    full_text = "\n".join([
+        "3.1.Preliminary",
+        "preliminary-marker " * 80,
+        "3.2.ALVTSFramework Layer-wiseTokenSelectionandProcessing.",
+        "target-marker ALVTS computes importance scores. " * 60,
+        "X(select) = TopK(X, S, k), (7)",
+        "formula-marker selection ratio alpha_s " * 40,
+        "3.3.Experiments",
+        "experiment-marker " * 80,
+    ])
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请拆解第 3.2 节",
+        top_k=3,
+    )
+
+    assert scope == "numbered_section"
+    assert plan.target_section_number == "3.2"
+    assert plan.matched_section_heading == "3.2.ALVTSFramework Layer-wiseTokenSelectionandProcessing."
+    assert "target-marker" in evidence[0].text
+    assert "formula-marker" in evidence[0].text
+    assert "preliminary-marker" not in evidence[0].text
+    assert "experiment-marker" not in evidence[0].text
+
+
 def test_numbered_section_prefers_full_text_range_over_structured_single_block():
     full_text = "\n".join([
         "3.2 FlexMem Update",

@@ -163,6 +163,10 @@ class PaperChunkService:
         r"^\s*(?:section|sec\.?|subsection|subsec\.?)?\s*(\d{1,2}(?:\.\d{1,2}){0,4})\s*[\.)、:：-]?\s+(.{0,160})$",
         re.I,
     )
+    COMPACT_SECTION_NUMBER_HEADING_RE = re.compile(
+        r"^\s*(?:section|sec\.?|subsection|subsec\.?)?\s*(\d{1,2}(?:\.\d{1,2}){1,4})\s*[\.)、:：-]\s*([A-Za-z\u4e00-\u9fff][^\n]{0,180})$",
+        re.I,
+    )
 
     @staticmethod
     def chunk_full_text(full_text: str) -> List[str]:
@@ -551,6 +555,12 @@ class PaperChunkService:
         if not text or len(text) > 220:
             return None
         match = cls.SECTION_NUMBER_HEADING_RE.match(text)
+        if not match:
+            compact_match = cls.COMPACT_SECTION_NUMBER_HEADING_RE.match(text)
+            if compact_match:
+                title = (compact_match.group(2) or "").strip(" .:-:：")
+                if title and re.search(r"[A-Za-z\u4e00-\u9fff]", title):
+                    return compact_match.group(1).strip("."), text
         if not match:
             return None
         number = match.group(1).strip(".")
