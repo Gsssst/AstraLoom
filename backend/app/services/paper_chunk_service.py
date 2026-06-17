@@ -112,6 +112,8 @@ class PaperChunkService:
     EXPERIMENT_COMPLETE_TEXT_BUDGET = 8
     METHOD_VISUAL_EVIDENCE_TOP_K = 16
     METHOD_VISUAL_TEXT_BUDGET = 5
+    VISUAL_CATALOG_TOP_K = 24
+    VISUAL_CATALOG_TEXT_BUDGET = 4
     FORMULA_EVIDENCE_TOP_K = 2
     REFERENCE_EVIDENCE_TOP_K = 6
     TABLE_PACK_CONTEXT_MAX_CHARS = 900
@@ -162,6 +164,16 @@ class PaperChunkService:
         "overview", "explain", "discuss", "compare", "comparison", "overall",
         "分析", "总结", "概括", "说明", "讲解", "比较", "对比", "整体", "全面",
         "综合", "如何", "怎么样",
+    )
+    BROAD_VISUAL_QUERY_TERMS = (
+        "visual result", "visual results", "visualization result", "visualization results",
+        "qualitative result", "qualitative results", "qualitative example", "qualitative examples",
+        "visual evidence", "figures", "all figures", "all images", "all visualizations",
+        "what figures", "which figures", "which images", "which visualizations",
+        "figures support", "visualizations support", "可视化结果", "定性结果", "定性案例",
+        "可视化案例", "视觉结果", "图像结果", "有哪些图", "有什么图", "所有图",
+        "全部图", "哪些图", "哪些可视化", "有没有可视化", "有没有图", "图支持",
+        "图像支持", "这些结果支持",
     )
     FORMULA_QUERY_TERMS = (
         "formula", "formulas", "equation", "equations", "eq.", "eq ", "objective",
@@ -519,6 +531,26 @@ class PaperChunkService:
         return has_method_anchor and has_breadth_marker
 
     @classmethod
+    def is_broad_visual_query(cls, query: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (query or "").lower())
+        if not normalized or not cls.is_visual_like_query(query):
+            return False
+        if re.search(r"(?:fig(?:ure)?|图)\s*\.?\s*\d+", normalized, re.I):
+            return False
+        if any(term in normalized for term in cls.BROAD_VISUAL_QUERY_TERMS):
+            return True
+        has_visual_anchor = any(term in normalized for term in cls.VISUAL_QUERY_TERMS)
+        has_breadth_marker = any(
+            marker in normalized
+            for marker in (
+                *cls.BROAD_ANALYSIS_MARKERS,
+                "all", "which", "what", "whether", "support", "supports",
+                "所有", "全部", "哪些", "有没有", "是否", "支持", "结论",
+            )
+        )
+        return has_visual_anchor and has_breadth_marker
+
+    @classmethod
     def detect_evidence_strategy(cls, query: str) -> str:
         if cls.is_reference_list_query(query):
             return "reference"
@@ -526,6 +558,8 @@ class PaperChunkService:
             return "novelty"
         if cls.is_dataset_query(query):
             return "dataset"
+        if cls.is_broad_visual_query(query):
+            return "visual_catalog"
         if cls.is_broad_experiment_query(query):
             return "experiment"
         if cls.is_broad_method_query(query):
@@ -632,6 +666,16 @@ class PaperChunkService:
                 formula_budget=cls.FORMULA_EVIDENCE_TOP_K if formula_like else 0,
                 text_budget=cls.METHOD_VISUAL_TEXT_BUDGET,
             )
+        if strategy == "visual_catalog":
+            return PaperQuestionEvidencePlan(
+                intent="visual_result_survey",
+                strategy="visual_catalog",
+                requested_sections=requested_sections,
+                include_visual_evidence=True,
+                max_evidence_items=max(top_k or 0, cls.VISUAL_CATALOG_TOP_K),
+                caption_budget=cls.VISUAL_CATALOG_TOP_K,
+                text_budget=cls.VISUAL_CATALOG_TEXT_BUDGET,
+            )
         if formula_like:
             formula_budget = max(cls.FORMULA_EVIDENCE_TOP_K, 3, len(formula_numbers)) if formula_number else cls.FORMULA_EVIDENCE_TOP_K
             return PaperQuestionEvidencePlan(
@@ -694,6 +738,8 @@ class PaperChunkService:
         if cls.is_formula_like_query(query):
             return max(default, cls.DEFAULT_EVIDENCE_TOP_K + cls.FORMULA_EVIDENCE_TOP_K)
         strategy = cls.detect_evidence_strategy(query)
+        if strategy == "visual_catalog":
+            return cls.VISUAL_CATALOG_TOP_K
         if strategy == "experiment":
             return cls.EXPERIMENT_COMPLETE_EVIDENCE_TOP_K
         if strategy == "method_visual":
@@ -2142,6 +2188,15 @@ class PaperChunkService:
             )
             if method_results:
                 return method_results, "method_visual"
+        if plan.strategy == "visual_catalog":
+            visual_catalog_results = cls._visual_catalog_evidence_pack(
+                structured_candidates,
+                text_candidates,
+                query,
+                plan,
+            )
+            if visual_catalog_results:
+                return visual_catalog_results, "visual_catalog"
         if visual_like_query and not table_like_query and structured_candidates:
             visual_results = cls._visual_evidence_lane(structured_candidates, query, top_k=min(top_k, cls.TABLE_EVIDENCE_TOP_K))
             if visual_results:
@@ -2364,6 +2419,205 @@ class PaperChunkService:
         if isinstance(confidence, (int, float)):
             score += min(0.12, max(0.0, float(confidence)) * 0.12)
         return round(max(0.0, min(1.0, score)), 3)
+
+    @classmethod
+    def _visual_catalog_entries(cls, structured_candidates: List[EvidenceChunk]) -> List[dict]:
+        visual_candidates = [
+            item for item in structured_candidates
+            if (
+                item.source_type in {"visual_evidence", "visual_table"}
+                or (item.source_type == "caption" and cls._is_figure_caption(item))
+            )
+        ]
+        visual_candidates.sort(key=lambda item: (
+            item.page_start if isinstance(item.page_start, int) else 9999,
+            0 if item.source_type in {"visual_evidence", "visual_table"} else 1,
+        ))
+        entries: List[dict] = []
+        seen: set[tuple[str, Optional[int], str]] = set()
+        for position, item in enumerate(visual_candidates, 1):
+            metadata = item.metadata or {}
+            caption = str(metadata.get("caption") or "")
+            if not caption and item.source_type == "caption":
+                caption = item.text
+            summary = str(
+                metadata.get("summary")
+                or metadata.get("visual_summary")
+                or metadata.get("ocr_text")
+                or ""
+            )
+            if not summary:
+                summary_match = re.search(r"Visual summary:\s*(.+)", item.text or "", re.I | re.S)
+                summary = summary_match.group(1).strip() if summary_match else ""
+            cleaned_caption = cls._clean_catalog_text(caption or item.text, limit=320)
+            cleaned_summary = cls._clean_catalog_text(summary, limit=320)
+            label_match = re.search(r"\b(?:fig(?:ure)?|图)\s*\.?\s*\d+[a-z]?", f"{cleaned_caption} {item.text}", re.I)
+            figure_label = label_match.group(0).strip() if label_match else f"visual-{position}"
+            kind = str(metadata.get("kind") or ("caption" if item.source_type == "caption" else item.source_type))
+            asset_token = metadata.get("thumbnail_token") or metadata.get("asset_token") or metadata.get("asset_id")
+            key = (
+                str(figure_label).lower(),
+                item.page_start,
+                cls._normalize_caption_for_match(cleaned_caption or cleaned_summary or item.text),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append({
+                "catalog_id": f"V{len(entries) + 1}",
+                "figure_label": figure_label,
+                "page": item.page_start,
+                "kind": kind,
+                "source_type": item.source_type,
+                "parser_source": item.source,
+                "caption": cleaned_caption,
+                "summary": cleaned_summary,
+                "confidence": metadata.get("confidence"),
+                "bbox": metadata.get("bbox"),
+                "asset_token": asset_token,
+                "image_attached": False,
+                "metadata_only": True,
+            })
+        entries.sort(key=lambda entry: (
+            entry.get("page") if isinstance(entry.get("page"), int) else 9999,
+            str(entry.get("figure_label") or ""),
+        ))
+        for index, entry in enumerate(entries, 1):
+            entry["catalog_id"] = f"V{index}"
+        return entries
+
+    @classmethod
+    def _build_visual_catalog_evidence(
+        cls,
+        visual_catalog: List[dict],
+        *,
+        total_count: int,
+        limit: int,
+        query: str,
+        plan: PaperQuestionEvidencePlan,
+    ) -> EvidenceChunk:
+        selected = visual_catalog[:max(1, limit)]
+        lines = [
+            "[PDF visual evidence catalog]",
+            "### 可视化证据覆盖",
+            f"检测到视觉/图像/图标题候选: {total_count}",
+            f"本轮目录纳入: {len(selected)}",
+            "说明: catalog 条目来自解析到的图像/视觉证据/caption 元数据；image_attached=false 表示本轮只提供元数据或 caption，未把图片像素作为附件发给模型。",
+            "### 图像目录",
+        ]
+        for entry in selected:
+            page = entry.get("page") or "unknown"
+            caption = entry.get("caption") or "no caption detected"
+            summary = entry.get("summary") or "no visual summary/OCR detected"
+            asset = entry.get("asset_token") or "none"
+            attached = "true" if entry.get("image_attached") else "false"
+            lines.append(
+                f"- {entry['catalog_id']}: {entry.get('figure_label') or 'visual'}, "
+                f"page {page}, kind {entry.get('kind') or 'unknown'}, source {entry.get('parser_source') or 'unknown'}, "
+                f"asset {asset}, image_attached={attached}, caption: {caption}, summary/OCR: {summary}"
+            )
+        if total_count > len(selected):
+            lines.append(f"... {total_count - len(selected)} more visual candidates omitted from context budget.")
+        pages = [entry.get("page") for entry in selected if isinstance(entry.get("page"), int)]
+        return EvidenceChunk(
+            text="\n".join(lines),
+            score=1.0,
+            page_start=min(pages) if pages else None,
+            page_end=max(pages) if pages else None,
+            source_type="visual_catalog",
+            source="document_visual_evidence",
+            metadata={
+                "strategy": plan.strategy,
+                "intent": plan.intent,
+                "evidence_plan_strategy": plan.strategy,
+                "visual_catalog": selected,
+                "visual_catalog_count": total_count,
+                "selected_visual_catalog_count": len(selected),
+                "metadata_only": True,
+                "query": query,
+            },
+        )
+
+    @classmethod
+    def _visual_catalog_evidence_pack(
+        cls,
+        structured_candidates: List[EvidenceChunk],
+        text_candidates: List[EvidenceChunk],
+        query: str,
+        plan: PaperQuestionEvidencePlan,
+    ) -> List[EvidenceChunk]:
+        visual_catalog = cls._visual_catalog_entries(structured_candidates)
+        if not visual_catalog:
+            return []
+        catalog_evidence = cls._build_visual_catalog_evidence(
+            visual_catalog,
+            total_count=len(visual_catalog),
+            limit=plan.caption_budget or cls.VISUAL_CATALOG_TOP_K,
+            query=query,
+            plan=plan,
+        )
+        visual_candidates = [
+            item for item in structured_candidates
+            if item.source_type in {"visual_evidence", "visual_table"}
+        ]
+        visual_results = cls._visual_evidence_lane(
+            visual_candidates,
+            query,
+            top_k=min(6, max(1, plan.max_evidence_items - 1)),
+        )
+        marked_visual_results = [
+            EvidenceChunk(
+                text=item.text,
+                score=max(item.score, 0.78),
+                section=item.section,
+                page_start=item.page_start,
+                page_end=item.page_end,
+                source_type=item.source_type,
+                source=item.source,
+                metadata={
+                    **(item.metadata or {}),
+                    "evidence_plan_strategy": plan.strategy,
+                    "visual_catalog_item": True,
+                },
+            )
+            for item in visual_results
+        ]
+        visual_pages = {
+            entry.get("page") for entry in visual_catalog
+            if isinstance(entry.get("page"), int)
+        }
+        related_text_candidates = [
+            item for item in text_candidates
+            if (
+                item.page_start in visual_pages
+                or cls._has_experiment_context(item.text)
+                or re.search(r"figure|fig\.?|visual|qualitative|可视化|定性|图", item.text or "", re.I)
+            )
+        ] or text_candidates
+        text_results = cls.search_evidence_chunks(
+            related_text_candidates,
+            query,
+            top_k=plan.text_budget,
+            requested_sections=set(plan.requested_sections),
+        ) if related_text_candidates and plan.text_budget > 0 else []
+        marked_text_results = [
+            EvidenceChunk(
+                text=item.text,
+                score=max(item.score, 0.5),
+                section=item.section,
+                page_start=item.page_start,
+                page_end=item.page_end,
+                source_type=item.source_type,
+                source=item.source,
+                metadata={**(item.metadata or {}), "visual_catalog_context": True},
+            )
+            for item in text_results
+        ]
+        return cls._merge_complete_evidence_pack(
+            [catalog_evidence, *marked_visual_results],
+            marked_text_results,
+            top_k=plan.max_evidence_items,
+        )
 
     @classmethod
     def _experiment_complete_evidence_pack(

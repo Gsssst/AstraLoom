@@ -2279,6 +2279,23 @@ def _visual_evidence_attachments_from_references(
 
 
 def _caption_only_evidence_warning(references: list[dict], attachments: list[ChatImageAttachment]) -> str:
+    visual_catalog_refs = [
+        ref for ref in references
+        if str(ref.get("evidence_type") or "") == "visual_catalog"
+    ]
+    if visual_catalog_refs:
+        metadata = visual_catalog_refs[0].get("metadata") if isinstance(visual_catalog_refs[0].get("metadata"), dict) else {}
+        catalog = metadata.get("visual_catalog")
+        catalog_count = metadata.get("visual_catalog_count")
+        if not isinstance(catalog, list):
+            catalog = []
+        attached_count = len(attachments)
+        return (
+            f"本轮检索使用了图像/可视化目录：目录候选 {catalog_count or len(catalog)} 个，"
+            f"其中最多 {attached_count} 张图片作为视觉附件发送给模型查看。"
+            "回答时必须区分：visual_catalog/caption 说明图像元数据已定位；"
+            "只有已附加的图片才能声称检查过像素细节。"
+        )
     has_caption = any(str(ref.get("evidence_type") or "") == "caption" for ref in references)
     if not has_caption:
         return ""
@@ -2325,6 +2342,10 @@ def _append_visual_evidence_guidance(
 
 def _paper_evidence_meta(references: list[dict]) -> dict:
     evidence = [ref for ref in references if ref.get("type") == "paper_evidence"]
+    visual_catalog = [
+        ref for ref in evidence
+        if str(ref.get("evidence_type") or "") == "visual_catalog"
+    ]
     visual_evidence = [
         ref for ref in evidence
         if str(ref.get("evidence_type") or "").startswith("visual") or (ref.get("metadata") or {}).get("visual_evidence")
@@ -2346,6 +2367,7 @@ def _paper_evidence_meta(references: list[dict]) -> dict:
     return {
         "evidence_count": len(evidence),
         "visual_evidence_count": len(visual_evidence),
+        "visual_catalog_count": len(visual_catalog),
         "evidence_coverage": round(coverage, 4),
         "evidence_insufficient": len(evidence) == 0 and not section_evidence_match,
         "visual_evidence_available": visual_ready,

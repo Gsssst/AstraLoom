@@ -1149,6 +1149,58 @@ def test_ready_document_visual_evidence_is_retrieved_for_figure_questions():
     assert "temporal grounding head" in evidence[0].text
 
 
+def test_broad_visual_question_routes_to_visual_catalog():
+    plan = PaperChunkService.plan_evidence("论文中有没有可视化结果？这些结果支持了什么结论？")
+
+    assert plan.strategy == "visual_catalog"
+    assert plan.intent == "visual_result_survey"
+    assert plan.include_visual_evidence is True
+    assert plan.caption_budget == PaperChunkService.VISUAL_CATALOG_TOP_K
+
+
+def test_broad_visual_catalog_includes_later_figures_not_just_top_matches():
+    full_text = (
+        "5 Experiments\n"
+        "The paper includes qualitative visualization results and discusses what they support. "
+        + "visual qualitative result " * 100
+    )
+    structured_blocks = []
+    for index in range(1, 7):
+        structured_blocks.append({
+            "type": "visual_evidence",
+            "page": index + 1,
+            "source": "document_visual_evidence",
+            "text": (
+                f"[PDF visual evidence, page {index + 1}, kind figure, asset fig{index}]\n"
+                f"Caption: Figure {index}. Qualitative visualization case {index}.\n"
+                f"Visual summary: Case {index} supports the visualization conclusion."
+            ),
+            "metadata": {
+                "asset_id": f"fig{index}",
+                "kind": "figure",
+                "caption": f"Figure {index}. Qualitative visualization case {index}.",
+                "summary": f"Case {index} supports the visualization conclusion.",
+                "confidence": 0.8,
+                "visual_evidence": True,
+            },
+        })
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "论文中有没有可视化结果？这些结果支持了什么结论？",
+        top_k=PaperChunkService.recommended_evidence_top_k("论文中有没有可视化结果？这些结果支持了什么结论？"),
+        structured_blocks=structured_blocks,
+    )
+
+    assert scope == "visual_catalog"
+    assert plan.strategy == "visual_catalog"
+    catalog = next(item for item in evidence if item.source_type == "visual_catalog")
+    assert "Figure 1" in catalog.text
+    assert "Figure 6" in catalog.text
+    assert catalog.metadata["visual_catalog_count"] == 6
+    assert any(item.source_type == "visual_evidence" for item in evidence)
+
+
 def test_experiment_questions_include_ready_visual_table_evidence():
     full_text = (
         "5 Experiments\n"

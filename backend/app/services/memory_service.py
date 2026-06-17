@@ -263,6 +263,7 @@ async def build_paper_context_with_evidence(
                     "formula": "，类型: 公式",
                     "reference_entry": "，类型: 参考文献条目",
                     "reference_catalog": "，类型: 参考文献列表",
+                    "visual_catalog": "，类型: 图像/可视化目录",
                     "visual_evidence": "，类型: 视觉证据",
                     "visual_table": "，类型: 视觉表格",
                 }.get(evidence.source_type, "")
@@ -337,6 +338,12 @@ async def build_paper_context_with_evidence(
         )
     elif plan_metadata.get("strategy") == "method_visual":
         plan_instruction += "这是方法/视觉证据包：请优先结合方法章节、架构图/标题和视觉证据解释方法。"
+    elif plan_metadata.get("strategy") == "visual_catalog":
+        plan_instruction += (
+            "这是全局可视化结果盘点：请先阅读 visual_catalog 类型证据，按目录列出当前解析到的图像/图标题/视觉证据，"
+            "再总结这些可视化结果支持了什么结论。必须区分 metadata/caption 可见与图片像素已附加查看；"
+            "不要因为某张图未作为图片附件发送就说论文中没有该图。"
+        )
     elif plan_metadata.get("strategy") == "reference_list":
         requested_reference_number = plan_metadata.get("requested_reference_number")
         if requested_reference_number:
@@ -363,6 +370,8 @@ async def build_paper_context_with_evidence(
             evidence_warning += " 本轮没有定位到文末 References/Bibliography 列表；不能把正文里的引用编号上下文当作参考文献条目，必须说明参考文献列表未在当前证据中找到。"
         if plan_metadata.get("strategy") == "experiment_complete":
             evidence_warning += " 如果部分表格只有标题、摘要或低置信解析，请说明具体缺少表格单元格/OCR 数值，而不是说整篇论文内容不足。"
+        elif plan_metadata.get("strategy") == "visual_catalog":
+            evidence_warning += " 如果 visual_catalog 里列出了某张图但未附加图片，请表述为“已检索到该图的元数据/caption，但本轮未检查像素细节”，不要表述为没有定位到这张图。"
         else:
             evidence_warning += " 如果证据只缺少某个局部细节，请用“未在当前证据中定位到该细节/仍需回看原文核对”来表述，并继续基于已有证据回答。"
     visual_question = False
