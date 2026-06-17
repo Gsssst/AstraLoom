@@ -467,6 +467,86 @@ def test_formula_number_query_explicit_page_overrides_current_reading_page():
     assert r"\tilde{Q}" not in evidence[0].text
 
 
+def test_formula_number_query_uses_current_page_order_when_label_is_missing():
+    full_text = "3 Method\n" + "method-marker " * 120
+    page_texts = [
+        "1 Introduction\n" + "intro-marker " * 40,
+        r"2 Background\ny_t \sim P(\cdot | y_{<t}, X_T, X_V), (2)",
+        "3.2 ALVTS Framework\n"
+        r"\tilde{W}_Q = U_Q V_Q, \tilde{W}_K = U_K V_K, (1)" "\n"
+        r"where U_Q, U_K \in R^{D \times R} and V_Q, V_K \in R^{R \times D}." "\n"
+        r"\tilde{Q} = X\tilde{W}_Q^T, \tilde{K} = X\tilde{W}_K^T," "\n"
+        "and derive the attention weights between all tokens:" "\n"
+        r"\tilde{A} = softmax(\tilde{Q}\tilde{K}^T / \sqrt{d_k}) (3)",
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释公式2的含义，每个变量分别代表什么",
+        top_k=4,
+        page_texts=page_texts,
+        preferred_pages=[3],
+    )
+
+    assert scope == "formula+text"
+    assert plan.strategy == "formula_number"
+    assert evidence[0].source_type == "formula"
+    assert evidence[0].page_start == 3
+    assert evidence[0].metadata["formula_order_fallback"] is True
+    assert evidence[0].metadata["formula_number_match"] is False
+    assert evidence[0].metadata["preferred_page_match"] is True
+    assert evidence[0].metadata["fallback_reason"] == "missing_formula_label_on_preferred_page"
+    assert r"\tilde{Q}" in evidence[0].text
+    assert r"\tilde{K}" in evidence[0].text
+    assert "P(\\cdot" not in evidence[0].text
+    assert r"\tilde{A} = softmax" not in evidence[0].text
+
+
+def test_formula_number_query_exact_label_beats_current_page_order_fallback():
+    full_text = "3 Method\n" + "method-marker " * 120
+    page_texts = [
+        "3.2 ALVTS Framework\n"
+        r"\tilde{W}_Q = U_Q V_Q, \tilde{W}_K = U_K V_K, (1)" "\n"
+        r"\tilde{Q} = X\tilde{W}_Q^T, \tilde{K} = X\tilde{W}_K^T, (2)" "\n"
+        r"\tilde{A} = softmax(\tilde{Q}\tilde{K}^T / \sqrt{d_k}) (3)",
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释公式2",
+        top_k=4,
+        page_texts=page_texts,
+        preferred_pages=[1],
+    )
+
+    assert scope == "formula+text"
+    assert plan.strategy == "formula_number"
+    assert evidence[0].page_start == 1
+    assert evidence[0].metadata["formula_number_match"] is True
+    assert evidence[0].metadata.get("formula_order_fallback") is None
+    assert r"\tilde{Q}" in evidence[0].text
+
+
+def test_formula_number_query_does_not_use_global_order_without_preferred_page():
+    full_text = "\n".join([
+        "3.2 ALVTS Framework",
+        r"\tilde{W}_Q = U_Q V_Q, \tilde{W}_K = U_K V_K,",
+        r"\tilde{Q} = X\tilde{W}_Q^T, \tilde{K} = X\tilde{W}_K^T,",
+    ])
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释公式2",
+        top_k=4,
+        page_texts=None,
+        preferred_pages=None,
+    )
+
+    assert plan.strategy == "formula_number"
+    assert scope != "formula+text"
+    assert not any((item.metadata or {}).get("formula_order_fallback") for item in evidence)
+
+
 def test_numbered_section_includes_supplemental_formula_evidence():
     full_text = "\n".join([
         "3.2 FlexMem Update",

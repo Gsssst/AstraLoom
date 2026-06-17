@@ -915,6 +915,103 @@ class PaperChunkService:
         return [item.strip() for item in lines[start:end] if item.strip()]
 
     @classmethod
+    def _is_display_formula_line(cls, line: str) -> bool:
+        text = re.sub(r"\s+", " ", (line or "").strip())
+        if not text or len(text) > 260:
+            return False
+        if cls._parse_numbered_heading(text):
+            return False
+        if re.match(r"^(where|here|given|and|for|we|the)\b", text, re.I):
+            return False
+        math_signal_count = len(re.findall(r"\\[A-Za-z]+|[_^{}=]|∈|≤|≥|≈|≪|∑|∏|√|𝑊|softmax", text))
+        return math_signal_count >= 2 and bool(re.search(r"=|\\sim|softmax|\\frac|\\sqrt", text))
+
+    @classmethod
+    def _display_formula_spans(cls, lines: List[str]) -> List[tuple[int, int]]:
+        spans: List[tuple[int, int]] = []
+        index = 0
+        while index < len(lines):
+            if not cls._is_display_formula_line(lines[index]):
+                index += 1
+                continue
+            start = index
+            index += 1
+            while (
+                index < len(lines)
+                and cls._is_display_formula_line(lines[index])
+                and not cls._numbered_formula_labels_in_line(lines[index - 1])
+                and not cls._numbered_formula_labels_in_line(lines[index])
+            ):
+                index += 1
+            spans.append((start, index))
+        return spans
+
+    @classmethod
+    def _formula_order_context_window(cls, lines: List[str], start: int, end: int, number: int) -> List[str]:
+        window_start = start
+        for previous_index in range(start - 1, max(-1, start - 2), -1):
+            previous_line = lines[previous_index].strip()
+            if not previous_line:
+                break
+            if cls._line_has_other_numbered_formula_label(previous_line, number):
+                break
+            if cls._is_display_formula_line(previous_line):
+                break
+            window_start = previous_index
+
+        window_end = end
+        for next_index in range(end, min(len(lines), end + 1)):
+            next_line = lines[next_index].strip()
+            if not next_line:
+                break
+            if cls._line_has_other_numbered_formula_label(next_line, number):
+                break
+            if cls._is_display_formula_line(next_line):
+                break
+            window_end = next_index + 1
+
+        return [item.strip() for item in lines[window_start:window_end] if item.strip()]
+
+    @classmethod
+    def _formula_order_evidence_from_text(
+        cls,
+        text: str,
+        number: int,
+        *,
+        source: str,
+        page_start: int,
+        page_end: int,
+        preferred_pages: set[int],
+    ) -> Optional[EvidenceChunk]:
+        lines = [line.rstrip() for line in (text or "").splitlines()]
+        spans = cls._display_formula_spans(lines)
+        if number < 1 or number > len(spans):
+            return None
+        start, end = spans[number - 1]
+        window = cls._formula_order_context_window(lines, start, end, number)
+        if not any(cls._line_has_math_signal(item) for item in window):
+            return None
+        return EvidenceChunk(
+            text="\n".join(window).strip(),
+            score=0.9,
+            section=None,
+            page_start=page_start,
+            page_end=page_end,
+            source_type="formula",
+            source=source,
+            metadata={
+                "formula_evidence": True,
+                "requested_formula_number": number,
+                "formula_number_match": False,
+                "formula_order_fallback": True,
+                "formula_text_extraction": True,
+                "preferred_pages": sorted(preferred_pages),
+                "preferred_page_match": True,
+                "fallback_reason": "missing_formula_label_on_preferred_page",
+            },
+        )
+
+    @classmethod
     def _numbered_formula_evidence_from_text(
         cls,
         text: str,
@@ -984,6 +1081,19 @@ class PaperChunkService:
                 page_end=page_index,
                 preferred_pages=bounded_preferred_pages,
                 preferred_page_match=True,
+            )
+            if evidence:
+                return evidence
+        for page_index in sorted(bounded_preferred_pages):
+            if not page_texts or page_index > len(page_texts):
+                continue
+            evidence = cls._formula_order_evidence_from_text(
+                page_texts[page_index - 1],
+                number,
+                source="pdf_page_text",
+                page_start=page_index,
+                page_end=page_index,
+                preferred_pages=bounded_preferred_pages,
             )
             if evidence:
                 return evidence
