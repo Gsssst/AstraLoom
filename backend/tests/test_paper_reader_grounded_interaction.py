@@ -619,6 +619,42 @@ def test_formula_number_query_uses_neighbor_page_exact_match_before_current_page
     assert "P(\\cdot" not in evidence[0].text
 
 
+def test_stacked_sum_formula_evidence_preserves_average_and_bounds():
+    full_text = "3 Method\n" + "method-marker " * 120
+    page_texts = [
+        "\n".join([
+            "Thefinalimportancescoreiscomputedastheproductof model’s attention patterns and align our low-rank approx-",
+            "thesetwocomponents: imationS byminimizingthereconstructionerror:",
+            "S(i)=S (i)·S (i), i=1,2,...,N. (6)",
+            "V2V T2V N",
+            "1 (cid:88)",
+            "L= (S(i)−S∗(i))2. (11)",
+            "This multiplicative combination ensures that tokens are N",
+            "i=1",
+            "deemed important only when they are relevant to both the",
+        ])
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释公式11的含义，每个变量分别代表什么",
+        top_k=4,
+        page_texts=page_texts,
+        preferred_pages=[1],
+    )
+
+    assert scope == "formula+text"
+    assert plan.strategy == "formula_number"
+    assert evidence[0].source_type == "formula"
+    assert evidence[0].metadata["formula_number_match"] is True
+    assert evidence[0].metadata["formula_layout_reconstruction"] is True
+    assert evidence[0].metadata["normalized_formula"] == "L = 1/N sum_{i=1}^{N} (S(i) - S*(i))^2"
+    assert evidence[0].metadata.get("matched_heading") is None
+    assert "1 (cid:88)" in evidence[0].text
+    assert "i=1" in evidence[0].text
+    assert "Normalized formula: L = 1/N sum_{i=1}^{N} (S(i) - S*(i))^2" in evidence[0].text
+
+
 def test_formula_number_query_does_not_use_global_order_without_preferred_page():
     full_text = "\n".join([
         "3.2 ALVTS Framework",

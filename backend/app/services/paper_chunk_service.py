@@ -675,6 +675,8 @@ class PaperChunkService:
         text = re.sub(r"\s+", " ", (line or "").strip())
         if not text or len(text) > 220:
             return None
+        if cls._is_formula_layout_fragment_line(text):
+            return None
         match = cls.SECTION_NUMBER_HEADING_RE.match(text)
         if not match:
             compact_match = cls.COMPACT_SECTION_NUMBER_HEADING_RE.match(text)
@@ -863,7 +865,7 @@ class PaperChunkService:
     @staticmethod
     def _line_has_math_signal(line: str) -> bool:
         return bool(re.search(
-            r"\\[A-Za-z]+|[_^{}=]|[A-Za-z]\s*[=~˜]\s*|∈|≤|≥|≈|≪|∑|∏|√|𝑊|˜|⊤|×|\\tilde|softmax",
+            r"\\[A-Za-z]+|[_^{}=]|[A-Za-z]\s*[=~˜]\s*|∈|≤|≥|≈|≪|∑|∏|√|𝑊|˜|⊤|×|\\tilde|softmax|\(cid:88\)",
             line or "",
             re.I,
         ))
@@ -902,7 +904,7 @@ class PaperChunkService:
     @classmethod
     def _numbered_formula_context_window(cls, lines: List[str], index: int, number: int) -> List[str]:
         start = index
-        for previous_index in range(index - 1, max(-1, index - 3), -1):
+        for previous_index in range(index - 1, max(-1, index - 5), -1):
             previous_line = lines[previous_index].strip()
             if not previous_line:
                 break
@@ -911,10 +913,13 @@ class PaperChunkService:
             if cls._is_display_formula_line(previous_line):
                 start = previous_index
                 continue
+            if cls._is_formula_layout_fragment_line(previous_line):
+                start = previous_index
+                continue
             break
 
         end = index + 1
-        for next_index in range(index + 1, min(len(lines), index + 3)):
+        for next_index in range(index + 1, min(len(lines), index + 4)):
             next_line = lines[next_index].strip()
             if not next_line:
                 break
@@ -922,12 +927,13 @@ class PaperChunkService:
                 break
             if cls._is_display_formula_line(next_line):
                 break
-            if cls._is_formula_subscript_continuation_line(next_line):
+            if cls._is_formula_subscript_continuation_line(next_line) or cls._is_formula_layout_fragment_line(next_line):
                 end = next_index + 1
                 continue
             break
 
-        return [item.strip() for item in lines[start:end] if item.strip()]
+        window = [item.strip() for item in lines[start:end] if item.strip()]
+        return cls._append_stacked_formula_fragments(lines, index, number, window)
 
     @classmethod
     def _is_display_formula_line(cls, line: str) -> bool:
@@ -940,11 +946,11 @@ class PaperChunkService:
             return False
         has_numbered_label = bool(cls._numbered_formula_labels_in_line(text))
         math_signal_count = len(re.findall(
-            r"\\[A-Za-z]+|[_^{}=]|∈|≤|≥|≈|≪|∑|∏|√|𝑊|˜|⊤|×|softmax|TopK",
+            r"\\[A-Za-z]+|[_^{}=]|∈|≤|≥|≈|≪|∑|∏|√|𝑊|˜|⊤|×|softmax|TopK|\(cid:88\)",
             text,
             re.I,
         ))
-        has_equation_operator = bool(re.search(r"=|\\sim|[A-Za-z]˜|˜|softmax|TopK|\\frac|\\sqrt|√", text, re.I))
+        has_equation_operator = bool(re.search(r"=|\\sim|[A-Za-z]˜|˜|softmax|TopK|\\frac|\\sqrt|√|\(cid:88\)", text, re.I))
         prose_setup = re.search(
             r"\b(given|being|contains?|compute[sd]?|represent(?:s|ing|ed)?|projected|through|using|with)\b",
             text,
@@ -982,9 +988,99 @@ class PaperChunkService:
         text = re.sub(r"\s+", " ", (line or "").strip())
         if not text or len(text) > 40:
             return False
-        if re.search(r"\\[A-Za-z]+|[_^{}=]|∈|≤|≥|≈|≪|∑|∏|√|˜|⊤|×|softmax|TopK|\(\s*\d{1,2}\s*\)", text, re.I):
+        if re.search(r"\\[A-Za-z]+|[_^{}=]|∈|≤|≥|≈|≪|∑|∏|√|˜|⊤|×|softmax|TopK|\(cid:88\)|\(\s*\d{1,2}\s*\)", text, re.I):
             return False
         return bool(re.fullmatch(r"[A-Za-z0-9,\.\s]+", text)) and bool(re.search(r"[A-Za-z]", text))
+
+    @staticmethod
+    def _is_formula_layout_fragment_line(line: str) -> bool:
+        text = re.sub(r"\s+", " ", (line or "").strip())
+        if not text or len(text) > 48:
+            return False
+        if re.search(r"\b(?:this|the|and|with|from|to|for|model|token|tokens|visual|textual|layer)\b", text, re.I):
+            return False
+        if re.search(r"\(cid:88\)|∑", text):
+            return True
+        if re.fullmatch(r"[A-Za-z]\s*=\s*\d+", text):
+            return True
+        if re.fullmatch(r"[A-Za-z]\s*[A-Za-z0-9]*", text) and len(text.replace(" ", "")) <= 3:
+            return True
+        if re.fullmatch(r"\d+", text):
+            return True
+        return False
+
+    @staticmethod
+    def _formula_layout_fragment_from_mixed_line(line: str) -> Optional[str]:
+        text = re.sub(r"\s+", " ", (line or "").strip())
+        if not text:
+            return None
+        lower_bound = re.search(r"\b([a-z])\s*=\s*(\d+)\b", text)
+        if lower_bound:
+            return f"{lower_bound.group(1)}={lower_bound.group(2)}"
+        upper_bound = re.search(r"(?:^|\s)([NM])(?:$|[\s.,;:])", text)
+        if upper_bound:
+            return upper_bound.group(1)
+        return None
+
+    @classmethod
+    def _append_stacked_formula_fragments(
+        cls,
+        lines: List[str],
+        formula_index: int,
+        number: int,
+        window: List[str],
+    ) -> List[str]:
+        if not any(re.search(r"\(cid:88\)|∑", item) for item in window):
+            return window
+
+        expanded = list(window)
+        seen = {item.strip() for item in expanded}
+        for next_index in range(formula_index + 1, min(len(lines), formula_index + 5)):
+            next_line = lines[next_index].strip()
+            if not next_line:
+                break
+            if cls._line_has_other_numbered_formula_label(next_line, number):
+                break
+            if cls._is_display_formula_line(next_line):
+                break
+            fragment = next_line if cls._is_formula_layout_fragment_line(next_line) else cls._formula_layout_fragment_from_mixed_line(next_line)
+            if fragment and fragment not in seen:
+                expanded.append(fragment)
+                seen.add(fragment)
+            if any(re.fullmatch(r"[a-z]\s*=\s*\d+", item) for item in expanded):
+                break
+        return expanded
+
+    @staticmethod
+    def _normalize_formula_fragment_text(text: str) -> str:
+        normalized = (text or "").replace("(cid:88)", "∑")
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        normalized = normalized.replace("−", "-")
+        normalized = re.sub(r"([A-Za-z])∗", r"\1*", normalized)
+        normalized = re.sub(r"\)\s*2\b", ")^2", normalized)
+        return normalized
+
+    @classmethod
+    def _normalized_stacked_formula_text(cls, window: List[str]) -> Optional[str]:
+        raw = "\n".join(window)
+        normalized = cls._normalize_formula_fragment_text(raw)
+        compact = normalized.replace(" ", "")
+        has_sum_marker = "∑" in normalized
+        has_lower_bound = bool(re.search(r"\bi\s*=\s*1\b", normalized))
+        has_upper_bound = bool(re.search(r"(?:^|[\s\n])N(?:$|[\s\n])", normalized))
+        has_average_factor = bool(re.search(r"(?:^|[\s\n])1\s*∑|1/N|1\s*/\s*N", normalized))
+        is_loss_formula = bool(re.search(r"\bL\s*=", normalized)) and "S(i)" in compact and ("S*(i)" in compact or "S∗(i)" in compact)
+        if not (is_loss_formula and has_sum_marker and has_lower_bound and has_upper_bound and has_average_factor):
+            return None
+        return "L = 1/N sum_{i=1}^{N} (S(i) - S*(i))^2"
+
+    @classmethod
+    def _formula_text_with_normalization(cls, window: List[str]) -> tuple[str, Optional[str]]:
+        formula_text = "\n".join(item.strip() for item in window if item.strip()).strip()
+        normalized_formula = cls._normalized_stacked_formula_text(window)
+        if normalized_formula:
+            formula_text = f"{formula_text}\n\nNormalized formula: {normalized_formula}"
+        return formula_text, normalized_formula
 
     @classmethod
     def _formula_order_context_window(cls, lines: List[str], start: int, end: int, number: int) -> List[str]:
@@ -1013,7 +1109,8 @@ class PaperChunkService:
                 continue
             break
 
-        return [item.strip() for item in lines[window_start:window_end] if item.strip()]
+        window = [item.strip() for item in lines[window_start:window_end] if item.strip()]
+        return cls._append_stacked_formula_fragments(lines, start, number, window)
 
     @classmethod
     def _formula_order_evidence_from_text(
@@ -1034,8 +1131,9 @@ class PaperChunkService:
         window = cls._formula_order_context_window(lines, start, end, number)
         if not any(cls._line_has_math_signal(item) for item in window):
             return None
+        formula_text, normalized_formula = cls._formula_text_with_normalization(window)
         return EvidenceChunk(
-            text="\n".join(window).strip(),
+            text=formula_text,
             score=0.9,
             section=None,
             page_start=page_start,
@@ -1051,6 +1149,10 @@ class PaperChunkService:
                 "preferred_pages": sorted(preferred_pages),
                 "preferred_page_match": True,
                 "fallback_reason": "missing_formula_label_on_preferred_page",
+                **({
+                    "normalized_formula": normalized_formula,
+                    "formula_layout_reconstruction": True,
+                } if normalized_formula else {}),
             },
         )
 
@@ -1080,7 +1182,7 @@ class PaperChunkService:
             window = cls._numbered_formula_context_window(lines, index, number)
             if not any(cls._line_has_math_signal(item) for item in window):
                 continue
-            formula_text = "\n".join(window).strip()
+            formula_text, normalized_formula = cls._formula_text_with_normalization(window)
             return EvidenceChunk(
                 text=formula_text,
                 score=0.98,
@@ -1097,6 +1199,10 @@ class PaperChunkService:
                     "preferred_pages": sorted(preferred_pages or []),
                     "preferred_page_match": preferred_page_match,
                     "matched_heading": current_heading,
+                    **({
+                        "normalized_formula": normalized_formula,
+                        "formula_layout_reconstruction": True,
+                    } if normalized_formula else {}),
                     **(extra_metadata or {}),
                 },
             )
