@@ -304,23 +304,47 @@ class PaperChunkService:
         return bool(re.search(r"\\[a-zA-Z]+|[$^_{}]|(?:^|\W)e[qx]\.?\s*\d+", query or "", re.I))
 
     @classmethod
-    def detect_requested_formula_number(cls, query: str) -> Optional[int]:
+    def detect_requested_formula_numbers(cls, query: str) -> List[int]:
         normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
         if not normalized or not cls.is_formula_like_query(query):
-            return None
-        patterns = (
+            return []
+
+        numbers: List[int] = []
+
+        def add_number(value: str) -> None:
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                return
+            if 1 <= number <= 99 and number not in numbers:
+                numbers.append(number)
+
+        list_patterns = (
+            r"(?:公式|方程|等式|式子|式)\s*([0-9]{1,2}(?:\s*[,，、/和及与]\s*[0-9]{1,2})+)",
+            r"(?:eq(?:uation)?\.?|formula)s?\s*([0-9]{1,2}(?:\s*[,，、/和及与]\s*[0-9]{1,2})+)",
+        )
+        for pattern in list_patterns:
+            for match in re.finditer(pattern, normalized, re.I):
+                for value in re.findall(r"\d{1,2}", match.group(1)):
+                    add_number(value)
+
+        single_patterns = (
             r"(?:公式|方程|等式|式子|式)\s*\(?\s*(\d{1,2})\s*\)?",
             r"(?:第\s*)?(\d{1,2})\s*(?:个|条)?\s*(?:公式|方程|等式|式子|式)",
             r"(?:eq(?:uation)?\.?|formula)\s*\(?\s*(\d{1,2})\s*\)?",
         )
-        for pattern in patterns:
-            match = re.search(pattern, normalized, re.I)
-            if match:
-                return int(match.group(1))
+        for pattern in single_patterns:
+            for match in re.finditer(pattern, normalized, re.I):
+                add_number(match.group(1))
         for word, number in cls.ORDINAL_FORMULA_WORDS.items():
             if word in normalized and re.search(r"formula|equation|公式|方程|等式|式子|式", normalized, re.I):
-                return number
-        return None
+                add_number(str(number))
+        return numbers
+
+    @classmethod
+    def detect_requested_formula_number(cls, query: str) -> Optional[int]:
+        numbers = cls.detect_requested_formula_numbers(query)
+        return numbers[0] if numbers else None
 
     @staticmethod
     def detect_requested_page_numbers(query: str) -> List[int]:
@@ -415,7 +439,8 @@ class PaperChunkService:
         visual_like = cls.is_visual_like_query(query)
         table_like = cls.is_table_like_query(query)
         formula_like = cls.is_formula_like_query(query)
-        formula_number = cls.detect_requested_formula_number(query)
+        formula_numbers = cls.detect_requested_formula_numbers(query)
+        formula_number = formula_numbers[0] if formula_numbers else None
 
         if target_section_number:
             return PaperQuestionEvidencePlan(
@@ -489,13 +514,14 @@ class PaperChunkService:
                 text_budget=cls.METHOD_VISUAL_TEXT_BUDGET,
             )
         if formula_like:
+            formula_budget = max(cls.FORMULA_EVIDENCE_TOP_K, 3, len(formula_numbers)) if formula_number else cls.FORMULA_EVIDENCE_TOP_K
             return PaperQuestionEvidencePlan(
                 intent="formula_number_lookup" if formula_number else "formula_lookup",
                 strategy="formula_number" if formula_number else "formula_top_k",
                 requested_sections=requested_sections,
                 include_formula_evidence=True,
                 max_evidence_items=max(top_k or 0, cls.DEFAULT_EVIDENCE_TOP_K + cls.FORMULA_EVIDENCE_TOP_K),
-                formula_budget=max(cls.FORMULA_EVIDENCE_TOP_K, 3) if formula_number else cls.FORMULA_EVIDENCE_TOP_K,
+                formula_budget=formula_budget,
                 text_budget=top_k or cls.DEFAULT_EVIDENCE_TOP_K,
             )
         if strategy == "visual":
@@ -1727,19 +1753,23 @@ class PaperChunkService:
                     dossier_results = cls._merge_evidence_lanes(visual_results, dossier_results, top_k=top_k)
                 return dossier_results, "experiment_dossier+structured" if structured_candidates else "experiment_dossier"
         if plan.strategy == "formula_number":
-            requested_formula_number = cls.detect_requested_formula_number(query)
-            if requested_formula_number:
-                text_formula = cls._numbered_formula_text_evidence(
-                    full_text,
-                    requested_formula_number,
-                    page_texts=page_texts,
-                    preferred_pages=formula_preferred_pages,
-                    neighbor_pages=formula_neighbor_pages,
-                )
-                if text_formula:
+            requested_formula_numbers = cls.detect_requested_formula_numbers(query)
+            if requested_formula_numbers:
+                text_formulas: List[EvidenceChunk] = []
+                for requested_formula_number in requested_formula_numbers:
+                    text_formula = cls._numbered_formula_text_evidence(
+                        full_text,
+                        requested_formula_number,
+                        page_texts=page_texts,
+                        preferred_pages=formula_preferred_pages,
+                        neighbor_pages=formula_neighbor_pages,
+                    )
+                    if text_formula:
+                        text_formulas.append(text_formula)
+                if text_formulas:
                     remaining_formula_budget = max(
                         0,
-                        (plan.formula_budget or cls.FORMULA_EVIDENCE_TOP_K) - 1,
+                        (plan.formula_budget or cls.FORMULA_EVIDENCE_TOP_K) - len(text_formulas),
                     )
                     structured_formula_results = cls._formula_number_evidence_lane(
                         structured_candidates,
@@ -1748,7 +1778,7 @@ class PaperChunkService:
                         target_pages=formula_target_pages,
                     ) if structured_candidates and remaining_formula_budget else []
                     formula_results = cls._merge_complete_evidence_pack(
-                        [text_formula],
+                        text_formulas,
                         structured_formula_results,
                         top_k=plan.formula_budget or cls.FORMULA_EVIDENCE_TOP_K,
                     )

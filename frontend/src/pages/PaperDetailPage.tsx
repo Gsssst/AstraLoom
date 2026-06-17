@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Button, Tag, Typography, Space, Spin, message,
@@ -28,7 +28,7 @@ import ResearchKnowledgeGraph, { type ResearchGraphEdge, type ResearchGraphNode 
 import { useAuthStore } from '../stores/useAuthStore';
 import { useThemeStore } from '../stores/useThemeStore';
 import useChatAutoScroll from '../hooks/useChatAutoScroll';
-import useChatAttachments from '../hooks/useChatAttachments';
+import useChatAttachments, { type ChatAttachment } from '../hooks/useChatAttachments';
 import {
   buildResearchCitationKey,
   computeEvidenceConfidence,
@@ -222,6 +222,103 @@ interface PaperChatEvidenceMeta {
   } | null;
 }
 
+interface PaperChatComposerHandle {
+  getValue: () => string;
+  clear: () => void;
+  restore: (value: string) => void;
+  setValue: (value: string) => void;
+}
+
+interface PaperChatComposerProps {
+  asking: boolean;
+  pdfQuote: PaperPdfQuote | null;
+  paperChatAttachments: ChatAttachment[];
+  rememberedPaperChatAttachments: ChatAttachment[];
+  hasExtractingPaperChatAttachments: boolean;
+  attachmentStatusLabel: (file: ChatAttachment) => string;
+  onUpload: () => void;
+  onRemoveAttachment: (id: string) => void;
+  onRemoveRememberedAttachment: (id: string) => void;
+  onAsk: () => void;
+  onStop: () => void;
+}
+
+const PaperChatComposer = memo(forwardRef<PaperChatComposerHandle, PaperChatComposerProps>(({
+  asking,
+  pdfQuote,
+  paperChatAttachments,
+  rememberedPaperChatAttachments,
+  hasExtractingPaperChatAttachments,
+  attachmentStatusLabel,
+  onUpload,
+  onRemoveAttachment,
+  onRemoveRememberedAttachment,
+  onAsk,
+  onStop,
+}, ref) => {
+  const [draft, setDraft] = useState('');
+
+  useImperativeHandle(ref, () => ({
+    getValue: () => draft,
+    clear: () => setDraft(''),
+    restore: (value: string) => setDraft(current => current || value),
+    setValue: (value: string) => setDraft(value),
+  }), [draft]);
+
+  const canSend = Boolean(
+    draft.trim()
+    || pdfQuote
+    || paperChatAttachments.length > 0
+    || rememberedPaperChatAttachments.length > 0
+  );
+
+  return (
+    <>
+      {paperChatAttachments.length > 0 && (
+        <div className="chat-attachments paper-chat-attachments">
+          {paperChatAttachments.map(file => (
+            <div key={file.id} className="chat-attachment-chip">
+              {file.file.type.startsWith('image/')
+                ? <img className="chat-attachment-thumb" src={file.dataUrl || URL.createObjectURL(file.file)} alt="" />
+                : <span className="chat-attachment-file-icon"><FilePdfOutlined /></span>}
+              <span className="chat-attachment-name">{attachmentStatusLabel(file)} · {file.file.name}</span>
+              <Button className="chat-attachment-remove" type="text" size="small" icon={<CloseOutlined />} onClick={() => onRemoveAttachment(file.id)} />
+            </div>
+          ))}
+        </div>
+      )}
+      {rememberedPaperChatAttachments.length > 0 && (
+        <div className="chat-attachments paper-chat-attachments chat-remembered-attachments">
+          {rememberedPaperChatAttachments.map(file => (
+            <div key={file.id} className="chat-attachment-chip">
+              {file.file.type.startsWith('image/')
+                ? <img className="chat-attachment-thumb" src={file.optimizedDataUrl || file.dataUrl || URL.createObjectURL(file.file)} alt="" />
+                : <span className="chat-attachment-file-icon"><FilePdfOutlined /></span>}
+              <span className="chat-attachment-name">{attachmentStatusLabel(file)} · {file.file.name}</span>
+              <Button className="chat-attachment-remove" type="text" size="small" icon={<CloseOutlined />} onClick={() => onRemoveRememberedAttachment(file.id)} />
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="paper-detail-chat-editor">
+        <Button className="chat-upload-button chat-tool-button paper-detail-chat-upload" type="text" icon={<UploadOutlined />} disabled={asking} onClick={onUpload} />
+        <TextArea
+          className="paper-detail-chat-input"
+          value={draft}
+          onChange={event => setDraft(event.target.value)}
+          onPressEnter={event => { if (!event.shiftKey) { event.preventDefault(); onAsk(); } }}
+          placeholder={pdfQuote ? '围绕引用内容提问，Enter 发送，Shift+Enter 换行' : '基于论文提问，Enter 发送，Shift+Enter 换行'}
+          autoSize={{ minRows: 1, maxRows: 6 }}
+          disabled={asking}
+        />
+        {asking
+          ? <Tooltip title="停止生成"><Button className="paper-detail-chat-send" danger shape="circle" icon={<StopOutlined />} onClick={onStop} /></Tooltip>
+          : <Button className="paper-detail-chat-send" type="primary" shape="circle" icon={<SendOutlined />} disabled={!canSend || hasExtractingPaperChatAttachments} onClick={onAsk} />}
+      </div>
+    </>
+  );
+}));
+
 type PaperEvidenceCategory = 'paper_text' | 'table' | 'visual' | 'web' | 'related' | 'other';
 
 interface PaperEvidenceDrawerState {
@@ -406,7 +503,7 @@ const PaperDetailPage: React.FC = () => {
 
   // AI 问答
   const [chatMsgs, setChatMsgs] = useState<PaperChatMessage[]>([]);
-  const [question, setQuestion] = useState('');
+  const paperChatComposerRef = useRef<PaperChatComposerHandle | null>(null);
   const [pdfQuote, setPdfQuote] = useState<PaperPdfQuote | null>(null);
   const [asking, setAsking] = useState(false);
   const [askStatus, setAskStatus] = useState<string | null>(null);
@@ -825,7 +922,8 @@ const PaperDetailPage: React.FC = () => {
   const submitPaperQuestion = async (rawQuestion?: string, displayQuestion?: string, quoteOverride?: PaperPdfQuote | null) => {
     const templateMode = typeof rawQuestion === 'string';
     const activeQuote = quoteOverride !== undefined ? quoteOverride : templateMode ? null : pdfQuote;
-    const visibleQuestion = (displayQuestion || rawQuestion || question.trim() || '请解释这段选中内容。').trim();
+    const draftQuestion = paperChatComposerRef.current?.getValue().trim() || '';
+    const visibleQuestion = (displayQuestion || rawQuestion || draftQuestion || '请解释这段选中内容。').trim();
     const readyAttachmentContext = mergedPaperChatReadyAttachments();
     if ((!visibleQuestion && !activeQuote && readyAttachmentContext.length === 0) || asking) return;
     if (hasExtractingPaperChatAttachments) { message.warning('附件还在解析中...'); return; }
@@ -848,7 +946,7 @@ const PaperDetailPage: React.FC = () => {
       quote: activeQuote || undefined,
       attachmentNames: attachmentNames.length > 0 ? attachmentNames : undefined,
     };
-    setQuestion('');
+    paperChatComposerRef.current?.clear();
     if (!templateMode) setPdfQuote(null);
     setPaperChatAttachments([]);
     if (templateMode && isMobile) setMobilePanel('chat');
@@ -887,7 +985,7 @@ const PaperDetailPage: React.FC = () => {
         return;
       }
       if (!templateMode) {
-        setQuestion(current => current || visibleQuestion);
+        paperChatComposerRef.current?.restore(visibleQuestion);
         setPdfQuote(current => current || activeQuote);
       }
       setPaperChatAttachments(current => current.length > 0 ? current : attachedFiles);
@@ -905,6 +1003,10 @@ const PaperDetailPage: React.FC = () => {
   const handleAsk = async () => {
     await submitPaperQuestion();
   };
+
+  const handleSetRegenerateDraft = useCallback(() => {
+    paperChatComposerRef.current?.setValue('请重新回答');
+  }, []);
 
   const handleReadingTemplate = async (template: PaperReadingTemplate) => {
     await submitPaperQuestion(template.question, template.title);
@@ -961,7 +1063,8 @@ const PaperDetailPage: React.FC = () => {
       setPdfQuote({ text: selected.text, pageNumber: selected.pageNumber });
       message.success(`已添加第 ${selected.pageNumber} 页引用`);
     } else {
-      setQuestion(current => current ? `${current}\n\n${selected.text}` : selected.text);
+      const currentDraft = paperChatComposerRef.current?.getValue() || '';
+      paperChatComposerRef.current?.setValue(currentDraft ? `${currentDraft}\n\n${selected.text}` : selected.text);
       message.success('已加入问题草稿');
     }
     if (isMobile) setMobilePanel('chat');
@@ -1739,7 +1842,7 @@ const PaperDetailPage: React.FC = () => {
                       {msg.role === 'assistant' && !msg._streaming && (
                         <div style={{ display:'flex', gap: 4, marginTop: 4, paddingLeft: 4 }}>
                           <Button type="text" size="small" icon={<CopyOutlined />} onClick={()=>{navigator.clipboard.writeText(msg.content);message.success('已复制');}} style={{fontSize:11,color:'#bbb'}}>复制</Button>
-                          <Button type="text" size="small" icon={<RedoOutlined />} onClick={()=>{setQuestion('请重新回答');}} style={{fontSize:11,color:'#bbb'}}>重新生成</Button>
+                          <Button type="text" size="small" icon={<RedoOutlined />} onClick={handleSetRegenerateDraft} style={{fontSize:11,color:'#bbb'}}>重新生成</Button>
                         </div>
                       )}
                       {((msg.references && msg.references.length > 0) || msg.evidence) && (() => {
@@ -1833,42 +1936,20 @@ const PaperDetailPage: React.FC = () => {
                   <div className="paper-chat-quote-text">{pdfQuote.text}</div>
                 </div>
               )}
-              {paperChatAttachments.length > 0 && (
-                <div className="chat-attachments paper-chat-attachments">
-                  {paperChatAttachments.map(file => (
-                    <div key={file.id} className="chat-attachment-chip">
-                      {file.file.type.startsWith('image/')
-                        ? <img className="chat-attachment-thumb" src={file.dataUrl || URL.createObjectURL(file.file)} alt="" />
-                        : <span className="chat-attachment-file-icon"><FilePdfOutlined /></span>}
-                      <span className="chat-attachment-name">{paperChatAttachmentStatusLabel(file)} · {file.file.name}</span>
-                      <Button className="chat-attachment-remove" type="text" size="small" icon={<CloseOutlined />} onClick={() => removePaperChatAttachment(file.id)} />
-                    </div>
-                  ))}
-                </div>
-              )}
-              {rememberedPaperChatAttachments.length > 0 && (
-                <div className="chat-attachments paper-chat-attachments chat-remembered-attachments">
-                  {rememberedPaperChatAttachments.map(file => (
-                    <div key={file.id} className="chat-attachment-chip">
-                      {file.file.type.startsWith('image/')
-                        ? <img className="chat-attachment-thumb" src={file.optimizedDataUrl || file.dataUrl || URL.createObjectURL(file.file)} alt="" />
-                        : <span className="chat-attachment-file-icon"><FilePdfOutlined /></span>}
-                      <span className="chat-attachment-name">{paperChatAttachmentStatusLabel(file)} · {file.file.name}</span>
-                      <Button className="chat-attachment-remove" type="text" size="small" icon={<CloseOutlined />} onClick={() => removeRememberedPaperChatAttachment(file.id)} />
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="paper-detail-chat-editor">
-                <Button className="chat-upload-button chat-tool-button paper-detail-chat-upload" type="text" icon={<UploadOutlined />} disabled={asking} onClick={openPaperChatAttachmentPicker} />
-                <TextArea className="paper-detail-chat-input" value={question} onChange={e=>setQuestion(e.target.value)}
-                onPressEnter={e=>{if(!e.shiftKey){e.preventDefault();handleAsk();}}}
-                placeholder={pdfQuote ? '围绕引用内容提问，Enter 发送，Shift+Enter 换行' : '基于论文提问，Enter 发送，Shift+Enter 换行'}
-                autoSize={{ minRows: 1, maxRows: 6 }} disabled={asking}/>
-                {asking
-                  ? <Tooltip title="停止生成"><Button className="paper-detail-chat-send" danger shape="circle" icon={<StopOutlined/>} onClick={handleStopPaperChatGeneration}/></Tooltip>
-                  : <Button className="paper-detail-chat-send" type="primary" shape="circle" icon={<SendOutlined/>} disabled={(!question.trim() && !pdfQuote && paperChatAttachments.length === 0 && rememberedPaperChatAttachments.length === 0) || hasExtractingPaperChatAttachments} onClick={handleAsk}/>}
-              </div>
+              <PaperChatComposer
+                ref={paperChatComposerRef}
+                asking={asking}
+                pdfQuote={pdfQuote}
+                paperChatAttachments={paperChatAttachments}
+                rememberedPaperChatAttachments={rememberedPaperChatAttachments}
+                hasExtractingPaperChatAttachments={hasExtractingPaperChatAttachments}
+                attachmentStatusLabel={paperChatAttachmentStatusLabel}
+                onUpload={openPaperChatAttachmentPicker}
+                onRemoveAttachment={removePaperChatAttachment}
+                onRemoveRememberedAttachment={removeRememberedPaperChatAttachment}
+                onAsk={handleAsk}
+                onStop={handleStopPaperChatGeneration}
+              />
             </div>
           </Card>
         </div>}

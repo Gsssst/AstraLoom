@@ -619,6 +619,45 @@ def test_formula_number_query_uses_neighbor_page_exact_match_before_current_page
     assert "P(\\cdot" not in evidence[0].text
 
 
+def test_formula_number_detection_supports_chinese_number_lists():
+    assert PaperChunkService.detect_requested_formula_numbers("具体解释一下公式8、9、10") == [8, 9, 10]
+    assert PaperChunkService.detect_requested_formula_number("具体解释一下公式8、9、10") == 8
+
+
+def test_formula_number_query_returns_multiple_requested_formula_evidence():
+    full_text = "3 Method\n" + "method-marker " * 120
+    page_texts = [
+        "\n".join([
+            "3.3 Token Selector Optimization",
+            "Σ1/2 =diag( σ , σ ,..., σ )∈RR×R, (8)",
+            "U Q =U full [:,:R]·Σ1 R /2 ∈RD×R, (9)",
+            "V =Σ1/2·V [:R,:]⊤ ∈RR×D. (10)",
+        ])
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "具体解释一下公式8、9、10",
+        top_k=6,
+        page_texts=page_texts,
+        preferred_pages=[1],
+    )
+
+    formula_numbers = [
+        item.metadata["requested_formula_number"]
+        for item in evidence
+        if item.source_type == "formula"
+    ]
+
+    assert scope == "formula+text"
+    assert plan.strategy == "formula_number"
+    assert plan.formula_budget >= 3
+    assert formula_numbers[:3] == [8, 9, 10]
+    assert any("(8)" in item.text for item in evidence if item.source_type == "formula")
+    assert any("(9)" in item.text for item in evidence if item.source_type == "formula")
+    assert any("(10)" in item.text for item in evidence if item.source_type == "formula")
+
+
 def test_stacked_sum_formula_evidence_preserves_average_and_bounds():
     full_text = "3 Method\n" + "method-marker " * 120
     page_texts = [
