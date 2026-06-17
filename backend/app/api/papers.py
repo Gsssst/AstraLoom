@@ -2126,6 +2126,10 @@ async def get_paper_ai_insights(
 
 # --- 论文增强 API ---
 
+class PaperReadingContext(BaseModel):
+    current_page: Optional[int] = Field(default=None, ge=1, description="当前 PDF 阅读页码")
+
+
 class AskPaperRequest(BaseModel):
     question: str = Field(..., description="关于论文的问题")
     history: Optional[list] = None
@@ -2134,6 +2138,7 @@ class AskPaperRequest(BaseModel):
     web_search: bool = Field(default=False, description="是否启用联网增强")
     search_depth: Literal["quick", "standard", "deep"] = Field(default="standard", description="检索深度")
     show_thinking: bool = Field(default=False, description="是否展示思考过程")
+    reading_context: Optional[PaperReadingContext] = None
 
 
 class PaperUserState(BaseModel):
@@ -2154,7 +2159,13 @@ async def _build_paper_chat_context(paper, req: AskPaperRequest) -> tuple[list[d
     from app.api.chat_sessions import _append_retrieval_context
     from app.services.memory_service import build_paper_context_with_evidence
 
-    context, evidence_refs = await build_paper_context_with_evidence(paper, req.question, req.history)
+    preferred_page = req.reading_context.current_page if req.reading_context else None
+    context, evidence_refs = await build_paper_context_with_evidence(
+        paper,
+        req.question,
+        req.history,
+        preferred_pages=[preferred_page] if preferred_page else None,
+    )
     references = await _append_retrieval_context(
         context,
         req.question,

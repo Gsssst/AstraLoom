@@ -321,6 +321,26 @@ class PaperChunkService:
                 return number
         return None
 
+    @staticmethod
+    def detect_requested_page_numbers(query: str) -> List[int]:
+        normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
+        if not normalized:
+            return []
+        pages: List[int] = []
+        patterns = (
+            r"(?:pdf\s*)?(?:第\s*)?(\d{1,4})\s*(?:页|頁)",
+            r"\b(?:p(?:age)?\.?|pdf\s+page)\s*(\d{1,4})\b",
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, normalized, re.I):
+                try:
+                    page = int(match.group(1))
+                except (TypeError, ValueError):
+                    continue
+                if page > 0:
+                    pages.append(page)
+        return list(dict.fromkeys(pages))
+
     @classmethod
     def is_dataset_query(cls, query: str) -> bool:
         normalized = re.sub(r"\s+", " ", (query or "").lower())
@@ -903,6 +923,8 @@ class PaperChunkService:
         source: str,
         page_start: Optional[int] = None,
         page_end: Optional[int] = None,
+        preferred_pages: Optional[set[int]] = None,
+        preferred_page_match: bool = False,
     ) -> Optional[EvidenceChunk]:
         lines = [line.rstrip() for line in (text or "").splitlines()]
         current_section: Optional[str] = None
@@ -931,6 +953,8 @@ class PaperChunkService:
                     "requested_formula_number": number,
                     "formula_number_match": True,
                     "formula_text_extraction": True,
+                    "preferred_pages": sorted(preferred_pages or []),
+                    "preferred_page_match": preferred_page_match,
                     "matched_heading": current_heading,
                 },
             )
@@ -943,18 +967,47 @@ class PaperChunkService:
         number: int,
         *,
         page_texts: Optional[List[str]] = None,
+        preferred_pages: Optional[set[int]] = None,
     ) -> Optional[EvidenceChunk]:
+        bounded_preferred_pages = {
+            page for page in (preferred_pages or set())
+            if isinstance(page, int) and page > 0
+        }
+        for page_index in sorted(bounded_preferred_pages):
+            if not page_texts or page_index > len(page_texts):
+                continue
+            evidence = cls._numbered_formula_evidence_from_text(
+                page_texts[page_index - 1],
+                number,
+                source="pdf_page_text",
+                page_start=page_index,
+                page_end=page_index,
+                preferred_pages=bounded_preferred_pages,
+                preferred_page_match=True,
+            )
+            if evidence:
+                return evidence
         for page_index, page_text in enumerate(page_texts or [], 1):
+            if page_index in bounded_preferred_pages:
+                continue
             evidence = cls._numbered_formula_evidence_from_text(
                 page_text,
                 number,
                 source="pdf_page_text",
                 page_start=page_index,
                 page_end=page_index,
+                preferred_pages=bounded_preferred_pages,
+                preferred_page_match=False,
             )
             if evidence:
                 return evidence
-        return cls._numbered_formula_evidence_from_text(full_text, number, source="full_text")
+        return cls._numbered_formula_evidence_from_text(
+            full_text,
+            number,
+            source="full_text",
+            preferred_pages=bounded_preferred_pages,
+            preferred_page_match=False,
+        )
 
     @classmethod
     def _formula_number_evidence_lane(
@@ -1175,6 +1228,7 @@ class PaperChunkService:
         top_k: int = 3,
         page_texts: Optional[List[str]] = None,
         structured_blocks: Optional[List[dict]] = None,
+        preferred_pages: Optional[List[int]] = None,
     ) -> Tuple[List[EvidenceChunk], str]:
         """Return structured evidence snippets, preferring explicitly requested sections."""
         text_candidates = cls._page_evidence_candidates(page_texts) if page_texts else cls._document_evidence_candidates(full_text)
@@ -1185,7 +1239,14 @@ class PaperChunkService:
         table_like_query = strategy in {"table", "experiment"} or cls.is_table_like_query(query)
         candidates = [*structured_candidates, *text_candidates]
         requested_sections = set(plan.requested_sections)
+        explicit_pages = set(cls.detect_requested_page_numbers(query))
+        reading_pages = {
+            page for page in (preferred_pages or [])
+            if isinstance(page, int) and page > 0
+        }
+        formula_preferred_pages = explicit_pages or reading_pages
         target_pages = cls._numbered_section_pages(plan.target_section_number, page_texts)
+        formula_target_pages = target_pages or formula_preferred_pages
         if plan.target_section_number:
             section_evidence = cls._numbered_section_evidence(
                 full_text,
@@ -1280,6 +1341,7 @@ class PaperChunkService:
                     full_text,
                     requested_formula_number,
                     page_texts=page_texts,
+                    preferred_pages=formula_preferred_pages,
                 )
                 if text_formula:
                     remaining_formula_budget = max(
@@ -1290,7 +1352,7 @@ class PaperChunkService:
                         structured_candidates,
                         query,
                         top_k=remaining_formula_budget,
-                        target_pages=target_pages,
+                        target_pages=formula_target_pages,
                     ) if structured_candidates and remaining_formula_budget else []
                     formula_results = cls._merge_complete_evidence_pack(
                         [text_formula],
@@ -1309,13 +1371,13 @@ class PaperChunkService:
                 structured_candidates,
                 query,
                 top_k=plan.formula_budget or cls.FORMULA_EVIDENCE_TOP_K,
-                target_pages=target_pages,
+                target_pages=formula_target_pages,
             ) if plan.strategy == "formula_number" else []
             formula_results = formula_results or cls._formula_evidence_lane(
                 structured_candidates,
                 query,
                 top_k=plan.formula_budget or cls.FORMULA_EVIDENCE_TOP_K,
-                target_pages=target_pages,
+                target_pages=formula_target_pages,
             )
             if formula_results:
                 document_results = cls.search_evidence_chunks(
@@ -1374,6 +1436,7 @@ class PaperChunkService:
         top_k: int = 3,
         page_texts: Optional[List[str]] = None,
         structured_blocks: Optional[List[dict]] = None,
+        preferred_pages: Optional[List[int]] = None,
     ) -> Tuple[List[EvidenceChunk], str, PaperQuestionEvidencePlan]:
         plan = cls.plan_evidence(query, top_k=top_k)
         evidence, scope = cls.retrieve_evidence(
@@ -1382,6 +1445,7 @@ class PaperChunkService:
             top_k=max(top_k, plan.max_evidence_items),
             page_texts=page_texts,
             structured_blocks=structured_blocks,
+            preferred_pages=preferred_pages,
         )
         if evidence and scope == "numbered_section":
             metadata = evidence[0].metadata or {}

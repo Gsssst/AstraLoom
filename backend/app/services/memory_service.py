@@ -152,12 +152,14 @@ async def build_paper_context(
     question: str,
     history: List[dict] = None,
     max_tokens: int = 6000,
+    preferred_pages: Optional[List[int]] = None,
 ) -> List[dict]:
     context, _evidence = await build_paper_context_with_evidence(
         paper,
         question,
         history=history,
         max_tokens=max_tokens,
+        preferred_pages=preferred_pages,
     )
     return context
 
@@ -167,6 +169,7 @@ async def build_paper_context_with_evidence(
     question: str,
     history: List[dict] = None,
     max_tokens: int = 6000,
+    preferred_pages: Optional[List[int]] = None,
 ) -> tuple[List[dict], list[dict]]:
     """为论文专属问答构建优化上下文。
 
@@ -239,6 +242,7 @@ async def build_paper_context_with_evidence(
             top_k=evidence_top_k,
             page_texts=page_texts or None,
             structured_blocks=structured_blocks or None,
+            preferred_pages=preferred_pages,
         )
 
         if evidence_chunks:

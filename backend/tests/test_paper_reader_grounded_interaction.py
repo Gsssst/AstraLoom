@@ -385,6 +385,88 @@ def test_formula_number_query_uses_page_text_when_no_structured_formula_blocks()
     assert "formula_evidence_not_found" not in plan.warnings
 
 
+def test_formula_number_query_prefers_current_reading_page_over_earlier_duplicate_label():
+    full_text = "3 Method\n" + "method-marker " * 120
+    page_texts = [
+        "1 Introduction\n" + "intro-marker " * 40,
+        r"2 Background\ny_t \sim P(\cdot | y_{<t}, X_T, X_V), (2)",
+        "3.1 Preliminary\n" + "prelim-marker " * 40,
+        "3.2 ALVTS Framework\n"
+        r"\tilde{W}_Q = U_Q V_Q, \tilde{W}_K = U_K V_K, (1)" "\n"
+        r"Given X = [X_T, X_V], compute approximate queries and keys:" "\n"
+        r"\tilde{Q} = X\tilde{W}_Q^T, \tilde{K} = X\tilde{W}_K^T, (2) and derive attention weights." "\n"
+        r"\tilde{A} = softmax(\tilde{Q}\tilde{K}^T / \sqrt{d_k}) (3)",
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释公式2的含义，每个变量分别代表什么",
+        top_k=4,
+        page_texts=page_texts,
+        preferred_pages=[4],
+    )
+
+    assert scope == "formula+text"
+    assert plan.strategy == "formula_number"
+    assert evidence[0].source_type == "formula"
+    assert evidence[0].page_start == 4
+    assert evidence[0].metadata["preferred_page_match"] is True
+    assert evidence[0].metadata["preferred_pages"] == [4]
+    assert r"\tilde{Q}" in evidence[0].text
+    assert "P(\\cdot" not in evidence[0].text
+
+
+def test_formula_number_query_falls_back_when_current_page_lacks_requested_formula():
+    full_text = "3 Method\n" + "method-marker " * 120
+    page_texts = [
+        "1 Introduction\n" + "intro-marker " * 40,
+        r"2 Background\ny_t \sim P(\cdot | y_{<t}, X_T, X_V), (2)",
+        "3.2 ALVTS Framework\nThis page explains token selection without the requested numbered formula.",
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释公式2",
+        top_k=4,
+        page_texts=page_texts,
+        preferred_pages=[3],
+    )
+
+    assert scope == "formula+text"
+    assert plan.strategy == "formula_number"
+    assert evidence[0].source_type == "formula"
+    assert evidence[0].page_start == 2
+    assert evidence[0].metadata["preferred_page_match"] is False
+    assert evidence[0].metadata["preferred_pages"] == [3]
+    assert "P(\\cdot" in evidence[0].text
+
+
+def test_formula_number_query_explicit_page_overrides_current_reading_page():
+    full_text = "3 Method\n" + "method-marker " * 120
+    page_texts = [
+        "1 Introduction\n" + "intro-marker " * 40,
+        r"2 Background\ny_t \sim P(\cdot | y_{<t}, X_T, X_V), (2)",
+        "3.1 Preliminary\n" + "prelim-marker " * 40,
+        r"3.2 ALVTS Framework\n\tilde{Q} = X\tilde{W}_Q^T, \tilde{K} = X\tilde{W}_K^T, (2)",
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释第2页的公式2",
+        top_k=4,
+        page_texts=page_texts,
+        preferred_pages=[4],
+    )
+
+    assert scope == "formula+text"
+    assert plan.strategy == "formula_number"
+    assert evidence[0].page_start == 2
+    assert evidence[0].metadata["preferred_page_match"] is True
+    assert evidence[0].metadata["preferred_pages"] == [2]
+    assert "P(\\cdot" in evidence[0].text
+    assert r"\tilde{Q}" not in evidence[0].text
+
+
 def test_numbered_section_includes_supplemental_formula_evidence():
     full_text = "\n".join([
         "3.2 FlexMem Update",

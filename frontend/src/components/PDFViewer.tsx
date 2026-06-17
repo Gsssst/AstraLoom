@@ -17,10 +17,11 @@ const PDF_LOAD_TIMEOUT_MS = 20000;
 interface PDFViewerProps {
   url: string;
   onTextSelect?: (text: string, pageNumber: number, position: { x: number; y: number }) => void;
+  onPageChange?: (pageNumber: number) => void;
   targetPage?: number | null;
 }
 
-const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) => {
+const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, onPageChange, targetPage }) => {
   const [numPages, setNumPages] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -43,11 +44,15 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
 
   const onDocLoad = useCallback(({ numPages }: any) => {
     setNumPages(numPages);
-    setPageNumber(current => Math.min(Math.max(current, 1), numPages || 1));
+    setPageNumber(current => {
+      const nextPage = Math.min(Math.max(current, 1), numPages || 1);
+      onPageChange?.(nextPage);
+      return nextPage;
+    });
     setLoadError(null);
     setNativeFallback(false);
     setLoading(false);
-  }, []);
+  }, [onPageChange]);
 
   const onDocLoadError = useCallback((error: Error) => {
     setLoading(false);
@@ -99,11 +104,15 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
   useEffect(() => {
     if (!targetPage || targetPage < 1) return;
     const bounded = numPages ? Math.min(targetPage, numPages) : targetPage;
-    setPageNumber(current => current === bounded ? current : bounded);
+    setPageNumber(current => {
+      if (current === bounded) return current;
+      onPageChange?.(bounded);
+      return bounded;
+    });
     window.requestAnimationFrame(() => {
       pageRefs.current.get(bounded)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
     });
-  }, [targetPage, numPages]);
+  }, [targetPage, numPages, onPageChange]);
 
   const syncCurrentPageFromScroll = useCallback(() => {
     const container = contentRef.current;
@@ -124,15 +133,17 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, targetPage }) 
 
     if (closestPage !== pageNumber) {
       setPageNumber(closestPage);
+      onPageChange?.(closestPage);
     }
-  }, [numPages, pageNumber]);
+  }, [numPages, onPageChange, pageNumber]);
 
   const handlePageJump = useCallback((page: number | null) => {
     if (!page) return;
     const bounded = Math.min(Math.max(page, 1), numPages || page);
     setPageNumber(bounded);
+    onPageChange?.(bounded);
     pageRefs.current.get(bounded)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-  }, [numPages]);
+  }, [numPages, onPageChange]);
 
   const pageNumbers = React.useMemo(
     () => Array.from({ length: numPages }, (_, index) => index + 1),

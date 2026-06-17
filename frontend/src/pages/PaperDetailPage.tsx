@@ -338,6 +338,7 @@ const PaperDetailPage: React.FC = () => {
   const [parseStatus, setParseStatus] = useState<StructuredPdfParseStatus | null>(null);
   const [showPdf, setShowPdf] = useState(false);
   const [targetPdfPage, setTargetPdfPage] = useState<number | null>(null);
+  const [currentPdfPage, setCurrentPdfPage] = useState<number | null>(null);
   const [mobilePanel, setMobilePanel] = useState<'content' | 'pdf' | 'chat'>('content');
   const [pdfPanelWidth, setPdfPanelWidth] = useState(CHAT_REOPEN_WIDTH_PERCENT);
   const [contentPanelWidth, setContentPanelWidth] = useState(CONTENT_PANEL_DEFAULT_PERCENT);
@@ -394,6 +395,7 @@ const PaperDetailPage: React.FC = () => {
     return () => document.removeEventListener('mouseup', handleMouseUp);
   }, []);
   const handlePdfTextSelect = (text: string, pageNumber: number, position: { x: number; y: number }) => {
+    setCurrentPdfPage(pageNumber);
     setSelectionMenu({
       text,
       pageNumber,
@@ -859,10 +861,20 @@ const PaperDetailPage: React.FC = () => {
     setAskStatus(webSearch ? '正在检索当前论文、论文库与网络来源...' : paperRagEnabled ? '正在检索当前论文与相关论文...' : '正在阅读当前论文...');
     try {
       const token = localStorage.getItem('access_token');
+      const readingPage = activeQuote?.pageNumber || currentPdfPage || undefined;
       const response = await fetch(`/api/papers/${paperId}/ask-stream`, {
         signal: controller.signal,
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ question: q, history: chatMsgs.slice(-6), rag_enabled: paperRagEnabled, web_search: webSearch, search_depth: searchDepth, show_thinking: showThinking, attachments: imageAttachments }),
+        body: JSON.stringify({
+          question: q,
+          history: chatMsgs.slice(-6),
+          rag_enabled: paperRagEnabled,
+          web_search: webSearch,
+          search_depth: searchDepth,
+          show_thinking: showThinking,
+          attachments: imageAttachments,
+          reading_context: readingPage ? { current_page: readingPage } : undefined,
+        }),
       });
       if (!response.ok) throw new Error('Stream failed');
       const reply = await consumePaperChatStream(response);
@@ -1253,7 +1265,7 @@ const PaperDetailPage: React.FC = () => {
               height: '100%',
             }}
           >
-            <PDFViewer url={pdfUrl} onTextSelect={handlePdfTextSelect} targetPage={targetPdfPage} />
+            <PDFViewer url={pdfUrl} onTextSelect={handlePdfTextSelect} onPageChange={setCurrentPdfPage} targetPage={targetPdfPage} />
           </div>
         )}
 

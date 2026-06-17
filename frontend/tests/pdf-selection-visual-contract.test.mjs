@@ -18,7 +18,7 @@ const frontendNginxSource = readFileSync(
 test('pdf viewer scopes page-level selection styles', () => {
   assert.match(pdfViewerSource, /className="paper-pdf-page"/);
   assert.match(pdfViewerSource, /renderTextLayer=\{true\}/);
-  assert.match(pdfViewerSource, /onTextSelect\(text, pageNumber, \{/);
+  assert.match(pdfViewerSource, /onTextSelect\(text, selectedPage, \{/);
   assert.match(pdfViewerSource, /getBoundingClientRect\(\)/);
 });
 

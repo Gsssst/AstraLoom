@@ -79,8 +79,8 @@ async def test_paper_chat_keeps_current_paper_and_appends_optional_retrieval(mon
     calls = []
     paper = SimpleNamespace(title="Primary paper")
 
-    async def _fake_build_paper_context(current_paper, question, history):
-        calls.append(("paper", current_paper.title, question, history))
+    async def _fake_build_paper_context(current_paper, question, history, preferred_pages=None):
+        calls.append(("paper", current_paper.title, question, history, preferred_pages))
         return [{"role": "system", "content": "primary paper context"}], [
             {"title": current_paper.title, "source": "current_paper", "type": "paper_evidence", "id": "E1", "page": 2}
         ]
@@ -110,7 +110,7 @@ async def test_paper_chat_keeps_current_paper_and_appends_optional_retrieval(mon
     context, references = await papers._build_paper_chat_context(paper, request)
 
     assert calls == [
-        ("paper", "Primary paper", "compare methods", [{"role": "user", "content": "history"}]),
+        ("paper", "Primary paper", "compare methods", [{"role": "user", "content": "history"}], None),
         ("retrieval", "compare methods", True, True, "deep"),
     ]
     assert context == [

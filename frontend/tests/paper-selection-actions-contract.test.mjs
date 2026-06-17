@@ -27,8 +27,12 @@ test('paper detail uses one contextual selection menu for content and PDF select
 
 test('PDF text selection reports coordinates without auto-inserting a quote card', () => {
   assert.match(pdfViewerSource, /onTextSelect\?: \(text: string, pageNumber: number, position: \{ x: number; y: number \}\) => void/);
+  assert.match(pdfViewerSource, /onPageChange\?: \(pageNumber: number\) => void/);
   assert.match(pdfViewerSource, /getBoundingClientRect\(\)/);
   assert.match(paperDetailSource, /const handlePdfTextSelect = \(text: string, pageNumber: number, position: \{ x: number; y: number \}\)/);
+  assert.match(paperDetailSource, /const \[currentPdfPage, setCurrentPdfPage\]/);
+  assert.match(paperDetailSource, /onPageChange=\{setCurrentPdfPage\}/);
+  assert.match(paperDetailSource, /reading_context: readingPage \? \{ current_page: readingPage \} : undefined/);
   assert.doesNotMatch(paperDetailSource, /const handlePdfTextSelect = \(text: string, pageNumber: number\) => \{\n\s*setPdfQuote/);
 });
 
