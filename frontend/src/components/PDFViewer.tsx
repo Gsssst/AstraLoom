@@ -21,6 +21,7 @@ const PDF_ZOOM_MIN = 0.75;
 const PDF_ZOOM_MAX = 4;
 const PDF_ZOOM_STEP = 0.1;
 const PDF_WHEEL_ZOOM_SENSITIVITY = 0.0025;
+const PDF_DEFAULT_PAGE_ASPECT_RATIO = 1.4142;
 
 interface PDFTargetLocator {
   page: number;
@@ -59,6 +60,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
   const [nativeFallback, setNativeFallback] = useState(false);
   const [pageWidth, setPageWidth] = useState(700);
   const [zoomScale, setZoomScale] = useState(1);
+  const [pageAspectRatios, setPageAspectRatios] = useState<Record<number, number>>({});
   const contentRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const activeEvidenceHighlightRef = useRef<HTMLElement[]>([]);
@@ -91,11 +93,6 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
   const clampZoomScale = useCallback((value: number) => (
     Math.max(PDF_ZOOM_MIN, Math.min(PDF_ZOOM_MAX, value))
   ), []);
-
-  const effectivePageWidth = React.useMemo(
-    () => Math.round(pageWidth * zoomScale),
-    [pageWidth, zoomScale],
-  );
 
   const zoomPercent = Math.round(zoomScale * 100);
 
@@ -145,6 +142,45 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     zoomAroundViewportPoint(1);
   }, [zoomAroundViewportPoint]);
 
+  const getScaledPageSize = useCallback((page: number) => {
+    const aspectRatio = pageAspectRatios[page] || PDF_DEFAULT_PAGE_ASPECT_RATIO;
+    return {
+      width: Math.round(pageWidth * zoomScale),
+      height: Math.round(pageWidth * aspectRatio * zoomScale),
+    };
+  }, [pageAspectRatios, pageWidth, zoomScale]);
+
+  const scrollPdfNodeIntoView = useCallback((node: HTMLElement, behavior: ScrollBehavior = 'smooth') => {
+    const container = contentRef.current;
+    if (!container) {
+      node.scrollIntoView({ block: 'center', inline: 'nearest', behavior });
+      return;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const nodeRect = node.getBoundingClientRect();
+    const targetTop = container.scrollTop + nodeRect.top - containerRect.top - (container.clientHeight / 2) + (nodeRect.height / 2);
+    const targetLeft = container.scrollLeft + nodeRect.left - containerRect.left - (container.clientWidth / 2) + (nodeRect.width / 2);
+    container.scrollTo({
+      top: Math.max(0, targetTop),
+      left: Math.max(0, targetLeft),
+      behavior,
+    });
+  }, []);
+
+  const handlePageLoadSuccess = useCallback((pdfPage: any, page: number) => {
+    const viewport = pdfPage?.getViewport?.({ scale: 1 });
+    const nextRatio = viewport?.width > 0 && viewport?.height > 0
+      ? viewport.height / viewport.width
+      : null;
+    if (!nextRatio) return;
+
+    setPageAspectRatios(current => {
+      if (Math.abs((current[page] || 0) - nextRatio) < 0.001) return current;
+      return { ...current, [page]: nextRatio };
+    });
+  }, []);
+
   const onDocLoad = useCallback(({ numPages }: any) => {
     setNumPages(numPages);
     setPageNumber(current => {
@@ -183,6 +219,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     setNumPages(0);
     setPageNumber(1);
     setZoomScale(1);
+    setPageAspectRatios({});
   }, [clearEvidenceHighlight, resolvedUrl]);
 
   useEffect(() => {
@@ -306,13 +343,13 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
       clearEvidenceHighlight();
       matchedNodes.forEach(node => node.classList.add('paper-pdf-evidence-hit'));
       activeEvidenceHighlightRef.current = matchedNodes;
-      firstNode.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+      scrollPdfNodeIntoView(firstNode);
       evidenceHighlightTimeoutRef.current = window.setTimeout(clearEvidenceHighlight, PDF_EVIDENCE_HIGHLIGHT_MS);
       return true;
     }
 
     return false;
-  }, [clearEvidenceHighlight, evidenceSearchQueries, normalizeEvidenceSearchText]);
+  }, [clearEvidenceHighlight, evidenceSearchQueries, normalizeEvidenceSearchText, scrollPdfNodeIntoView]);
 
   useEffect(() => {
     if (!targetLocator || targetLocator.page < 1) return;
@@ -572,17 +609,30 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
                     key={page}
                     className="paper-pdf-page"
                     data-page-number={page}
+                    style={{
+                      width: getScaledPageSize(page).width,
+                      height: getScaledPageSize(page).height,
+                    }}
                     ref={(node) => {
                       if (node) pageRefs.current.set(page, node);
                       else pageRefs.current.delete(page);
                     }}
                   >
-                    <Page
-                      pageNumber={page}
-                      renderTextLayer={true}
-                      renderAnnotationLayer={true}
-                      width={effectivePageWidth}
-                    />
+                    <div
+                      className="paper-pdf-page-shell"
+                      style={{
+                        width: pageWidth,
+                        transform: `scale(${zoomScale})`,
+                      }}
+                    >
+                      <Page
+                        pageNumber={page}
+                        renderTextLayer={true}
+                        renderAnnotationLayer={true}
+                        width={pageWidth}
+                        onLoadSuccess={(pdfPage) => handlePageLoadSuccess(pdfPage, page)}
+                      />
+                    </div>
                   </div>
                 ))}
               </div>

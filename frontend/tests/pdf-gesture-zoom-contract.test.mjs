@@ -15,8 +15,10 @@ test('pdf viewer renders pages with bounded global zoom state', () => {
   assert.match(pdfViewerSource, /const PDF_ZOOM_MIN = 0\.75;/);
   assert.match(pdfViewerSource, /const PDF_ZOOM_MAX = 4;/);
   assert.match(pdfViewerSource, /const \[zoomScale, setZoomScale\] = useState\(1\);/);
-  assert.match(pdfViewerSource, /const effectivePageWidth = React\.useMemo/);
-  assert.match(pdfViewerSource, /width=\{effectivePageWidth\}/);
+  assert.match(pdfViewerSource, /const \[pageAspectRatios, setPageAspectRatios\]/);
+  assert.match(pdfViewerSource, /const getScaledPageSize = useCallback/);
+  assert.match(pdfViewerSource, /width=\{pageWidth\}/);
+  assert.doesNotMatch(pdfViewerSource, /width=\{effectivePageWidth\}/);
 });
 
 test('pdf viewer exposes toolbar zoom controls and current percentage', () => {
@@ -44,4 +46,14 @@ test('pdf zoom styles allow horizontally scrollable zoomed pages without local l
   assert.doesNotMatch(responsiveCssSource, /paper-pdf-magnifier/);
   assert.doesNotMatch(pdfViewerSource, /magnifierEnabled/);
   assert.doesNotMatch(pdfViewerSource, /clonePageIntoMagnifier/);
+});
+
+test('pdf viewer uses transform-based smooth zoom without rerendering every gesture step', () => {
+  assert.match(pdfViewerSource, /className="paper-pdf-page-shell"/);
+  assert.match(pdfViewerSource, /transform: `scale\(\$\{zoomScale\}\)`/);
+  assert.match(pdfViewerSource, /onLoadSuccess=\{\(pdfPage\) => handlePageLoadSuccess\(pdfPage, page\)\}/);
+  assert.match(pdfViewerSource, /scrollPdfNodeIntoView\(firstNode\)/);
+  assert.match(responsiveCssSource, /\.paper-pdf-page-shell \{/);
+  assert.match(responsiveCssSource, /transform-origin: top left;/);
+  assert.match(responsiveCssSource, /will-change: transform;/);
 });

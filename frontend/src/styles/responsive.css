@@ -706,16 +706,24 @@
 
 .paper-pdf-page {
   display: flex;
+  overflow: visible;
   justify-content: center;
   width: max-content;
-  min-width: 100%;
+  min-width: 0;
   scroll-margin-top: 12px;
+}
+
+.paper-pdf-page-shell {
+  flex: 0 0 auto;
+  transform-origin: top left;
+  will-change: transform;
 }
 
 .paper-pdf-page .react-pdf__Page {
   overflow: hidden;
   border-radius: 2px;
   box-shadow: 0 2px 12px rgba(15, 23, 42, 0.24);
+  background: #fff;
 }
 
 .paper-pdf-page .react-pdf__Page__textContent {
