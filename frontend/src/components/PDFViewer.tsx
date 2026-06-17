@@ -13,15 +13,40 @@ pdfjs.GlobalWorkerOptions.workerSrc = versionedPdfWorkerUrl;
 
 const { Text } = Typography;
 const PDF_LOAD_TIMEOUT_MS = 20000;
+const PDF_EVIDENCE_LOCATOR_RETRY_MS = 180;
+const PDF_EVIDENCE_LOCATOR_MAX_ATTEMPTS = 14;
+const PDF_EVIDENCE_HIGHLIGHT_MS = 6500;
+
+interface PDFTargetLocator {
+  page: number;
+  snippet?: string | null;
+  requestId: number;
+}
+
+interface PDFTargetLocatorResult {
+  requestId: number;
+  page: number;
+  matched: boolean;
+  reason?: 'no_snippet' | 'native_fallback' | 'not_found';
+}
 
 interface PDFViewerProps {
   url: string;
   onTextSelect?: (text: string, pageNumber: number, position: { x: number; y: number }) => void;
   onPageChange?: (pageNumber: number) => void;
   targetPage?: number | null;
+  targetLocator?: PDFTargetLocator | null;
+  onTargetLocatorResult?: (result: PDFTargetLocatorResult) => void;
 }
 
-const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, onPageChange, targetPage }) => {
+const PDFViewer: React.FC<PDFViewerProps> = ({
+  url,
+  onTextSelect,
+  onPageChange,
+  targetPage,
+  targetLocator,
+  onTargetLocatorResult,
+}) => {
   const [numPages, setNumPages] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -30,6 +55,8 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, onPageChange, 
   const [pageWidth, setPageWidth] = useState(700);
   const contentRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const activeEvidenceHighlightRef = useRef<HTMLElement[]>([]);
+  const evidenceHighlightTimeoutRef = useRef<number | null>(null);
   const resolvedUrl = React.useMemo(() => {
     if (!url) return '';
     if (typeof window === 'undefined') return url;
@@ -41,6 +68,15 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, onPageChange, 
     disableStream: true,
     disableAutoFetch: true,
   }), [resolvedUrl]);
+
+  const clearEvidenceHighlight = useCallback(() => {
+    if (evidenceHighlightTimeoutRef.current) {
+      window.clearTimeout(evidenceHighlightTimeoutRef.current);
+      evidenceHighlightTimeoutRef.current = null;
+    }
+    activeEvidenceHighlightRef.current.forEach(node => node.classList.remove('paper-pdf-evidence-hit'));
+    activeEvidenceHighlightRef.current = [];
+  }, []);
 
   const onDocLoad = useCallback(({ numPages }: any) => {
     setNumPages(numPages);
@@ -70,12 +106,13 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, onPageChange, 
   }, []);
 
   useEffect(() => {
+    clearEvidenceHighlight();
     setLoading(true);
     setLoadError(null);
     setNativeFallback(false);
     setNumPages(0);
     setPageNumber(1);
-  }, [resolvedUrl]);
+  }, [clearEvidenceHighlight, resolvedUrl]);
 
   useEffect(() => {
     if (!resolvedUrl || !loading || loadError || nativeFallback) return;
@@ -113,6 +150,164 @@ const PDFViewer: React.FC<PDFViewerProps> = ({ url, onTextSelect, onPageChange, 
       pageRefs.current.get(bounded)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
     });
   }, [targetPage, numPages, onPageChange]);
+
+  useEffect(() => () => clearEvidenceHighlight(), [clearEvidenceHighlight]);
+
+  const normalizeEvidenceSearchText = useCallback((value: string) => (
+    value
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[\u2010-\u2015\u2212]/g, '-')
+      .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+      .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+      .replace(/\u00AD/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase()
+  ), []);
+
+  const evidenceSearchQueries = useCallback((snippet: string) => {
+    const normalized = normalizeEvidenceSearchText(snippet);
+    if (!normalized) return [];
+
+    const queries = new Set<string>([normalized]);
+    const sentenceParts = normalized
+      .split(/(?<=[.!?;:。！？；：])\s+/)
+      .map(item => item.trim())
+      .filter(item => item.length >= 24);
+
+    sentenceParts.slice(0, 4).forEach(item => queries.add(item));
+
+    if (normalized.length > 180) queries.add(normalized.slice(0, 180).trim());
+    if (normalized.length > 260) {
+      const middleStart = Math.max(0, Math.floor(normalized.length / 2) - 90);
+      queries.add(normalized.slice(middleStart, middleStart + 180).trim());
+    }
+
+    const words = normalized.split(' ').filter(Boolean);
+    if (words.length > 14) queries.add(words.slice(0, 14).join(' '));
+
+    return Array.from(queries).filter(item => item.length >= 12);
+  }, [normalizeEvidenceSearchText]);
+
+  const findEvidenceSnippetInPage = useCallback((page: number, snippet: string) => {
+    const pageNode = pageRefs.current.get(page);
+    if (!pageNode) return false;
+
+    const spans = Array.from(
+      pageNode.querySelectorAll<HTMLElement>('.react-pdf__Page__textContent span'),
+    ).filter(span => Boolean(span.textContent?.trim()));
+    if (spans.length === 0) return false;
+
+    let searchableText = '';
+    const spanBySearchIndex: HTMLElement[] = [];
+    spans.forEach((span, index) => {
+      const normalized = normalizeEvidenceSearchText(span.textContent || '');
+      if (!normalized) return;
+      if (searchableText && index > 0) {
+        searchableText += ' ';
+        spanBySearchIndex.push(span);
+      }
+      for (const char of normalized) {
+        searchableText += char;
+        spanBySearchIndex.push(span);
+      }
+    });
+
+    if (!searchableText) return false;
+
+    for (const query of evidenceSearchQueries(snippet)) {
+      const start = searchableText.indexOf(query);
+      if (start < 0) continue;
+
+      const end = start + query.length;
+      const matchedSpans = new Set<HTMLElement>();
+      for (let index = start; index < end; index += 1) {
+        const span = spanBySearchIndex[index];
+        if (span) matchedSpans.add(span);
+      }
+      const matchedNodes = Array.from(matchedSpans);
+      const firstNode = matchedNodes[0];
+      if (!firstNode) return false;
+
+      clearEvidenceHighlight();
+      matchedNodes.forEach(node => node.classList.add('paper-pdf-evidence-hit'));
+      activeEvidenceHighlightRef.current = matchedNodes;
+      firstNode.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+      evidenceHighlightTimeoutRef.current = window.setTimeout(clearEvidenceHighlight, PDF_EVIDENCE_HIGHLIGHT_MS);
+      return true;
+    }
+
+    return false;
+  }, [clearEvidenceHighlight, evidenceSearchQueries, normalizeEvidenceSearchText]);
+
+  useEffect(() => {
+    if (!targetLocator || targetLocator.page < 1) return;
+
+    const bounded = numPages ? Math.min(targetLocator.page, numPages) : targetLocator.page;
+    setPageNumber(current => {
+      if (current === bounded) return current;
+      onPageChange?.(bounded);
+      return bounded;
+    });
+    window.requestAnimationFrame(() => {
+      pageRefs.current.get(bounded)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+
+    const snippet = targetLocator.snippet?.trim();
+    if (!snippet) {
+      onTargetLocatorResult?.({
+        requestId: targetLocator.requestId,
+        page: bounded,
+        matched: false,
+        reason: 'no_snippet',
+      });
+      return;
+    }
+
+    if (nativeFallback) {
+      onTargetLocatorResult?.({
+        requestId: targetLocator.requestId,
+        page: bounded,
+        matched: false,
+        reason: 'native_fallback',
+      });
+      return;
+    }
+
+    let cancelled = false;
+    let attempts = 0;
+    let retryTimer: number | null = null;
+
+    const tryLocate = () => {
+      if (cancelled) return;
+      attempts += 1;
+      if (findEvidenceSnippetInPage(bounded, snippet)) {
+        onTargetLocatorResult?.({
+          requestId: targetLocator.requestId,
+          page: bounded,
+          matched: true,
+        });
+        return;
+      }
+      if (attempts >= PDF_EVIDENCE_LOCATOR_MAX_ATTEMPTS) {
+        onTargetLocatorResult?.({
+          requestId: targetLocator.requestId,
+          page: bounded,
+          matched: false,
+          reason: 'not_found',
+        });
+        return;
+      }
+      retryTimer = window.setTimeout(tryLocate, PDF_EVIDENCE_LOCATOR_RETRY_MS);
+    };
+
+    retryTimer = window.setTimeout(tryLocate, PDF_EVIDENCE_LOCATOR_RETRY_MS);
+    return () => {
+      cancelled = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+    };
+  }, [findEvidenceSnippetInPage, nativeFallback, numPages, onPageChange, onTargetLocatorResult, targetLocator]);
 
   const syncCurrentPageFromScroll = useCallback(() => {
     const container = contentRef.current;

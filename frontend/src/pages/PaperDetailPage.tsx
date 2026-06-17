@@ -158,6 +158,12 @@ interface PaperPdfQuote {
   pageNumber: number;
 }
 
+interface PaperPdfTargetLocator {
+  page: number;
+  snippet?: string | null;
+  requestId: number;
+}
+
 type PaperSelectionSource = 'pdf' | 'content';
 type PaperImportanceLabel = 'important' | 'interesting';
 
@@ -435,12 +441,14 @@ const PaperDetailPage: React.FC = () => {
   const [parseStatus, setParseStatus] = useState<StructuredPdfParseStatus | null>(null);
   const [showPdf, setShowPdf] = useState(false);
   const [targetPdfPage, setTargetPdfPage] = useState<number | null>(null);
+  const [targetPdfLocator, setTargetPdfLocator] = useState<PaperPdfTargetLocator | null>(null);
   const [currentPdfPage, setCurrentPdfPage] = useState<number | null>(null);
   const [mobilePanel, setMobilePanel] = useState<'content' | 'pdf' | 'chat'>('content');
   const [pdfPanelWidth, setPdfPanelWidth] = useState(CHAT_REOPEN_WIDTH_PERCENT);
   const [contentPanelWidth, setContentPanelWidth] = useState(CONTENT_PANEL_DEFAULT_PERCENT);
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const paperBodyRef = useRef<HTMLDivElement>(null);
+  const pdfLocatorRequestIdRef = useRef(0);
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
 
@@ -810,9 +818,15 @@ const PaperDetailPage: React.FC = () => {
       const page = ref.page || ref.page_start;
       if (page) {
         setTargetPdfPage(page);
+        pdfLocatorRequestIdRef.current += 1;
+        setTargetPdfLocator({
+          page,
+          snippet: ref.snippet,
+          requestId: pdfLocatorRequestIdRef.current,
+        });
         if (isMobile) setMobilePanel('pdf');
         else setShowPdf(true);
-        message.info(`已跳转到 PDF 第 ${page} 页`);
+        message.info(ref.snippet ? `已跳转到 PDF 第 ${page} 页，正在定位引用位置` : `已跳转到 PDF 第 ${page} 页`);
       }
       return;
     }
@@ -1391,7 +1405,21 @@ const PaperDetailPage: React.FC = () => {
               height: '100%',
             }}
           >
-            <PDFViewer url={pdfUrl} onTextSelect={handlePdfTextSelect} onPageChange={setCurrentPdfPage} targetPage={targetPdfPage} />
+            <PDFViewer
+              url={pdfUrl}
+              onTextSelect={handlePdfTextSelect}
+              onPageChange={setCurrentPdfPage}
+              targetPage={targetPdfPage}
+              targetLocator={targetPdfLocator}
+              onTargetLocatorResult={(result) => {
+                if (!targetPdfLocator || result.requestId !== targetPdfLocator.requestId) return;
+                if (result.matched) {
+                  message.success(`已定位到 PDF 第 ${result.page} 页引用位置`);
+                } else if (result.reason === 'not_found') {
+                  message.info(`已跳转到 PDF 第 ${result.page} 页，暂未在文本层精确匹配引用片段`);
+                }
+              }}
+            />
           </div>
         )}
 

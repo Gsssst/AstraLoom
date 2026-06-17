@@ -29,7 +29,7 @@ test('paper chat renders and routes visual evidence references distinctly', () =
   assert.match(paperDetailSource, /visual: \{ label: '视觉\/OCR', color: 'purple' \}/);
   assert.match(paperDetailSource, /referenceTooltip\(ref\)/);
   assert.match(paperDetailSource, /setTargetPdfPage\(page\)/);
-  assert.match(paperDetailSource, /message\.info\(`已跳转到 PDF 第 \$\{page\} 页`\)/);
+  assert.match(paperDetailSource, /正在定位引用位置/);
 });
 
 test('paper chat renders preview cards only for non-table visual evidence assets', () => {
