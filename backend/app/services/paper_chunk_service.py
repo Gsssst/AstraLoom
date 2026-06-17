@@ -250,6 +250,18 @@ class PaperChunkService:
         "第五条": 5,
         "第五": 5,
     }
+    CHINESE_SECTION_ORDINALS = {
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+    }
     REFERENCE_HEADING_RE = re.compile(
         r"^\s*(?:\d+(?:\.\d+)*\s*)?(?:references|bibliography|works\s+cited|参考文献|参考资料)\s*$",
         re.I,
@@ -260,11 +272,11 @@ class PaperChunkService:
     )
     REFERENCE_ENTRY_RE = re.compile(r"^\s*(?:\[(\d{1,3})\]|\(?(\d{1,3})\)?[.)])\s+(.+?)\s*$")
     SECTION_NUMBER_CONTEXT_RE = re.compile(
-        r"(?:第\s*)?(\d{1,2}(?:\.\d{1,2}){1,3})\s*(?:节|小节|章节|部分|section|sec\.?|subsection|subsec\.?)",
+        r"(?:第\s*)?(\d{1,2}(?:\.\d{1,2}){0,3})\s*(?:节|小节|章节|部分|section|sec\.?|subsection|subsec\.?)",
         re.I,
     )
     SECTION_NUMBER_PREFIX_RE = re.compile(
-        r"(?:section|sec\.?|subsection|subsec\.?)\s*(\d{1,2}(?:\.\d{1,2}){1,3})",
+        r"(?:section|sec\.?|subsection|subsec\.?)\s*(\d{1,2}(?:\.\d{1,2}){0,3})",
         re.I,
     )
     SECTION_NUMBER_HEADING_RE = re.compile(
@@ -274,6 +286,9 @@ class PaperChunkService:
     COMPACT_SECTION_NUMBER_HEADING_RE = re.compile(
         r"^\s*(?:section|sec\.?|subsection|subsec\.?)?\s*(\d{1,2}(?:\.\d{1,2}){1,4})\s*[\.)、:：-]\s*([A-Za-z\u4e00-\u9fff][^\n]{0,180})$",
         re.I,
+    )
+    EMBEDDED_TOP_SECTION_HEADING_RE = re.compile(
+        r"(?<![A-Za-z0-9])(\d{1,2})\s*[\.)、:：-]\s*([A-Z][A-Za-z][A-Za-z\- ]{2,80})(?=$|\s|[A-Z]\w|\\x|Table|Figure|Fig\.)"
     )
     FORMULA_LABEL_TRAILER = r"(?=\s*(?:$|[^\d%]|\d{1,2}(?:\.\d{1,2}){1,4}\s*[\.)、:：-]?\s*[A-Za-z\u4e00-\u9fff]))"
 
@@ -355,6 +370,11 @@ class PaperChunkService:
         normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
         if not normalized:
             return None
+        ordinal_match = re.search(r"第\s*([一二三四五六七八九十])\s*(?:节|小节|章节|部分)", normalized)
+        if ordinal_match:
+            number = cls.CHINESE_SECTION_ORDINALS.get(ordinal_match.group(1))
+            if number:
+                return str(number)
         for pattern in (cls.SECTION_NUMBER_PREFIX_RE, cls.SECTION_NUMBER_CONTEXT_RE):
             match = pattern.search(normalized)
             if match:
@@ -362,7 +382,7 @@ class PaperChunkService:
         # Bare numbers are only accepted with section-like context to avoid
         # confusing metric values such as 63.2 with a requested section.
         if re.search(r"(节|小节|章节|section|sec\.?|subsection|subsec\.?)", normalized, re.I):
-            match = re.search(r"(?<!\d)(\d{1,2}(?:\.\d{1,2}){1,3})(?!\d)", normalized)
+            match = re.search(r"(?<!\d)(\d{1,2}(?:\.\d{1,2}){0,3})(?!\d)", normalized)
             if match:
                 return match.group(1)
         return None
@@ -1077,6 +1097,80 @@ class PaperChunkService:
         return "\n".join(lines)
 
     @classmethod
+    def _reference_citation_context_chunks(
+        cls,
+        full_text: str,
+        number: int,
+        *,
+        page_texts: Optional[List[str]] = None,
+        limit: int = 3,
+    ) -> List[EvidenceChunk]:
+        pattern = re.compile(rf"\[\s*{number}\s*\]")
+        chunks: List[EvidenceChunk] = []
+
+        def add_matches(text: str, source: str, page: Optional[int]) -> None:
+            if not text or len(chunks) >= limit:
+                return
+            refs_pos = cls._reference_section_start(text)
+            search_text = text[:refs_pos] if refs_pos is not None else text
+            for match in pattern.finditer(search_text):
+                if len(chunks) >= limit:
+                    break
+                start = cls._citation_context_boundary(search_text, match.start(), direction=-1)
+                end = cls._citation_context_boundary(search_text, match.end(), direction=1)
+                snippet = re.sub(r"\s+", " ", search_text[start:end]).strip()
+                if len(snippet) < 30 or not pattern.search(snippet):
+                    continue
+                if any(cls._chunk_similarity(snippet, item.text) >= 0.82 for item in chunks):
+                    continue
+                chunks.append(EvidenceChunk(
+                    text=(
+                        "[PDF in-body citation context]\n"
+                        f"Requested reference: [{number}]\n"
+                        f"Citation context: {snippet}"
+                    ),
+                    score=0.86,
+                    page_start=page,
+                    page_end=page,
+                    source_type="reference_context",
+                    source=source,
+                    metadata={
+                        "reference_evidence": True,
+                        "citation_context": True,
+                        "requested_reference_number": number,
+                        "reference_number": number,
+                    },
+                ))
+
+        for index, page_text in enumerate(page_texts or [], 1):
+            add_matches(page_text, "pdf_page_text", index)
+            if len(chunks) >= limit:
+                return chunks[:limit]
+        add_matches(full_text, "full_text", None)
+        return chunks[:limit]
+
+    @classmethod
+    def _reference_section_start(cls, text: str) -> Optional[int]:
+        for match in re.finditer(r"(?im)^\s*(?:references|bibliography|works\s+cited|参考文献|参考资料)\s*$", text or ""):
+            return match.start()
+        match = re.search(r"(?i)(?:^|\n)\s*references\b", text or "")
+        return match.start() if match else None
+
+    @staticmethod
+    def _citation_context_boundary(text: str, index: int, *, direction: int) -> int:
+        if direction < 0:
+            window_start = max(0, index - 500)
+            prefix = text[window_start:index]
+            matches = list(re.finditer(r"(?<=[.!?。！？])\s+|\n{2,}", prefix))
+            if matches:
+                return window_start + matches[-1].end()
+            return window_start
+        window_end = min(len(text), index + 500)
+        suffix = text[index:window_end]
+        match = re.search(r"(?<=[.!?。！？])\s+|\n{2,}", suffix)
+        return index + match.end() if match else window_end
+
+    @classmethod
     def _reference_evidence_pack(
         cls,
         full_text: str,
@@ -1113,21 +1207,29 @@ class PaperChunkService:
                         },
                     )
                 ]
+            entry_evidence = EvidenceChunk(
+                text=cls._reference_entry_evidence_text(entries, target),
+                score=0.98,
+                page_start=target.page_start,
+                page_end=target.page_end,
+                source_type="reference_entry",
+                source=target.source,
+                metadata={
+                    "reference_evidence": True,
+                    "requested_reference_number": requested_number,
+                    "reference_number_found": True,
+                    "reference_number": target.number,
+                },
+            )
+            citation_context = cls._reference_citation_context_chunks(
+                full_text,
+                requested_number,
+                page_texts=page_texts,
+                limit=max(1, min(3, (plan.reference_budget or cls.REFERENCE_EVIDENCE_TOP_K) - 1)),
+            )
             return [
-                EvidenceChunk(
-                    text=cls._reference_entry_evidence_text(entries, target),
-                    score=0.98,
-                    page_start=target.page_start,
-                    page_end=target.page_end,
-                    source_type="reference_entry",
-                    source=target.source,
-                    metadata={
-                        "reference_evidence": True,
-                        "requested_reference_number": requested_number,
-                        "reference_number_found": True,
-                        "reference_number": target.number,
-                    },
-                )
+                entry_evidence,
+                *citation_context,
             ]
         return [
             EvidenceChunk(
@@ -1144,6 +1246,44 @@ class PaperChunkService:
                 },
             )
         ]
+
+    @classmethod
+    def _normalize_numbered_section_text(cls, text: str, target_number: str) -> str:
+        normalized_lines: list[str] = []
+        target_top_level = "." not in target_number
+        for line in (text or "").splitlines():
+            stripped = line.rstrip()
+            if not target_top_level:
+                normalized_lines.append(stripped)
+                continue
+            match = cls._embedded_top_section_heading_match(stripped, target_number)
+            if not match:
+                normalized_lines.append(stripped)
+                continue
+            prefix = stripped[:match.start()].rstrip()
+            heading = f"{match.group(1)}. {match.group(2).strip()}"
+            suffix = stripped[match.end():].strip()
+            if prefix:
+                normalized_lines.append(prefix)
+            normalized_lines.append(heading)
+            if suffix:
+                normalized_lines.append(suffix)
+        return "\n".join(normalized_lines)
+
+    @classmethod
+    def _embedded_top_section_heading_match(cls, line: str, target_number: str) -> Optional[re.Match]:
+        if not line or len(line) > 420:
+            return None
+        if re.search(r"\b(?:figure|fig\.?|table)\s*\.?\s*" + re.escape(target_number) + r"\b", line, re.I):
+            return None
+        for match in cls.EMBEDDED_TOP_SECTION_HEADING_RE.finditer(line):
+            if match.group(1) != target_number:
+                continue
+            title = (match.group(2) or "").strip()
+            title_words = re.findall(r"[A-Za-z][A-Za-z-]*", title)
+            if 1 <= len(title_words) <= 8 and not re.search(r"accuracy|similarity|caption|number\s+encoder", title, re.I):
+                return match
+        return None
 
     @classmethod
     def _parse_numbered_heading(cls, line: str) -> Optional[tuple[str, str]]:
@@ -1180,6 +1320,11 @@ class PaperChunkService:
             return False
         if current_parts == target_parts:
             return False
+        if len(target_parts) == 1:
+            try:
+                return len(current_parts) == 1 and int(current_parts[0]) > int(target_parts[0])
+            except ValueError:
+                return False
         if len(current_parts) == 1 and len(target_parts) > 1:
             try:
                 return int(current_parts[0]) > int(target_parts[0])
@@ -1221,7 +1366,8 @@ class PaperChunkService:
         page_start: Optional[int] = None,
         page_end: Optional[int] = None,
     ) -> Optional[EvidenceChunk]:
-        lines = [line.rstrip() for line in (text or "").splitlines()]
+        normalized_text = cls._normalize_numbered_section_text(text, target_number)
+        lines = [line.rstrip() for line in (normalized_text or "").splitlines()]
         start_index: Optional[int] = None
         matched_heading: Optional[str] = None
         for index, line in enumerate(lines):

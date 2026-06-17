@@ -262,6 +262,7 @@ async def build_paper_context_with_evidence(
                     "ocr": "，类型: OCR 文本",
                     "formula": "，类型: 公式",
                     "reference_entry": "，类型: 参考文献条目",
+                    "reference_context": "，类型: 正文引用上下文",
                     "reference_catalog": "，类型: 参考文献列表",
                     "visual_catalog": "，类型: 图像/可视化目录",
                     "visual_evidence": "，类型: 视觉证据",
@@ -350,7 +351,7 @@ async def build_paper_context_with_evidence(
             plan_instruction += (
                 f"这是参考文献编号查找：用户要找文末 References/Bibliography 中的第 {requested_reference_number} 条。"
                 "只有参考文献条目/参考文献列表证据可以用于回答该编号对应哪篇论文；"
-                "正文中出现的 [n] 引用上下文不能替代文末参考文献条目。"
+                "正文中出现的 [n] 引用上下文不能替代文末参考文献条目，但可用于解释该文献与本文论述的关系。"
             )
         else:
             plan_instruction += "这是参考文献列表查找：请优先使用 reference_entry/reference_catalog 类型证据。"

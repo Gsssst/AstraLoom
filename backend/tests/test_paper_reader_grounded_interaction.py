@@ -254,6 +254,40 @@ def test_reference_number_query_retrieves_bibliography_entry_not_body_citation()
     assert "Gershgorin's theorem [11]" not in evidence[0].text
 
 
+def test_reference_number_query_includes_body_citation_context():
+    full_text = "\n".join([
+        "2 Related Work",
+        "Current Vid-LLMs leverage powerful LLMs [1] for cross-modal understanding and video-based reasoning. " * 8,
+        "References",
+        "[1] Jinze Bai, Shuai Bai, Yunfei Chu, Zeyu Cui, Kai Dang, Xiaodong Deng, Yang Fan, Wenbin Ge, Yu Han, Fei Huang, et al. Qwen technical report. arXiv preprint arXiv:2309.16609, 2023.",
+        "[2] Yang Bai, Min Cao, Daming Gao. RASA. 2023.",
+    ])
+    page_texts = [
+        "2 Related Work\nCurrent Vid-LLMs leverage powerful LLMs [1] for cross-modal understanding and video-based reasoning.",
+        "\n".join([
+            "References",
+            "[1] Jinze Bai, Shuai Bai, Yunfei Chu, Zeyu Cui, Kai Dang, Xiaodong Deng, Yang Fan, Wenbin Ge, Yu Han, Fei Huang, et al. Qwen technical report. arXiv preprint arXiv:2309.16609, 2023.",
+            "[2] Yang Bai, Min Cao, Daming Gao. RASA. 2023.",
+        ]),
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请找出参考文献 [1] 是什么，并说明它和本文的关系",
+        top_k=4,
+        page_texts=page_texts,
+    )
+
+    assert scope == "reference_list"
+    assert plan.requested_reference_number == 1
+    assert evidence[0].source_type == "reference_entry"
+    assert any(item.source_type == "reference_context" for item in evidence)
+    context = next(item for item in evidence if item.source_type == "reference_context")
+    assert context.page_start == 1
+    assert "cross-modal understanding" in context.text
+    assert "References" not in context.text
+
+
 def test_reference_number_query_records_warning_when_bibliography_missing():
     full_text = "5 Derivation\nAccording to Gershgorin's theorem [11], this follows from matrix theory. " * 20
 
@@ -933,6 +967,39 @@ def test_bare_metric_number_does_not_trigger_numbered_section_lookup():
     assert PaperChunkService.detect_requested_section_number("COQA 63.2 的结果说明什么") is None
     assert PaperChunkService.detect_requested_section_number("section 3.2") == "3.2"
     assert PaperChunkService.detect_requested_section_number("3.2 节讲什么") == "3.2"
+    assert PaperChunkService.detect_requested_section_number("第四部分讲了什么") == "4"
+    assert PaperChunkService.detect_requested_section_number("请解释第 4 节") == "4"
+    assert PaperChunkService.detect_requested_section_number("section 4") == "4"
+
+
+def test_top_level_section_lookup_recovers_embedded_pdf_heading():
+    full_text = "\n".join([
+        "3.3.DesignofNumericalPrompt",
+        "method design " * 50,
+        "1XPEHU Accuracy Caption Accuracy 4.Experiments",
+        "We evaluate NumPro on moment retrieval and highlight detection tasks. " * 20,
+        "4.1.ImplementationDetailsforNumPro-FT",
+        "Implementation details are described here. " * 20,
+        "Figure 4. Our NumPro Design Algorithm.",
+        "This caption should not become the section heading. " * 8,
+        "5 Conclusion",
+        "final remarks " * 40,
+    ])
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释第四部分",
+        top_k=3,
+    )
+
+    assert scope == "numbered_section"
+    assert plan.target_section_number == "4"
+    assert plan.matched_section_heading == "4. Experiments"
+    assert evidence[0].source_type == "numbered_section"
+    assert "We evaluate NumPro" in evidence[0].text
+    assert "Implementation details" in evidence[0].text
+    assert "5 Conclusion" not in evidence[0].text
+    assert evidence[0].metadata["matched_heading"] == "4. Experiments"
 
 
 def test_page_aware_evidence_preserves_section_and_page_number():
