@@ -261,6 +261,8 @@ async def build_paper_context_with_evidence(
                     "caption": "，类型: 图/表标题",
                     "ocr": "，类型: OCR 文本",
                     "formula": "，类型: 公式",
+                    "reference_entry": "，类型: 参考文献条目",
+                    "reference_catalog": "，类型: 参考文献列表",
                     "visual_evidence": "，类型: 视觉证据",
                     "visual_table": "，类型: 视觉表格",
                 }.get(evidence.source_type, "")
@@ -310,6 +312,8 @@ async def build_paper_context_with_evidence(
     plan_warnings = [str(item) for item in plan_metadata.get("warnings") or []]
     formula_needed = bool(plan_metadata.get("include_formula_evidence"))
     formula_missing = "formula_evidence_not_found" in plan_warnings
+    reference_needed = bool(plan_metadata.get("include_reference_evidence"))
+    reference_missing = "reference_list_not_found" in plan_warnings
     if target_section_number:
         matched_heading = plan_metadata.get("matched_section_heading")
         if matched_heading:
@@ -333,8 +337,20 @@ async def build_paper_context_with_evidence(
         )
     elif plan_metadata.get("strategy") == "method_visual":
         plan_instruction += "这是方法/视觉证据包：请优先结合方法章节、架构图/标题和视觉证据解释方法。"
+    elif plan_metadata.get("strategy") == "reference_list":
+        requested_reference_number = plan_metadata.get("requested_reference_number")
+        if requested_reference_number:
+            plan_instruction += (
+                f"这是参考文献编号查找：用户要找文末 References/Bibliography 中的第 {requested_reference_number} 条。"
+                "只有参考文献条目/参考文献列表证据可以用于回答该编号对应哪篇论文；"
+                "正文中出现的 [n] 引用上下文不能替代文末参考文献条目。"
+            )
+        else:
+            plan_instruction += "这是参考文献列表查找：请优先使用 reference_entry/reference_catalog 类型证据。"
     if formula_needed:
         plan_instruction += "本轮问题可能涉及公式、符号或推导；若证据中包含公式类型片段，请优先引用它们解释变量含义和计算关系。"
+    if reference_needed:
+        plan_instruction += "本轮问题涉及文末参考文献；不要根据正文引用编号或常识猜测参考文献标题。"
     if not evidence_refs:
         evidence_warning = "当前没有检索到可定位的正文证据。若用户要求 Introduction、Method、Experiments 等章节，请明确说明“当前论文内容不足”，不要仅根据摘要推测。"
     else:
@@ -343,6 +359,8 @@ async def build_paper_context_with_evidence(
             evidence_warning += f" 本轮未能在解析后的论文文本中精确定位第 {target_section_number} 节；如果使用其他相邻证据回答，必须说明它不是第 {target_section_number} 节的完整正文。"
         if formula_missing:
             evidence_warning += " 本轮没有检索到可直接引用的公式块；如需讨论公式、变量或推导，请把限制表述为“该公式细节未在当前证据中定位到”，同时继续基于已检索到的正文/表格证据解释可确认的机制。"
+        if reference_missing:
+            evidence_warning += " 本轮没有定位到文末 References/Bibliography 列表；不能把正文里的引用编号上下文当作参考文献条目，必须说明参考文献列表未在当前证据中找到。"
         if plan_metadata.get("strategy") == "experiment_complete":
             evidence_warning += " 如果部分表格只有标题、摘要或低置信解析，请说明具体缺少表格单元格/OCR 数值，而不是说整篇论文内容不足。"
         else:

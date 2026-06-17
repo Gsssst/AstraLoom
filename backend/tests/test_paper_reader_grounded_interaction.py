@@ -215,6 +215,98 @@ def test_formula_query_prioritizes_structured_formula_evidence():
     assert "alpha_s" in evidence[0].text
 
 
+def test_reference_number_query_retrieves_bibliography_entry_not_body_citation():
+    full_text = "\n".join([
+        "5 Derivation",
+        "According to Gershgorin's theorem [11], the eigenvalue bounds are stable. " * 20,
+        "References",
+        "[1] A. Smith and B. Chen. Grounded Citation Parsing for Scientific PDFs. ACL, 2024.",
+        "[2] C. Wang. Video Grounding with Temporal Evidence. CVPR, 2023.",
+        "[11] S. Gershgorin. Uber die Abgrenzung der Eigenwerte einer Matrix. 1931.",
+    ])
+    page_texts = [
+        "5 Derivation\n" + "According to Gershgorin's theorem [11], the eigenvalue bounds are stable. " * 12,
+        "\n".join([
+            "References",
+            "[1] A. Smith and B. Chen. Grounded Citation Parsing for Scientific PDFs. ACL, 2024.",
+            "[2] C. Wang. Video Grounding with Temporal Evidence. CVPR, 2023.",
+            "[11] S. Gershgorin. Uber die Abgrenzung der Eigenwerte einer Matrix. 1931.",
+        ]),
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "讲一下这篇论文引用的第一篇论文是什么",
+        top_k=4,
+        page_texts=page_texts,
+    )
+
+    assert scope == "reference_list"
+    assert plan.strategy == "reference_list"
+    assert plan.requested_reference_number == 1
+    assert plan.include_reference_evidence is True
+    assert plan.warnings == ()
+    assert evidence[0].source_type == "reference_entry"
+    assert evidence[0].metadata["reference_number_found"] is True
+    assert evidence[0].metadata["requested_reference_number"] == 1
+    assert evidence[0].page_start == 2
+    assert "[1] A. Smith" in evidence[0].text
+    assert "Gershgorin's theorem [11]" not in evidence[0].text
+
+
+def test_reference_number_query_records_warning_when_bibliography_missing():
+    full_text = "5 Derivation\nAccording to Gershgorin's theorem [11], this follows from matrix theory. " * 20
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "What is Reference [1]?",
+        top_k=4,
+    )
+
+    assert scope == "document"
+    assert plan.strategy == "reference_list"
+    assert plan.requested_reference_number == 1
+    assert "reference_list_not_found" in plan.warnings
+    assert "reference_number_not_found:1" in plan.warnings
+    assert evidence
+    assert all(item.source_type != "reference_entry" for item in evidence)
+
+
+def test_reference_parser_handles_two_column_interleaved_pdf_text():
+    page_texts = [
+        "\n".join([
+            "References mation theorem. Linear Algebra and its applications, 88:",
+            "317-327, 1987. 4",
+            "[1] Harsh Agrawal, Karan Desai, Yufei Wang, Xinlei Chen,",
+            "[14] Yash Goyal, Tejas Khot, Douglas Summers-Stay,",
+            "Rishabh Jain, Mark Johnson, Dhruv Batra, Devi Parikh, Ste-",
+            "tra, and Devi Parikh. Making the v in vqa matter.",
+            "fan Lee, and Peter Anderson. Nocaps: Novel object caption-",
+            "In Proceedings of the IEEE conference on computer vision,",
+            "ing at scale. In Proceedings of the IEEE/CVF international",
+            "pages 6904-6913, 2017. 1",
+            "conference on computer vision, pages 8948-8957, 2019. 5",
+            "[2] Joshua Ainslie, James Lee-Thorp, Michiel De Jong, Yury",
+            "[15] Danna Gurari, Qing Li, Abigale J Stangl, Anhong Guo,",
+            "Zemlyanskiy, Federico Lebron, and Sumit Sanghai. Gqa:",
+        ])
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        "",
+        "What is Reference [1]?",
+        top_k=4,
+        page_texts=page_texts,
+    )
+
+    assert scope == "reference_list"
+    assert plan.requested_reference_number == 1
+    assert evidence[0].source_type == "reference_entry"
+    assert "Nocaps" in evidence[0].text
+    assert "Making the v in vqa matter" not in evidence[0].text
+    assert "[14]" not in evidence[0].text
+
+
 def test_formula_number_query_targets_labelled_formula_not_first_math_like_text():
     full_text = (
         "3 Preliminary\n"

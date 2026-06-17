@@ -31,6 +31,17 @@ class EvidenceChunk:
 
 
 @dataclass
+class ReferenceEntry:
+    """A numbered bibliography entry extracted from a References section."""
+
+    number: int
+    text: str
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
+    source: str = "current_paper"
+
+
+@dataclass
 class PaperQuestionEvidencePlan:
     """Deterministic retrieval plan for a paper-specific user question."""
 
@@ -38,16 +49,19 @@ class PaperQuestionEvidencePlan:
     strategy: str
     requested_sections: Tuple[str, ...] = ()
     target_section_number: Optional[str] = None
+    requested_reference_number: Optional[int] = None
     matched_section_heading: Optional[str] = None
     include_all_tables: bool = False
     include_visual_tables: bool = False
     include_visual_evidence: bool = False
     include_formula_evidence: bool = False
+    include_reference_evidence: bool = False
     max_evidence_items: int = 4
     table_budget: int = 0
     visual_table_budget: int = 0
     caption_budget: int = 0
     formula_budget: int = 0
+    reference_budget: int = 0
     text_budget: int = 0
     warnings: Tuple[str, ...] = ()
 
@@ -57,17 +71,20 @@ class PaperQuestionEvidencePlan:
             "strategy": self.strategy,
             "requested_sections": list(self.requested_sections),
             "target_section_number": self.target_section_number,
+            "requested_reference_number": self.requested_reference_number,
             "matched_section_heading": self.matched_section_heading,
             "include_all_tables": self.include_all_tables,
             "include_visual_tables": self.include_visual_tables,
             "include_visual_evidence": self.include_visual_evidence,
             "include_formula_evidence": self.include_formula_evidence,
+            "include_reference_evidence": self.include_reference_evidence,
             "max_evidence_items": self.max_evidence_items,
             "budgets": {
                 "tables": self.table_budget,
                 "visual_tables": self.visual_table_budget,
                 "captions": self.caption_budget,
                 "formulas": self.formula_budget,
+                "references": self.reference_budget,
                 "text": self.text_budget,
             },
             "warnings": list(self.warnings),
@@ -96,6 +113,7 @@ class PaperChunkService:
     METHOD_VISUAL_EVIDENCE_TOP_K = 16
     METHOD_VISUAL_TEXT_BUDGET = 5
     FORMULA_EVIDENCE_TOP_K = 2
+    REFERENCE_EVIDENCE_TOP_K = 6
     TABLE_PACK_CONTEXT_MAX_CHARS = 900
     SECTION_ALIASES = {
         "abstract": ("abstract", "摘要"),
@@ -151,6 +169,11 @@ class PaperChunkService:
         "beta", "lambda", "theta", "公式", "方程", "等式", "式子", "符号",
         "推导", "损失", "目标函数", "目标式", "变量", "记号",
     )
+    REFERENCE_QUERY_TERMS = (
+        "reference", "references", "bibliography", "bib entry", "citation list",
+        "cited paper", "cited work", "paper cited", "参考文献", "参考论文",
+        "引用文献", "引用的论文", "引用论文", "文献列表", "参考列表",
+    )
     DATASET_QUERY_TERMS = (
         "dataset", "datasets", "benchmark", "benchmarks", "data set", "data sets",
         "corpus", "corpora", "evaluation data", "training data", "validation data",
@@ -183,6 +206,47 @@ class PaperChunkService:
         "第五个": 5,
         "第五": 5,
     }
+    ORDINAL_REFERENCE_WORDS = {
+        "first": 1,
+        "1st": 1,
+        "second": 2,
+        "2nd": 2,
+        "third": 3,
+        "3rd": 3,
+        "fourth": 4,
+        "4th": 4,
+        "fifth": 5,
+        "5th": 5,
+        "第一个": 1,
+        "第一篇": 1,
+        "第一条": 1,
+        "第一": 1,
+        "第二个": 2,
+        "第二篇": 2,
+        "第二条": 2,
+        "第二": 2,
+        "第三个": 3,
+        "第三篇": 3,
+        "第三条": 3,
+        "第三": 3,
+        "第四个": 4,
+        "第四篇": 4,
+        "第四条": 4,
+        "第四": 4,
+        "第五个": 5,
+        "第五篇": 5,
+        "第五条": 5,
+        "第五": 5,
+    }
+    REFERENCE_HEADING_RE = re.compile(
+        r"^\s*(?:\d+(?:\.\d+)*\s*)?(?:references|bibliography|works\s+cited|参考文献|参考资料)\s*$",
+        re.I,
+    )
+    TERMINAL_SECTION_HEADING_RE = re.compile(
+        r"^\s*(?:\d+(?:\.\d+)*)?\s*(?:appendix|appendices|附录|acknowledg(?:e)?ments?|致谢|supplementary|附加材料)\b",
+        re.I,
+    )
+    REFERENCE_ENTRY_RE = re.compile(r"^\s*(?:\[(\d{1,3})\]|\(?(\d{1,3})\)?[.)])\s+(.+?)\s*$")
     SECTION_NUMBER_CONTEXT_RE = re.compile(
         r"(?:第\s*)?(\d{1,2}(?:\.\d{1,2}){1,3})\s*(?:节|小节|章节|部分|section|sec\.?|subsection|subsec\.?)",
         re.I,
@@ -346,6 +410,46 @@ class PaperChunkService:
         numbers = cls.detect_requested_formula_numbers(query)
         return numbers[0] if numbers else None
 
+    @classmethod
+    def is_reference_list_query(cls, query: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
+        if not normalized:
+            return False
+        if any(term in normalized for term in cls.REFERENCE_QUERY_TERMS):
+            return True
+        if re.search(r"\bref(?:erence)?s?\s*\[?\s*\d{1,3}\s*\]?", normalized, re.I):
+            return True
+        if re.search(r"引用.*(?:第\s*)?(?:\d{1,3}|一|二|三|四|五|first|second|third).*(?:篇|条|个)?.*(?:论文|文献)", normalized, re.I):
+            return True
+        return bool(re.search(r"(文末|论文末尾|最后).*?(引用|文献|参考)", normalized))
+
+    @classmethod
+    def detect_requested_reference_number(cls, query: str) -> Optional[int]:
+        normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
+        if not normalized or not cls.is_reference_list_query(query):
+            return None
+
+        patterns = (
+            r"\bref(?:erence)?s?\s*\[?\s*(\d{1,3})\s*\]?",
+            r"\[(\d{1,3})\]\s*(?:是|是哪|什么|which|what|reference|文献|论文)",
+            r"(?:参考文献|参考论文|引用文献|引用论文|引用的论文|文献)\s*\[?\s*(\d{1,3})\s*\]?",
+            r"(?:第\s*)?(\d{1,3})\s*(?:篇|条|个)?\s*(?:参考文献|参考论文|引用文献|引用论文|引用的论文)",
+            r"引用.*(?:第\s*)?(\d{1,3})\s*(?:篇|条|个)?.*(?:论文|文献)",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, normalized, re.I)
+            if match:
+                try:
+                    number = int(match.group(1))
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= number <= 999:
+                    return number
+        for word, number in cls.ORDINAL_REFERENCE_WORDS.items():
+            if word in normalized and re.search(r"reference|bibliography|引用|参考|文献|论文", normalized, re.I):
+                return number
+        return None
+
     @staticmethod
     def detect_requested_page_numbers(query: str) -> List[int]:
         normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
@@ -416,6 +520,8 @@ class PaperChunkService:
 
     @classmethod
     def detect_evidence_strategy(cls, query: str) -> str:
+        if cls.is_reference_list_query(query):
+            return "reference"
         if cls.is_novelty_query(query):
             return "novelty"
         if cls.is_dataset_query(query):
@@ -441,6 +547,19 @@ class PaperChunkService:
         formula_like = cls.is_formula_like_query(query)
         formula_numbers = cls.detect_requested_formula_numbers(query)
         formula_number = formula_numbers[0] if formula_numbers else None
+        requested_reference_number = cls.detect_requested_reference_number(query)
+
+        if strategy == "reference":
+            return PaperQuestionEvidencePlan(
+                intent="reference_entry_lookup" if requested_reference_number else "reference_list_lookup",
+                strategy="reference_list",
+                requested_sections=requested_sections,
+                requested_reference_number=requested_reference_number,
+                include_reference_evidence=True,
+                max_evidence_items=max(top_k or 0, cls.REFERENCE_EVIDENCE_TOP_K),
+                reference_budget=cls.REFERENCE_EVIDENCE_TOP_K,
+                text_budget=min(top_k or cls.DEFAULT_EVIDENCE_TOP_K, cls.DEFAULT_EVIDENCE_TOP_K),
+            )
 
         if target_section_number:
             return PaperQuestionEvidencePlan(
@@ -564,6 +683,8 @@ class PaperChunkService:
 
     @classmethod
     def recommended_evidence_top_k(cls, query: str, default: int = DEFAULT_EVIDENCE_TOP_K) -> int:
+        if cls.is_reference_list_query(query):
+            return cls.REFERENCE_EVIDENCE_TOP_K
         if cls.detect_requested_section_number(query):
             return max(default, cls.DEFAULT_EVIDENCE_TOP_K + cls.FORMULA_EVIDENCE_TOP_K)
         if cls.is_novelty_query(query):
@@ -695,6 +816,288 @@ class PaperChunkService:
                 metadata=block.get("metadata") if isinstance(block.get("metadata"), dict) else {},
             ))
         return candidates
+
+    @classmethod
+    def _is_reference_heading(cls, line: str) -> bool:
+        text = re.sub(r"\s+", " ", (line or "").strip())
+        return bool(cls.REFERENCE_HEADING_RE.match(text) or re.match(r"^(?:references|bibliography|参考文献|参考资料)\b", text, re.I))
+
+    @classmethod
+    def _is_terminal_after_references_heading(cls, line: str) -> bool:
+        text = re.sub(r"\s+", " ", (line or "").strip())
+        if not text:
+            return False
+        return bool(cls.TERMINAL_SECTION_HEADING_RE.match(text))
+
+    @classmethod
+    def _extract_reference_section_lines(cls, text: str) -> list[str]:
+        lines = [line.rstrip() for line in (text or "").splitlines()]
+        start_index: Optional[int] = None
+        for index, line in enumerate(lines):
+            if cls._is_reference_heading(line):
+                start_index = index + 1
+                break
+        if start_index is None:
+            return []
+        section_lines: list[str] = []
+        for line in lines[start_index:]:
+            if section_lines and cls._is_terminal_after_references_heading(line):
+                break
+            section_lines.append(line)
+        return section_lines
+
+    @classmethod
+    def _parse_reference_entries(
+        cls,
+        lines: list[str],
+        *,
+        page_start: Optional[int],
+        page_end: Optional[int],
+        source: str,
+    ) -> list[ReferenceEntry]:
+        cleaned_lines = [re.sub(r"\s+", " ", (line or "").strip()) for line in lines]
+        starts: list[tuple[int, int, str]] = []
+        for index, line in enumerate(cleaned_lines):
+            if not line:
+                continue
+            match = cls.REFERENCE_ENTRY_RE.match(line)
+            if not match:
+                continue
+            try:
+                number = int(match.group(1) or match.group(2))
+            except (TypeError, ValueError):
+                continue
+            starts.append((index, number, match.group(3).strip()))
+        if not starts:
+            return []
+
+        start_by_index = {index: (number, content) for index, number, content in starts}
+        entries: list[ReferenceEntry] = []
+        for position, (start_index, number, content) in enumerate(starts):
+            next_sequential_index = next(
+                (index for index, candidate_number, _content in starts[position + 1:] if candidate_number == number + 1),
+                None,
+            )
+            next_any_index = starts[position + 1][0] if position + 1 < len(starts) else None
+            stop_index = next_sequential_index or next_any_index or len(cleaned_lines)
+            interleaved = any(index != start_index for index, _candidate_number, _content in starts[position + 1:] if index < stop_index)
+            entry_lines = [content]
+            for line_index in range(start_index + 1, stop_index):
+                line = cleaned_lines[line_index]
+                if not line:
+                    continue
+                if line_index in start_by_index:
+                    continue
+                if interleaved and line_index % 2 != start_index % 2:
+                    continue
+                entry_lines.append(line)
+            text = re.sub(r"\s+", " ", " ".join(entry_lines)).strip()
+            if len(text) >= 20:
+                entries.append(ReferenceEntry(
+                    number=number,
+                    text=text,
+                    page_start=page_start,
+                    page_end=page_end,
+                    source=source,
+                ))
+        entries.sort(key=lambda entry: entry.number)
+        deduped: list[ReferenceEntry] = []
+        seen_numbers: set[int] = set()
+        for entry in entries:
+            if entry.number in seen_numbers:
+                continue
+            seen_numbers.add(entry.number)
+            deduped.append(entry)
+        return deduped
+
+    @classmethod
+    def _reference_entries_from_text(
+        cls,
+        text: str,
+        *,
+        source: str,
+        page_start: Optional[int] = None,
+        page_end: Optional[int] = None,
+    ) -> list[ReferenceEntry]:
+        section_lines = cls._extract_reference_section_lines(text)
+        if not section_lines:
+            return []
+        return cls._parse_reference_entries(
+            section_lines,
+            page_start=page_start,
+            page_end=page_end,
+            source=source,
+        )
+
+    @classmethod
+    def _reference_entries_from_page_texts(cls, page_texts: Optional[List[str]]) -> list[ReferenceEntry]:
+        if not page_texts:
+            return []
+        merged_lines: list[str] = []
+        start_page: Optional[int] = None
+        end_page: Optional[int] = None
+        in_references = False
+
+        for page_index, page_text in enumerate(page_texts, 1):
+            lines = [line.rstrip() for line in (page_text or "").splitlines()]
+            if not lines:
+                continue
+            if not in_references:
+                for line_index, line in enumerate(lines):
+                    if not cls._is_reference_heading(line):
+                        continue
+                    in_references = True
+                    start_page = page_index
+                    end_page = page_index
+                    merged_lines.extend(lines[line_index + 1:])
+                    break
+            else:
+                if any(cls._is_terminal_after_references_heading(line) for line in lines[:6]):
+                    break
+                end_page = page_index
+                merged_lines.extend(lines)
+
+        if not merged_lines:
+            return []
+        return cls._parse_reference_entries(
+            merged_lines,
+            page_start=start_page,
+            page_end=end_page,
+            source="pdf_page_text",
+        )
+
+    @classmethod
+    def _reference_entries(
+        cls,
+        full_text: str,
+        *,
+        page_texts: Optional[List[str]] = None,
+        structured_blocks: Optional[List[dict]] = None,
+    ) -> list[ReferenceEntry]:
+        entries = cls._reference_entries_from_page_texts(page_texts)
+        if entries:
+            return entries
+        entries = cls._reference_entries_from_text(full_text, source="full_text")
+        if entries:
+            return entries
+        for block in structured_blocks or []:
+            if not isinstance(block, dict):
+                continue
+            text = str(block.get("text") or "")
+            if not text.strip():
+                continue
+            page = block.get("page")
+            page_number = page if isinstance(page, int) else None
+            entries = cls._reference_entries_from_text(
+                text,
+                source=str(block.get("source") or "pdf_structured"),
+                page_start=page_number,
+                page_end=page_number,
+            )
+            if entries:
+                return entries
+        return []
+
+    @classmethod
+    def _reference_entry_evidence_text(
+        cls,
+        entries: list[ReferenceEntry],
+        target: ReferenceEntry,
+    ) -> str:
+        neighbors = [
+            entry for entry in entries
+            if entry.number != target.number and abs(entry.number - target.number) <= 1
+        ][:2]
+        lines = [
+            "[PDF bibliography entry]",
+            f"Requested reference: [{target.number}]",
+            f"[{target.number}] {target.text}",
+        ]
+        if neighbors:
+            lines.append("Nearby bibliography entries:")
+            lines.extend(f"[{entry.number}] {entry.text}" for entry in neighbors)
+        return "\n".join(lines)
+
+    @classmethod
+    def _reference_catalog_evidence_text(cls, entries: list[ReferenceEntry], *, limit: int) -> str:
+        selected = entries[:max(1, limit)]
+        lines = [
+            "[PDF bibliography catalog]",
+            f"Detected numbered bibliography entries: {len(entries)}",
+        ]
+        lines.extend(f"[{entry.number}] {entry.text}" for entry in selected)
+        if len(entries) > len(selected):
+            lines.append(f"... {len(entries) - len(selected)} more entries omitted from context budget.")
+        return "\n".join(lines)
+
+    @classmethod
+    def _reference_evidence_pack(
+        cls,
+        full_text: str,
+        query: str,
+        plan: PaperQuestionEvidencePlan,
+        *,
+        page_texts: Optional[List[str]] = None,
+        structured_blocks: Optional[List[dict]] = None,
+    ) -> List[EvidenceChunk]:
+        entries = cls._reference_entries(
+            full_text,
+            page_texts=page_texts,
+            structured_blocks=structured_blocks,
+        )
+        if not entries:
+            return []
+        requested_number = plan.requested_reference_number
+        if requested_number:
+            target = next((entry for entry in entries if entry.number == requested_number), None)
+            if not target:
+                return [
+                    EvidenceChunk(
+                        text=cls._reference_catalog_evidence_text(entries, limit=min(len(entries), plan.reference_budget or 4)),
+                        score=0.72,
+                        page_start=entries[0].page_start,
+                        page_end=entries[-1].page_end or entries[0].page_end,
+                        source_type="reference_catalog",
+                        source=entries[0].source,
+                        metadata={
+                            "reference_evidence": True,
+                            "requested_reference_number": requested_number,
+                            "reference_number_found": False,
+                            "available_reference_numbers": [entry.number for entry in entries[:50]],
+                        },
+                    )
+                ]
+            return [
+                EvidenceChunk(
+                    text=cls._reference_entry_evidence_text(entries, target),
+                    score=0.98,
+                    page_start=target.page_start,
+                    page_end=target.page_end,
+                    source_type="reference_entry",
+                    source=target.source,
+                    metadata={
+                        "reference_evidence": True,
+                        "requested_reference_number": requested_number,
+                        "reference_number_found": True,
+                        "reference_number": target.number,
+                    },
+                )
+            ]
+        return [
+            EvidenceChunk(
+                text=cls._reference_catalog_evidence_text(entries, limit=plan.reference_budget or cls.REFERENCE_EVIDENCE_TOP_K),
+                score=0.9,
+                page_start=entries[0].page_start,
+                page_end=entries[-1].page_end or entries[0].page_end,
+                source_type="reference_catalog",
+                source=entries[0].source,
+                metadata={
+                    "reference_evidence": True,
+                    "reference_count": len(entries),
+                    "reference_numbers": [entry.number for entry in entries[:50]],
+                },
+            )
+        ]
 
     @classmethod
     def _parse_numbered_heading(cls, line: str) -> Optional[tuple[str, str]]:
@@ -841,16 +1244,19 @@ class PaperChunkService:
             "strategy": plan.strategy,
             "requested_sections": plan.requested_sections,
             "target_section_number": plan.target_section_number,
+            "requested_reference_number": plan.requested_reference_number,
             "matched_section_heading": plan.matched_section_heading,
             "include_all_tables": plan.include_all_tables,
             "include_visual_tables": plan.include_visual_tables,
             "include_visual_evidence": plan.include_visual_evidence,
             "include_formula_evidence": plan.include_formula_evidence,
+            "include_reference_evidence": plan.include_reference_evidence,
             "max_evidence_items": plan.max_evidence_items,
             "table_budget": plan.table_budget,
             "visual_table_budget": plan.visual_table_budget,
             "caption_budget": plan.caption_budget,
             "formula_budget": plan.formula_budget,
+            "reference_budget": plan.reference_budget,
             "text_budget": plan.text_budget,
             "warnings": plan.warnings,
         }
@@ -1665,6 +2071,20 @@ class PaperChunkService:
             formula_neighbor_pages = set(cls._neighbor_pages_for_formula_lookup(reading_pages, len(page_texts)))
         target_pages = cls._numbered_section_pages(plan.target_section_number, page_texts)
         formula_target_pages = target_pages or formula_preferred_pages or formula_neighbor_pages
+        if plan.strategy == "reference_list":
+            reference_results = cls._reference_evidence_pack(
+                full_text,
+                query,
+                plan,
+                page_texts=page_texts,
+                structured_blocks=structured_blocks,
+            )
+            if reference_results:
+                return reference_results, "reference_list"
+            warnings = [*plan.warnings, "reference_list_not_found"]
+            if plan.requested_reference_number:
+                warnings.append(f"reference_number_not_found:{plan.requested_reference_number}")
+            plan = cls._plan_copy(plan, warnings=tuple(dict.fromkeys(warnings)))
         if plan.target_section_number:
             section_evidence = cls._numbered_section_evidence(
                 full_text,
@@ -1883,6 +2303,20 @@ class PaperChunkService:
             warnings = (*plan.warnings, warning) if warning not in plan.warnings else plan.warnings
             if plan.include_formula_evidence and not any(cls._is_formula_evidence(item) for item in evidence):
                 warnings = (*warnings, "formula_evidence_not_found") if "formula_evidence_not_found" not in warnings else warnings
+            plan = cls._plan_copy(plan, warnings=warnings)
+        elif plan.include_reference_evidence:
+            warnings = plan.warnings
+            if scope != "reference_list":
+                warnings = (*warnings, "reference_list_not_found") if "reference_list_not_found" not in warnings else warnings
+                if plan.requested_reference_number:
+                    reference_warning = f"reference_number_not_found:{plan.requested_reference_number}"
+                    warnings = (*warnings, reference_warning) if reference_warning not in warnings else warnings
+            elif plan.requested_reference_number and not any(
+                (item.metadata or {}).get("reference_number_found") is True
+                for item in evidence
+            ):
+                reference_warning = f"reference_number_not_found:{plan.requested_reference_number}"
+                warnings = (*warnings, reference_warning) if reference_warning not in warnings else warnings
             plan = cls._plan_copy(plan, warnings=warnings)
         elif plan.include_formula_evidence and not any(cls._is_formula_evidence(item) for item in evidence):
             plan = cls._plan_copy(plan, warnings=(*plan.warnings, "formula_evidence_not_found"))
