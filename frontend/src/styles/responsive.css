@@ -634,12 +634,28 @@
   flex-direction: column;
 }
 
-.paper-pdf-viewer.is-magnifier-enabled .paper-pdf-page {
-  cursor: zoom-in;
+.paper-pdf-zoom-controls {
+  padding: 2px 4px;
+  border: 1px solid rgba(117, 96, 196, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
 }
 
-.paper-pdf-magnifier-toggle.is-active {
-  box-shadow: 0 0 0 2px rgba(117, 96, 196, 0.18);
+.paper-pdf-zoom-controls .ant-btn {
+  width: 26px;
+  height: 24px;
+  border-radius: 6px;
+}
+
+.paper-pdf-zoom-level {
+  display: inline-flex;
+  width: 48px;
+  align-items: center;
+  justify-content: center;
+  color: #3f3a52;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
 }
 
 .paper-pdf-scroll {
@@ -680,73 +696,30 @@
 
 .paper-pdf-pages {
   display: flex;
-  width: 100%;
-  min-width: 0;
+  width: max-content;
+  min-width: 100%;
   flex-direction: column;
   align-items: center;
   gap: 16px;
-  padding: 16px 0 28px;
+  padding: 16px 18px 28px;
 }
 
 .paper-pdf-page {
   display: flex;
   justify-content: center;
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   scroll-margin-top: 12px;
 }
 
-.paper-pdf-magnifier {
-  position: fixed;
-  z-index: 1800;
+.paper-pdf-page .react-pdf__Page {
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.72);
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 16px 42px rgba(15, 23, 42, 0.28);
-  pointer-events: none;
-}
-
-.paper-pdf-magnifier::after {
-  position: absolute;
-  inset: 0;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  border-radius: 7px;
-  content: "";
-  pointer-events: none;
-}
-
-.paper-pdf-magnifier-crosshair {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  z-index: 2;
-  width: 18px;
-  height: 18px;
-  border-top: 1px solid rgba(37, 99, 235, 0.46);
-  border-left: 1px solid rgba(37, 99, 235, 0.46);
-  transform: translate(-50%, -50%) rotate(45deg);
-  pointer-events: none;
-}
-
-.paper-pdf-magnifier-content {
-  position: absolute;
-  top: 0;
-  left: 0;
-  transform-origin: top left;
-  will-change: transform;
-}
-
-.paper-pdf-magnifier-page-clone {
-  margin: 0 !important;
-  box-shadow: none !important;
+  border-radius: 2px;
+  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.24);
 }
 
 .paper-pdf-page .react-pdf__Page__textContent {
   cursor: text;
-}
-
-.paper-pdf-viewer.is-magnifier-enabled .paper-pdf-page .react-pdf__Page__textContent {
-  cursor: zoom-in;
 }
 
 .paper-pdf-page .react-pdf__Page__textContent span {
