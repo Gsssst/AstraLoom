@@ -30,10 +30,23 @@ test('shared markdown renderer normalizes common model latex delimiters', () => 
   assert.match(markdownSource, /looksLikeLatexMath\(expression\)/);
 });
 
+test('shared markdown renderer normalizes trailing display equation labels into katex tags', () => {
+  assert.match(markdownSource, /export const normalizeDisplayEquationTags = \(value: string\)/);
+  assert.match(markdownSource, /DISPLAY_MATH_BLOCK_RE = \/\\\$\\\$\(\[\\s\\S\]\*\?\)\\\$\\\$\/g/);
+  assert.match(markdownSource, /STANDALONE_INLINE_MATH_LINE_RE/);
+  assert.match(markdownSource, /TRAILING_NUMERIC_EQUATION_LABEL_RE/);
+  assert.match(markdownSource, /normalizeTrailingDisplayEquationLabel\(expression\)/);
+  assert.match(markdownSource, /KATEX_TAG_RE\.test\(trimmed\)/);
+  assert.match(markdownSource, /const body = trimmed\.replace\(TRAILING_NUMERIC_EQUATION_LABEL_RE, ''\)\.trimEnd\(\)/);
+  assert.match(markdownSource, /\\tag\{\$\{label\}\}/);
+  assert.match(markdownSource, /normalizeDisplayEquationTags\(normalizedBracketLines\)/);
+});
+
 test('shared markdown renderer preserves non-math contexts', () => {
   assert.match(markdownSource, /FENCED_CODE_BLOCK_RE/);
   assert.match(markdownSource, /segment\.startsWith\('```'\) \|\| segment\.startsWith\('~~~'\)/);
   assert.match(markdownSource, /\^E\\d\+\(\?:\[,;\\s\]\+E\\d\+\)\*\$/);
+  assert.doesNotMatch(markdownSource, /normalizeDisplayEquationTags\(value\)/);
 });
 
 test('shared markdown renderer keeps long display equations scrollable', () => {
@@ -41,7 +54,8 @@ test('shared markdown renderer keeps long display equations scrollable', () => {
   assert.match(indexCssSource, /\.app-markdown \.katex-display \{[\s\S]*max-width: 100%;/);
   assert.match(indexCssSource, /\.app-markdown \.katex-display \{[\s\S]*overflow-x: auto;/);
   assert.match(indexCssSource, /\.app-markdown \.katex-display > \.katex \{[\s\S]*white-space: nowrap;/);
-  assert.match(indexCssSource, /\.app-markdown \.katex-display \.tag \{[\s\S]*margin-left: 1\.2em;/);
+  assert.match(indexCssSource, /\.app-markdown \.katex-display > \.katex > \.katex-html:has\(> \.tag\) \{[\s\S]*padding-right: 3\.4em;/);
+  assert.match(indexCssSource, /\.app-markdown \.katex-display > \.katex > \.katex-html > \.tag \{[\s\S]*right: 0\.2em;/);
   assert.doesNotMatch(indexCssSource, /\.app-markdown \.katex-display > \.katex \{[\s\S]*width: max-content;/);
   assert.doesNotMatch(indexCssSource, /\.app-markdown \.katex-display > \.katex \{[\s\S]*min-width: max-content;/);
   assert.match(indexCssSource, /\.app-markdown \.katex,[\s\S]*\.app-markdown \.katex \* \{[\s\S]*word-break: normal;/);

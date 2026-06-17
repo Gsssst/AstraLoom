@@ -21,6 +21,10 @@ interface MarkdownProps {
 }
 
 const FENCED_CODE_BLOCK_RE = /(```[\s\S]*?```|~~~[\s\S]*?~~~)/g;
+const DISPLAY_MATH_BLOCK_RE = /\$\$([\s\S]*?)\$\$/g;
+const STANDALONE_INLINE_MATH_LINE_RE = /^(\s*)\$(?!\$)\s*([^$\n]+?)\s*\$(\s*)$/;
+const KATEX_TAG_RE = /\\tag\*?\s*\{/;
+const TRAILING_NUMERIC_EQUATION_LABEL_RE = /(?:\s|\\[,;! ]|\\quad|\\qquad|\\hspace\{[^}]*\})*\((\d{1,4})\)\s*$/;
 const LATEX_COMMAND_RE = /\\[a-zA-Z]+/;
 const LATEX_STRUCTURE_RE = /(?:[_^{}]|\\[,;! ]|\\[()[\]]|\\[{}]|\\[|]\s*\\|[=<>]\s*\\|\\\||\\&|\\\\)/;
 const LATEX_OPERATOR_RE = /(?:=|\\leq?|\\geq?|\\neq|\\approx|\\sim|\\times|\\cdot|\\pm|\\mp|\\sum|\\prod|\\int|\\frac|\\sqrt)/;
@@ -41,7 +45,7 @@ const normalizeMathInTextSegment = (segment: string) => {
     .replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, (_, expression: string) => `\n$$\n${expression.trim()}\n$$\n`)
     .replace(/\\\(([\s\S]*?)\\\)/g, (_, expression: string) => `$${expression.trim()}$`);
 
-  return normalizedDelimiters
+  const normalizedBracketLines = normalizedDelimiters
     .split('\n')
     .map((line) => {
       const match = line.match(/^(\s*)\[\s*(.+?)\s*\](\s*)$/);
@@ -51,7 +55,38 @@ const normalizeMathInTextSegment = (segment: string) => {
       if (!looksLikeLatexMath(expression)) return line;
       return `${prefix}$$\n${expression.trim()}\n${prefix}$$${suffix}`;
     })
+    .map((line) => {
+      const match = line.match(STANDALONE_INLINE_MATH_LINE_RE);
+      if (!match) return line;
+
+      const [, prefix, expression, suffix] = match;
+      const normalized = normalizeTrailingDisplayEquationLabel(expression);
+      return normalized ? `${prefix}$$\n${normalized}\n${prefix}$$${suffix}` : line;
+    })
     .join('\n');
+
+  return normalizeDisplayEquationTags(normalizedBracketLines);
+};
+
+const normalizeTrailingDisplayEquationLabel = (expression: string) => {
+  const trimmed = expression.trim();
+  if (!trimmed || KATEX_TAG_RE.test(trimmed)) return null;
+
+  const match = trimmed.match(TRAILING_NUMERIC_EQUATION_LABEL_RE);
+  const label = match?.[1];
+  if (!label) return null;
+
+  const body = trimmed.replace(TRAILING_NUMERIC_EQUATION_LABEL_RE, '').trimEnd();
+  if (!body || !looksLikeLatexMath(body)) return null;
+  return `${body} \\tag{${label}}`;
+};
+
+export const normalizeDisplayEquationTags = (value: string) => {
+  if (!value) return value;
+  return value.replace(DISPLAY_MATH_BLOCK_RE, (block, expression: string) => {
+    const normalized = normalizeTrailingDisplayEquationLabel(expression);
+    return normalized ? `$$\n${normalized}\n$$` : block;
+  });
 };
 
 export const normalizeMarkdownMath = (value: string) => {

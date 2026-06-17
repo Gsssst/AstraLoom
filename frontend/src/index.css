@@ -35,9 +35,13 @@ body {
   white-space: nowrap;
 }
 
-.app-markdown .katex-display .tag {
-  margin-left: 1.2em;
-  padding-right: 0.2em;
+.app-markdown .katex-display > .katex > .katex-html:has(> .tag) {
+  display: inline-block;
+  padding-right: 3.4em;
+}
+
+.app-markdown .katex-display > .katex > .katex-html > .tag {
+  right: 0.2em;
 }
 
 .app-markdown .katex,
