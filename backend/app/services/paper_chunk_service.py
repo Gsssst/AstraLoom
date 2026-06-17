@@ -199,6 +199,7 @@ class PaperChunkService:
         r"^\s*(?:section|sec\.?|subsection|subsec\.?)?\s*(\d{1,2}(?:\.\d{1,2}){1,4})\s*[\.)、:：-]\s*([A-Za-z\u4e00-\u9fff][^\n]{0,180})$",
         re.I,
     )
+    FORMULA_LABEL_TRAILER = r"(?=\s*(?:$|[^\d%]|\d{1,2}(?:\.\d{1,2}){1,4}\s*[\.)、:：-]?\s*[A-Za-z\u4e00-\u9fff]))"
 
     @staticmethod
     def chunk_full_text(full_text: str) -> List[str]:
@@ -861,12 +862,17 @@ class PaperChunkService:
 
     @staticmethod
     def _line_has_math_signal(line: str) -> bool:
-        return bool(re.search(r"\\[A-Za-z]+|[_^{}=]|[A-Za-z]\s*[=~]\s*|∈|≤|≥|≈|≪|∑|∏|√|𝑊|\\tilde", line or ""))
+        return bool(re.search(
+            r"\\[A-Za-z]+|[_^{}=]|[A-Za-z]\s*[=~˜]\s*|∈|≤|≥|≈|≪|∑|∏|√|𝑊|˜|⊤|×|\\tilde|softmax",
+            line or "",
+            re.I,
+        ))
 
     @classmethod
     def _numbered_formula_label_in_line(cls, line: str, number: int) -> bool:
+        label_pattern = rf"\(\s*{number}\s*\){cls.FORMULA_LABEL_TRAILER}"
         patterns = (
-            rf"\(\s*{number}\s*\)(?!\s*(?:%|\d))",
+            label_pattern,
             rf"(?:eq(?:uation)?|formula)\s*\.?\s*\(?\s*{number}\s*\)?",
             rf"(?:公式|方程|等式|式子|式)\s*\(?\s*{number}\s*\)?",
         )
@@ -875,8 +881,9 @@ class PaperChunkService:
     @staticmethod
     def _numbered_formula_labels_in_line(line: str) -> set[int]:
         labels: set[int] = set()
+        label_trailer = PaperChunkService.FORMULA_LABEL_TRAILER
         patterns = (
-            r"\(\s*(\d{1,2})\s*\)(?!\s*(?:%|\d))",
+            rf"\(\s*(\d{{1,2}})\s*\){label_trailer}",
             r"(?:eq(?:uation)?|formula)\s*\.?\s*\(?\s*(\d{1,2})\s*\)?",
             r"(?:公式|方程|等式|式子|式)\s*\(?\s*(\d{1,2})\s*\)?",
         )
@@ -901,7 +908,10 @@ class PaperChunkService:
                 break
             if cls._line_has_other_numbered_formula_label(previous_line, number):
                 break
-            start = previous_index
+            if cls._is_display_formula_line(previous_line):
+                start = previous_index
+                continue
+            break
 
         end = index + 1
         for next_index in range(index + 1, min(len(lines), index + 3)):
@@ -910,7 +920,12 @@ class PaperChunkService:
                 break
             if cls._line_has_other_numbered_formula_label(next_line, number):
                 break
-            end = next_index + 1
+            if cls._is_display_formula_line(next_line):
+                break
+            if cls._is_formula_subscript_continuation_line(next_line):
+                end = next_index + 1
+                continue
+            break
 
         return [item.strip() for item in lines[start:end] if item.strip()]
 
@@ -923,8 +938,24 @@ class PaperChunkService:
             return False
         if re.match(r"^(where|here|given|and|for|we|the)\b", text, re.I):
             return False
-        math_signal_count = len(re.findall(r"\\[A-Za-z]+|[_^{}=]|∈|≤|≥|≈|≪|∑|∏|√|𝑊|softmax", text))
-        return math_signal_count >= 2 and bool(re.search(r"=|\\sim|softmax|\\frac|\\sqrt", text))
+        has_numbered_label = bool(cls._numbered_formula_labels_in_line(text))
+        math_signal_count = len(re.findall(
+            r"\\[A-Za-z]+|[_^{}=]|∈|≤|≥|≈|≪|∑|∏|√|𝑊|˜|⊤|×|softmax|TopK",
+            text,
+            re.I,
+        ))
+        has_equation_operator = bool(re.search(r"=|\\sim|[A-Za-z]˜|˜|softmax|TopK|\\frac|\\sqrt|√", text, re.I))
+        prose_setup = re.search(
+            r"\b(given|being|contains?|compute[sd]?|represent(?:s|ing|ed)?|projected|through|using|with)\b",
+            text,
+            re.I,
+        )
+        strong_formula_notation = bool(re.search(r"\\[A-Za-z]+|[_^{}]|˜|⊤|softmax|TopK|\\frac|\\sqrt|√", text, re.I))
+        if prose_setup and not has_numbered_label and text.count("=") <= 1 and not strong_formula_notation:
+            return False
+        if has_numbered_label:
+            return math_signal_count >= 1 and has_equation_operator
+        return math_signal_count >= 2 and has_equation_operator
 
     @classmethod
     def _display_formula_spans(cls, lines: List[str]) -> List[tuple[int, int]]:
@@ -946,6 +977,15 @@ class PaperChunkService:
             spans.append((start, index))
         return spans
 
+    @staticmethod
+    def _is_formula_subscript_continuation_line(line: str) -> bool:
+        text = re.sub(r"\s+", " ", (line or "").strip())
+        if not text or len(text) > 40:
+            return False
+        if re.search(r"\\[A-Za-z]+|[_^{}=]|∈|≤|≥|≈|≪|∑|∏|√|˜|⊤|×|softmax|TopK|\(\s*\d{1,2}\s*\)", text, re.I):
+            return False
+        return bool(re.fullmatch(r"[A-Za-z0-9,\.\s]+", text)) and bool(re.search(r"[A-Za-z]", text))
+
     @classmethod
     def _formula_order_context_window(cls, lines: List[str], start: int, end: int, number: int) -> List[str]:
         window_start = start
@@ -957,7 +997,7 @@ class PaperChunkService:
                 break
             if cls._is_display_formula_line(previous_line):
                 break
-            window_start = previous_index
+            break
 
         window_end = end
         for next_index in range(end, min(len(lines), end + 1)):
@@ -968,7 +1008,10 @@ class PaperChunkService:
                 break
             if cls._is_display_formula_line(next_line):
                 break
-            window_end = next_index + 1
+            if cls._is_formula_subscript_continuation_line(next_line):
+                window_end = next_index + 1
+                continue
+            break
 
         return [item.strip() for item in lines[window_start:window_end] if item.strip()]
 
@@ -1022,6 +1065,7 @@ class PaperChunkService:
         page_end: Optional[int] = None,
         preferred_pages: Optional[set[int]] = None,
         preferred_page_match: bool = False,
+        extra_metadata: Optional[dict] = None,
     ) -> Optional[EvidenceChunk]:
         lines = [line.rstrip() for line in (text or "").splitlines()]
         current_section: Optional[str] = None
@@ -1053,8 +1097,103 @@ class PaperChunkService:
                     "preferred_pages": sorted(preferred_pages or []),
                     "preferred_page_match": preferred_page_match,
                     "matched_heading": current_heading,
+                    **(extra_metadata or {}),
                 },
             )
+        return None
+
+    @staticmethod
+    def _neighbor_pages_for_formula_lookup(
+        preferred_pages: set[int],
+        page_count: int,
+    ) -> List[int]:
+        ordered: List[int] = []
+        for page in sorted(preferred_pages):
+            for candidate in (page + 1, page - 1):
+                if candidate < 1 or candidate > page_count:
+                    continue
+                if candidate in preferred_pages or candidate in ordered:
+                    continue
+                ordered.append(candidate)
+        return ordered
+
+    @staticmethod
+    def _split_formula_neighbor_pages(
+        preferred_pages: set[int],
+        neighbor_pages: set[int],
+    ) -> tuple[set[int], set[int]]:
+        forward_pages: set[int] = set()
+        backward_pages: set[int] = set()
+        for page in neighbor_pages:
+            if any(page == preferred + 1 for preferred in preferred_pages):
+                forward_pages.add(page)
+            elif any(page == preferred - 1 for preferred in preferred_pages):
+                backward_pages.add(page)
+        return forward_pages, backward_pages
+
+    @classmethod
+    def _numbered_formula_evidence_from_pages(
+        cls,
+        page_texts: Optional[List[str]],
+        pages: set[int],
+        number: int,
+        *,
+        preferred_pages: set[int],
+        neighbor_match: bool = False,
+    ) -> Optional[EvidenceChunk]:
+        for page_index in sorted(pages):
+            if not page_texts or page_index > len(page_texts):
+                continue
+            extra_metadata = None
+            if neighbor_match:
+                extra_metadata = {
+                    "preferred_page_neighbor_match": True,
+                    "preferred_page_distance": min(abs(page_index - page) for page in preferred_pages) if preferred_pages else None,
+                }
+            evidence = cls._numbered_formula_evidence_from_text(
+                page_texts[page_index - 1],
+                number,
+                source="pdf_page_text",
+                page_start=page_index,
+                page_end=page_index,
+                preferred_pages=preferred_pages,
+                preferred_page_match=page_index in preferred_pages,
+                extra_metadata=extra_metadata,
+            )
+            if evidence:
+                return evidence
+        return None
+
+    @classmethod
+    def _formula_order_evidence_from_pages(
+        cls,
+        page_texts: Optional[List[str]],
+        pages: set[int],
+        number: int,
+        *,
+        preferred_pages: set[int],
+        neighbor_match: bool = False,
+    ) -> Optional[EvidenceChunk]:
+        for page_index in sorted(pages):
+            if not page_texts or page_index > len(page_texts):
+                continue
+            evidence = cls._formula_order_evidence_from_text(
+                page_texts[page_index - 1],
+                number,
+                source="pdf_page_text",
+                page_start=page_index,
+                page_end=page_index,
+                preferred_pages=preferred_pages,
+            )
+            if evidence:
+                if neighbor_match:
+                    evidence.metadata = {
+                        **(evidence.metadata or {}),
+                        "preferred_page_match": False,
+                        "preferred_page_neighbor_match": True,
+                        "preferred_page_distance": min(abs(page_index - page) for page in preferred_pages) if preferred_pages else None,
+                    }
+                return evidence
         return None
 
     @classmethod
@@ -1065,40 +1204,74 @@ class PaperChunkService:
         *,
         page_texts: Optional[List[str]] = None,
         preferred_pages: Optional[set[int]] = None,
+        neighbor_pages: Optional[set[int]] = None,
     ) -> Optional[EvidenceChunk]:
         bounded_preferred_pages = {
             page for page in (preferred_pages or set())
             if isinstance(page, int) and page > 0
         }
-        for page_index in sorted(bounded_preferred_pages):
-            if not page_texts or page_index > len(page_texts):
-                continue
-            evidence = cls._numbered_formula_evidence_from_text(
-                page_texts[page_index - 1],
-                number,
-                source="pdf_page_text",
-                page_start=page_index,
-                page_end=page_index,
-                preferred_pages=bounded_preferred_pages,
-                preferred_page_match=True,
-            )
-            if evidence:
-                return evidence
-        for page_index in sorted(bounded_preferred_pages):
-            if not page_texts or page_index > len(page_texts):
-                continue
-            evidence = cls._formula_order_evidence_from_text(
-                page_texts[page_index - 1],
-                number,
-                source="pdf_page_text",
-                page_start=page_index,
-                page_end=page_index,
-                preferred_pages=bounded_preferred_pages,
-            )
-            if evidence:
-                return evidence
+        bounded_neighbor_pages = {
+            page for page in (neighbor_pages or set())
+            if isinstance(page, int) and page > 0 and page not in bounded_preferred_pages
+        }
+        forward_neighbor_pages, backward_neighbor_pages = cls._split_formula_neighbor_pages(
+            bounded_preferred_pages,
+            bounded_neighbor_pages,
+        )
+        evidence = cls._numbered_formula_evidence_from_pages(
+            page_texts,
+            bounded_preferred_pages,
+            number,
+            preferred_pages=bounded_preferred_pages,
+        )
+        if evidence:
+            return evidence
+        evidence = cls._numbered_formula_evidence_from_pages(
+            page_texts,
+            forward_neighbor_pages,
+            number,
+            preferred_pages=bounded_preferred_pages,
+            neighbor_match=True,
+        )
+        if evidence:
+            return evidence
+        evidence = cls._formula_order_evidence_from_pages(
+            page_texts,
+            bounded_preferred_pages,
+            number,
+            preferred_pages=bounded_preferred_pages,
+        )
+        if evidence:
+            return evidence
+        evidence = cls._formula_order_evidence_from_pages(
+            page_texts,
+            forward_neighbor_pages,
+            number,
+            preferred_pages=bounded_preferred_pages,
+            neighbor_match=True,
+        )
+        if evidence:
+            return evidence
+        evidence = cls._numbered_formula_evidence_from_pages(
+            page_texts,
+            backward_neighbor_pages,
+            number,
+            preferred_pages=bounded_preferred_pages,
+            neighbor_match=True,
+        )
+        if evidence:
+            return evidence
+        evidence = cls._formula_order_evidence_from_pages(
+            page_texts,
+            backward_neighbor_pages,
+            number,
+            preferred_pages=bounded_preferred_pages,
+            neighbor_match=True,
+        )
+        if evidence:
+            return evidence
         for page_index, page_text in enumerate(page_texts or [], 1):
-            if page_index in bounded_preferred_pages:
+            if page_index in bounded_preferred_pages or page_index in bounded_neighbor_pages:
                 continue
             evidence = cls._numbered_formula_evidence_from_text(
                 page_text,
@@ -1355,8 +1528,11 @@ class PaperChunkService:
             if isinstance(page, int) and page > 0
         }
         formula_preferred_pages = explicit_pages or reading_pages
+        formula_neighbor_pages = set()
+        if reading_pages and not explicit_pages and page_texts:
+            formula_neighbor_pages = set(cls._neighbor_pages_for_formula_lookup(reading_pages, len(page_texts)))
         target_pages = cls._numbered_section_pages(plan.target_section_number, page_texts)
-        formula_target_pages = target_pages or formula_preferred_pages
+        formula_target_pages = target_pages or formula_preferred_pages or formula_neighbor_pages
         if plan.target_section_number:
             section_evidence = cls._numbered_section_evidence(
                 full_text,
@@ -1452,6 +1628,7 @@ class PaperChunkService:
                     requested_formula_number,
                     page_texts=page_texts,
                     preferred_pages=formula_preferred_pages,
+                    neighbor_pages=formula_neighbor_pages,
                 )
                 if text_formula:
                     remaining_formula_budget = max(

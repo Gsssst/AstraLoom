@@ -527,6 +527,98 @@ def test_formula_number_query_exact_label_beats_current_page_order_fallback():
     assert r"\tilde{Q}" in evidence[0].text
 
 
+def test_unicode_pdf_formula_label_followed_by_heading_is_exact_match():
+    full_text = "3 Method\n" + "method-marker " * 120
+    page_texts = [
+        "3.2.ALVTSFramework Layer-wiseTokenSelectionandProcessing. Basedon\n"
+        "W˜ =U V , W˜ =U V , (1)\n"
+        "Q Q Q K K K processisperformedindependentlyateachlayer. Different\n"
+        "where U ,U ∈ RD×R and V ,V ∈ RR×D, with layersmayselectdifferentsubsetsofvisualtokensbasedon\n"
+        "R ≪ D being the rank. Given the input sequence X =\n"
+        "[X ,X ],wecomputetheapproximatequeriesandkeys:\n"
+        "Q˜ =XW˜⊤, K˜ =XW˜⊤, (2) 3.3.TokenSelectorOptimization\n"
+        "Q K\n"
+        "Q˜K˜⊤\n"
+        "A˜=softmax √ ∈R(M+N)×(M+N). (3) forthequeryprojectionW Q ∈RD×D,weperformSVDto\n",
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释公式2的含义，每个变量分别代表什么",
+        top_k=4,
+        page_texts=page_texts,
+        preferred_pages=[1],
+    )
+
+    assert scope == "formula+text"
+    assert plan.strategy == "formula_number"
+    assert evidence[0].source_type == "formula"
+    assert evidence[0].page_start == 1
+    assert evidence[0].metadata["formula_number_match"] is True
+    assert evidence[0].metadata.get("formula_order_fallback") is None
+    assert "Q˜ =XW˜⊤" in evidence[0].text
+    assert "K˜ =XW˜⊤" in evidence[0].text
+    assert "R ≪ D being the rank" not in evidence[0].text
+    assert "A˜=softmax" not in evidence[0].text
+    assert "formula_evidence_not_found" not in plan.warnings
+
+
+def test_page_local_formula_fallback_ignores_pdf_prose_setup_line():
+    lines = [
+        "W˜ =U V , W˜ =U V , (1)",
+        "where U ,U ∈ RD×R and V ,V ∈ RR×D, with layersmayselectdifferentsubsetsofvisualtokensbasedon",
+        "R ≪ D being the rank. Given the input sequence X =",
+        "[X ,X ],wecomputetheapproximatequeriesandkeys:",
+        "Q˜ =XW˜⊤, K˜ =XW˜⊤,",
+        "Q K",
+        "Q˜K˜⊤",
+        "A˜=softmax √ ∈R(M+N)×(M+N). (3)",
+    ]
+
+    spans = PaperChunkService._display_formula_spans(lines)
+    span_texts = ["\n".join(lines[start:end]) for start, end in spans]
+
+    assert not PaperChunkService._is_display_formula_line("R ≪ D being the rank. Given the input sequence X =")
+    assert not any(text == "R ≪ D being the rank. Given the input sequence X =" for text in span_texts)
+    assert any("Q˜ =XW˜⊤" in text for text in span_texts)
+
+
+def test_formula_number_query_uses_neighbor_page_exact_match_before_current_page_order():
+    full_text = "3 Method\n" + "method-marker " * 120
+    page_texts = [
+        "1 Introduction\n" + "intro-marker " * 40,
+        r"2 Background\ny_t \sim P(\cdot | y_{<t}, X_T, X_V), (2)",
+        "3.1 Preliminary\n"
+        "X = [t ,t ,...,t ] ∈ RM×D through the language\n"
+        "projected into N visual tokens X = [v ,v ,...,v ] ∈\n",
+        "3.2.ALVTSFramework\n"
+        "W˜ =U V , W˜ =U V , (1)\n"
+        "R ≪ D being the rank. Given the input sequence X =\n"
+        "[X ,X ],wecomputetheapproximatequeriesandkeys:\n"
+        "Q˜ =XW˜⊤, K˜ =XW˜⊤, (2) 3.3.TokenSelectorOptimization\n"
+        "A˜=softmax √ ∈R(M+N)×(M+N). (3)",
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释公式2",
+        top_k=4,
+        page_texts=page_texts,
+        preferred_pages=[3],
+    )
+
+    assert scope == "formula+text"
+    assert plan.strategy == "formula_number"
+    assert evidence[0].source_type == "formula"
+    assert evidence[0].page_start == 4
+    assert evidence[0].metadata["formula_number_match"] is True
+    assert evidence[0].metadata["preferred_page_match"] is False
+    assert evidence[0].metadata["preferred_page_neighbor_match"] is True
+    assert evidence[0].metadata["preferred_pages"] == [3]
+    assert "Q˜ =XW˜⊤" in evidence[0].text
+    assert "P(\\cdot" not in evidence[0].text
+
+
 def test_formula_number_query_does_not_use_global_order_without_preferred_page():
     full_text = "\n".join([
         "3.2 ALVTS Framework",
