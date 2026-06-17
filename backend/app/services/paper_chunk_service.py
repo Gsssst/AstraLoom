@@ -839,6 +839,83 @@ class PaperChunkService:
         )
         return any(re.search(pattern, text, re.I) for pattern in patterns)
 
+    @staticmethod
+    def _line_has_math_signal(line: str) -> bool:
+        return bool(re.search(r"\\[A-Za-z]+|[_^{}=]|[A-Za-z]\s*[=~]\s*|∈|≤|≥|≈|≪|∑|∏|√|𝑊|\\tilde", line or ""))
+
+    @classmethod
+    def _numbered_formula_label_in_line(cls, line: str, number: int) -> bool:
+        patterns = (
+            rf"\(\s*{number}\s*\)\s*$",
+            rf"(?:eq(?:uation)?|formula)\s*\.?\s*\(?\s*{number}\s*\)?",
+            rf"(?:公式|方程|等式|式子|式)\s*\(?\s*{number}\s*\)?",
+        )
+        return any(re.search(pattern, line or "", re.I) for pattern in patterns)
+
+    @classmethod
+    def _numbered_formula_evidence_from_text(
+        cls,
+        text: str,
+        number: int,
+        *,
+        source: str,
+        page_start: Optional[int] = None,
+        page_end: Optional[int] = None,
+    ) -> Optional[EvidenceChunk]:
+        lines = [line.rstrip() for line in (text or "").splitlines()]
+        current_section: Optional[str] = None
+        current_heading: Optional[str] = None
+        for index, line in enumerate(lines):
+            parsed_heading = cls._parse_numbered_heading(line)
+            if parsed_heading:
+                current_section = f"section {parsed_heading[0]}"
+                current_heading = parsed_heading[1]
+            if not cls._numbered_formula_label_in_line(line, number):
+                continue
+            window_start = max(0, index - 2)
+            window_end = min(len(lines), index + 3)
+            window = [item.strip() for item in lines[window_start:window_end] if item.strip()]
+            if not any(cls._line_has_math_signal(item) for item in window):
+                continue
+            formula_text = "\n".join(window).strip()
+            return EvidenceChunk(
+                text=formula_text,
+                score=0.98,
+                section=current_section,
+                page_start=page_start,
+                page_end=page_end,
+                source_type="formula",
+                source=source,
+                metadata={
+                    "formula_evidence": True,
+                    "requested_formula_number": number,
+                    "formula_number_match": True,
+                    "formula_text_extraction": True,
+                    "matched_heading": current_heading,
+                },
+            )
+        return None
+
+    @classmethod
+    def _numbered_formula_text_evidence(
+        cls,
+        full_text: str,
+        number: int,
+        *,
+        page_texts: Optional[List[str]] = None,
+    ) -> Optional[EvidenceChunk]:
+        for page_index, page_text in enumerate(page_texts or [], 1):
+            evidence = cls._numbered_formula_evidence_from_text(
+                page_text,
+                number,
+                source="pdf_page_text",
+                page_start=page_index,
+                page_end=page_index,
+            )
+            if evidence:
+                return evidence
+        return cls._numbered_formula_evidence_from_text(full_text, number, source="full_text")
+
     @classmethod
     def _formula_number_evidence_lane(
         cls,
@@ -1157,12 +1234,29 @@ class PaperChunkService:
                     dossier_results = cls._merge_evidence_lanes(visual_results, dossier_results, top_k=top_k)
                 return dossier_results, "experiment_dossier+structured" if structured_candidates else "experiment_dossier"
         if plan.include_formula_evidence and structured_candidates:
+            text_formula_results: List[EvidenceChunk] = []
+            if plan.strategy == "formula_number":
+                requested_formula_number = cls.detect_requested_formula_number(query)
+                if requested_formula_number:
+                    text_formula = cls._numbered_formula_text_evidence(
+                        full_text,
+                        requested_formula_number,
+                        page_texts=page_texts,
+                    )
+                    if text_formula:
+                        text_formula_results = [text_formula]
             formula_results = cls._formula_number_evidence_lane(
                 structured_candidates,
                 query,
                 top_k=plan.formula_budget or cls.FORMULA_EVIDENCE_TOP_K,
                 target_pages=target_pages,
             ) if plan.strategy == "formula_number" else []
+            if text_formula_results:
+                formula_results = cls._merge_complete_evidence_pack(
+                    text_formula_results,
+                    formula_results,
+                    top_k=plan.formula_budget or cls.FORMULA_EVIDENCE_TOP_K,
+                )
             formula_results = formula_results or cls._formula_evidence_lane(
                 structured_candidates,
                 query,

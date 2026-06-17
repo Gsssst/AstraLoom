@@ -253,6 +253,61 @@ def test_formula_number_query_targets_labelled_formula_not_first_math_like_text(
     assert "Eq. 2" not in evidence[0].text
 
 
+def test_formula_number_query_prefers_explicit_text_formula_over_inline_math_order():
+    full_text = "\n".join([
+        "3.1 Preliminary",
+        r"For text input, tokens are embedded as X_T = [t_1, t_2, ..., t_M] and visual tokens X_V are projected.",
+        "3.2 ALVTS Framework",
+        "Token Importance Estimation via Low-Rank Approximation.",
+        r"\tilde{W}_Q = U_Q V_Q,\quad \tilde{W}_K = U_K V_K,   (1)",
+        r"where U_Q, U_K \in R^{D \times R} and V_Q, V_K \in R^{R \times D}.",
+    ])
+    page_texts = [
+        "\n".join([
+            "3.1 Preliminary",
+            r"For text input, tokens are embedded as X_T = [t_1, t_2, ..., t_M] and visual tokens X_V are projected.",
+        ]),
+        "\n".join([
+            "3.2 ALVTS Framework",
+            "Token Importance Estimation via Low-Rank Approximation.",
+            r"\tilde{W}_Q = U_Q V_Q,\quad \tilde{W}_K = U_K V_K,   (1)",
+            r"where U_Q, U_K \in R^{D \times R} and V_Q, V_K \in R^{R \times D}.",
+        ]),
+    ]
+    structured_blocks = [
+        {
+            "type": "formula",
+            "page": 1,
+            "source": "docling",
+            "text": r"X_T = [t_1, t_2, ..., t_M]",
+            "metadata": {},
+        },
+        {
+            "type": "formula",
+            "page": 2,
+            "source": "docling",
+            "text": r"\tilde{W}_Q = U_Q V_Q,\quad \tilde{W}_K = U_K V_K",
+            "metadata": {},
+        },
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释公式 1 的含义，每个变量分别代表什么。",
+        top_k=4,
+        page_texts=page_texts,
+        structured_blocks=structured_blocks,
+    )
+
+    assert scope == "formula+structured"
+    assert plan.strategy == "formula_number"
+    assert evidence[0].source_type == "formula"
+    assert evidence[0].page_start == 2
+    assert evidence[0].metadata["formula_text_extraction"] is True
+    assert r"\tilde{W}_Q" in evidence[0].text
+    assert "X_T = [t_1" not in evidence[0].text
+
+
 def test_numbered_section_includes_supplemental_formula_evidence():
     full_text = "\n".join([
         "3.2 FlexMem Update",
