@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
-import { Alert, Spin, Button, Space, Typography, InputNumber } from 'antd';
+import { Alert, Spin, Button, Space, Typography, InputNumber, Tooltip } from 'antd';
+import { ZoomInOutlined } from '@ant-design/icons';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
@@ -16,6 +17,9 @@ const PDF_LOAD_TIMEOUT_MS = 20000;
 const PDF_EVIDENCE_LOCATOR_RETRY_MS = 180;
 const PDF_EVIDENCE_LOCATOR_MAX_ATTEMPTS = 14;
 const PDF_EVIDENCE_HIGHLIGHT_MS = 6500;
+const PDF_MAGNIFIER_SIZE = 224;
+const PDF_MAGNIFIER_SCALE = 2.15;
+const PDF_MAGNIFIER_OFFSET = 18;
 
 interface PDFTargetLocator {
   page: number;
@@ -39,6 +43,16 @@ interface PDFViewerProps {
   onTargetLocatorResult?: (result: PDFTargetLocatorResult) => void;
 }
 
+interface PDFMagnifierState {
+  visible: boolean;
+  page: number | null;
+  left: number;
+  top: number;
+  pageWidth: number;
+  pageHeight: number;
+  transform: string;
+}
+
 const PDFViewer: React.FC<PDFViewerProps> = ({
   url,
   onTextSelect,
@@ -53,7 +67,18 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [nativeFallback, setNativeFallback] = useState(false);
   const [pageWidth, setPageWidth] = useState(700);
+  const [magnifierEnabled, setMagnifierEnabled] = useState(false);
+  const [magnifierState, setMagnifierState] = useState<PDFMagnifierState>({
+    visible: false,
+    page: null,
+    left: 0,
+    top: 0,
+    pageWidth: 0,
+    pageHeight: 0,
+    transform: '',
+  });
   const contentRef = useRef<HTMLDivElement>(null);
+  const magnifierContentRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const activeEvidenceHighlightRef = useRef<HTMLElement[]>([]);
   const evidenceHighlightTimeoutRef = useRef<number | null>(null);
@@ -79,6 +104,46 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     activeEvidenceHighlightRef.current.forEach(node => node.classList.remove('paper-pdf-evidence-hit'));
     activeEvidenceHighlightRef.current = [];
   }, []);
+
+  const hideMagnifier = useCallback(() => {
+    setMagnifierState(current => (current.visible ? { ...current, visible: false } : current));
+  }, []);
+
+  const copyCanvasPixelsToClone = useCallback((sourcePage: HTMLElement, clonedPage: HTMLElement) => {
+    const sourceCanvases = Array.from(sourcePage.querySelectorAll<HTMLCanvasElement>('canvas'));
+    const clonedCanvases = Array.from(clonedPage.querySelectorAll<HTMLCanvasElement>('canvas'));
+    sourceCanvases.forEach((sourceCanvas, index) => {
+      const clonedCanvas = clonedCanvases[index];
+      if (!clonedCanvas) return;
+      try {
+        clonedCanvas.width = sourceCanvas.width;
+        clonedCanvas.height = sourceCanvas.height;
+        clonedCanvas.style.width = sourceCanvas.style.width;
+        clonedCanvas.style.height = sourceCanvas.style.height;
+        const context = clonedCanvas.getContext('2d');
+        context?.drawImage(sourceCanvas, 0, 0);
+      } catch {
+        // Some browser security modes can block canvas copying. The text layer
+        // still remains visible in the loupe, so keep the magnifier usable.
+      }
+    });
+  }, []);
+
+  const clonePageIntoMagnifier = useCallback((page: number | null) => {
+    const target = magnifierContentRef.current;
+    if (!target || !page) return;
+    const sourcePage = pageRefs.current.get(page)?.querySelector<HTMLElement>('.react-pdf__Page');
+    if (!sourcePage) return;
+    const existingPage = target.querySelector<HTMLElement>('.react-pdf__Page');
+    if (existingPage?.dataset.magnifierPage === String(page)) return;
+
+    const clonedPage = sourcePage.cloneNode(true) as HTMLElement;
+    clonedPage.dataset.magnifierPage = String(page);
+    clonedPage.classList.add('paper-pdf-magnifier-page-clone');
+    clonedPage.setAttribute('aria-hidden', 'true');
+    copyCanvasPixelsToClone(sourcePage, clonedPage);
+    target.replaceChildren(clonedPage);
+  }, [copyCanvasPixelsToClone]);
 
   const onDocLoad = useCallback(({ numPages }: any) => {
     setNumPages(numPages);
@@ -109,6 +174,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
 
   useEffect(() => {
     clearEvidenceHighlight();
+    hideMagnifier();
     handledTargetPageRef.current = null;
     handledLocatorRequestIdsRef.current.clear();
     setLoading(true);
@@ -116,7 +182,18 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     setNativeFallback(false);
     setNumPages(0);
     setPageNumber(1);
-  }, [clearEvidenceHighlight, resolvedUrl]);
+  }, [clearEvidenceHighlight, hideMagnifier, resolvedUrl]);
+
+  useEffect(() => {
+    if (!magnifierEnabled || !magnifierState.visible) return;
+    clonePageIntoMagnifier(magnifierState.page);
+  }, [clonePageIntoMagnifier, magnifierEnabled, magnifierState.page, magnifierState.visible]);
+
+  useEffect(() => {
+    if (magnifierEnabled && !nativeFallback) return;
+    hideMagnifier();
+    magnifierContentRef.current?.replaceChildren();
+  }, [hideMagnifier, magnifierEnabled, nativeFallback]);
 
   useEffect(() => {
     if (!resolvedUrl || !loading || loadError || nativeFallback) return;
@@ -340,6 +417,11 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     }
   }, [numPages, onPageChange, pageNumber]);
 
+  const handlePdfScroll = useCallback(() => {
+    hideMagnifier();
+    syncCurrentPageFromScroll();
+  }, [hideMagnifier, syncCurrentPageFromScroll]);
+
   const handlePageJump = useCallback((page: number | null) => {
     if (!page) return;
     const bounded = Math.min(Math.max(page, 1), numPages || page);
@@ -372,10 +454,54 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     }, 100);
   }, [onTextSelect, pageNumber]);
 
+  const toggleMagnifier = useCallback(() => {
+    setMagnifierEnabled(current => {
+      if (current) hideMagnifier();
+      return !current;
+    });
+  }, [hideMagnifier]);
+
+  const handlePageMouseMove = useCallback((event: React.MouseEvent<HTMLDivElement>, page: number) => {
+    if (!magnifierEnabled || nativeFallback) return;
+    const renderedPage = pageRefs.current.get(page)?.querySelector<HTMLElement>('.react-pdf__Page');
+    const container = contentRef.current;
+    if (!renderedPage || !container) return;
+
+    const pageRect = renderedPage.getBoundingClientRect();
+    const pointerX = event.clientX - pageRect.left;
+    const pointerY = event.clientY - pageRect.top;
+    if (pointerX < 0 || pointerY < 0 || pointerX > pageRect.width || pointerY > pageRect.height) {
+      hideMagnifier();
+      return;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    let left = event.clientX + PDF_MAGNIFIER_OFFSET;
+    let top = event.clientY + PDF_MAGNIFIER_OFFSET;
+    if (left + PDF_MAGNIFIER_SIZE > containerRect.right - 8) {
+      left = event.clientX - PDF_MAGNIFIER_SIZE - PDF_MAGNIFIER_OFFSET;
+    }
+    if (top + PDF_MAGNIFIER_SIZE > containerRect.bottom - 8) {
+      top = event.clientY - PDF_MAGNIFIER_SIZE - PDF_MAGNIFIER_OFFSET;
+    }
+    left = Math.max(containerRect.left + 8, Math.min(left, containerRect.right - PDF_MAGNIFIER_SIZE - 8));
+    top = Math.max(containerRect.top + 8, Math.min(top, containerRect.bottom - PDF_MAGNIFIER_SIZE - 8));
+
+    setMagnifierState({
+      visible: true,
+      page,
+      left,
+      top,
+      pageWidth: pageRect.width,
+      pageHeight: pageRect.height,
+      transform: `translate(${PDF_MAGNIFIER_SIZE / 2 - pointerX * PDF_MAGNIFIER_SCALE}px, ${PDF_MAGNIFIER_SIZE / 2 - pointerY * PDF_MAGNIFIER_SCALE}px) scale(${PDF_MAGNIFIER_SCALE})`,
+    });
+  }, [hideMagnifier, magnifierEnabled, nativeFallback]);
+
   if (!url) return <Text type="secondary">PDF 不可用</Text>;
 
   return (
-    <div className="paper-pdf-viewer" onMouseUp={handleMouseUp}>
+    <div className={`paper-pdf-viewer${magnifierEnabled ? ' is-magnifier-enabled' : ''}`} onMouseUp={handleMouseUp}>
       {/* 导航栏 */}
       <div style={{
         display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12,
@@ -387,10 +513,21 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
           <Text type="secondary" style={{ fontSize: 12 }}>/ {nativeFallback ? '-' : numPages}</Text>
         </Space>
         <Text type="secondary" style={{ fontSize: 12 }}>{nativeFallback ? '原生预览' : '滚动阅读 · 划词可加入提问'}</Text>
+        <Tooltip title={nativeFallback ? '原生预览不支持局部放大' : '局部放大'}>
+          <Button
+            size="small"
+            type={magnifierEnabled ? 'primary' : 'default'}
+            icon={<ZoomInOutlined />}
+            disabled={nativeFallback || loading || !!loadError}
+            className={`paper-pdf-magnifier-toggle${magnifierEnabled ? ' is-active' : ''}`}
+            aria-pressed={magnifierEnabled}
+            onClick={toggleMagnifier}
+          />
+        </Tooltip>
       </div>
 
       {/* PDF 内容 */}
-      <div ref={contentRef} className={`paper-pdf-scroll${nativeFallback ? ' paper-pdf-scroll-native' : ''}`} onScroll={syncCurrentPageFromScroll}>
+      <div ref={contentRef} className={`paper-pdf-scroll${nativeFallback ? ' paper-pdf-scroll-native' : ''}`} onScroll={handlePdfScroll}>
         {nativeFallback ? (
           <div className="paper-pdf-native-fallback">
             <Alert
@@ -454,6 +591,8 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
                     key={page}
                     className="paper-pdf-page"
                     data-page-number={page}
+                    onMouseMove={event => handlePageMouseMove(event, page)}
+                    onMouseLeave={hideMagnifier}
                     ref={(node) => {
                       if (node) pageRefs.current.set(page, node);
                       else pageRefs.current.delete(page);
@@ -472,6 +611,28 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
           </>
         )}
       </div>
+      {magnifierEnabled && magnifierState.visible && !nativeFallback && (
+        <div
+          className="paper-pdf-magnifier"
+          style={{
+            left: magnifierState.left,
+            top: magnifierState.top,
+            width: PDF_MAGNIFIER_SIZE,
+            height: PDF_MAGNIFIER_SIZE,
+          }}
+        >
+          <div className="paper-pdf-magnifier-crosshair" />
+          <div
+            ref={magnifierContentRef}
+            className="paper-pdf-magnifier-content"
+            style={{
+              width: magnifierState.pageWidth,
+              height: magnifierState.pageHeight,
+              transform: magnifierState.transform,
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 };
