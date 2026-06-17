@@ -912,6 +912,29 @@ const PaperDetailPage: React.FC = () => {
     setEvidenceDrawer({ open: true, message: messageItem, index, referenceKey });
   };
 
+  const evidenceLinksForMessage = (messageItem: PaperChatMessage, index: number) => {
+    const links: Record<string, { id: string; label: string; title?: string; disabled?: boolean; onClick?: () => void }> = {};
+    (messageItem.references || []).forEach(ref => {
+      const evidenceId = String(ref.id || '').trim();
+      if (!/^E\d+$/i.test(evidenceId)) return;
+      const id = evidenceId.toUpperCase();
+      const page = ref.page || ref.page_start;
+      links[id] = {
+        id,
+        label: `[${id}]`,
+        title: page ? `${referenceTitle(ref)} · 点击跳转到 PDF 第 ${page} 页` : `${referenceTitle(ref)} · 当前证据没有页码`,
+        disabled: !page,
+        onClick: page
+          ? () => {
+            handleEvidenceReferenceClick(ref);
+            openEvidenceDrawer(messageItem, index, referencePanelKey(messageItem, index));
+          }
+          : undefined,
+      };
+    });
+    return links;
+  };
+
   const closeEvidenceDrawer = () => {
     if (evidenceDrawer.referenceKey) {
       setExpandedReferencePanels(prev => ({ ...prev, [evidenceDrawer.referenceKey!]: false }));
@@ -1830,7 +1853,7 @@ const PaperDetailPage: React.FC = () => {
                               </div>
                             )}
                             <div style={{whiteSpace:'pre-wrap'}}>{msg.displayContent || msg.content}</div>
-                          </> : <Markdown content={msg.content} />}
+                          </> : <Markdown content={msg.content} evidenceLinks={evidenceLinksForMessage(msg, idx)} />}
                         </div>
                       )}
                       {msg.role === 'assistant' && msg.warning && (

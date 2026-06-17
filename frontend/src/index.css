@@ -24,24 +24,57 @@ body {
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-x: contain;
-  padding: 2px 0 6px;
-  text-align: left;
+  padding: 2px 0 8px;
+  text-align: center;
 }
 
 .app-markdown .katex-display > .katex {
-  display: block;
-  margin: 0 auto;
-  width: max-content;
+  display: inline-block;
   max-width: none;
-  min-width: max-content;
   overflow-wrap: normal;
   white-space: nowrap;
+}
+
+.app-markdown .katex-display .tag {
+  margin-left: 1.2em;
+  padding-right: 0.2em;
 }
 
 .app-markdown .katex,
 .app-markdown .katex * {
   overflow-wrap: normal;
   word-break: normal;
+}
+
+.markdown-evidence-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 20px;
+  margin: 0 2px;
+  padding: 0 7px;
+  border: 1px solid #d9e7ff;
+  border-radius: 999px;
+  background: #f3f7ff;
+  color: #1d4ed8;
+  font: inherit;
+  font-size: 0.82em;
+  font-weight: 600;
+  line-height: 1.5;
+  cursor: pointer;
+  vertical-align: baseline;
+}
+
+.markdown-evidence-link:hover {
+  border-color: #91caff;
+  background: #e6f4ff;
+  color: #0958d9;
+}
+
+.markdown-evidence-link.is-disabled,
+.markdown-evidence-link:disabled {
+  cursor: default;
+  opacity: 0.72;
 }
 
 .code-project-summary {

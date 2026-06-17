@@ -7,8 +7,17 @@ import 'katex/dist/katex.min.css';
 import { Button, message } from 'antd';
 import { CopyOutlined, CheckOutlined } from '@ant-design/icons';
 
+export interface MarkdownEvidenceLink {
+  id: string;
+  label?: string;
+  title?: string;
+  disabled?: boolean;
+  onClick?: () => void;
+}
+
 interface MarkdownProps {
   content: string;
+  evidenceLinks?: Record<string, MarkdownEvidenceLink>;
 }
 
 const FENCED_CODE_BLOCK_RE = /(```[\s\S]*?```|~~~[\s\S]*?~~~)/g;
@@ -82,9 +91,67 @@ const CodeBlock: React.FC<{ children: string; className?: string }> = ({ childre
   );
 };
 
+const EVIDENCE_MARKER_RE = /\[(E\d+)\]/g;
+const EVIDENCE_LINK_PREFIX = '#paper-evidence-';
+
+export const linkMarkdownEvidenceMarkers = (
+  value: string,
+  evidenceLinks?: Record<string, MarkdownEvidenceLink>,
+) => {
+  if (!value || !evidenceLinks) return value;
+  return value
+    .split(FENCED_CODE_BLOCK_RE)
+    .map((segment) => {
+      if (segment.startsWith('```') || segment.startsWith('~~~')) return segment;
+      return segment.replace(/\[(E\d+)\](?!\()/gi, (marker, rawId: string) => {
+        const id = rawId.toUpperCase();
+        return evidenceLinks[id] ? `[${id}](${EVIDENCE_LINK_PREFIX}${id})` : marker;
+      });
+    })
+    .join('');
+};
+
+const renderEvidenceLinkedText = (
+  children: React.ReactNode,
+  evidenceLinks?: Record<string, MarkdownEvidenceLink>,
+) => {
+  if (!evidenceLinks || typeof children !== 'string' || !/\[E\d+\]/.test(children)) {
+    return children;
+  }
+
+  EVIDENCE_MARKER_RE.lastIndex = 0;
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = EVIDENCE_MARKER_RE.exec(children)) !== null) {
+    const [marker, id] = match;
+    if (match.index > lastIndex) parts.push(children.slice(lastIndex, match.index));
+    const link = evidenceLinks[id];
+    if (link) {
+      parts.push(
+        <button
+          key={`${id}-${match.index}`}
+          type="button"
+          className={`markdown-evidence-link ${link.disabled ? 'is-disabled' : ''}`}
+          title={link.title}
+          disabled={link.disabled}
+          onClick={link.onClick}
+        >
+          {link.label || marker}
+        </button>,
+      );
+    } else {
+      parts.push(marker);
+    }
+    lastIndex = match.index + marker.length;
+  }
+  if (lastIndex < children.length) parts.push(children.slice(lastIndex));
+  return parts;
+};
+
 /** 全局 Markdown 渲染组件，支持 GFM 表格、LaTeX 数学公式 */
-const Markdown: React.FC<MarkdownProps> = ({ content }) => {
-  const normalizedContent = normalizeMarkdownMath(content);
+const Markdown: React.FC<MarkdownProps> = ({ content, evidenceLinks }) => {
+  const normalizedContent = linkMarkdownEvidenceMarkers(normalizeMarkdownMath(content), evidenceLinks);
 
   return (
     <div className="markdown-body app-markdown" style={{ lineHeight: 1.8, fontSize: 14 }}>
@@ -128,6 +195,22 @@ const Markdown: React.FC<MarkdownProps> = ({ content }) => {
           },
           // 链接在新窗口打开
           a({ href, children }) {
+            const evidenceMatch = String(href || '').match(/^#paper-evidence-(E\d+)$/i);
+            if (evidenceMatch) {
+              const id = evidenceMatch[1].toUpperCase();
+              const link = evidenceLinks?.[id];
+              return (
+                <button
+                  type="button"
+                  className={`markdown-evidence-link ${link?.disabled ? 'is-disabled' : ''}`}
+                  title={link?.title}
+                  disabled={link?.disabled}
+                  onClick={link?.onClick}
+                >
+                  {link?.label || `[${id}]`}
+                </button>
+              );
+            }
             return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
           },
           // 引用块
@@ -137,6 +220,9 @@ const Markdown: React.FC<MarkdownProps> = ({ content }) => {
               margin: '12px 0', background: '#f0f5ff', borderRadius: '0 8px 8px 0',
               color: '#555',
             }}>{children}</blockquote>;
+          },
+          text({ children }) {
+            return <>{renderEvidenceLinkedText(children, evidenceLinks)}</>;
           },
         }}
       >

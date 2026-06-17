@@ -88,6 +88,15 @@ test('paper chat evidence drawer renders grouped details with existing navigatio
   assert.match(paperDetailSource, /computeEvidenceConfidence\(drawerMessage\)/);
 });
 
+test('paper chat answer evidence markers navigate from inline citations', () => {
+  assert.match(paperDetailSource, /evidenceLinksForMessage/);
+  assert.match(paperDetailSource, /\^E\\d\+\$/i);
+  assert.match(paperDetailSource, /handleEvidenceReferenceClick\(ref\)/);
+  assert.match(paperDetailSource, /openEvidenceDrawer\(messageItem, index, referencePanelKey\(messageItem, index\)\)/);
+  assert.match(paperDetailSource, /<Markdown content=\{msg\.content\} evidenceLinks=\{evidenceLinksForMessage\(msg, idx\)\}/);
+  assert.match(paperDetailSource, /点击跳转到 PDF 第 \$\{page\} 页/);
+});
+
 test('paper chat evidence meta includes visual evidence counts from backend contract', () => {
   assert.match(paperDetailSource, /visual_evidence_count\?: number/);
   assert.match(paperDetailSource, /visual_evidence_available\?: boolean/);

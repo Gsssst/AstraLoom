@@ -40,8 +40,22 @@ test('shared markdown renderer keeps long display equations scrollable', () => {
   assert.match(markdownSource, /className="markdown-body app-markdown"/);
   assert.match(indexCssSource, /\.app-markdown \.katex-display \{[\s\S]*max-width: 100%;/);
   assert.match(indexCssSource, /\.app-markdown \.katex-display \{[\s\S]*overflow-x: auto;/);
-  assert.match(indexCssSource, /\.app-markdown \.katex-display > \.katex \{[\s\S]*width: max-content;/);
-  assert.match(indexCssSource, /\.app-markdown \.katex-display > \.katex \{[\s\S]*min-width: max-content;/);
   assert.match(indexCssSource, /\.app-markdown \.katex-display > \.katex \{[\s\S]*white-space: nowrap;/);
+  assert.match(indexCssSource, /\.app-markdown \.katex-display \.tag \{[\s\S]*margin-left: 1\.2em;/);
+  assert.doesNotMatch(indexCssSource, /\.app-markdown \.katex-display > \.katex \{[\s\S]*width: max-content;/);
+  assert.doesNotMatch(indexCssSource, /\.app-markdown \.katex-display > \.katex \{[\s\S]*min-width: max-content;/);
   assert.match(indexCssSource, /\.app-markdown \.katex,[\s\S]*\.app-markdown \.katex \* \{[\s\S]*word-break: normal;/);
+});
+
+test('shared markdown renderer can link paper evidence markers', () => {
+  assert.match(markdownSource, /export interface MarkdownEvidenceLink/);
+  assert.match(markdownSource, /evidenceLinks\?: Record<string, MarkdownEvidenceLink>/);
+  assert.match(markdownSource, /EVIDENCE_MARKER_RE = \/\\\[\(E\\d\+\)\\\]\/g/);
+  assert.match(markdownSource, /EVIDENCE_LINK_PREFIX = '#paper-evidence-'/);
+  assert.match(markdownSource, /export const linkMarkdownEvidenceMarkers/);
+  assert.match(markdownSource, /linkMarkdownEvidenceMarkers\(normalizeMarkdownMath\(content\), evidenceLinks\)/);
+  assert.match(markdownSource, /\^#paper-evidence-\(E\\d\+\)\$/i);
+  assert.match(markdownSource, /renderEvidenceLinkedText\(children, evidenceLinks\)/);
+  assert.match(markdownSource, /className=\{`markdown-evidence-link/);
+  assert.match(indexCssSource, /\.markdown-evidence-link \{/);
 });
