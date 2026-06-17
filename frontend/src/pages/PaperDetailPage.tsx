@@ -1816,7 +1816,7 @@ const PaperDetailPage: React.FC = () => {
                 chatMsgs.map((msg,idx) => (
                   <div key={idx} style={{ marginBottom: 16, display: 'flex', gap: 8, flexDirection: msg.role==='user'?'row-reverse':'row', alignItems:'flex-start' }}>
                     <Avatar size={28} icon={msg.role==='user'?<UserOutlined/>:<RobotOutlined/>} style={{flexShrink:0, background:msg.role==='user'?'linear-gradient(135deg,#667eea,#764ba2)':'linear-gradient(135deg,#12c2e9,#c471ed)'}}/>
-                    <div style={{ maxWidth: '82%' }}>
+                    <div style={{ maxWidth: '82%', minWidth: 0 }}>
                       {msg.role === 'assistant' && msg.reasoning && (
                         <ThinkingPanel reasoningText={msg.reasoning} isStreaming={!!msg._reasoningStreaming} startTime={msg.thinkingStartedAt} />
                       )}

@@ -11,6 +11,39 @@ body {
   min-height: 100vh;
 }
 
+.app-markdown {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.app-markdown .katex-display {
+  display: block;
+  max-width: 100%;
+  margin: 0.85em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  padding: 2px 0 6px;
+  text-align: left;
+}
+
+.app-markdown .katex-display > .katex {
+  display: block;
+  margin: 0 auto;
+  width: max-content;
+  max-width: none;
+  min-width: max-content;
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+
+.app-markdown .katex,
+.app-markdown .katex * {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
 .code-project-summary {
   display: flex;
   align-items: flex-start;

@@ -87,7 +87,7 @@ const Markdown: React.FC<MarkdownProps> = ({ content }) => {
   const normalizedContent = normalizeMarkdownMath(content);
 
   return (
-    <div className="markdown-body" style={{ lineHeight: 1.8, fontSize: 14 }}>
+    <div className="markdown-body app-markdown" style={{ lineHeight: 1.8, fontSize: 14 }}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}
