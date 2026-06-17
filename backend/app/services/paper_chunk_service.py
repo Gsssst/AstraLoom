@@ -846,11 +846,53 @@ class PaperChunkService:
     @classmethod
     def _numbered_formula_label_in_line(cls, line: str, number: int) -> bool:
         patterns = (
-            rf"\(\s*{number}\s*\)\s*$",
+            rf"\(\s*{number}\s*\)(?!\s*(?:%|\d))",
             rf"(?:eq(?:uation)?|formula)\s*\.?\s*\(?\s*{number}\s*\)?",
             rf"(?:公式|方程|等式|式子|式)\s*\(?\s*{number}\s*\)?",
         )
         return any(re.search(pattern, line or "", re.I) for pattern in patterns)
+
+    @staticmethod
+    def _numbered_formula_labels_in_line(line: str) -> set[int]:
+        labels: set[int] = set()
+        patterns = (
+            r"\(\s*(\d{1,2})\s*\)(?!\s*(?:%|\d))",
+            r"(?:eq(?:uation)?|formula)\s*\.?\s*\(?\s*(\d{1,2})\s*\)?",
+            r"(?:公式|方程|等式|式子|式)\s*\(?\s*(\d{1,2})\s*\)?",
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, line or "", re.I):
+                try:
+                    labels.add(int(match.group(1)))
+                except (TypeError, ValueError):
+                    continue
+        return labels
+
+    @classmethod
+    def _line_has_other_numbered_formula_label(cls, line: str, number: int) -> bool:
+        return any(label != number for label in cls._numbered_formula_labels_in_line(line))
+
+    @classmethod
+    def _numbered_formula_context_window(cls, lines: List[str], index: int, number: int) -> List[str]:
+        start = index
+        for previous_index in range(index - 1, max(-1, index - 3), -1):
+            previous_line = lines[previous_index].strip()
+            if not previous_line:
+                break
+            if cls._line_has_other_numbered_formula_label(previous_line, number):
+                break
+            start = previous_index
+
+        end = index + 1
+        for next_index in range(index + 1, min(len(lines), index + 3)):
+            next_line = lines[next_index].strip()
+            if not next_line:
+                break
+            if cls._line_has_other_numbered_formula_label(next_line, number):
+                break
+            end = next_index + 1
+
+        return [item.strip() for item in lines[start:end] if item.strip()]
 
     @classmethod
     def _numbered_formula_evidence_from_text(
@@ -872,9 +914,7 @@ class PaperChunkService:
                 current_heading = parsed_heading[1]
             if not cls._numbered_formula_label_in_line(line, number):
                 continue
-            window_start = max(0, index - 2)
-            window_end = min(len(lines), index + 3)
-            window = [item.strip() for item in lines[window_start:window_end] if item.strip()]
+            window = cls._numbered_formula_context_window(lines, index, number)
             if not any(cls._line_has_math_signal(item) for item in window):
                 continue
             formula_text = "\n".join(window).strip()
@@ -1233,30 +1273,44 @@ class PaperChunkService:
                 if visual_results:
                     dossier_results = cls._merge_evidence_lanes(visual_results, dossier_results, top_k=top_k)
                 return dossier_results, "experiment_dossier+structured" if structured_candidates else "experiment_dossier"
-        if plan.include_formula_evidence and structured_candidates:
-            text_formula_results: List[EvidenceChunk] = []
-            if plan.strategy == "formula_number":
-                requested_formula_number = cls.detect_requested_formula_number(query)
-                if requested_formula_number:
-                    text_formula = cls._numbered_formula_text_evidence(
-                        full_text,
-                        requested_formula_number,
-                        page_texts=page_texts,
+        if plan.strategy == "formula_number":
+            requested_formula_number = cls.detect_requested_formula_number(query)
+            if requested_formula_number:
+                text_formula = cls._numbered_formula_text_evidence(
+                    full_text,
+                    requested_formula_number,
+                    page_texts=page_texts,
+                )
+                if text_formula:
+                    remaining_formula_budget = max(
+                        0,
+                        (plan.formula_budget or cls.FORMULA_EVIDENCE_TOP_K) - 1,
                     )
-                    if text_formula:
-                        text_formula_results = [text_formula]
+                    structured_formula_results = cls._formula_number_evidence_lane(
+                        structured_candidates,
+                        query,
+                        top_k=remaining_formula_budget,
+                        target_pages=target_pages,
+                    ) if structured_candidates and remaining_formula_budget else []
+                    formula_results = cls._merge_complete_evidence_pack(
+                        [text_formula],
+                        structured_formula_results,
+                        top_k=plan.formula_budget or cls.FORMULA_EVIDENCE_TOP_K,
+                    )
+                    document_results = cls.search_evidence_chunks(
+                        [candidate for candidate in candidates if not cls._is_formula_evidence(candidate)],
+                        query,
+                        top_k=max(1, top_k - len(formula_results)),
+                        requested_sections=requested_sections,
+                    )
+                    return cls._merge_evidence_lanes(formula_results, document_results, top_k=top_k), "formula+text"
+        if plan.include_formula_evidence and structured_candidates:
             formula_results = cls._formula_number_evidence_lane(
                 structured_candidates,
                 query,
                 top_k=plan.formula_budget or cls.FORMULA_EVIDENCE_TOP_K,
                 target_pages=target_pages,
             ) if plan.strategy == "formula_number" else []
-            if text_formula_results:
-                formula_results = cls._merge_complete_evidence_pack(
-                    text_formula_results,
-                    formula_results,
-                    top_k=plan.formula_budget or cls.FORMULA_EVIDENCE_TOP_K,
-                )
             formula_results = formula_results or cls._formula_evidence_lane(
                 structured_candidates,
                 query,

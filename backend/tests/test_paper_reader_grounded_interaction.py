@@ -299,13 +299,90 @@ def test_formula_number_query_prefers_explicit_text_formula_over_inline_math_ord
         structured_blocks=structured_blocks,
     )
 
-    assert scope == "formula+structured"
+    assert scope == "formula+text"
     assert plan.strategy == "formula_number"
     assert evidence[0].source_type == "formula"
     assert evidence[0].page_start == 2
     assert evidence[0].metadata["formula_text_extraction"] is True
     assert r"\tilde{W}_Q" in evidence[0].text
     assert "X_T = [t_1" not in evidence[0].text
+
+
+def test_formula_number_query_extracts_inline_formula_two_without_neighbor_formulas():
+    full_text = "\n".join([
+        "3.1 Preliminary",
+        r"For text input, tokens are embedded as X_T = [t_1, t_2, ..., t_M] and visual tokens X_V are projected.",
+        "3.2 ALVTS Framework",
+        "Token Importance Estimation via Low-Rank Approximation.",
+        r"\tilde{W}_Q = U_Q V_Q, \tilde{W}_K = U_K V_K, (1)",
+        r"Given the input sequence X = [X_T, X_V], the approximate queries and keys are:",
+        r"\tilde{Q} = X\tilde{W}_Q^T, \tilde{K} = X\tilde{W}_K^T, (2) and derive attention weights.",
+        r"\tilde{A} = softmax(\tilde{Q}\tilde{K}^T / \sqrt{d_k}) (3)",
+    ])
+    page_texts = [
+        "\n".join([
+            "3.2 ALVTS Framework",
+            "Token Importance Estimation via Low-Rank Approximation.",
+            r"\tilde{W}_Q = U_Q V_Q, \tilde{W}_K = U_K V_K, (1)",
+            r"Given the input sequence X = [X_T, X_V], the approximate queries and keys are:",
+            r"\tilde{Q} = X\tilde{W}_Q^T, \tilde{K} = X\tilde{W}_K^T, (2) and derive attention weights.",
+            r"\tilde{A} = softmax(\tilde{Q}\tilde{K}^T / \sqrt{d_k}) (3)",
+        ])
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释公式2的含义，每个变量分别代表什么",
+        top_k=4,
+        page_texts=page_texts,
+        structured_blocks=[],
+    )
+
+    assert scope == "formula+text"
+    assert plan.strategy == "formula_number"
+    assert evidence[0].source_type == "formula"
+    assert evidence[0].page_start == 1
+    assert evidence[0].metadata["requested_formula_number"] == 2
+    assert evidence[0].metadata["formula_text_extraction"] is True
+    assert r"\tilde{Q}" in evidence[0].text
+    assert r"\tilde{K}" in evidence[0].text
+    assert r"\tilde{W}_Q = U_Q V_Q" not in evidence[0].text
+    assert r"\tilde{A} = softmax" not in evidence[0].text
+    assert "formula_evidence_not_found" not in plan.warnings
+
+
+def test_formula_number_query_uses_page_text_when_no_structured_formula_blocks():
+    full_text = (
+        "3 Method\n"
+        "The section discusses low-rank projections and approximate attention. "
+        + "method-marker " * 80
+    )
+    page_texts = [
+        "\n".join([
+            "3.2 ALVTS Framework",
+            r"\tilde{W}_Q = U_Q V_Q, \tilde{W}_K = U_K V_K, (1)",
+            r"\tilde{Q} = X\tilde{W}_Q^T, \tilde{K} = X\tilde{W}_K^T, (2) where X contains text and visual tokens.",
+            r"Here, \tilde{W}_Q and \tilde{W}_K are low-rank projected matrices.",
+        ])
+    ]
+
+    evidence, scope, plan = PaperChunkService.retrieve_evidence_with_plan(
+        full_text,
+        "请解释公式2",
+        top_k=4,
+        page_texts=page_texts,
+        structured_blocks=None,
+    )
+
+    assert scope == "formula+text"
+    assert plan.strategy == "formula_number"
+    assert evidence[0].source_type == "formula"
+    assert evidence[0].source == "pdf_page_text"
+    assert evidence[0].page_start == 1
+    assert evidence[0].metadata["formula_text_extraction"] is True
+    assert r"\tilde{Q}" in evidence[0].text
+    assert r"\tilde{W}_Q = U_Q V_Q" not in evidence[0].text
+    assert "formula_evidence_not_found" not in plan.warnings
 
 
 def test_numbered_section_includes_supplemental_formula_evidence():
