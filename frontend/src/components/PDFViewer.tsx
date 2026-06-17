@@ -57,6 +57,8 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const activeEvidenceHighlightRef = useRef<HTMLElement[]>([]);
   const evidenceHighlightTimeoutRef = useRef<number | null>(null);
+  const handledTargetPageRef = useRef<number | null>(null);
+  const handledLocatorRequestIdsRef = useRef<Set<number>>(new Set());
   const resolvedUrl = React.useMemo(() => {
     if (!url) return '';
     if (typeof window === 'undefined') return url;
@@ -107,6 +109,8 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
 
   useEffect(() => {
     clearEvidenceHighlight();
+    handledTargetPageRef.current = null;
+    handledLocatorRequestIdsRef.current.clear();
     setLoading(true);
     setLoadError(null);
     setNativeFallback(false);
@@ -141,6 +145,8 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
   useEffect(() => {
     if (!targetPage || targetPage < 1) return;
     const bounded = numPages ? Math.min(targetPage, numPages) : targetPage;
+    if (handledTargetPageRef.current === bounded) return;
+    handledTargetPageRef.current = bounded;
     setPageNumber(current => {
       if (current === bounded) return current;
       onPageChange?.(bounded);
@@ -243,6 +249,8 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
 
   useEffect(() => {
     if (!targetLocator || targetLocator.page < 1) return;
+    if (handledLocatorRequestIdsRef.current.has(targetLocator.requestId)) return;
+    handledLocatorRequestIdsRef.current.add(targetLocator.requestId);
 
     const bounded = numPages ? Math.min(targetLocator.page, numPages) : targetLocator.page;
     setPageNumber(current => {

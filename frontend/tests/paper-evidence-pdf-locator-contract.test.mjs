@@ -35,6 +35,17 @@ test('PDF viewer searches rendered page text layer for normalized evidence snipp
   assert.match(pdfViewerSource, /PDF_EVIDENCE_LOCATOR_RETRY_MS/);
 });
 
+test('PDF viewer consumes page and evidence locator targets only once', () => {
+  assert.match(pdfViewerSource, /handledTargetPageRef = useRef<number \| null>\(null\)/);
+  assert.match(pdfViewerSource, /handledLocatorRequestIdsRef = useRef<Set<number>>\(new Set\(\)\)/);
+  assert.match(pdfViewerSource, /handledTargetPageRef\.current = null/);
+  assert.match(pdfViewerSource, /handledLocatorRequestIdsRef\.current\.clear\(\)/);
+  assert.match(pdfViewerSource, /if \(handledTargetPageRef\.current === bounded\) return/);
+  assert.match(pdfViewerSource, /handledTargetPageRef\.current = bounded/);
+  assert.match(pdfViewerSource, /handledLocatorRequestIdsRef\.current\.has\(targetLocator\.requestId\)/);
+  assert.match(pdfViewerSource, /handledLocatorRequestIdsRef\.current\.add\(targetLocator\.requestId\)/);
+});
+
 test('PDF viewer scrolls and highlights matched evidence text spans', () => {
   assert.match(pdfViewerSource, /paper-pdf-evidence-hit/);
   assert.match(pdfViewerSource, /firstNode\.scrollIntoView\(\{ block: 'center'/);
