@@ -64,6 +64,8 @@ interface DigestNotification {
   } | null;
 }
 
+type PaperChatShareMessage = NonNullable<NonNullable<DigestNotification['metadata']>['selected_messages']>[number];
+
 const PaperDigestInboxPage: React.FC = () => {
   const navigate = useNavigate();
   const [digests, setDigests] = useState<DigestNotification[]>([]);
@@ -231,6 +233,10 @@ const PaperDigestInboxPage: React.FC = () => {
     }
   };
 
+  const paperChatShareMessageContent = (item: PaperChatShareMessage) => (
+    item.content || item.display_content || item.excerpt || ''
+  );
+
   const renderPaperChatShareCard = (digest: DigestNotification) => {
     const metadata = digest.metadata || {};
     const selectedMessages = metadata.selected_messages || [];
@@ -278,9 +284,9 @@ const PaperDigestInboxPage: React.FC = () => {
               <div key={`${item.role || 'message'}-${item.message_index ?? index}`} style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #eef0f5', background: '#fff' }}>
                 <Space size={6} align="start">
                   <Tag color={item.role === 'user' ? 'blue' : 'purple'}>{item.role === 'user' ? '问题' : '回答'}</Tag>
-                  <Paragraph style={{ margin: 0, lineHeight: 1.7 }}>
-                    {item.excerpt || item.display_content || item.content}
-                  </Paragraph>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <Markdown content={paperChatShareMessageContent(item)} />
+                  </div>
                 </Space>
               </div>
             ))}

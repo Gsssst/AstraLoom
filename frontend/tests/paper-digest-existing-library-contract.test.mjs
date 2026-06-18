@@ -24,3 +24,9 @@ test('paper push center renders paper chat share notifications', () => {
   assert.match(digestPageSource, /打开论文/);
   assert.match(digestPageSource, /条推送/);
 });
+
+test('paper chat share cards render full markdown content instead of excerpts', () => {
+  assert.match(digestPageSource, /paperChatShareMessageContent/);
+  assert.match(digestPageSource, /item\.content \|\| item\.display_content \|\| item\.excerpt/);
+  assert.match(digestPageSource, /<Markdown content=\{paperChatShareMessageContent\(item\)\} \/>/);
+});
