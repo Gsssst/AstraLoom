@@ -12,3 +12,4 @@
 
 - [x] 3.1 Add or update frontend contract tests for the toolbar overflow classes and CSS rules.
 - [x] 3.2 Run targeted tests, frontend build, OpenSpec validation, and diff checks.
+- [x] 3.3 Add regression coverage for desktop toolbar title/action overlap caused by long paper titles.

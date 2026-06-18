@@ -1328,12 +1328,12 @@ const PaperDetailPage: React.FC = () => {
   return (
     <div className="paper-detail-page">
       {/* 顶部工具栏 */}
-      <div className="paper-detail-toolbar" style={{ borderBottom: '1px solid #f0f0f0', background: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
-        <Space className="paper-detail-toolbar-main">
+      <div className="paper-detail-toolbar" style={{ borderBottom: '1px solid #f0f0f0', background: '#fff', flexShrink: 0 }}>
+        <div className="paper-detail-toolbar-main">
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>
           <Text className="paper-detail-title" strong ellipsis>{paper.title}</Text>
-        </Space>
-        <Space className="paper-detail-toolbar-actions">
+        </div>
+        <Space className="paper-detail-toolbar-actions" wrap>
           {paper.pdf_url && <Button icon={<LinkOutlined />} href={paper.pdf_url} target="_blank" rel="noreferrer">开放 PDF</Button>}
           {isAuthenticated && (
             <Space.Compact>
