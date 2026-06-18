@@ -986,6 +986,13 @@
   color: #d48806;
 }
 
+.paper-chat-share-preview {
+  padding: 10px 12px;
+  border: 1px solid #eef0f5;
+  border-radius: 8px;
+  background: #fafbff;
+}
+
 .paper-reading-assistant-card {
   border: 1px solid rgba(117, 96, 196, 0.12);
   background:

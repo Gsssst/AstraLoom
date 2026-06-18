@@ -21,6 +21,7 @@ const { Header, Sider, Content } = Layout;
 const notificationCategoryConfig: Record<string, { labelKey: MessageKey; color: string }> = {
   digest: { labelKey: 'notifications.category.digest', color: 'blue' },
   workspace_issue: { labelKey: 'notifications.category.workspaceIssue', color: 'purple' },
+  paper_chat_share: { labelKey: 'notifications.category.paperChatShare', color: 'geekblue' },
   system: { labelKey: 'notifications.category.system', color: 'default' },
 };
 
@@ -101,6 +102,10 @@ const AppLayout: React.FC = () => {
     if (item.category === 'workspace_issue') {
       if (metadata.path) return metadata.path;
       if (metadata.workspace_id && metadata.issue_id) return `/workspaces/${metadata.workspace_id}?issue=${metadata.issue_id}`;
+    }
+    if (item.category === 'paper_chat_share') {
+      if (metadata.path) return metadata.path;
+      if (metadata.paper_id) return `/papers/${metadata.paper_id}`;
     }
     if (item.category === 'digest') return '/papers/digests';
     return metadata.path || '';

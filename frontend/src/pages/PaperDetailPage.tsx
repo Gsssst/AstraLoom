@@ -208,6 +208,23 @@ interface PaperChatMessage {
   warning?: string;
 }
 
+interface PaperChatShareTarget {
+  id: string;
+  name: string;
+  description?: string;
+  role: string;
+  member_count: number;
+  can_share: boolean;
+}
+
+interface PaperChatShareState {
+  open: boolean;
+  message?: PaperChatMessage;
+  messageIndex?: number;
+  targetId?: string;
+  note: string;
+}
+
 interface PaperChatEvidenceMeta {
   evidence_count: number;
   evidence_coverage: number;
@@ -522,6 +539,10 @@ const PaperDetailPage: React.FC = () => {
   const [searchDepth, setSearchDepth] = useState<'quick' | 'standard' | 'deep'>('standard');
   const [expandedReferencePanels, setExpandedReferencePanels] = useState<Record<string, boolean>>({});
   const [evidenceDrawer, setEvidenceDrawer] = useState<PaperEvidenceDrawerState>({ open: false });
+  const [shareTargets, setShareTargets] = useState<PaperChatShareTarget[]>([]);
+  const [shareTargetsLoading, setShareTargetsLoading] = useState(false);
+  const [shareSubmitting, setShareSubmitting] = useState(false);
+  const [chatShare, setChatShare] = useState<PaperChatShareState>({ open: false, note: '' });
   const [tagging, setTagging] = useState(false);
   const [paperTools, setPaperTools] = useState<ToolboxTool[]>([]);
   const [availableTools, setAvailableTools] = useState<ToolboxTool[]>([]);
@@ -1047,6 +1068,74 @@ const PaperDetailPage: React.FC = () => {
 
   const handleReadingTemplate = async (template: PaperReadingTemplate) => {
     await submitPaperQuestion(template.question, template.title);
+  };
+
+  const fetchPaperChatShareTargets = async (preferredTargetId?: string) => {
+    if (!paperId || !isAuthenticated) return;
+    setShareTargetsLoading(true);
+    try {
+      const response = await api.get(`/papers/${paperId}/share-targets`);
+      const targets = response.data.targets || [];
+      setShareTargets(targets);
+      setChatShare(prev => ({
+        ...prev,
+        targetId: preferredTargetId || prev.targetId || targets[0]?.id,
+      }));
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '加载可推送项目空间失败');
+    } finally {
+      setShareTargetsLoading(false);
+    }
+  };
+
+  const openPaperChatShareModal = (messageItem: PaperChatMessage, index: number) => {
+    if (!isAuthenticated) { message.warning('请先登录'); return; }
+    setChatShare({ open: true, message: messageItem, messageIndex: index, note: '' });
+    fetchPaperChatShareTargets();
+  };
+
+  const paperChatShareQuestion = () => {
+    if (typeof chatShare.messageIndex !== 'number') return '';
+    for (let index = chatShare.messageIndex - 1; index >= 0; index -= 1) {
+      const item = chatMsgs[index];
+      if (item?.role === 'user') return item.displayContent || item.content;
+    }
+    return '论文 AI 问答精选';
+  };
+
+  const referenceMetadataText = (ref: PaperChatReference, key: string) => {
+    const value = ref.metadata?.[key];
+    return typeof value === 'string' ? value : undefined;
+  };
+
+  const submitPaperChatShare = async () => {
+    if (!paperId || !chatShare.message || !chatShare.targetId) return;
+    setShareSubmitting(true);
+    try {
+      const response = await api.post(`/papers/${paperId}/share-chat-insight`, {
+        space_id: chatShare.targetId,
+        question: paperChatShareQuestion(),
+        answer: chatShare.message.content,
+        note: chatShare.note,
+        references: (chatShare.message.references || []).slice(0, 12).map(ref => ({
+          id: ref.id,
+          title: referenceTitle(ref),
+          page: ref.page || ref.page_start,
+          section_heading: ref.section || referenceMetadataText(ref, 'section_heading'),
+          source_type: ref.source || ref.type,
+          snippet: ref.snippet || referenceMetadataText(ref, 'quote') || referenceMetadataText(ref, 'summary'),
+          locator: typeof ref.metadata?.locator === 'object' && ref.metadata.locator ? ref.metadata.locator : undefined,
+        })),
+      });
+      const recipientCount = response.data.recipient_count || 0;
+      message.success(recipientCount > 0 ? `已推送给 ${recipientCount} 位成员` : '已记录到项目空间，当前没有其他成员可通知');
+      setChatShare({ open: false, note: '' });
+      window.dispatchEvent(new Event('notifications:refresh'));
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '推送失败');
+    } finally {
+      setShareSubmitting(false);
+    }
   };
 
   const handleSaveAnnotation = async (quoteOverride?: PaperPdfQuote) => {
@@ -1893,6 +1982,7 @@ const PaperDetailPage: React.FC = () => {
                       {msg.role === 'assistant' && !msg._streaming && (
                         <div style={{ display:'flex', gap: 4, marginTop: 4, paddingLeft: 4 }}>
                           <Button type="text" size="small" icon={<CopyOutlined />} onClick={()=>{navigator.clipboard.writeText(msg.content);message.success('已复制');}} style={{fontSize:11,color:'#bbb'}}>复制</Button>
+                          <Button type="text" size="small" icon={<SendOutlined />} onClick={() => openPaperChatShareModal(msg, idx)} style={{fontSize:11,color:'#8b5cf6'}}>推送成员</Button>
                           <Button type="text" size="small" icon={<RedoOutlined />} onClick={handleSetRegenerateDraft} style={{fontSize:11,color:'#bbb'}}>重新生成</Button>
                         </div>
                       )}
@@ -2005,6 +2095,63 @@ const PaperDetailPage: React.FC = () => {
           </Card>
         </div>}
       </div>
+      <Modal
+        title="推送论文 AI 精读"
+        open={chatShare.open}
+        onCancel={() => setChatShare({ open: false, note: '' })}
+        onOk={submitPaperChatShare}
+        confirmLoading={shareSubmitting}
+        okText="推送给成员"
+        okButtonProps={{ disabled: !chatShare.targetId || shareTargets.length === 0 }}
+        destroyOnHidden
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Text type="secondary">
+            将当前 AI 回答和配对问题推送到项目空间，其他成员会在通知中看到并可跳回这篇论文。
+          </Text>
+          {shareTargets.length > 0 ? (
+            <Select
+              loading={shareTargetsLoading}
+              value={chatShare.targetId}
+              onChange={(targetId) => setChatShare(prev => ({ ...prev, targetId }))}
+              style={{ width: '100%' }}
+              options={shareTargets.map(target => ({
+                value: target.id,
+                label: `${target.name} · ${target.member_count} 人 · ${target.role}`,
+              }))}
+            />
+          ) : (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={shareTargetsLoading ? '正在加载可推送项目空间...' : '这篇论文还没有绑定到你所在的项目空间'}
+            >
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                先在论文页的“所属项目空间”里绑定项目空间，再推送给成员。
+              </Text>
+            </Empty>
+          )}
+          {chatShare.message && (
+            <div className="paper-chat-share-preview">
+              <Text strong>问题</Text>
+              <Paragraph ellipsis={{ rows: 2 }} style={{ marginBottom: 8 }}>
+                {paperChatShareQuestion()}
+              </Paragraph>
+              <Text strong>回答预览</Text>
+              <Paragraph ellipsis={{ rows: 4, expandable: true }} style={{ marginBottom: 0 }}>
+                {chatShare.message.content}
+              </Paragraph>
+            </div>
+          )}
+          <TextArea
+            rows={3}
+            maxLength={600}
+            showCount
+            placeholder="可选：补充你为什么推荐大家看这段回答"
+            value={chatShare.note}
+            onChange={event => setChatShare(prev => ({ ...prev, note: event.target.value }))}
+          />
+        </Space>
+      </Modal>
       <Drawer
         title={<Space><FileSearchOutlined />回答证据</Space>}
         placement="right"
