@@ -19,19 +19,26 @@ const responsiveSource = readFileSync(
   'utf8',
 );
 
-test('paper detail exposes a share-to-members action on assistant answers', () => {
-  assert.match(paperDetailSource, /openPaperChatShareModal\(msg, idx\)/);
-  assert.match(paperDetailSource, />推送成员<\/Button>/);
-  assert.match(paperDetailSource, /api\.get\(`\/papers\/\$\{paperId\}\/share-targets`\)/);
+test('paper detail exposes direct user multi-message sharing controls', () => {
+  assert.match(paperDetailSource, /shareSelectionMode/);
+  assert.match(paperDetailSource, /'选择推送'/);
+  assert.match(paperDetailSource, /toggleShareMessageSelection\(idx\)/);
+  assert.match(paperDetailSource, />推送这段<\/Button>/);
+  assert.match(paperDetailSource, /api\.get\(`\/papers\/\$\{paperId\}\/share-recipients`/);
   assert.match(paperDetailSource, /api\.post\(`\/papers\/\$\{paperId\}\/share-chat-insight`/);
+  assert.match(paperDetailSource, /recipient_user_ids: chatShare\.recipientIds/);
+  assert.match(paperDetailSource, /selected_messages: selectedShareMessages\.map/);
 });
 
-test('paper chat share modal shows workspace target, note, and empty state guidance', () => {
+test('paper chat share modal shows searchable recipients and selected-message preview', () => {
   assert.match(paperDetailSource, /title="推送论文 AI 精读"/);
-  assert.match(paperDetailSource, /okText="推送给成员"/);
-  assert.match(paperDetailSource, /这篇论文还没有绑定到你所在的项目空间/);
-  assert.match(paperDetailSource, /placeholder="可选：补充你为什么推荐大家看这段回答"/);
+  assert.match(paperDetailSource, /okText="推送给用户"/);
+  assert.match(paperDetailSource, /mode="multiple"/);
+  assert.match(paperDetailSource, /placeholder="搜索用户名、邮箱或显示名"/);
+  assert.match(paperDetailSource, /已选择 \{selectedShareMessages\.length\} 条对话/);
+  assert.match(paperDetailSource, /placeholder="可选：补充你为什么推荐大家看这段对话"/);
   assert.match(responsiveSource, /\.paper-chat-share-preview/);
+  assert.match(responsiveSource, /\.paper-chat-share-message-preview/);
 });
 
 test('global notifications route paper chat share events to source papers', () => {

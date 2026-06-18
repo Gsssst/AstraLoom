@@ -14,13 +14,14 @@ from typing import Optional, List, Any, AsyncIterator, Literal
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
 from app.db.models.notification import Notification
 from app.db.models.paper import Paper, Category, PaperCategory, UserPaper
+from app.db.models.user import User
 from app.db.models.workspace import ProjectSpace, ProjectSpaceActivity, ProjectSpaceMember, ProjectSpaceResource
 from app.services.paper_search import (
     PaperResult,
@@ -2818,12 +2819,36 @@ class PaperChatShareReference(BaseModel):
     locator: Optional[dict] = None
 
 
+class PaperChatShareSelectedMessage(BaseModel):
+    role: str = Field(..., pattern="^(user|assistant|system)$")
+    content: str = Field(..., min_length=1, max_length=30000)
+    display_content: Optional[str] = Field(default=None, max_length=8000)
+    message_index: Optional[int] = Field(default=None, ge=0)
+    references: list[PaperChatShareReference] = Field(default_factory=list, max_length=20)
+
+
 class PaperChatShareRequest(BaseModel):
-    space_id: str = Field(..., min_length=1)
-    question: str = Field(..., min_length=1, max_length=8000)
-    answer: str = Field(..., min_length=1, max_length=30000)
+    space_id: Optional[str] = Field(default=None, min_length=1)
+    recipient_user_ids: list[str] = Field(default_factory=list, max_length=50)
+    selected_messages: list[PaperChatShareSelectedMessage] = Field(default_factory=list, max_length=20)
+    question: Optional[str] = Field(default=None, max_length=8000)
+    answer: Optional[str] = Field(default=None, max_length=30000)
     note: Optional[str] = Field(default=None, max_length=1000)
     references: list[PaperChatShareReference] = Field(default_factory=list, max_length=20)
+
+
+class PaperChatShareRecipient(BaseModel):
+    id: str
+    username: str
+    email: str
+    display_name: Optional[str] = None
+    avatar: Optional[str] = None
+    label: str
+
+
+class PaperChatShareRecipientsResponse(BaseModel):
+    paper_id: str
+    users: list[PaperChatShareRecipient]
 
 
 class PaperChatShareTarget(BaseModel):
@@ -2844,8 +2869,9 @@ class PaperChatShareResponse(BaseModel):
     shared: bool
     recipient_count: int
     notification_count: int
-    activity_id: str
-    target: PaperChatShareTarget
+    activity_id: Optional[str] = None
+    target: Optional[PaperChatShareTarget] = None
+    recipients: list[PaperChatShareRecipient] = Field(default_factory=list)
 
 
 class PaperAnnotationRequest(BaseModel):
@@ -2889,6 +2915,17 @@ def _chat_share_display_name(user) -> str:
     return (getattr(user, "display_name", None) or getattr(user, "username", None) or getattr(user, "email", None) or "成员").strip()
 
 
+def _paper_chat_share_recipient_response(user: User) -> PaperChatShareRecipient:
+    return PaperChatShareRecipient(
+        id=str(user.id),
+        username=user.username,
+        email=user.email,
+        display_name=user.display_name,
+        avatar=user.avatar,
+        label=_chat_share_display_name(user),
+    )
+
+
 def _bounded_share_references(references: list[PaperChatShareReference], limit: int = 8) -> list[dict]:
     rows: list[dict] = []
     for ref in references[:limit]:
@@ -2907,6 +2944,70 @@ def _bounded_share_references(references: list[PaperChatShareReference], limit: 
                 bounded[key] = _bounded_text(value, 500 if key in {"snippet", "quote"} else 160)
         rows.append(bounded)
     return rows
+
+
+def _bounded_share_selected_messages(
+    messages: list[PaperChatShareSelectedMessage],
+    *,
+    limit: int = 12,
+) -> list[dict]:
+    rows: list[dict] = []
+    for message in messages[:limit]:
+        content = _bounded_text(message.content, 5000)
+        display_content = _bounded_text(message.display_content, 1200) if message.display_content else ""
+        references = _bounded_share_references(message.references, limit=8)
+        rows.append({
+            "role": message.role,
+            "content": content,
+            "display_content": display_content,
+            "excerpt": _bounded_text(display_content or content, 500),
+            "message_index": message.message_index,
+            "references": references,
+            "reference_count": len(references),
+        })
+    return rows
+
+
+def _legacy_selected_messages_from_request(req: PaperChatShareRequest) -> list[PaperChatShareSelectedMessage]:
+    messages: list[PaperChatShareSelectedMessage] = []
+    question = (req.question or "").strip()
+    answer = (req.answer or "").strip()
+    if question:
+        messages.append(PaperChatShareSelectedMessage(role="user", content=question, display_content=question))
+    if answer:
+        messages.append(PaperChatShareSelectedMessage(role="assistant", content=answer, references=req.references))
+    return messages
+
+
+async def _paper_chat_share_recipients_by_id(
+    db: AsyncSession,
+    recipient_user_ids: list[str],
+    sender_id,
+) -> list[User]:
+    from uuid import UUID
+
+    parsed_ids = []
+    for raw_id in dict.fromkeys(recipient_user_ids):
+        try:
+            parsed_ids.append(UUID(str(raw_id)))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="收件人不存在或不可用")
+    if not parsed_ids:
+        raise HTTPException(status_code=400, detail="请选择至少一位收件人")
+    if any(str(uid) == str(sender_id) for uid in parsed_ids):
+        raise HTTPException(status_code=400, detail="不能推送给自己")
+
+    result = await db.execute(
+        select(User)
+        .where(User.id.in_(parsed_ids), User.is_active.is_(True))
+        .order_by(User.created_at.desc())
+    )
+    users = result.scalars().all()
+    if len(users) != len(parsed_ids):
+        raise HTTPException(status_code=400, detail="收件人不存在或不可用")
+
+    user_map = {str(candidate.id): candidate for candidate in users}
+    return [user_map[str(uid)] for uid in parsed_ids]
 
 
 async def _paper_chat_share_targets(db: AsyncSession, paper_uuid, user_id) -> list[tuple[ProjectSpace, str]]:
@@ -3052,6 +3153,45 @@ async def list_paper_chat_share_targets(
     return PaperChatShareTargetsResponse(paper_id=str(pid), targets=targets)
 
 
+@router.get("/{paper_id}/share-recipients", response_model=PaperChatShareRecipientsResponse)
+async def list_paper_chat_share_recipients(
+    paper_id: str,
+    q: str = "",
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """搜索论文 AI 精读可推送的用户收件人。"""
+    from uuid import UUID
+    try:
+        pid = UUID(paper_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid paper_id")
+
+    paper = (await db.execute(select(Paper.id).where(Paper.id == pid))).scalar_one_or_none()
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文不存在")
+
+    q = (q or "").strip()
+    limit = max(1, min(limit, 50))
+    statement = select(User).where(
+        User.is_active.is_(True),
+        User.id != user.id,
+    )
+    if q:
+        needle = f"%{q}%"
+        statement = statement.where(or_(
+            User.username.ilike(needle),
+            User.email.ilike(needle),
+            User.display_name.ilike(needle),
+        ))
+    result = await db.execute(statement.order_by(User.created_at.desc()).limit(limit))
+    return PaperChatShareRecipientsResponse(
+        paper_id=str(pid),
+        users=[_paper_chat_share_recipient_response(candidate) for candidate in result.scalars().all()],
+    )
+
+
 @router.post("/{paper_id}/share-chat-insight", response_model=PaperChatShareResponse)
 async def share_paper_chat_insight(
     paper_id: str,
@@ -3059,36 +3199,40 @@ async def share_paper_chat_insight(
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """将一条论文 AI 问答精选推送给项目空间成员。"""
+    """将论文 AI 问答精选推送给指定用户，兼容旧的项目空间推送。"""
     from uuid import UUID
     try:
         pid = UUID(paper_id)
-        sid = UUID(req.space_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid paper_id or space_id")
+        raise HTTPException(status_code=400, detail="Invalid paper_id")
 
     paper = (await db.execute(select(Paper).where(Paper.id == pid))).scalar_one_or_none()
     if not paper:
         raise HTTPException(status_code=404, detail="论文不存在")
 
-    target_rows = await _paper_chat_share_targets(db, pid, user.id)
-    target_map = {space.id: (space, role) for space, role in target_rows}
-    target = target_map.get(sid)
-    if not target:
-        raise HTTPException(status_code=403, detail="只能推送给已绑定该论文且你是成员的项目空间")
-
-    space, role = target
-    if role not in {"owner", "editor", "viewer"}:
-        raise HTTPException(status_code=403, detail="你没有该项目空间的推送权限")
-
     sender_name = _chat_share_display_name(user)
-    question = _bounded_text(req.question, 1200)
-    answer = _bounded_text(req.answer, 6000)
     note = _bounded_text(req.note, 600) if req.note else ""
+    source_messages = req.selected_messages or _legacy_selected_messages_from_request(req)
+    selected_messages = _bounded_share_selected_messages(source_messages)
+    if not selected_messages:
+        raise HTTPException(status_code=400, detail="请选择至少一条要推送的对话消息")
+
+    first_user_message = next((item for item in selected_messages if item.get("role") == "user"), None)
+    first_assistant_message = next((item for item in selected_messages if item.get("role") == "assistant"), None)
+    question = _bounded_text(
+        req.question or (first_user_message or {}).get("display_content") or (first_user_message or {}).get("content") or "",
+        1200,
+    )
+    answer = _bounded_text(
+        req.answer or (first_assistant_message or {}).get("content") or selected_messages[-1].get("content") or "",
+        6000,
+    )
     references = _bounded_share_references(req.references)
-    metadata = {
-        "workspace_id": str(space.id),
-        "workspace_name": space.name,
+    if not references and first_assistant_message:
+        references = list(first_assistant_message.get("references") or [])[:8]
+    reference_count = sum(int(item.get("reference_count") or 0) for item in selected_messages)
+    path = f"/papers/{paper.id}"
+    base_metadata = {
         "paper_id": str(paper.id),
         "paper_title": paper.title,
         "paper_year": paper.year,
@@ -3100,9 +3244,59 @@ async def share_paper_chat_insight(
         "answer_excerpt": _bounded_text(answer, 500),
         "note": note,
         "references": references,
-        "reference_count": len(references),
-        "path": f"/papers/{paper.id}",
+        "reference_count": reference_count,
+        "selected_messages": selected_messages,
+        "message_count": len(selected_messages),
+        "path": path,
         "action": "paper_chat_shared",
+    }
+
+    if req.recipient_user_ids:
+        recipients = await _paper_chat_share_recipients_by_id(db, req.recipient_user_ids, user.id)
+        for recipient in recipients:
+            db.add(Notification(
+                user_id=recipient.id,
+                title=f"{sender_name} 分享了论文 AI 精读",
+                content=f"分享了《{_bounded_text(paper.title, 120)}》中的 {len(selected_messages)} 条论文问答片段。",
+                category="paper_chat_share",
+                metadata_json={
+                    **base_metadata,
+                    "recipient_mode": "users",
+                },
+            ))
+        await db.commit()
+        return PaperChatShareResponse(
+            shared=True,
+            recipient_count=len(recipients),
+            notification_count=len(recipients),
+            activity_id=None,
+            target=None,
+            recipients=[_paper_chat_share_recipient_response(recipient) for recipient in recipients],
+        )
+
+    if not req.space_id:
+        raise HTTPException(status_code=400, detail="请选择至少一位收件人")
+
+    try:
+        sid = UUID(req.space_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid space_id")
+
+    target_rows = await _paper_chat_share_targets(db, pid, user.id)
+    target_map = {space.id: (space, role) for space, role in target_rows}
+    target = target_map.get(sid)
+    if not target:
+        raise HTTPException(status_code=403, detail="只能推送给已绑定该论文且你是成员的项目空间")
+
+    space, role = target
+    if role not in {"owner", "editor", "viewer"}:
+        raise HTTPException(status_code=403, detail="你没有该项目空间的推送权限")
+
+    metadata = {
+        **base_metadata,
+        "workspace_id": str(space.id),
+        "workspace_name": space.name,
+        "recipient_mode": "workspace",
     }
 
     activity = ProjectSpaceActivity(
@@ -3117,7 +3311,8 @@ async def share_paper_chat_insight(
             "answer_excerpt": _bounded_text(answer, 500),
             "note": note,
             "path": metadata["path"],
-            "reference_count": len(references),
+            "reference_count": reference_count,
+            "message_count": len(selected_messages),
         },
     )
     db.add(activity)
@@ -3147,6 +3342,7 @@ async def share_paper_chat_insight(
         notification_count=len(recipients),
         activity_id=str(activity.id),
         target=_paper_chat_share_target_response(space, role),
+        recipients=[],
     )
 
 

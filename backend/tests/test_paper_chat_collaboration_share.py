@@ -1,5 +1,6 @@
 """Contract tests for sharing paper AI chat insights to project-space members."""
 
+import pytest
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ def _dependency_calls(path: str, method: str):
 def test_paper_chat_share_routes_require_authentication():
     private_routes = [
         ("/api/papers/{paper_id}/share-targets", "GET"),
+        ("/api/papers/{paper_id}/share-recipients", "GET"),
         ("/api/papers/{paper_id}/share-chat-insight", "POST"),
     ]
 
@@ -67,6 +69,64 @@ def test_paper_chat_share_bounds_text_and_references():
     assert bounded[0]["page"] == 3
     assert len(bounded[0]["snippet"]) <= 500
     assert len(bounded[0]["locator"]["text"]) <= 160
+
+
+def test_paper_chat_share_recipient_response_uses_display_identity():
+    user = SimpleNamespace(
+        id=uuid4(),
+        username="alice",
+        email="alice@example.com",
+        display_name="Alice Lab",
+        avatar=None,
+    )
+
+    response = papers._paper_chat_share_recipient_response(user)
+
+    assert response.id == str(user.id)
+    assert response.label == "Alice Lab"
+    assert response.email == "alice@example.com"
+
+
+def test_paper_chat_share_bounds_selected_messages_with_references():
+    selected = [
+        papers.PaperChatShareSelectedMessage(
+            role="user",
+            content="请解释核心创新",
+            message_index=1,
+        ),
+        papers.PaperChatShareSelectedMessage(
+            role="assistant",
+            content="a" * 7000,
+            display_content="回答摘要",
+            message_index=2,
+            references=[
+                papers.PaperChatShareReference(id="E1", title="Method", page=4, snippet="x" * 900),
+            ],
+        ),
+    ]
+
+    bounded = papers._bounded_share_selected_messages(selected)
+
+    assert len(bounded) == 2
+    assert bounded[0]["role"] == "user"
+    assert bounded[1]["message_index"] == 2
+    assert len(bounded[1]["content"]) <= 5000
+    assert bounded[1]["reference_count"] == 1
+    assert len(bounded[1]["references"][0]["snippet"]) <= 500
+
+
+@pytest.mark.asyncio
+async def test_paper_chat_share_rejects_invalid_recipient_ids():
+    sender_id = uuid4()
+
+    with pytest.raises(papers.HTTPException) as exc_info:
+        await papers._paper_chat_share_recipients_by_id(
+            SimpleNamespace(),
+            ["not-a-uuid"],
+            sender_id,
+        )
+
+    assert exc_info.value.status_code == 400
 
 
 def test_paper_chat_share_notification_metadata_targets_other_members_only():
@@ -123,3 +183,38 @@ def test_paper_chat_share_notification_metadata_targets_other_members_only():
     assert activity.action == "paper_chat_shared"
     assert activity.resource_type == "papers"
     assert activity.resource_id == str(paper_id)
+
+
+def test_paper_chat_direct_share_notification_metadata_contains_selected_messages():
+    sender_id = uuid4()
+    recipient_id = uuid4()
+    paper_id = uuid4()
+    selected_messages = [
+        {"role": "user", "content": "这篇论文解决什么问题？", "excerpt": "这篇论文解决什么问题？", "message_index": 0},
+        {"role": "assistant", "content": "它解决视频定位中的监督成本问题。", "excerpt": "它解决视频定位中的监督成本问题。", "message_index": 1},
+    ]
+    metadata = {
+        "paper_id": str(paper_id),
+        "paper_title": "Grounded Video Reasoning",
+        "sender_id": str(sender_id),
+        "sender_name": "Alice",
+        "selected_messages": selected_messages,
+        "message_count": len(selected_messages),
+        "note": "建议讨论",
+        "path": f"/papers/{paper_id}",
+        "action": "paper_chat_shared",
+        "recipient_mode": "users",
+    }
+
+    notification = Notification(
+        user_id=recipient_id,
+        title="Alice 分享了论文 AI 精读",
+        content="分享了《Grounded Video Reasoning》中的 2 条论文问答片段。",
+        category="paper_chat_share",
+        metadata_json=metadata,
+    )
+
+    assert notification.user_id == recipient_id
+    assert notification.metadata_json["recipient_mode"] == "users"
+    assert notification.metadata_json["message_count"] == 2
+    assert notification.metadata_json["selected_messages"][0]["role"] == "user"

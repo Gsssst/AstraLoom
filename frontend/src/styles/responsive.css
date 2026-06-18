@@ -597,6 +597,26 @@
   justify-content: flex-end;
 }
 
+.paper-chat-message-row {
+  position: relative;
+  padding: 2px 4px;
+  border-radius: 12px;
+}
+
+.paper-chat-message-row.is-selecting {
+  background: rgba(117, 96, 196, 0.035);
+}
+
+.paper-chat-message-row.is-selected {
+  outline: 1px solid rgba(117, 96, 196, 0.35);
+  background: rgba(117, 96, 196, 0.08);
+}
+
+.paper-chat-share-checkbox {
+  flex: 0 0 auto;
+  margin-top: 5px;
+}
+
 .paper-chat-attachments {
   max-width: 100%;
   margin-bottom: 0;
@@ -991,6 +1011,21 @@
   border: 1px solid #eef0f5;
   border-radius: 8px;
   background: #fafbff;
+}
+
+.paper-chat-share-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.paper-chat-share-message-preview {
+  padding: 8px 10px;
+  border: 1px solid #eef0f5;
+  border-radius: 8px;
+  background: #fff;
 }
 
 .paper-reading-assistant-card {
