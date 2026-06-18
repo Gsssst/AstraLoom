@@ -15,6 +15,7 @@ from app.core.security import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/notifications", tags=["通知"])
+PAPER_PUSH_CATEGORIES = ("digest", "paper_chat_share")
 
 
 class SubscriptionUpdate(BaseModel):
@@ -196,7 +197,7 @@ async def list_digests(
         select(Notification)
         .where(
             Notification.user_id == user.id,
-            Notification.category == "digest",
+            Notification.category.in_(PAPER_PUSH_CATEGORIES),
         )
         .order_by(Notification.created_at.desc())
         .limit(limit)
@@ -214,7 +215,7 @@ async def digest_unread_count(
         select(func.count(Notification.id))
         .where(
             Notification.user_id == user.id,
-            Notification.category == "digest",
+            Notification.category.in_(PAPER_PUSH_CATEGORIES),
             Notification.is_read == False,
         )
     )
@@ -230,7 +231,7 @@ async def mark_all_digests_read(
     result = await db.execute(
         select(Notification).where(
             Notification.user_id == user.id,
-            Notification.category == "digest",
+            Notification.category.in_(PAPER_PUSH_CATEGORIES),
             Notification.is_read == False,
         )
     )

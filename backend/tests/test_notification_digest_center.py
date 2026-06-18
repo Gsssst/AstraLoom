@@ -437,3 +437,8 @@ def test_celery_registers_daily_digest_and_beijing_morning_schedule():
     schedule = celery_app.conf.beat_schedule["daily-arxiv-digest"]
     assert schedule["task"] == "daily_arxiv_digest"
     assert str(schedule["schedule"]) == "<crontab: 0 * * * * (m/h/dM/MY/d)>"
+
+
+def test_paper_push_center_categories_include_chat_shares():
+    assert "digest" in notifications.PAPER_PUSH_CATEGORIES
+    assert "paper_chat_share" in notifications.PAPER_PUSH_CATEGORIES

@@ -7,6 +7,7 @@ import {
   ArrowLeftOutlined, CalendarOutlined, CheckCircleOutlined,
   ClockCircleOutlined, FilePdfOutlined, ImportOutlined, LikeOutlined,
   LinkOutlined, PlayCircleOutlined, ReadOutlined, StopOutlined, UserOutlined,
+  SendOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
 import Markdown from '../components/Markdown';
@@ -39,6 +40,7 @@ interface DigestNotification {
   id: string;
   title: string;
   content?: string | null;
+  category?: string;
   is_read: boolean;
   created_at?: string | null;
   metadata?: {
@@ -47,6 +49,18 @@ interface DigestNotification {
     is_test?: boolean;
     paper_count?: number;
     feedback?: Record<string, { action?: string } | string>;
+    sender_name?: string;
+    paper_title?: string;
+    note?: string;
+    path?: string;
+    selected_messages?: Array<{
+      role?: string;
+      content?: string;
+      display_content?: string;
+      excerpt?: string;
+      message_index?: number;
+    }>;
+    message_count?: number;
   } | null;
 }
 
@@ -100,6 +114,21 @@ const PaperDigestInboxPage: React.FC = () => {
     } finally {
       setMarkingRead(false);
     }
+  };
+
+  const handleOpenPaperShare = async (digest: DigestNotification) => {
+    const path = digest.metadata?.path;
+    try {
+      if (!digest.is_read) {
+        await api.post(`/notifications/${digest.id}/read`);
+        setDigests(previous => previous.map(item => item.id === digest.id ? { ...item, is_read: true } : item));
+        setUnreadCount(previous => Math.max(0, previous - 1));
+        window.dispatchEvent(new Event('notifications:refresh'));
+      }
+    } catch {
+      // Opening the source paper should not be blocked by read-state sync.
+    }
+    if (path) navigate(path);
   };
 
   const paperKey = (paper: DigestPaper) => (
@@ -202,6 +231,67 @@ const PaperDigestInboxPage: React.FC = () => {
     }
   };
 
+  const renderPaperChatShareCard = (digest: DigestNotification) => {
+    const metadata = digest.metadata || {};
+    const selectedMessages = metadata.selected_messages || [];
+    return (
+      <Card
+        key={digest.id}
+        style={{
+          marginBottom: 14,
+          borderRadius: 16,
+          border: digest.is_read ? '1px solid #f0f0f0' : '1px solid #d6e4ff',
+          boxShadow: digest.is_read ? 'none' : '0 8px 24px rgba(102,126,234,0.08)',
+        }}
+        styles={{ body: { padding: 20 } }}
+      >
+        <Row align="top" justify="space-between" gutter={[12, 12]}>
+          <Col flex="auto">
+            <Space size={8} wrap>
+              {!digest.is_read && <Badge status="processing" />}
+              <Title level={4} style={{ margin: 0 }}>{digest.title}</Title>
+              <Tag color="geekblue">论文精读分享</Tag>
+            </Space>
+            <div style={{ marginTop: 8 }}>
+              <Space size={6} wrap>
+                <Tag icon={<CalendarOutlined />}>{digest.created_at ? new Date(digest.created_at).toLocaleString() : '时间未知'}</Tag>
+                {metadata.sender_name && <Tag icon={<UserOutlined />}>{metadata.sender_name}</Tag>}
+                <Tag color="purple">{metadata.message_count ?? selectedMessages.length} 条对话</Tag>
+              </Space>
+            </div>
+          </Col>
+          <Col>
+            <Button type="primary" ghost icon={<SendOutlined />} onClick={() => handleOpenPaperShare(digest)}>
+              打开论文
+            </Button>
+          </Col>
+        </Row>
+
+        <div style={{ margin: '16px 0 12px', padding: '12px 14px', borderRadius: 12, background: '#fafaff', border: '1px solid #f0efff' }}>
+          <Text strong>{metadata.paper_title || digest.content || '论文精读分享'}</Text>
+          {metadata.note && <Paragraph style={{ margin: '8px 0 0', color: '#5f6470' }}>{metadata.note}</Paragraph>}
+        </div>
+
+        {selectedMessages.length ? (
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            {selectedMessages.map((item, index) => (
+              <div key={`${item.role || 'message'}-${item.message_index ?? index}`} style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #eef0f5', background: '#fff' }}>
+                <Space size={6} align="start">
+                  <Tag color={item.role === 'user' ? 'blue' : 'purple'}>{item.role === 'user' ? '问题' : '回答'}</Tag>
+                  <Paragraph style={{ margin: 0, lineHeight: 1.7 }}>
+                    {item.excerpt || item.display_content || item.content}
+                  </Paragraph>
+                </Space>
+              </div>
+            ))}
+          </Space>
+        ) : (
+          <Alert type="info" showIcon message="这条精读分享没有附带对话片段" />
+        )}
+      </Card>
+    );
+  };
+
   return (
     <PageShell
       title="论文推送中心"
@@ -220,7 +310,7 @@ const PaperDigestInboxPage: React.FC = () => {
           <Col>
             <Space size={10} wrap>
               <Text strong>推送历史</Text>
-              <Tag color="purple">{digests.length} 次摘要</Tag>
+              <Tag color="purple">{digests.length} 条推送</Tag>
               <Badge count={unreadCount} size="small"><Tag color={unreadCount ? 'blue' : 'default'}>未读推送</Tag></Badge>
             </Space>
           </Col>
@@ -258,6 +348,7 @@ const PaperDigestInboxPage: React.FC = () => {
           <List
             dataSource={digests}
             renderItem={digest => {
+              if (digest.category === 'paper_chat_share') return renderPaperChatShareCard(digest);
               const metadata = digest.metadata || {};
               const papers = metadata.papers || [];
               return (
