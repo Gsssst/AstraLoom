@@ -2830,6 +2830,7 @@ class PaperChatShareSelectedMessage(BaseModel):
 class PaperChatShareRequest(BaseModel):
     space_id: Optional[str] = Field(default=None, min_length=1)
     recipient_user_ids: list[str] = Field(default_factory=list, max_length=50)
+    all_users: bool = False
     selected_messages: list[PaperChatShareSelectedMessage] = Field(default_factory=list, max_length=20)
     question: Optional[str] = Field(default=None, max_length=8000)
     answer: Optional[str] = Field(default=None, max_length=30000)
@@ -3008,6 +3009,15 @@ async def _paper_chat_share_recipients_by_id(
 
     user_map = {str(candidate.id): candidate for candidate in users}
     return [user_map[str(uid)] for uid in parsed_ids]
+
+
+async def _all_paper_chat_share_recipients(db: AsyncSession, sender_id) -> list[User]:
+    result = await db.execute(
+        select(User)
+        .where(User.is_active.is_(True), User.id != sender_id)
+        .order_by(User.created_at.desc())
+    )
+    return result.scalars().all()
 
 
 async def _paper_chat_share_targets(db: AsyncSession, paper_uuid, user_id) -> list[tuple[ProjectSpace, str]]:
@@ -3251,8 +3261,12 @@ async def share_paper_chat_insight(
         "action": "paper_chat_shared",
     }
 
-    if req.recipient_user_ids:
-        recipients = await _paper_chat_share_recipients_by_id(db, req.recipient_user_ids, user.id)
+    if req.all_users or req.recipient_user_ids:
+        recipients = (
+            await _all_paper_chat_share_recipients(db, user.id)
+            if req.all_users
+            else await _paper_chat_share_recipients_by_id(db, req.recipient_user_ids, user.id)
+        )
         for recipient in recipients:
             db.add(Notification(
                 user_id=recipient.id,
@@ -3261,7 +3275,7 @@ async def share_paper_chat_insight(
                 category="paper_chat_share",
                 metadata_json={
                     **base_metadata,
-                    "recipient_mode": "users",
+                    "recipient_mode": "all_users" if req.all_users else "users",
                 },
             ))
         await db.commit()

@@ -6,7 +6,7 @@ import {
   SettingOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UserOutlined,
   LogoutOutlined, LoginOutlined, BellOutlined, BgColorsOutlined,
   RocketOutlined, AppstoreOutlined, SafetyCertificateOutlined, ThunderboltOutlined,
-  SearchOutlined, GlobalOutlined, ToolOutlined,
+  SearchOutlined, GlobalOutlined, ToolOutlined, SendOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useThemeStore, THEME_PRESETS } from '../stores/useThemeStore';
@@ -117,6 +117,59 @@ const AppLayout: React.FC = () => {
       setNotifOpen(false);
       navigate(targetPath);
     }
+  };
+  const handleOpenNotificationTarget = async (event: React.MouseEvent, item: any) => {
+    event.stopPropagation();
+    await handleNotificationSelect(item);
+  };
+  const renderNotificationDescription = (item: any) => {
+    const metadata = item.metadata || {};
+    const selectedMessages = Array.isArray(metadata.selected_messages) ? metadata.selected_messages.slice(0, 4) : [];
+    const isPaperChatShare = item.category === 'paper_chat_share' && selectedMessages.length > 0;
+    if (!isPaperChatShare) {
+      return (
+        <div>
+          <Text style={{ fontSize: 12 }} ellipsis>{item.content?.slice(0, 150)}</Text>
+          <div>
+            <Tag color={notificationCategoryConfig[item.category]?.color || 'default'} style={{ fontSize: 10 }}>
+              {notificationCategoryConfig[item.category]?.labelKey ? t(notificationCategoryConfig[item.category].labelKey) : item.category}
+            </Tag>
+            <Text type="secondary" style={{ fontSize: 10 }}>{new Date(item.created_at).toLocaleDateString()}</Text>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="notification-paper-share-preview">
+        <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+          {metadata.paper_title || item.content}
+        </Text>
+        {metadata.note && (
+          <div className="notification-paper-share-note">{metadata.note}</div>
+        )}
+        <div className="notification-paper-share-messages">
+          {selectedMessages.map((messageItem: any, index: number) => (
+            <div key={`${messageItem.role || 'message'}-${index}`} className="notification-paper-share-message">
+              <Tag color={messageItem.role === 'user' ? 'blue' : 'purple'} style={{ marginInlineEnd: 4 }}>
+                {messageItem.role === 'user' ? '问题' : '回答'}
+              </Tag>
+              <Text style={{ fontSize: 12 }}>
+                {String(messageItem.excerpt || messageItem.display_content || messageItem.content || '').slice(0, 180)}
+              </Text>
+            </div>
+          ))}
+        </div>
+        <div className="notification-paper-share-footer">
+          <Tag color={notificationCategoryConfig[item.category]?.color || 'default'} style={{ fontSize: 10 }}>
+            {notificationCategoryConfig[item.category]?.labelKey ? t(notificationCategoryConfig[item.category].labelKey) : item.category}
+          </Tag>
+          <Text type="secondary" style={{ fontSize: 10 }}>{new Date(item.created_at).toLocaleDateString()}</Text>
+          <Button type="link" size="small" icon={<SendOutlined />} onClick={(event) => handleOpenNotificationTarget(event, item)}>
+            打开论文
+          </Button>
+        </div>
+      </div>
+    );
   };
   const handleMarkAllNotificationsRead = async () => {
     try {
@@ -354,21 +407,12 @@ const AppLayout: React.FC = () => {
                   {notifications.length === 0 ? <Empty description={t('notifications.empty')} image={Empty.PRESENTED_IMAGE_SIMPLE} /> : (
                     <List style={{ maxHeight: 360, overflow: 'auto' }} dataSource={notifications} renderItem={(item: any) => (
                       <List.Item
+                        className={item.category === 'paper_chat_share' ? 'notification-paper-share-item' : undefined}
                         style={{ opacity: item.is_read ? 0.58 : 1, cursor: 'pointer' }}
-                        onClick={() => handleNotificationSelect(item)}
+                        onClick={() => item.category === 'paper_chat_share' ? handleMarkRead(item.id) : handleNotificationSelect(item)}
                         {...routeIntentProps(notificationTargetPath(item))}
                       >
-                        <List.Item.Meta title={item.title} description={
-                          <div>
-                            <Text style={{ fontSize: 12 }} ellipsis>{item.content?.slice(0, 150)}</Text>
-                            <div>
-                              <Tag color={notificationCategoryConfig[item.category]?.color || 'default'} style={{ fontSize: 10 }}>
-                                {notificationCategoryConfig[item.category]?.labelKey ? t(notificationCategoryConfig[item.category].labelKey) : item.category}
-                              </Tag>
-                              <Text type="secondary" style={{ fontSize: 10 }}>{new Date(item.created_at).toLocaleDateString()}</Text>
-                            </div>
-                          </div>
-                        } />
+                        <List.Item.Meta title={item.title} description={renderNotificationDescription(item)} />
                       </List.Item>
                     )} />
                   )}

@@ -138,6 +138,51 @@
   white-space: nowrap;
 }
 
+.notification-paper-share-item {
+  align-items: flex-start !important;
+}
+
+.notification-paper-share-preview {
+  max-width: 100%;
+}
+
+.notification-paper-share-note {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-left: 3px solid #8b5cf6;
+  border-radius: 6px;
+  color: #4c3d68;
+  font-size: 12px;
+  line-height: 1.45;
+  background: #f6f2ff;
+}
+
+.notification-paper-share-messages {
+  display: flex;
+  max-height: 180px;
+  margin-top: 8px;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+}
+
+.notification-paper-share-message {
+  padding: 6px 8px;
+  border: 1px solid #eef0f5;
+  border-radius: 8px;
+  background: #fafbff;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.notification-paper-share-footer {
+  display: flex;
+  margin-top: 8px;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
 .paper-library-toolbar,
 .paper-library-primary,
 .paper-library-actions {

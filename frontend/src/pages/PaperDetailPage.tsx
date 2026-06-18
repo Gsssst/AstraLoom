@@ -222,6 +222,7 @@ interface PaperChatShareState {
   open: boolean;
   selectedMessageIndexes: number[];
   recipientIds: string[];
+  allUsers: boolean;
   note: string;
 }
 
@@ -542,7 +543,7 @@ const PaperDetailPage: React.FC = () => {
   const [shareRecipients, setShareRecipients] = useState<PaperChatShareRecipient[]>([]);
   const [shareRecipientsLoading, setShareRecipientsLoading] = useState(false);
   const [shareSubmitting, setShareSubmitting] = useState(false);
-  const [chatShare, setChatShare] = useState<PaperChatShareState>({ open: false, selectedMessageIndexes: [], recipientIds: [], note: '' });
+  const [chatShare, setChatShare] = useState<PaperChatShareState>({ open: false, selectedMessageIndexes: [], recipientIds: [], allUsers: false, note: '' });
   const [shareSelectionMode, setShareSelectionMode] = useState(false);
   const [tagging, setTagging] = useState(false);
   const [paperTools, setPaperTools] = useState<ToolboxTool[]>([]);
@@ -1109,7 +1110,7 @@ const PaperDetailPage: React.FC = () => {
       message.warning('请先选择要推送的对话内容');
       return;
     }
-    setChatShare(prev => ({ ...prev, open: true, selectedMessageIndexes, recipientIds: prev.recipientIds || [], note: prev.note || '' }));
+    setChatShare(prev => ({ ...prev, open: true, selectedMessageIndexes, recipientIds: prev.recipientIds || [], allUsers: prev.allUsers || false, note: prev.note || '' }));
     fetchPaperChatShareRecipients();
   };
 
@@ -1142,11 +1143,12 @@ const PaperDetailPage: React.FC = () => {
   };
 
   const submitPaperChatShare = async () => {
-    if (!paperId || selectedShareMessages.length === 0 || chatShare.recipientIds.length === 0) return;
+    if (!paperId || selectedShareMessages.length === 0 || (!chatShare.allUsers && chatShare.recipientIds.length === 0)) return;
     setShareSubmitting(true);
     try {
       const response = await api.post(`/papers/${paperId}/share-chat-insight`, {
-        recipient_user_ids: chatShare.recipientIds,
+        recipient_user_ids: chatShare.allUsers ? [] : chatShare.recipientIds,
+        all_users: chatShare.allUsers,
         selected_messages: selectedShareMessages.map(({ index, message: item }) => ({
           role: item.role,
           content: item.content,
@@ -1167,7 +1169,7 @@ const PaperDetailPage: React.FC = () => {
       });
       const recipientCount = response.data.recipient_count || 0;
       message.success(`已推送给 ${recipientCount} 位用户`);
-      setChatShare({ open: false, selectedMessageIndexes: [], recipientIds: [], note: '' });
+      setChatShare({ open: false, selectedMessageIndexes: [], recipientIds: [], allUsers: false, note: '' });
       setShareSelectionMode(false);
       window.dispatchEvent(new Event('notifications:refresh'));
     } catch (error: any) {
@@ -2159,13 +2161,32 @@ const PaperDetailPage: React.FC = () => {
         onOk={submitPaperChatShare}
         confirmLoading={shareSubmitting}
         okText="推送给用户"
-        okButtonProps={{ disabled: chatShare.recipientIds.length === 0 || selectedShareMessages.length === 0 }}
+        okButtonProps={{ disabled: (!chatShare.allUsers && chatShare.recipientIds.length === 0) || selectedShareMessages.length === 0 }}
         destroyOnHidden
       >
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Text type="secondary">
             将选中的论文问答片段推送给指定用户，对方会在通知中看到摘要并可跳回这篇论文。
           </Text>
+          <Space size={8} wrap>
+            <Button
+              size="small"
+              icon={<CheckSquareOutlined />}
+              onClick={() => setChatShare(prev => ({
+                ...prev,
+                allUsers: true,
+                recipientIds: shareRecipients.map(recipient => recipient.id),
+              }))}
+            >
+              推送所有用户
+            </Button>
+            {chatShare.allUsers && <Tag color="purple">将推送给所有活跃用户</Tag>}
+            {chatShare.allUsers && (
+              <Button size="small" type="link" onClick={() => setChatShare(prev => ({ ...prev, allUsers: false, recipientIds: [] }))}>
+                改为手动选择
+              </Button>
+            )}
+          </Space>
           <Select
             mode="multiple"
             showSearch
@@ -2174,9 +2195,10 @@ const PaperDetailPage: React.FC = () => {
             value={chatShare.recipientIds}
             onSearch={fetchPaperChatShareRecipients}
             onFocus={() => fetchPaperChatShareRecipients()}
-            onChange={(recipientIds) => setChatShare(prev => ({ ...prev, recipientIds }))}
+            onChange={(recipientIds) => setChatShare(prev => ({ ...prev, recipientIds, allUsers: false }))}
             placeholder="搜索用户名、邮箱或显示名"
             style={{ width: '100%' }}
+            disabled={chatShare.allUsers}
             options={shareRecipients.map(recipient => ({
               value: recipient.id,
               label: `${recipient.label} · ${recipient.email}`,

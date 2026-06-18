@@ -115,6 +115,18 @@ def test_paper_chat_share_bounds_selected_messages_with_references():
     assert len(bounded[1]["references"][0]["snippet"]) <= 500
 
 
+def test_paper_chat_share_request_accepts_all_users_flag():
+    request = papers.PaperChatShareRequest(
+        all_users=True,
+        selected_messages=[
+            papers.PaperChatShareSelectedMessage(role="user", content="请分享这段问题"),
+        ],
+    )
+
+    assert request.all_users is True
+    assert request.recipient_user_ids == []
+
+
 @pytest.mark.asyncio
 async def test_paper_chat_share_rejects_invalid_recipient_ids():
     sender_id = uuid4()
@@ -127,6 +139,28 @@ async def test_paper_chat_share_rejects_invalid_recipient_ids():
         )
 
     assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_paper_chat_share_all_recipients_excludes_sender():
+    sender_id = uuid4()
+    active_recipient = SimpleNamespace(id=uuid4())
+
+    class FakeResult:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [active_recipient]
+
+    class FakeSession:
+        async def execute(self, statement):
+            self.statement = statement
+            return FakeResult()
+
+    recipients = await papers._all_paper_chat_share_recipients(FakeSession(), sender_id)
+
+    assert recipients == [active_recipient]
 
 
 def test_paper_chat_share_notification_metadata_targets_other_members_only():
@@ -203,7 +237,7 @@ def test_paper_chat_direct_share_notification_metadata_contains_selected_message
         "note": "建议讨论",
         "path": f"/papers/{paper_id}",
         "action": "paper_chat_shared",
-        "recipient_mode": "users",
+        "recipient_mode": "all_users",
     }
 
     notification = Notification(
@@ -215,6 +249,6 @@ def test_paper_chat_direct_share_notification_metadata_contains_selected_message
     )
 
     assert notification.user_id == recipient_id
-    assert notification.metadata_json["recipient_mode"] == "users"
+    assert notification.metadata_json["recipient_mode"] == "all_users"
     assert notification.metadata_json["message_count"] == 2
     assert notification.metadata_json["selected_messages"][0]["role"] == "user"
