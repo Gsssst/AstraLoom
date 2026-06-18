@@ -381,10 +381,32 @@
 
 .paper-detail-toolbar {
   padding: 8px 20px;
+  gap: 12px;
+  min-width: 0;
+}
+
+.paper-detail-toolbar-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .paper-detail-title {
-  max-width: 400px;
+  min-width: 0;
+  max-width: min(560px, 42vw);
+  flex: 1 1 auto;
+}
+
+.paper-detail-toolbar-actions {
+  min-width: 0;
+  flex: 0 1 auto;
+  justify-content: flex-end;
+  row-gap: 6px;
+}
+
+.paper-detail-toolbar-actions .ant-space-item {
+  min-width: 0;
+  flex: 0 0 auto;
 }
 
 .paper-detail-mobile-tabs {
@@ -2605,10 +2627,17 @@
 
   .paper-detail-toolbar-main {
     width: 100%;
+    flex: 1 1 100%;
   }
 
   .paper-detail-title {
     max-width: calc(100vw - 116px);
+  }
+
+  .paper-detail-toolbar-actions {
+    width: 100%;
+    flex: 1 1 100%;
+    justify-content: flex-start;
   }
 
   .paper-detail-mobile-tabs {

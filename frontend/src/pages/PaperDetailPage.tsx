@@ -1333,7 +1333,7 @@ const PaperDetailPage: React.FC = () => {
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>
           <Text className="paper-detail-title" strong ellipsis>{paper.title}</Text>
         </Space>
-        <Space>
+        <Space className="paper-detail-toolbar-actions">
           {paper.pdf_url && <Button icon={<LinkOutlined />} href={paper.pdf_url} target="_blank" rel="noreferrer">开放 PDF</Button>}
           {isAuthenticated && (
             <Space.Compact>
