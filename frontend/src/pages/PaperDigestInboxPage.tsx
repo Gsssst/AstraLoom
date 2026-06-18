@@ -5,8 +5,9 @@ import {
 } from 'antd';
 import {
   ArrowLeftOutlined, CalendarOutlined, CheckCircleOutlined,
+  DownOutlined,
   ClockCircleOutlined, FilePdfOutlined, ImportOutlined, LikeOutlined,
-  LinkOutlined, PlayCircleOutlined, ReadOutlined, StopOutlined, UserOutlined,
+  LinkOutlined, PlayCircleOutlined, ReadOutlined, RightOutlined, StopOutlined, UserOutlined,
   SendOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
@@ -77,6 +78,7 @@ const PaperDigestInboxPage: React.FC = () => {
   const [localPaperIds, setLocalPaperIds] = useState<Record<string, string>>({});
   const [readingLoopStatus, setReadingLoopStatus] = useState<Record<string, 'unread' | 'reading'>>({});
   const [feedbackLoadingKeys, setFeedbackLoadingKeys] = useState<Set<string>>(new Set());
+  const [expandedShareIds, setExpandedShareIds] = useState<Set<string>>(new Set());
   const [digestActionError, setDigestActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
 
   const loadDigests = useCallback(async () => {
@@ -237,9 +239,30 @@ const PaperDigestInboxPage: React.FC = () => {
     item.content || item.display_content || item.excerpt || ''
   );
 
+  const paperChatShareMessagePreview = (item?: PaperChatShareMessage) => {
+    const source = item ? (item.excerpt || item.display_content || item.content || '') : '';
+    const compact = source.replace(/\s+/g, ' ').trim();
+    return compact.length > 180 ? `${compact.slice(0, 180)}...` : compact;
+  };
+
+  const togglePaperChatShareExpanded = (digestId: string) => {
+    setExpandedShareIds(previous => {
+      const next = new Set(previous);
+      if (next.has(digestId)) {
+        next.delete(digestId);
+      } else {
+        next.add(digestId);
+      }
+      return next;
+    });
+  };
+
   const renderPaperChatShareCard = (digest: DigestNotification) => {
     const metadata = digest.metadata || {};
     const selectedMessages = metadata.selected_messages || [];
+    const expanded = expandedShareIds.has(digest.id);
+    const messageCount = metadata.message_count ?? selectedMessages.length;
+    const preview = paperChatShareMessagePreview(selectedMessages[0]) || metadata.note || digest.content || '这条分享暂时没有摘要';
     return (
       <Card
         key={digest.id}
@@ -262,14 +285,22 @@ const PaperDigestInboxPage: React.FC = () => {
               <Space size={6} wrap>
                 <Tag icon={<CalendarOutlined />}>{digest.created_at ? new Date(digest.created_at).toLocaleString() : '时间未知'}</Tag>
                 {metadata.sender_name && <Tag icon={<UserOutlined />}>{metadata.sender_name}</Tag>}
-                <Tag color="purple">{metadata.message_count ?? selectedMessages.length} 条对话</Tag>
+                <Tag color="purple">{messageCount} 条对话</Tag>
               </Space>
             </div>
           </Col>
           <Col>
-            <Button type="primary" ghost icon={<SendOutlined />} onClick={() => handleOpenPaperShare(digest)}>
-              打开论文
-            </Button>
+            <Space wrap>
+              <Button
+                icon={expanded ? <DownOutlined /> : <RightOutlined />}
+                onClick={() => togglePaperChatShareExpanded(digest.id)}
+              >
+                {expanded ? '收起精读' : `展开精读${messageCount ? ` ${messageCount}` : ''}`}
+              </Button>
+              <Button type="primary" ghost icon={<SendOutlined />} onClick={() => handleOpenPaperShare(digest)}>
+                打开论文
+              </Button>
+            </Space>
           </Col>
         </Row>
 
@@ -278,7 +309,23 @@ const PaperDigestInboxPage: React.FC = () => {
           {metadata.note && <Paragraph style={{ margin: '8px 0 0', color: '#5f6470' }}>{metadata.note}</Paragraph>}
         </div>
 
-        {selectedMessages.length ? (
+        {!expanded ? (
+          <div style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #eef0f5', background: '#fff' }}>
+            <Space size={6} align="start">
+              {selectedMessages[0] && (
+                <Tag color={selectedMessages[0].role === 'user' ? 'blue' : 'purple'}>
+                  {selectedMessages[0].role === 'user' ? '问题' : '回答'}
+                </Tag>
+              )}
+              <Paragraph
+                style={{ margin: 0, color: '#5f6470' }}
+                ellipsis={{ rows: 2, expandable: false }}
+              >
+                {preview}
+              </Paragraph>
+            </Space>
+          </div>
+        ) : selectedMessages.length ? (
           <Space direction="vertical" size={10} style={{ width: '100%' }}>
             {selectedMessages.map((item, index) => (
               <div key={`${item.role || 'message'}-${item.message_index ?? index}`} style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #eef0f5', background: '#fff' }}>

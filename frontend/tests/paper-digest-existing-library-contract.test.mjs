@@ -30,3 +30,14 @@ test('paper chat share cards render full markdown content instead of excerpts', 
   assert.match(digestPageSource, /item\.content \|\| item\.display_content \|\| item\.excerpt/);
   assert.match(digestPageSource, /<Markdown content=\{paperChatShareMessageContent\(item\)\} \/>/);
 });
+
+test('paper chat share cards are collapsed until expanded', () => {
+  assert.match(digestPageSource, /expandedShareIds/);
+  assert.match(digestPageSource, /togglePaperChatShareExpanded/);
+  assert.match(digestPageSource, /expandedShareIds\.has\(digest\.id\)/);
+  assert.match(digestPageSource, /paperChatShareMessagePreview/);
+  assert.match(digestPageSource, /展开精读/);
+  assert.match(digestPageSource, /收起精读/);
+  assert.match(digestPageSource, /!expanded \?/);
+  assert.match(digestPageSource, /expanded \? '收起精读'/);
+});
