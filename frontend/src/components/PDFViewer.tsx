@@ -22,6 +22,7 @@ const PDF_ZOOM_MAX = 4;
 const PDF_ZOOM_STEP = 0.1;
 const PDF_WHEEL_ZOOM_SENSITIVITY = 0.0025;
 const PDF_DEFAULT_PAGE_ASPECT_RATIO = 1.4142;
+const PDF_SELECTION_MAX_CHARS = 5000;
 
 interface PDFTargetLocator {
   page: number;
@@ -44,6 +45,22 @@ interface PDFViewerProps {
   targetLocator?: PDFTargetLocator | null;
   onTargetLocatorResult?: (result: PDFTargetLocatorResult) => void;
 }
+
+const getSelectionAnchorRect = (range: Range): DOMRect | null => {
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const visibleRects = Array.from(range.getClientRects()).filter(rect => (
+    rect.width > 1
+    && rect.height > 1
+    && rect.bottom >= 0
+    && rect.right >= 0
+    && rect.top <= viewportHeight
+    && rect.left <= viewportWidth
+  ));
+  if (visibleRects.length) return visibleRects[0];
+  const boundingRect = range.getBoundingClientRect();
+  return boundingRect.width > 1 && boundingRect.height > 1 ? boundingRect : null;
+};
 
 const PDFViewer: React.FC<PDFViewerProps> = ({
   url,
@@ -487,9 +504,9 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     setTimeout(() => {
       const sel = window.getSelection();
       const text = sel?.toString().trim();
-      if (text && text.length > 5 && text.length < 800) {
+      if (text && text.length > 5 && text.length <= PDF_SELECTION_MAX_CHARS) {
         const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
-        const rect = range?.getBoundingClientRect();
+        const rect = range ? getSelectionAnchorRect(range) : null;
         const selectionNode = sel?.anchorNode instanceof Element ? sel.anchorNode : sel?.anchorNode?.parentElement;
         const selectedPage = Number(selectionNode?.closest<HTMLElement>('.paper-pdf-page')?.dataset.pageNumber) || pageNumber;
         onTextSelect(text, selectedPage, {
