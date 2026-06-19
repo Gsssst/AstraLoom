@@ -184,6 +184,7 @@ def test_paper_chat_share_notification_metadata_targets_other_members_only():
         "reference_count": 1,
         "path": f"/papers/{paper_id}",
         "action": "paper_chat_shared",
+        "share_thread_id": str(uuid4()),
         "activity_id": str(activity_id),
     }
 
@@ -214,6 +215,7 @@ def test_paper_chat_share_notification_metadata_targets_other_members_only():
     assert notification.category == "paper_chat_share"
     assert notification.metadata_json["path"] == f"/papers/{paper_id}"
     assert notification.metadata_json["action"] == "paper_chat_shared"
+    assert notification.metadata_json["share_thread_id"]
     assert activity.action == "paper_chat_shared"
     assert activity.resource_type == "papers"
     assert activity.resource_id == str(paper_id)
@@ -237,6 +239,7 @@ def test_paper_chat_direct_share_notification_metadata_contains_selected_message
         "note": "建议讨论",
         "path": f"/papers/{paper_id}",
         "action": "paper_chat_shared",
+        "share_thread_id": str(uuid4()),
         "recipient_mode": "all_users",
     }
 
@@ -250,5 +253,6 @@ def test_paper_chat_direct_share_notification_metadata_contains_selected_message
 
     assert notification.user_id == recipient_id
     assert notification.metadata_json["recipient_mode"] == "all_users"
+    assert notification.metadata_json["share_thread_id"]
     assert notification.metadata_json["message_count"] == 2
     assert notification.metadata_json["selected_messages"][0]["role"] == "user"

@@ -41,3 +41,17 @@ test('paper chat share cards are collapsed until expanded', () => {
   assert.match(digestPageSource, /!expanded \?/);
   assert.match(digestPageSource, /expanded \? '收起精读'/);
 });
+
+test('expanded paper chat share cards expose discussion threads and status actions', () => {
+  assert.match(digestPageSource, /PaperChatShareThread/);
+  assert.match(digestPageSource, /shareThreads/);
+  assert.match(digestPageSource, /loadPaperChatShareThread/);
+  assert.match(digestPageSource, /\/notifications\/paper-chat-shares\/\$\{digestId\}\/thread/);
+  assert.match(digestPageSource, /\/notifications\/paper-chat-shares\/\$\{digestId\}\/comments/);
+  assert.match(digestPageSource, /\/notifications\/paper-chat-shares\/\$\{digestId\}\/status/);
+  assert.match(digestPageSource, /renderPaperChatShareDiscussion/);
+  assert.match(digestPageSource, /精读讨论/);
+  assert.match(digestPageSource, /发送评论/);
+  assert.match(digestPageSource, /待跟进/);
+  assert.match(digestPageSource, /已处理/);
+});

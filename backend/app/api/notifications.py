@@ -3,19 +3,29 @@
 import logging
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.db.models.notification import DigestSubscription, Notification
+from app.db.models.notification import (
+    DigestSubscription,
+    Notification,
+    PaperChatShareComment,
+    PaperChatShareParticipant,
+    PaperChatShareStatus,
+    PaperChatShareThread,
+)
 from app.db.models.user import User
 from app.core.security import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/notifications", tags=["通知"])
 PAPER_PUSH_CATEGORIES = ("digest", "paper_chat_share")
+PAPER_CHAT_SHARE_DISCUSSION_CATEGORY = "paper_chat_share_discussion"
+PAPER_CHAT_SHARE_STATUSES = {"useful", "follow_up", "resolved"}
 
 
 class SubscriptionUpdate(BaseModel):
@@ -39,6 +49,14 @@ class SubscriptionResponse(BaseModel):
 class DigestPaperFeedbackRequest(BaseModel):
     paper_key: str = Field(..., min_length=1, max_length=500)
     action: Literal["interested", "later", "dismissed"]
+
+
+class PaperChatShareCommentRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=4000)
+
+
+class PaperChatShareStatusRequest(BaseModel):
+    status: Optional[Literal["useful", "follow_up", "resolved"]] = None
 
 
 # --- 订阅管理 ---
@@ -163,6 +181,252 @@ def _notification_response(notification: Notification) -> dict:
     }
 
 
+def _parse_uuid(value: str | None, field_name: str = "ID") -> UUID:
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}")
+
+
+def _user_display_name(user: User | None) -> str:
+    if not user:
+        return "未知用户"
+    return getattr(user, "display_name", None) or getattr(user, "username", None) or getattr(user, "email", None) or "未知用户"
+
+
+async def _users_by_id(db: AsyncSession, user_ids: list) -> dict:
+    ids = list({item for item in user_ids if item})
+    if not ids:
+        return {}
+    result = await db.execute(select(User).where(User.id.in_(ids)))
+    return {user.id: user for user in result.scalars().all()}
+
+
+async def _ensure_share_participant(
+    db: AsyncSession,
+    thread_id,
+    user_id,
+    role: str,
+    notification_id=None,
+) -> PaperChatShareParticipant:
+    result = await db.execute(
+        select(PaperChatShareParticipant).where(
+            PaperChatShareParticipant.thread_id == thread_id,
+            PaperChatShareParticipant.user_id == user_id,
+        )
+    )
+    participant = result.scalar_one_or_none()
+    if participant:
+        if notification_id and not participant.notification_id:
+            participant.notification_id = notification_id
+        if role == "sender" and participant.role != "sender":
+            participant.role = "sender"
+        return participant
+    participant = PaperChatShareParticipant(
+        thread_id=thread_id,
+        user_id=user_id,
+        role=role,
+        notification_id=notification_id,
+    )
+    db.add(participant)
+    await db.flush()
+    return participant
+
+
+def _metadata_uuid(metadata: dict, key: str):
+    value = metadata.get(key)
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _ensure_share_thread_for_notification(
+    db: AsyncSession,
+    notification: Notification,
+) -> PaperChatShareThread:
+    metadata = dict(notification.metadata_json or {})
+    thread_id = _metadata_uuid(metadata, "share_thread_id")
+    if thread_id:
+        thread = (await db.execute(
+            select(PaperChatShareThread).where(PaperChatShareThread.id == thread_id)
+        )).scalar_one_or_none()
+        if thread:
+            role = "sender" if str(metadata.get("sender_id") or "") == str(notification.user_id) else "recipient"
+            await _ensure_share_participant(db, thread.id, notification.user_id, role, notification.id)
+            return thread
+
+    sender_id = _metadata_uuid(metadata, "sender_id")
+    thread = PaperChatShareThread(
+        paper_id=_metadata_uuid(metadata, "paper_id"),
+        sender_id=sender_id,
+        title=(metadata.get("paper_title") or notification.title or "")[:500],
+        metadata_json={
+            "legacy_notification_id": str(notification.id),
+            "paper_title": metadata.get("paper_title"),
+            "sender_name": metadata.get("sender_name"),
+            "note": metadata.get("note"),
+            "path": metadata.get("path"),
+            "message_count": metadata.get("message_count"),
+        },
+    )
+    db.add(thread)
+    await db.flush()
+    role = "sender" if sender_id and sender_id == notification.user_id else "recipient"
+    await _ensure_share_participant(db, thread.id, notification.user_id, role, notification.id)
+    if sender_id and sender_id != notification.user_id:
+        sender_notification = Notification(
+            user_id=sender_id,
+            title="你分享了论文 AI 精读",
+            content=notification.content,
+            category="paper_chat_share",
+            is_read=True,
+            metadata_json={
+                **metadata,
+                "share_thread_id": str(thread.id),
+                "recipient_mode": "sent_legacy",
+            },
+        )
+        db.add(sender_notification)
+        await db.flush()
+        await _ensure_share_participant(db, thread.id, sender_id, "sender", sender_notification.id)
+    metadata["share_thread_id"] = str(thread.id)
+    notification.metadata_json = metadata
+    await db.flush()
+    return thread
+
+
+async def _owned_paper_chat_share_notification(
+    notification_id: str,
+    user: User,
+    db: AsyncSession,
+) -> Notification:
+    nid = _parse_uuid(notification_id, "notification_id")
+    result = await db.execute(
+        select(Notification).where(
+            Notification.id == nid,
+            Notification.user_id == user.id,
+            Notification.category == "paper_chat_share",
+        )
+    )
+    notification = result.scalar_one_or_none()
+    if not notification:
+        raise HTTPException(status_code=404, detail="Paper chat share not found")
+    return notification
+
+
+async def _assert_thread_participant(db: AsyncSession, thread_id, user_id) -> PaperChatShareParticipant:
+    participant = (await db.execute(
+        select(PaperChatShareParticipant).where(
+            PaperChatShareParticipant.thread_id == thread_id,
+            PaperChatShareParticipant.user_id == user_id,
+        )
+    )).scalar_one_or_none()
+    if not participant:
+        raise HTTPException(status_code=404, detail="Paper chat share not found")
+    return participant
+
+
+async def _paper_chat_share_thread_response(
+    db: AsyncSession,
+    thread: PaperChatShareThread,
+    current_user: User,
+) -> dict:
+    participants = (await db.execute(
+        select(PaperChatShareParticipant)
+        .where(PaperChatShareParticipant.thread_id == thread.id)
+        .order_by(PaperChatShareParticipant.created_at.asc())
+    )).scalars().all()
+    comments = (await db.execute(
+        select(PaperChatShareComment)
+        .where(PaperChatShareComment.thread_id == thread.id)
+        .order_by(PaperChatShareComment.created_at.asc())
+    )).scalars().all()
+    statuses = (await db.execute(
+        select(PaperChatShareStatus).where(PaperChatShareStatus.thread_id == thread.id)
+    )).scalars().all()
+    users = await _users_by_id(
+        db,
+        [participant.user_id for participant in participants]
+        + [comment.author_id for comment in comments if comment.author_id]
+        + [status.user_id for status in statuses],
+    )
+    status_counts: dict[str, int] = {}
+    current_status = None
+    for item in statuses:
+        status_counts[item.status] = status_counts.get(item.status, 0) + 1
+        if item.user_id == current_user.id:
+            current_status = item.status
+    return {
+        "id": str(thread.id),
+        "paper_id": str(thread.paper_id) if thread.paper_id else None,
+        "sender_id": str(thread.sender_id) if thread.sender_id else None,
+        "title": thread.title,
+        "metadata": thread.metadata_json or {},
+        "participants": [
+            {
+                "id": str(participant.id),
+                "user_id": str(participant.user_id),
+                "name": _user_display_name(users.get(participant.user_id)),
+                "role": participant.role,
+                "notification_id": str(participant.notification_id) if participant.notification_id else None,
+            }
+            for participant in participants
+        ],
+        "comments": [
+            {
+                "id": str(comment.id),
+                "author_id": str(comment.author_id) if comment.author_id else None,
+                "author_name": _user_display_name(users.get(comment.author_id)) if comment.author_id else "未知用户",
+                "content": comment.content,
+                "created_at": comment.created_at.isoformat() if comment.created_at else None,
+                "updated_at": comment.updated_at.isoformat() if comment.updated_at else None,
+            }
+            for comment in comments
+        ],
+        "current_user_status": current_status,
+        "status_counts": status_counts,
+        "created_at": thread.created_at.isoformat() if thread.created_at else None,
+        "updated_at": thread.updated_at.isoformat() if thread.updated_at else None,
+    }
+
+
+async def _notify_paper_chat_share_comment(
+    db: AsyncSession,
+    thread: PaperChatShareThread,
+    comment: PaperChatShareComment,
+    actor: User,
+) -> None:
+    participant_rows = (await db.execute(
+        select(PaperChatShareParticipant).where(PaperChatShareParticipant.thread_id == thread.id)
+    )).scalars().all()
+    participant_by_user = {item.user_id: item for item in participant_rows}
+    target_ids = {item.user_id for item in participant_rows if item.user_id != actor.id}
+    if not target_ids:
+        return
+    title = (thread.title or (thread.metadata_json or {}).get("paper_title") or "论文精读分享")[:120]
+    actor_name = _user_display_name(actor)
+    for target_id in target_ids:
+        participant = participant_by_user.get(target_id)
+        db.add(Notification(
+            user_id=target_id,
+            title=f"{actor_name} 回复了论文精读分享",
+            content=f"《{title}》的精读分享有新评论。",
+            category=PAPER_CHAT_SHARE_DISCUSSION_CATEGORY,
+            metadata_json={
+                "action": "paper_chat_share_commented",
+                "share_thread_id": str(thread.id),
+                "comment_id": str(comment.id),
+                "paper_id": str(thread.paper_id) if thread.paper_id else None,
+                "paper_title": title,
+                "path": "/papers/digests",
+                "target_notification_id": str(participant.notification_id) if participant and participant.notification_id else None,
+            },
+        ))
+
+
 @router.get("/list")
 async def list_notifications(
     limit: int = Query(default=20, ge=1, le=100),
@@ -220,6 +484,80 @@ async def digest_unread_count(
         )
     )
     return {"unread_count": result.scalar() or 0}
+
+
+@router.get("/paper-chat-shares/{notification_id}/thread")
+async def get_paper_chat_share_thread(
+    notification_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取论文精读分享讨论串。"""
+    notification = await _owned_paper_chat_share_notification(notification_id, user, db)
+    thread = await _ensure_share_thread_for_notification(db, notification)
+    await _assert_thread_participant(db, thread.id, user.id)
+    await db.commit()
+    return await _paper_chat_share_thread_response(db, thread, user)
+
+
+@router.post("/paper-chat-shares/{notification_id}/comments")
+async def add_paper_chat_share_comment(
+    notification_id: str,
+    req: PaperChatShareCommentRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """在论文精读分享讨论串中发表评论。"""
+    content = " ".join(req.content.split())
+    if not content:
+        raise HTTPException(status_code=400, detail="评论内容不能为空")
+    notification = await _owned_paper_chat_share_notification(notification_id, user, db)
+    thread = await _ensure_share_thread_for_notification(db, notification)
+    await _assert_thread_participant(db, thread.id, user.id)
+    comment = PaperChatShareComment(
+        thread_id=thread.id,
+        author_id=user.id,
+        content=content[:4000],
+    )
+    db.add(comment)
+    await db.flush()
+    await _notify_paper_chat_share_comment(db, thread, comment, user)
+    await db.commit()
+    return await _paper_chat_share_thread_response(db, thread, user)
+
+
+@router.put("/paper-chat-shares/{notification_id}/status")
+async def update_paper_chat_share_status(
+    notification_id: str,
+    req: PaperChatShareStatusRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """更新当前用户对论文精读分享的处理状态。"""
+    notification = await _owned_paper_chat_share_notification(notification_id, user, db)
+    thread = await _ensure_share_thread_for_notification(db, notification)
+    await _assert_thread_participant(db, thread.id, user.id)
+    existing = (await db.execute(
+        select(PaperChatShareStatus).where(
+            PaperChatShareStatus.thread_id == thread.id,
+            PaperChatShareStatus.user_id == user.id,
+        )
+    )).scalar_one_or_none()
+    if req.status is None:
+        if existing:
+            await db.delete(existing)
+    elif req.status not in PAPER_CHAT_SHARE_STATUSES:
+        raise HTTPException(status_code=400, detail="不支持的状态")
+    elif existing:
+        existing.status = req.status
+    else:
+        db.add(PaperChatShareStatus(
+            thread_id=thread.id,
+            user_id=user.id,
+            status=req.status,
+        ))
+    await db.commit()
+    return await _paper_chat_share_thread_response(db, thread, user)
 
 
 @router.post("/digests/read-all")

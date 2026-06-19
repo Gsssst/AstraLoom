@@ -3,6 +3,12 @@
 import logging
 from sqlalchemy import text
 from app.db.session import engine, AsyncSessionLocal
+from app.db.models.notification import (
+    PaperChatShareComment,
+    PaperChatShareParticipant,
+    PaperChatShareStatus,
+    PaperChatShareThread,
+)
 from app.db.models.paper import Folder, PaperFolderItem
 from app.db.models.workspace import (
     ProjectSpace,
@@ -39,6 +45,10 @@ async def init_db() -> None:
                 ProjectSpaceIssueComment.__table__,
                 Folder.__table__,
                 PaperFolderItem.__table__,
+                PaperChatShareThread.__table__,
+                PaperChatShareParticipant.__table__,
+                PaperChatShareComment.__table__,
+                PaperChatShareStatus.__table__,
             ])
             logger.info("✅ 项目空间与论文分类表已就绪")
     except Exception as e:

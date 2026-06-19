@@ -40,13 +40,21 @@ test('chat session active state does not add a second full-height left border', 
 
 test('header notifications route workspace issue events and keep digest behavior', () => {
   assert.match(layoutSource, /notificationCategoryConfig/);
-  assert.match(layoutSource, /workspace_issue: \{ label: 'Issue', color: 'purple' \}/);
+  assert.match(layoutSource, /workspace_issue: \{ labelKey: 'notifications\.category\.workspaceIssue', color: 'purple' \}/);
   assert.match(layoutSource, /const notificationTargetPath = \(item: any\) =>/);
   assert.match(layoutSource, /metadata\.path/);
   assert.match(layoutSource, /`\/workspaces\/\$\{metadata\.workspace_id\}\?issue=\$\{metadata\.issue_id\}`/);
   assert.match(layoutSource, /if \(item\.category === 'digest'\) return '\/papers\/digests'/);
   assert.match(layoutSource, /navigate\(targetPath\)/);
   assert.match(layoutSource, /api\.post\('\/notifications\/read-all'\)/);
-  assert.match(layoutSource, /全部标记已读/);
+  assert.match(layoutSource, /notifications\.markAllRead/);
   assert.match(layoutSource, /routeIntentProps\(notificationTargetPath\(item\)\)/);
+});
+
+test('header notifications route paper chat share discussion events to digest center', () => {
+  assert.match(layoutSource, /paper_chat_share_discussion: \{ labelKey: 'notifications\.category\.paperChatShareDiscussion'/);
+  assert.match(layoutSource, /item\.category === 'paper_chat_share_discussion'/);
+  assert.match(layoutSource, /params\.set\('share', metadata\.target_notification_id\)/);
+  assert.match(layoutSource, /params\.set\('thread', metadata\.share_thread_id\)/);
+  assert.match(layoutSource, /`\/papers\/digests\?\$\{query\}`/);
 });

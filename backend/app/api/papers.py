@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
-from app.db.models.notification import Notification
+from app.db.models.notification import Notification, PaperChatShareParticipant, PaperChatShareThread
 from app.db.models.paper import Paper, Category, PaperCategory, UserPaper
 from app.db.models.user import User
 from app.db.models.workspace import ProjectSpace, ProjectSpaceActivity, ProjectSpaceMember, ProjectSpaceResource
@@ -3242,6 +3242,31 @@ async def share_paper_chat_insight(
         references = list(first_assistant_message.get("references") or [])[:8]
     reference_count = sum(int(item.get("reference_count") or 0) for item in selected_messages)
     path = f"/papers/{paper.id}"
+    share_thread = PaperChatShareThread(
+        paper_id=paper.id,
+        sender_id=user.id,
+        title=_bounded_text(paper.title, 500),
+        metadata_json={
+            "paper_title": paper.title,
+            "paper_year": paper.year,
+            "paper_arxiv_id": paper.arxiv_id,
+            "sender_name": sender_name,
+            "question": _bounded_text(question, 300),
+            "answer_excerpt": _bounded_text(answer, 500),
+            "note": note,
+            "path": path,
+            "message_count": len(selected_messages),
+            "reference_count": reference_count,
+        },
+    )
+    db.add(share_thread)
+    await db.flush()
+    sender_participant = PaperChatShareParticipant(
+        thread_id=share_thread.id,
+        user_id=user.id,
+        role="sender",
+    )
+    db.add(sender_participant)
     base_metadata = {
         "paper_id": str(paper.id),
         "paper_title": paper.title,
@@ -3259,7 +3284,22 @@ async def share_paper_chat_insight(
         "message_count": len(selected_messages),
         "path": path,
         "action": "paper_chat_shared",
+        "share_thread_id": str(share_thread.id),
     }
+    sender_notification = Notification(
+        user_id=user.id,
+        title="你分享了论文 AI 精读",
+        content=f"你分享了《{_bounded_text(paper.title, 120)}》中的 {len(selected_messages)} 条论文问答片段。",
+        category="paper_chat_share",
+        is_read=True,
+        metadata_json={
+            **base_metadata,
+            "recipient_mode": "sent",
+        },
+    )
+    db.add(sender_notification)
+    await db.flush()
+    sender_participant.notification_id = sender_notification.id
 
     if req.all_users or req.recipient_user_ids:
         recipients = (
@@ -3268,7 +3308,7 @@ async def share_paper_chat_insight(
             else await _paper_chat_share_recipients_by_id(db, req.recipient_user_ids, user.id)
         )
         for recipient in recipients:
-            db.add(Notification(
+            notification = Notification(
                 user_id=recipient.id,
                 title=f"{sender_name} 分享了论文 AI 精读",
                 content=f"分享了《{_bounded_text(paper.title, 120)}》中的 {len(selected_messages)} 条论文问答片段。",
@@ -3277,12 +3317,20 @@ async def share_paper_chat_insight(
                     **base_metadata,
                     "recipient_mode": "all_users" if req.all_users else "users",
                 },
+            )
+            db.add(notification)
+            await db.flush()
+            db.add(PaperChatShareParticipant(
+                thread_id=share_thread.id,
+                user_id=recipient.id,
+                role="recipient",
+                notification_id=notification.id,
             ))
         await db.commit()
         return PaperChatShareResponse(
             shared=True,
             recipient_count=len(recipients),
-            notification_count=len(recipients),
+            notification_count=len(recipients) + 1,
             activity_id=None,
             target=None,
             recipients=[_paper_chat_share_recipient_response(recipient) for recipient in recipients],
@@ -3338,7 +3386,7 @@ async def share_paper_chat_insight(
         if str(member.user_id) != str(user.id)
     ]
     for member in recipients:
-        db.add(Notification(
+        notification = Notification(
             user_id=member.user_id,
             title=f"{sender_name} 分享了论文 AI 精读",
             content=f"项目空间「{space.name}」中分享了《{_bounded_text(paper.title, 120)}》的 AI 问答精选。",
@@ -3347,13 +3395,21 @@ async def share_paper_chat_insight(
                 **metadata,
                 "activity_id": str(activity.id),
             },
+        )
+        db.add(notification)
+        await db.flush()
+        db.add(PaperChatShareParticipant(
+            thread_id=share_thread.id,
+            user_id=member.user_id,
+            role="recipient",
+            notification_id=notification.id,
         ))
 
     await db.commit()
     return PaperChatShareResponse(
         shared=True,
         recipient_count=len(recipients),
-        notification_count=len(recipients),
+        notification_count=len(recipients) + 1,
         activity_id=str(activity.id),
         target=_paper_chat_share_target_response(space, role),
         recipients=[],

@@ -22,6 +22,7 @@ const notificationCategoryConfig: Record<string, { labelKey: MessageKey; color: 
   digest: { labelKey: 'notifications.category.digest', color: 'blue' },
   workspace_issue: { labelKey: 'notifications.category.workspaceIssue', color: 'purple' },
   paper_chat_share: { labelKey: 'notifications.category.paperChatShare', color: 'geekblue' },
+  paper_chat_share_discussion: { labelKey: 'notifications.category.paperChatShareDiscussion', color: 'cyan' },
   system: { labelKey: 'notifications.category.system', color: 'default' },
 };
 
@@ -106,6 +107,13 @@ const AppLayout: React.FC = () => {
     if (item.category === 'paper_chat_share') {
       if (metadata.path) return metadata.path;
       if (metadata.paper_id) return `/papers/${metadata.paper_id}`;
+    }
+    if (item.category === 'paper_chat_share_discussion') {
+      const params = new URLSearchParams();
+      if (metadata.target_notification_id) params.set('share', metadata.target_notification_id);
+      if (metadata.share_thread_id) params.set('thread', metadata.share_thread_id);
+      const query = params.toString();
+      return query ? `/papers/digests?${query}` : '/papers/digests';
     }
     if (item.category === 'digest') return '/papers/digests';
     return metadata.path || '';

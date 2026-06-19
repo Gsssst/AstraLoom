@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Alert, Badge, Button, Card, Col, Empty, List, Row, Space, Spin, Tag, Typography, message,
+  Alert, Badge, Button, Card, Col, Empty, Input, List, Row, Space, Spin, Tag, Typography, message,
 } from 'antd';
 import {
-  ArrowLeftOutlined, CalendarOutlined, CheckCircleOutlined,
+  ArrowLeftOutlined, CalendarOutlined, CheckCircleOutlined, CommentOutlined,
   DownOutlined,
   ClockCircleOutlined, FilePdfOutlined, ImportOutlined, LikeOutlined,
   LinkOutlined, PlayCircleOutlined, ReadOutlined, RightOutlined, StopOutlined, UserOutlined,
@@ -54,6 +54,7 @@ interface DigestNotification {
     paper_title?: string;
     note?: string;
     path?: string;
+    share_thread_id?: string;
     selected_messages?: Array<{
       role?: string;
       content?: string;
@@ -66,9 +67,24 @@ interface DigestNotification {
 }
 
 type PaperChatShareMessage = NonNullable<NonNullable<DigestNotification['metadata']>['selected_messages']>[number];
+type PaperChatShareStatus = 'useful' | 'follow_up' | 'resolved';
+
+interface PaperChatShareThread {
+  id: string;
+  comments: Array<{
+    id: string;
+    author_name?: string | null;
+    content: string;
+    created_at?: string | null;
+  }>;
+  current_user_status?: PaperChatShareStatus | null;
+  status_counts?: Record<string, number>;
+  participants?: Array<{ id: string; user_id: string; name?: string; role?: string }>;
+}
 
 const PaperDigestInboxPage: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [digests, setDigests] = useState<DigestNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -79,6 +95,10 @@ const PaperDigestInboxPage: React.FC = () => {
   const [readingLoopStatus, setReadingLoopStatus] = useState<Record<string, 'unread' | 'reading'>>({});
   const [feedbackLoadingKeys, setFeedbackLoadingKeys] = useState<Set<string>>(new Set());
   const [expandedShareIds, setExpandedShareIds] = useState<Set<string>>(new Set());
+  const [shareThreads, setShareThreads] = useState<Record<string, PaperChatShareThread>>({});
+  const [shareThreadLoadingIds, setShareThreadLoadingIds] = useState<Set<string>>(new Set());
+  const [shareCommentDrafts, setShareCommentDrafts] = useState<Record<string, string>>({});
+  const [shareThreadSubmittingIds, setShareThreadSubmittingIds] = useState<Set<string>>(new Set());
   const [digestActionError, setDigestActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
 
   const loadDigests = useCallback(async () => {
@@ -100,6 +120,21 @@ const PaperDigestInboxPage: React.FC = () => {
   }, []);
 
   useEffect(() => { loadDigests(); }, [loadDigests]);
+
+  useEffect(() => {
+    const targetShareId = searchParams.get('share');
+    const targetThreadId = searchParams.get('thread');
+    if (!targetShareId && !targetThreadId) return;
+    const targetDigest = digests.find(digest => (
+      digest.category === 'paper_chat_share'
+      && (
+        digest.id === targetShareId
+        || digest.metadata?.share_thread_id === targetThreadId
+      )
+    ));
+    if (!targetDigest) return;
+    setExpandedShareIds(previous => new Set(previous).add(targetDigest.id));
+  }, [digests, searchParams]);
 
   const handleMarkAllRead = async () => {
     if (!unreadCount) return;
@@ -245,6 +280,26 @@ const PaperDigestInboxPage: React.FC = () => {
     return compact.length > 180 ? `${compact.slice(0, 180)}...` : compact;
   };
 
+  const loadPaperChatShareThread = useCallback(async (digestId: string, force = false) => {
+    if (!force && shareThreads[digestId]) return;
+    setShareThreadLoadingIds(previous => new Set(previous).add(digestId));
+    try {
+      const response = await api.get(`/notifications/paper-chat-shares/${digestId}/thread`);
+      setShareThreads(previous => ({ ...previous, [digestId]: response.data }));
+      setDigestActionError(null);
+    } catch (error: any) {
+      const detail = getApiErrorDetails(error, { fallback: '加载精读讨论失败' });
+      setDigestActionError({ title: '加载精读讨论失败', detail });
+      message.warning(detail.message);
+    } finally {
+      setShareThreadLoadingIds(previous => {
+        const next = new Set(previous);
+        next.delete(digestId);
+        return next;
+      });
+    }
+  }, [shareThreads]);
+
   const togglePaperChatShareExpanded = (digestId: string) => {
     setExpandedShareIds(previous => {
       const next = new Set(previous);
@@ -252,9 +307,135 @@ const PaperDigestInboxPage: React.FC = () => {
         next.delete(digestId);
       } else {
         next.add(digestId);
+        void loadPaperChatShareThread(digestId);
       }
       return next;
     });
+  };
+
+  useEffect(() => {
+    expandedShareIds.forEach(digestId => {
+      void loadPaperChatShareThread(digestId);
+    });
+  }, [expandedShareIds, loadPaperChatShareThread]);
+
+  const updatePaperChatShareStatus = async (digestId: string, status: PaperChatShareStatus | null) => {
+    setShareThreadSubmittingIds(previous => new Set(previous).add(digestId));
+    try {
+      const response = await api.put(`/notifications/paper-chat-shares/${digestId}/status`, { status });
+      setShareThreads(previous => ({ ...previous, [digestId]: response.data }));
+      setDigestActionError(null);
+    } catch (error: any) {
+      const detail = getApiErrorDetails(error, { fallback: '更新精读状态失败' });
+      setDigestActionError({ title: '更新精读状态失败', detail });
+      message.warning(detail.message);
+    } finally {
+      setShareThreadSubmittingIds(previous => {
+        const next = new Set(previous);
+        next.delete(digestId);
+        return next;
+      });
+    }
+  };
+
+  const submitPaperChatShareComment = async (digestId: string) => {
+    const content = (shareCommentDrafts[digestId] || '').trim();
+    if (!content) {
+      message.warning('请先输入评论内容');
+      return;
+    }
+    setShareThreadSubmittingIds(previous => new Set(previous).add(digestId));
+    try {
+      const response = await api.post(`/notifications/paper-chat-shares/${digestId}/comments`, { content });
+      setShareThreads(previous => ({ ...previous, [digestId]: response.data }));
+      setShareCommentDrafts(previous => ({ ...previous, [digestId]: '' }));
+      setDigestActionError(null);
+      window.dispatchEvent(new Event('notifications:refresh'));
+    } catch (error: any) {
+      const detail = getApiErrorDetails(error, { fallback: '发送精读评论失败' });
+      setDigestActionError({ title: '发送精读评论失败', detail });
+      message.warning(detail.message);
+    } finally {
+      setShareThreadSubmittingIds(previous => {
+        const next = new Set(previous);
+        next.delete(digestId);
+        return next;
+      });
+    }
+  };
+
+  const renderPaperChatShareDiscussion = (digest: DigestNotification) => {
+    const thread = shareThreads[digest.id];
+    const loadingThread = shareThreadLoadingIds.has(digest.id);
+    const submitting = shareThreadSubmittingIds.has(digest.id);
+    const currentStatus = thread?.current_user_status || null;
+    const statusOptions: Array<{ key: PaperChatShareStatus; label: string; icon: React.ReactNode }> = [
+      { key: 'useful', label: '有用', icon: <LikeOutlined /> },
+      { key: 'follow_up', label: '待跟进', icon: <ClockCircleOutlined /> },
+      { key: 'resolved', label: '已处理', icon: <CheckCircleOutlined /> },
+    ];
+    return (
+      <div style={{ marginTop: 14, padding: '12px 14px', borderRadius: 12, border: '1px solid #eef0f5', background: '#fbfcff' }}>
+        <Row align="middle" justify="space-between" gutter={[10, 10]}>
+          <Col>
+            <Space size={8} wrap>
+              <Text strong><CommentOutlined /> 精读讨论</Text>
+              <Tag color="blue">{thread?.comments?.length || 0} 条评论</Tag>
+              {thread?.participants?.length ? <Tag>{thread.participants.length} 位参与者</Tag> : null}
+            </Space>
+          </Col>
+          <Col>
+            <Space size={6} wrap>
+              {statusOptions.map(option => (
+                <Button
+                  key={option.key}
+                  size="small"
+                  icon={option.icon}
+                  type={currentStatus === option.key ? 'primary' : 'default'}
+                  loading={submitting}
+                  onClick={() => updatePaperChatShareStatus(digest.id, currentStatus === option.key ? null : option.key)}
+                >
+                  {option.label}{thread?.status_counts?.[option.key] ? ` ${thread.status_counts[option.key]}` : ''}
+                </Button>
+              ))}
+            </Space>
+          </Col>
+        </Row>
+        <Spin spinning={loadingThread}>
+          <Space direction="vertical" size={10} style={{ width: '100%', marginTop: 12 }}>
+            {thread?.comments?.length ? thread.comments.map(comment => (
+              <div key={comment.id} style={{ padding: '10px 12px', borderRadius: 10, background: '#fff', border: '1px solid #eef0f5' }}>
+                <Space size={8} wrap>
+                  <Text strong>{comment.author_name || '未知用户'}</Text>
+                  {comment.created_at && <Text type="secondary" style={{ fontSize: 12 }}>{new Date(comment.created_at).toLocaleString()}</Text>}
+                </Space>
+                <Paragraph style={{ margin: '6px 0 0', whiteSpace: 'pre-wrap' }}>{comment.content}</Paragraph>
+              </div>
+            )) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有讨论，写下第一条反馈" />
+            )}
+            <Input.TextArea
+              value={shareCommentDrafts[digest.id] || ''}
+              onChange={event => setShareCommentDrafts(previous => ({ ...previous, [digest.id]: event.target.value }))}
+              placeholder="围绕这次精读分享补充问题、实验建议或后续行动"
+              autoSize={{ minRows: 2, maxRows: 5 }}
+              maxLength={4000}
+              showCount
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Button
+                type="primary"
+                icon={<SendOutlined />}
+                loading={submitting}
+                onClick={() => submitPaperChatShareComment(digest.id)}
+              >
+                发送评论
+              </Button>
+            </div>
+          </Space>
+        </Spin>
+      </div>
+    );
   };
 
   const renderPaperChatShareCard = (digest: DigestNotification) => {
@@ -337,9 +518,13 @@ const PaperDigestInboxPage: React.FC = () => {
                 </Space>
               </div>
             ))}
+            {renderPaperChatShareDiscussion(digest)}
           </Space>
         ) : (
-          <Alert type="info" showIcon message="这条精读分享没有附带对话片段" />
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            <Alert type="info" showIcon message="这条精读分享没有附带对话片段" />
+            {renderPaperChatShareDiscussion(digest)}
+          </Space>
         )}
       </Card>
     );

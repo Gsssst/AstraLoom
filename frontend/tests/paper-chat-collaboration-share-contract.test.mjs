@@ -55,4 +55,6 @@ test('global notifications route paper chat share events to source papers', () =
   assert.match(responsiveSource, /\.notification-paper-share-message/);
   assert.match(messagesSource, /'notifications\.category\.paperChatShare': '论文精读分享'/);
   assert.match(messagesSource, /'notifications\.category\.paperChatShare': 'Paper Reading Share'/);
+  assert.match(messagesSource, /'notifications\.category\.paperChatShareDiscussion': '精读讨论'/);
+  assert.match(messagesSource, /'notifications\.category\.paperChatShareDiscussion': 'Reading Discussion'/);
 });
