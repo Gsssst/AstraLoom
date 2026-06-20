@@ -18,6 +18,7 @@ from app.db.models.notification import (
     PaperChatShareStatus,
     PaperChatShareThread,
 )
+from app.db.models.paper import Paper, UserPaper
 from app.db.models.user import User
 from app.core.security import get_current_user
 
@@ -57,6 +58,14 @@ class PaperChatShareCommentRequest(BaseModel):
 
 class PaperChatShareStatusRequest(BaseModel):
     status: Optional[Literal["useful", "follow_up", "resolved"]] = None
+
+
+class PaperChatShareSaveToNoteResponse(BaseModel):
+    paper_id: str
+    thread_id: str
+    saved_at: str
+    appended_markdown: str
+    note_length: int
 
 
 # --- 订阅管理 ---
@@ -200,6 +209,134 @@ async def _users_by_id(db: AsyncSession, user_ids: list) -> dict:
         return {}
     result = await db.execute(select(User).where(User.id.in_(ids)))
     return {user.id: user for user in result.scalars().all()}
+
+
+def _bounded_markdown_text(value, limit: int = 6000) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 1)].rstrip()}…"
+
+
+def _selected_share_messages(metadata: dict) -> list[dict]:
+    messages = metadata.get("selected_messages")
+    if isinstance(messages, list):
+        return [item for item in messages if isinstance(item, dict)][:20]
+    fallback_messages: list[dict] = []
+    question = _bounded_markdown_text(metadata.get("question"), 3000)
+    answer = _bounded_markdown_text(metadata.get("answer") or metadata.get("answer_excerpt"), 6000)
+    if question:
+        fallback_messages.append({"role": "user", "content": question})
+    if answer:
+        fallback_messages.append({"role": "assistant", "content": answer})
+    return fallback_messages
+
+
+def _share_status_label(status: str | None) -> str:
+    return {
+        "useful": "有用",
+        "follow_up": "待跟进",
+        "resolved": "已处理",
+    }.get(status or "", status or "未标记")
+
+
+def _format_saved_at(value: datetime | None) -> str:
+    current = value or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current.astimezone(timezone.utc).isoformat()
+
+
+async def _format_paper_chat_share_note_block(
+    db: AsyncSession,
+    *,
+    notification: Notification,
+    thread: PaperChatShareThread,
+    current_user: User,
+    saved_at: datetime | None = None,
+) -> tuple[str, str]:
+    metadata = dict(notification.metadata_json or {})
+    thread_metadata = dict(thread.metadata_json or {})
+    title = _bounded_markdown_text(
+        metadata.get("paper_title") or thread.title or thread_metadata.get("paper_title") or notification.title or "论文精读分享",
+        300,
+    )
+    sender_name = _bounded_markdown_text(metadata.get("sender_name") or thread_metadata.get("sender_name"), 80)
+    sender_note = _bounded_markdown_text(metadata.get("note") or thread_metadata.get("note"), 1200)
+    saved_at_text = _format_saved_at(saved_at)
+    messages = _selected_share_messages(metadata)
+    comments = (await db.execute(
+        select(PaperChatShareComment)
+        .where(PaperChatShareComment.thread_id == thread.id)
+        .order_by(PaperChatShareComment.created_at.asc())
+    )).scalars().all()
+    statuses = (await db.execute(
+        select(PaperChatShareStatus).where(PaperChatShareStatus.thread_id == thread.id)
+    )).scalars().all()
+    participants = (await db.execute(
+        select(PaperChatShareParticipant).where(PaperChatShareParticipant.thread_id == thread.id)
+    )).scalars().all()
+    users = await _users_by_id(
+        db,
+        [comment.author_id for comment in comments if comment.author_id]
+        + [status.user_id for status in statuses]
+        + [participant.user_id for participant in participants],
+    )
+    status_lines = []
+    for status in statuses:
+        name = _user_display_name(users.get(status.user_id))
+        status_lines.append(f"- {name}: {_share_status_label(status.status)}")
+    message_blocks = []
+    for index, item in enumerate(messages, start=1):
+        role = "问题" if item.get("role") == "user" else "回答" if item.get("role") == "assistant" else "消息"
+        content = _bounded_markdown_text(item.get("content") or item.get("display_content") or item.get("excerpt"), 6000)
+        if not content:
+            content = "（无正文）"
+        message_blocks.append(f"#### {index}. {role}\n\n{content}")
+    comment_lines = []
+    for comment in comments:
+        author = _user_display_name(users.get(comment.author_id)) if comment.author_id else "未知用户"
+        created_at = comment.created_at.isoformat() if comment.created_at else ""
+        suffix = f"（{created_at}）" if created_at else ""
+        comment_lines.append(f"- **{author}**{suffix}: {_bounded_markdown_text(comment.content, 1600)}")
+    source_path = metadata.get("path") or thread_metadata.get("path") or ""
+    lines = [
+        "",
+        "---",
+        "",
+        f"## 精读分享沉淀：{title}",
+        "",
+        f"- 保存时间：{saved_at_text}",
+        f"- 来源线程：{thread.id}",
+    ]
+    if sender_name:
+        lines.append(f"- 分享者：{sender_name}")
+    if source_path:
+        lines.append(f"- 来源页面：{source_path}")
+    if sender_note:
+        lines.extend(["", "### 分享备注", "", sender_note])
+    lines.extend(["", "### 共享对话", ""])
+    lines.append("\n\n".join(message_blocks) if message_blocks else "（这条分享没有附带对话片段）")
+    lines.extend(["", "### 讨论评论", ""])
+    lines.append("\n".join(comment_lines) if comment_lines else "（暂无讨论评论）")
+    lines.extend(["", "### 处理状态", ""])
+    lines.append("\n".join(status_lines) if status_lines else "（暂无参与者标记）")
+    return "\n".join(lines).strip() + "\n", saved_at_text
+
+
+async def _get_or_create_user_paper_note(db: AsyncSession, user_id, paper_id) -> UserPaper:
+    user_paper = (await db.execute(
+        select(UserPaper).where(
+            UserPaper.user_id == user_id,
+            UserPaper.paper_id == paper_id,
+        )
+    )).scalar_one_or_none()
+    if user_paper:
+        return user_paper
+    user_paper = UserPaper(user_id=user_id, paper_id=paper_id, saved=True)
+    db.add(user_paper)
+    await db.flush()
+    return user_paper
 
 
 async def _ensure_share_participant(
@@ -558,6 +695,43 @@ async def update_paper_chat_share_status(
         ))
     await db.commit()
     return await _paper_chat_share_thread_response(db, thread, user)
+
+
+@router.post("/paper-chat-shares/{notification_id}/save-to-note", response_model=PaperChatShareSaveToNoteResponse)
+async def save_paper_chat_share_discussion_to_note(
+    notification_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """将论文精读分享和讨论沉淀到当前用户的论文笔记。"""
+    notification = await _owned_paper_chat_share_notification(notification_id, user, db)
+    thread = await _ensure_share_thread_for_notification(db, notification)
+    await _assert_thread_participant(db, thread.id, user.id)
+    if not thread.paper_id:
+        raise HTTPException(status_code=400, detail="这条精读分享没有绑定本地论文，无法沉淀到论文笔记")
+    paper = (await db.execute(select(Paper).where(Paper.id == thread.paper_id))).scalar_one_or_none()
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文不存在，无法沉淀到论文笔记")
+    saved_at = datetime.now(timezone.utc)
+    block, saved_at_text = await _format_paper_chat_share_note_block(
+        db,
+        notification=notification,
+        thread=thread,
+        current_user=user,
+        saved_at=saved_at,
+    )
+    user_paper = await _get_or_create_user_paper_note(db, user.id, thread.paper_id)
+    existing_note = (user_paper.personal_notes or "").rstrip()
+    user_paper.personal_notes = f"{existing_note}\n\n{block}".strip() if existing_note else block.strip()
+    user_paper.saved = True
+    await db.commit()
+    return PaperChatShareSaveToNoteResponse(
+        paper_id=str(thread.paper_id),
+        thread_id=str(thread.id),
+        saved_at=saved_at_text,
+        appended_markdown=block,
+        note_length=len(user_paper.personal_notes or ""),
+    )
 
 
 @router.post("/digests/read-all")

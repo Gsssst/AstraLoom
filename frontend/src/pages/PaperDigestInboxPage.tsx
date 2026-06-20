@@ -7,7 +7,7 @@ import {
   ArrowLeftOutlined, CalendarOutlined, CheckCircleOutlined, CommentOutlined,
   DownOutlined,
   ClockCircleOutlined, FilePdfOutlined, ImportOutlined, LikeOutlined,
-  LinkOutlined, PlayCircleOutlined, ReadOutlined, RightOutlined, StopOutlined, UserOutlined,
+  LinkOutlined, PlayCircleOutlined, ReadOutlined, RightOutlined, SaveOutlined, StopOutlined, UserOutlined,
   SendOutlined,
 } from '@ant-design/icons';
 import api from '../services/api';
@@ -99,6 +99,7 @@ const PaperDigestInboxPage: React.FC = () => {
   const [shareThreadLoadingIds, setShareThreadLoadingIds] = useState<Set<string>>(new Set());
   const [shareCommentDrafts, setShareCommentDrafts] = useState<Record<string, string>>({});
   const [shareThreadSubmittingIds, setShareThreadSubmittingIds] = useState<Set<string>>(new Set());
+  const [shareNoteSavingIds, setShareNoteSavingIds] = useState<Set<string>>(new Set());
   const [digestActionError, setDigestActionError] = useState<{ title: string; detail: ApiErrorDetails } | null>(null);
 
   const loadDigests = useCallback(async () => {
@@ -364,10 +365,30 @@ const PaperDigestInboxPage: React.FC = () => {
     }
   };
 
+  const savePaperChatShareDiscussionToNote = async (digestId: string) => {
+    setShareNoteSavingIds(previous => new Set(previous).add(digestId));
+    try {
+      const response = await api.post(`/notifications/paper-chat-shares/${digestId}/save-to-note`);
+      setDigestActionError(null);
+      message.success(`已沉淀到论文笔记，当前笔记 ${response.data.note_length || 0} 字`);
+    } catch (error: any) {
+      const detail = getApiErrorDetails(error, { fallback: '沉淀到论文笔记失败' });
+      setDigestActionError({ title: '沉淀到论文笔记失败', detail });
+      message.warning(detail.message);
+    } finally {
+      setShareNoteSavingIds(previous => {
+        const next = new Set(previous);
+        next.delete(digestId);
+        return next;
+      });
+    }
+  };
+
   const renderPaperChatShareDiscussion = (digest: DigestNotification) => {
     const thread = shareThreads[digest.id];
     const loadingThread = shareThreadLoadingIds.has(digest.id);
     const submitting = shareThreadSubmittingIds.has(digest.id);
+    const savingNote = shareNoteSavingIds.has(digest.id);
     const currentStatus = thread?.current_user_status || null;
     const statusOptions: Array<{ key: PaperChatShareStatus; label: string; icon: React.ReactNode }> = [
       { key: 'useful', label: '有用', icon: <LikeOutlined /> },
@@ -386,6 +407,15 @@ const PaperDigestInboxPage: React.FC = () => {
           </Col>
           <Col>
             <Space size={6} wrap>
+              <Button
+                size="small"
+                icon={<SaveOutlined />}
+                loading={savingNote}
+                disabled={loadingThread}
+                onClick={() => savePaperChatShareDiscussionToNote(digest.id)}
+              >
+                沉淀到笔记
+              </Button>
               {statusOptions.map(option => (
                 <Button
                   key={option.key}

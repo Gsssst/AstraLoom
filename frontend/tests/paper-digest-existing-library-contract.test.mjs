@@ -55,3 +55,12 @@ test('expanded paper chat share cards expose discussion threads and status actio
   assert.match(digestPageSource, /待跟进/);
   assert.match(digestPageSource, /已处理/);
 });
+
+test('expanded paper chat share cards can settle discussions into paper notes', () => {
+  assert.match(digestPageSource, /shareNoteSavingIds/);
+  assert.match(digestPageSource, /savePaperChatShareDiscussionToNote/);
+  assert.match(digestPageSource, /\/notifications\/paper-chat-shares\/\$\{digestId\}\/save-to-note/);
+  assert.match(digestPageSource, /<SaveOutlined \/>/);
+  assert.match(digestPageSource, /沉淀到笔记/);
+  assert.match(digestPageSource, /已沉淀到论文笔记/);
+});
