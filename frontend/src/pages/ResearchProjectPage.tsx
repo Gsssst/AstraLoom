@@ -77,6 +77,23 @@ interface ProposalReviewPackage {
   writing_readiness: 'ready' | 'needs_revision' | 'blocked' | string;
   next_revision_focus: string;
 }
+interface ProposalOutline {
+  problem_framing?: string;
+  core_hypothesis?: string;
+  mechanism?: string;
+  technical_steps?: string[];
+  expected_contribution?: string[];
+  experiment_design?: {
+    dataset?: string;
+    baselines?: string[];
+    metrics?: string[];
+    ablations?: string[];
+    success_criteria?: string;
+  };
+  risk_boundaries?: string[];
+  evidence_rationale?: string[];
+  next_actions?: string[];
+}
 interface Review {
   scores: Record<string, number>; rationale: string; uncertainty: string; recommendation: string;
   aggregate_score?: number;
@@ -157,6 +174,7 @@ interface Review {
   used_tool_ids?: string[];
   used_tool_names?: string[];
   tool_fit_rationale?: string | null;
+  proposal_outline?: ProposalOutline | null;
   tool_fit_plan?: {
     mode?: string;
     summary?: string;
@@ -2495,6 +2513,71 @@ const ResearchProjectPage: React.FC = () => {
     );
   };
 
+  const renderProposalOutline = (outline?: ProposalOutline | null) => {
+    if (!outline) return null;
+    const experiment = outline.experiment_design || {};
+    const listItems = (items?: string[]) => (items || []).filter(Boolean).map(item => <li key={item}>{item}</li>);
+    return (
+      <div className="proposal-outline">
+        <Alert
+          type="success"
+          showIcon
+          message="核心假设"
+          description={outline.core_hypothesis || '暂无核心假设'}
+          style={{ marginBottom: 14 }}
+        />
+        <Row gutter={[12, 12]}>
+          <Col xs={24} lg={12}>
+            <Card size="small" title="问题定义" style={{ borderRadius: 10, height: '100%' }}>
+              <Paragraph style={{ marginBottom: 0 }}>{outline.problem_framing || '暂无问题定义'}</Paragraph>
+            </Card>
+          </Col>
+          <Col xs={24} lg={12}>
+            <Card size="small" title="机制假设" style={{ borderRadius: 10, height: '100%' }}>
+              <Paragraph style={{ marginBottom: 0 }}>{outline.mechanism || '暂无机制说明'}</Paragraph>
+            </Card>
+          </Col>
+          <Col xs={24} lg={12}>
+            <Card size="small" title="技术路线" style={{ borderRadius: 10, height: '100%' }}>
+              <ol style={{ margin: 0, paddingLeft: 18 }}>{listItems(outline.technical_steps)}</ol>
+            </Card>
+          </Col>
+          <Col xs={24} lg={12}>
+            <Card size="small" title="预期贡献" style={{ borderRadius: 10, height: '100%' }}>
+              <ul style={{ margin: 0, paddingLeft: 18 }}>{listItems(outline.expected_contribution)}</ul>
+            </Card>
+          </Col>
+          <Col xs={24}>
+            <Card size="small" title="实验设计" style={{ borderRadius: 10 }}>
+              <Row gutter={[10, 10]}>
+                <Col xs={24} md={12}><Text type="secondary">数据集</Text><Paragraph style={{ marginBottom: 0 }}>{experiment.dataset || '暂无'}</Paragraph></Col>
+                <Col xs={24} md={12}><Text type="secondary">成功判据</Text><Paragraph style={{ marginBottom: 0 }}>{experiment.success_criteria || '暂无'}</Paragraph></Col>
+                <Col xs={24} md={8}><Text type="secondary">Baselines</Text><Space wrap style={{ marginTop: 6 }}>{(experiment.baselines || []).map(item => <Tag key={item}>{item}</Tag>)}</Space></Col>
+                <Col xs={24} md={8}><Text type="secondary">Metrics</Text><Space wrap style={{ marginTop: 6 }}>{(experiment.metrics || []).map(item => <Tag color="blue" key={item}>{item}</Tag>)}</Space></Col>
+                <Col xs={24} md={8}><Text type="secondary">Ablations</Text><Space wrap style={{ marginTop: 6 }}>{(experiment.ablations || []).map(item => <Tag color="purple" key={item}>{item}</Tag>)}</Space></Col>
+              </Row>
+            </Card>
+          </Col>
+          <Col xs={24} lg={12}>
+            <Card size="small" title="风险边界" style={{ borderRadius: 10, height: '100%' }}>
+              <ul style={{ margin: 0, paddingLeft: 18 }}>{listItems(outline.risk_boundaries)}</ul>
+            </Card>
+          </Col>
+          <Col xs={24} lg={12}>
+            <Card size="small" title="证据依据" style={{ borderRadius: 10, height: '100%' }}>
+              <ul style={{ margin: 0, paddingLeft: 18 }}>{listItems(outline.evidence_rationale)}</ul>
+            </Card>
+          </Col>
+          <Col xs={24}>
+            <Card size="small" title="下一步最小行动" style={{ borderRadius: 10 }}>
+              <Space wrap>{(outline.next_actions || []).map(item => <Tag color="geekblue" key={item}>{item}</Tag>)}</Space>
+            </Card>
+          </Col>
+        </Row>
+      </div>
+    );
+  };
+
   const renderProposal = (idea: Idea) => {
     const review = idea.review_json;
     const plan = idea.experiment_plan;
@@ -2524,9 +2607,13 @@ const ResearchProjectPage: React.FC = () => {
           : 'low';
     return (
       <div>
-        {idea.hypothesis && <Alert type="success" showIcon message="可证伪假设" description={idea.hypothesis} style={{ marginBottom: 14 }} />}
-        <Paragraph style={{ whiteSpace: 'pre-wrap' }}>{idea.description || '暂无描述'}</Paragraph>
-        {idea.approach && <Paragraph><Text strong>技术草图：</Text>{idea.approach}</Paragraph>}
+        {review?.proposal_outline ? renderProposalOutline(review.proposal_outline) : (
+          <>
+            {idea.hypothesis && <Alert type="success" showIcon message="可证伪假设" description={idea.hypothesis} style={{ marginBottom: 14 }} />}
+            <Paragraph style={{ whiteSpace: 'pre-wrap' }}>{idea.description || '暂无描述'}</Paragraph>
+            {idea.approach && <Paragraph><Text strong>技术草图：</Text>{idea.approach}</Paragraph>}
+          </>
+        )}
         {renderProposalNextActions(idea)}
         {review && <>
           <Divider>六维评审</Divider>

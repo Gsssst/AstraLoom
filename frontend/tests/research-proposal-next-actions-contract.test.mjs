@@ -38,6 +38,21 @@ test('proposal next-step actions reuse existing proposal workflows', () => {
   assert.match(researchProjectSource, /openTimeline\(idea\)/);
 });
 
+test('proposal detail renders structured outline sections when available', () => {
+  assert.match(researchProjectSource, /interface ProposalOutline/);
+  assert.match(researchProjectSource, /proposal_outline/);
+  assert.match(researchProjectSource, /renderProposalOutline/);
+  assert.match(researchProjectSource, /问题定义/);
+  assert.match(researchProjectSource, /机制假设/);
+  assert.match(researchProjectSource, /技术路线/);
+  assert.match(researchProjectSource, /预期贡献/);
+  assert.match(researchProjectSource, /实验设计/);
+  assert.match(researchProjectSource, /风险边界/);
+  assert.match(researchProjectSource, /证据依据/);
+  assert.match(researchProjectSource, /下一步最小行动/);
+  assert.match(researchProjectSource, /review\?\.proposal_outline \? renderProposalOutline/);
+});
+
 test('proposal next-step actions are compact and responsive', () => {
   assert.match(globalCssSource, /\.proposal-next-actions/);
   assert.match(globalCssSource, /\.proposal-next-action-grid/);

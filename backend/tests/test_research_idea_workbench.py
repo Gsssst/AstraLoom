@@ -244,6 +244,84 @@ def test_generation_context_summarizes_feedback_and_fallback_avoids_rejected_gap
     assert "rating=strong" in candidates[0]["approach"]
 
 
+def test_normalize_candidate_adds_structured_proposal_outline():
+    evidence = {
+        "seed": [{"paper_id": "p1", "title": "Evidence Paper", "category": "seed"}],
+        "background": [],
+        "inspiration": [],
+    }
+    candidate = ResearchIdeaWorkbenchService._normalize_candidate(
+        {
+            "title": "Structured Proposal",
+            "gap": "现有方法没有验证长视频边界。",
+            "hypothesis": "编码流触发能降低写入成本并保留关键事件。",
+            "approach": "检测低运动片段并调用轻量语义哨兵。",
+            "evidence_ids": ["p1"],
+            "minimum_experiment": {
+                "dataset": "LongVideoQA",
+                "baselines": ["fixed interval"],
+                "metrics": ["accuracy"],
+                "steps": ["复现 baseline"],
+            },
+        },
+        {"name": "Long Video Memory"},
+        evidence,
+        0,
+    )
+
+    outline = candidate["proposal_outline"]
+    assert outline["problem_framing"]
+    assert outline["core_hypothesis"] == candidate["hypothesis"]
+    assert outline["mechanism"]
+    assert outline["technical_steps"]
+    assert outline["experiment_design"]["dataset"] == "LongVideoQA"
+    assert outline["risk_boundaries"]
+    assert outline["evidence_rationale"][0] == "关联证据：Evidence Paper"
+    assert outline["next_actions"]
+
+
+@pytest.mark.asyncio
+async def test_persist_top_proposals_stores_proposal_outline_metadata():
+    session = _Session()
+    service = ResearchIdeaWorkbenchService(session)
+    run = SimpleNamespace(id=uuid4(), project_id=uuid4())
+    evidence_map = {
+        "scope": "local_library",
+        "seed": [{"paper_id": "p1", "title": "Evidence Paper", "category": "seed"}],
+        "background": [],
+        "inspiration": [],
+    }
+    outline = {
+        "problem_framing": "具体问题",
+        "core_hypothesis": "核心假设",
+        "mechanism": "机制",
+        "technical_steps": ["步骤"],
+        "expected_contribution": ["贡献"],
+        "experiment_design": {"dataset": "D", "baselines": ["B"], "metrics": ["M"], "ablations": ["A"], "success_criteria": "S"},
+        "risk_boundaries": ["风险"],
+        "evidence_rationale": ["证据"],
+        "next_actions": ["行动"],
+    }
+    reviewed = [{
+        "title": "Proposal",
+        "gap": "Gap",
+        "hypothesis": "Hypothesis",
+        "approach": "Approach",
+        "evidence_ids": ["p1"],
+        "minimum_experiment": {"dataset": "D", "baselines": ["B"], "metrics": ["M"], "steps": ["S"]},
+        "review": {"scores": {"feasibility": 8, "novelty": 7}, "rationale": "Good"},
+        "score": 7.5,
+        "proposal_outline": outline,
+    }]
+
+    ideas = await service.persist_top_proposals(run, reviewed, evidence_map, 1)
+
+    assert ideas[0].review_json["proposal_outline"] == outline
+    assert ideas[0].description == "Gap\n\nHypothesis"
+    assert ideas[0].experiment_plan["dataset"] == "D"
+    assert session.added[0] is ideas[0]
+
+
 def test_duplicate_candidates_are_merged_by_hypothesis_overlap():
     candidates = [
         {"title": "Adaptive pruning", "hypothesis": "adaptive pruning improves efficient inference"},

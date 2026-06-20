@@ -1168,8 +1168,18 @@ class ResearchIdeaWorkbenchService:
 "gap":"...", "hypothesis":"可证伪假设", "approach":"技术草图", "evidence_ids":["paper uuid"],
 "used_tool_ids":["tool uuid"], "used_tool_names":["工具名"], "tool_fit_rationale":"为什么使用或规避这些工具",
 "risks":["..."], "falsification_test":"...", "minimum_experiment":{{"dataset":"...",
-"baselines":["..."], "metrics":["..."], "steps":["..."]}}}}]}}
+"baselines":["..."], "metrics":["..."], "steps":["..."]}},
+"proposal_outline":{{"problem_framing":"用 2-3 句说明具体问题、为什么当前证据显示它值得做",
+"core_hypothesis":"一句可证伪假设，必须包含触发条件、干预机制、预期收益",
+"mechanism":"解释方法为什么可能有效，不要只说提升性能",
+"technical_steps":["步骤1","步骤2","步骤3","步骤4"],
+"expected_contribution":["贡献1","贡献2"],
+"experiment_design":{{"dataset":"...", "baselines":["..."], "metrics":["..."], "ablations":["..."], "success_criteria":"..."}},
+"risk_boundaries":["什么时候会失败或不适用"],
+"evidence_rationale":["证据论文如何支持这个 gap 或机制"],
+"next_actions":["下一步最小行动"]}}}}]}}
 禁止只输出宽泛方向，每条必须可以设计最小实验验证。
+每个 proposal_outline 都要具体到可以交给学生做一轮最小实验；避免空泛词，如“提高鲁棒性”“设计模块”，除非说明模块输入、输出和验证方式。
 如果用户选择了工具箱条目，必须遵守 tool_instruction 和 tool_fit_plan；如果未实际使用工具，则 used_tool_ids 为空数组。
 
 研究简报：{json.dumps(brief, ensure_ascii=False)}
@@ -2047,6 +2057,18 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                 "steps": steps or ["复现基线", "运行改进版本", "误差分析"],
             },
         }
+        outline = dict(parent.get("proposal_outline") or {})
+        if outline:
+            outline["core_hypothesis"] = child["hypothesis"]
+            outline["mechanism"] = child["approach"]
+            outline["technical_steps"] = list(dict.fromkeys([*(outline.get("technical_steps") or []), f"加入{suffix}检查"]))
+            experiment_design = dict(outline.get("experiment_design") or {})
+            experiment_design["baselines"] = child["minimum_experiment"]["baselines"]
+            experiment_design["metrics"] = child["minimum_experiment"]["metrics"]
+            experiment_design["success_criteria"] = child.get("falsification_test") or experiment_design.get("success_criteria")
+            outline["experiment_design"] = experiment_design
+            outline["risk_boundaries"] = list(dict.fromkeys([*(outline.get("risk_boundaries") or []), *risks]))
+            child["proposal_outline"] = outline
         return self._with_tree_metadata(child, round_number=round_number, operator=operator, parent=parent)
 
     def _candidate_potential(self, candidate: dict[str, Any]) -> float:
@@ -2863,6 +2885,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                     "evidence_grounding_matrix": candidate.get("evidence_grounding_matrix"),
                     "quality_adjustments": candidate.get("quality_adjustments"),
                     "experiment_completeness": candidate.get("experiment_completeness"),
+                    "proposal_outline": candidate.get("proposal_outline"),
                     "gap_alignment": candidate.get("gap_alignment"),
                     "gap_selection": candidate.get("gap_selection"),
                     "tool_context": candidate.get("tool_context"),
@@ -3685,6 +3708,116 @@ Proposal：{json.dumps({
                 "steps": [str(value) for value in experiment.get("steps", [])]
                 or ["复现基线", "实现最小改动", "运行消融与误差分析"],
             },
+            "proposal_outline": ResearchIdeaWorkbenchService._normalize_proposal_outline(data, brief, evidence_map),
+        }
+
+    @staticmethod
+    def _bounded_string(value: Any, fallback: str = "", limit: int = 900) -> str:
+        text = str(value or "").strip()
+        if not text:
+            text = fallback
+        return text[:limit]
+
+    @staticmethod
+    def _bounded_string_list(value: Any, fallback: list[str], limit: int = 6, item_limit: int = 260) -> list[str]:
+        items = value if isinstance(value, list) else []
+        cleaned = [str(item).strip()[:item_limit] for item in items if str(item).strip()]
+        return (cleaned or fallback)[:limit]
+
+    @staticmethod
+    def _normalize_proposal_outline(
+        item: dict[str, Any],
+        brief: dict[str, Any],
+        evidence_map: dict[str, Any],
+    ) -> dict[str, Any]:
+        outline = item.get("proposal_outline") if isinstance(item.get("proposal_outline"), dict) else {}
+        experiment = item.get("minimum_experiment") if isinstance(item.get("minimum_experiment"), dict) else {}
+        evidence_lookup = ResearchIdeaWorkbenchService._evidence_lookup(evidence_map)
+        evidence_ids = [str(value) for value in item.get("evidence_ids", []) if str(value) in evidence_lookup]
+        evidence_titles = [str(evidence_lookup[eid].get("title") or "") for eid in evidence_ids if evidence_lookup.get(eid)]
+        default_problem = (
+            f"围绕「{brief.get('name') or '当前研究方向'}」，当前证据显示：{item.get('gap') or '关键边界条件仍缺少系统验证。'}"
+        )
+        default_mechanism = (
+            f"将核心干预限定在「{item.get('approach') or '一个可替换模块'}」，并通过统一预算下的对照实验验证其是否真正改变失败模式。"
+        )
+        technical_steps = outline.get("technical_steps") or outline.get("implementation_steps")
+        experiment_design = outline.get("experiment_design") if isinstance(outline.get("experiment_design"), dict) else {}
+        dataset = ResearchIdeaWorkbenchService._bounded_string(
+            experiment_design.get("dataset") or experiment.get("dataset"),
+            "选择一个公开基准并保留验证集",
+            220,
+        )
+        baselines = ResearchIdeaWorkbenchService._bounded_string_list(
+            experiment_design.get("baselines") or experiment.get("baselines"),
+            ["当前最强可复现基线"],
+            limit=6,
+        )
+        metrics = ResearchIdeaWorkbenchService._bounded_string_list(
+            experiment_design.get("metrics") or experiment.get("metrics"),
+            ["主要任务指标", "效率指标"],
+            limit=6,
+        )
+        ablations = ResearchIdeaWorkbenchService._bounded_string_list(
+            experiment_design.get("ablations") or experiment.get("ablations"),
+            ["移除核心模块", "替换触发策略", "控制相同训练和推理预算"],
+            limit=6,
+        )
+        evidence_fallback = [
+            f"关联证据：{title}" for title in evidence_titles[:4] if title
+        ] or ["当前证据覆盖有限，需要补充阅读后再收紧 claim。"]
+        return {
+            "problem_framing": ResearchIdeaWorkbenchService._bounded_string(
+                outline.get("problem_framing"),
+                default_problem,
+                900,
+            ),
+            "core_hypothesis": ResearchIdeaWorkbenchService._bounded_string(
+                outline.get("core_hypothesis") or item.get("hypothesis"),
+                f"如果对「{item.get('gap') or brief.get('name') or '目标问题'}」施加可控干预，则应在统一预算下带来可复现收益。",
+                700,
+            ),
+            "mechanism": ResearchIdeaWorkbenchService._bounded_string(
+                outline.get("mechanism"),
+                default_mechanism,
+                900,
+            ),
+            "technical_steps": ResearchIdeaWorkbenchService._bounded_string_list(
+                technical_steps,
+                ["复现强基线", "实现最小可替换模块", "统一训练和推理预算", "运行误差分析和消融"],
+                limit=8,
+            ),
+            "expected_contribution": ResearchIdeaWorkbenchService._bounded_string_list(
+                outline.get("expected_contribution") or outline.get("contributions"),
+                ["提出一个可证伪的机制假设", "给出统一预算下的实验验证"],
+                limit=5,
+            ),
+            "experiment_design": {
+                "dataset": dataset,
+                "baselines": baselines,
+                "metrics": metrics,
+                "ablations": ablations,
+                "success_criteria": ResearchIdeaWorkbenchService._bounded_string(
+                    experiment_design.get("success_criteria") or item.get("falsification_test"),
+                    "若主要指标和效率指标均未稳定超过强基线，则否定该假设。",
+                    500,
+                ),
+            },
+            "risk_boundaries": ResearchIdeaWorkbenchService._bounded_string_list(
+                outline.get("risk_boundaries") or item.get("risks"),
+                ["收益可能只来自训练预算差异", "结论可能只在单一数据集上成立"],
+                limit=6,
+            ),
+            "evidence_rationale": ResearchIdeaWorkbenchService._bounded_string_list(
+                outline.get("evidence_rationale"),
+                evidence_fallback,
+                limit=6,
+            ),
+            "next_actions": ResearchIdeaWorkbenchService._bounded_string_list(
+                outline.get("next_actions"),
+                ["确定最小数据集和强基线", "实现最小模块", "跑一组主实验和两组消融"],
+                limit=6,
+            ),
         }
 
     @staticmethod
