@@ -42,7 +42,9 @@ test('proposal detail renders compact idea brief before secondary details', () =
   assert.match(researchProjectSource, /interface ProposalOutline/);
   assert.match(researchProjectSource, /interface IdeaBriefMetadata/);
   assert.match(researchProjectSource, /interface ProposalDeepeningMetadata/);
+  assert.match(researchProjectSource, /interface ProposalSelectionSelfCheck/);
   assert.match(researchProjectSource, /proposal_outline/);
+  assert.match(researchProjectSource, /selection_self_check/);
   assert.match(researchProjectSource, /proposalBriefFromOutline/);
   assert.match(researchProjectSource, /proposalBriefForIdea/);
   assert.match(researchProjectSource, /renderIdeaBrief/);
@@ -50,6 +52,9 @@ test('proposal detail renders compact idea brief before secondary details', () =
   assert.match(researchProjectSource, /key_insight/);
   assert.match(researchProjectSource, /failure_condition/);
   assert.match(researchProjectSource, /深入打磨/);
+  assert.match(researchProjectSource, /自动自检/);
+  assert.match(researchProjectSource, /入库前自检/);
+  assert.match(researchProjectSource, /quality_gates/);
   assert.match(researchProjectSource, /\/research\/ideas\/\$\{idea\.id\}\/deepen/);
   assert.match(researchProjectSource, /proposal-secondary-collapse/);
   assert.match(researchProjectSource, /评审、证据与质量信号/);

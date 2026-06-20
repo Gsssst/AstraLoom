@@ -126,6 +126,20 @@ interface ProposalDeepeningMetadata {
   evidence_facets_used?: string[];
   experiment_tightening?: string[];
 }
+interface ProposalSelectionSelfCheck {
+  status?: 'tightened' | 'fallback' | string;
+  rank?: number;
+  critique?: {
+    novelty?: string;
+    scope?: string;
+    mechanism?: string;
+    experiment?: string;
+    failure_condition?: string;
+  };
+  rewrite_summary?: string;
+  quality_gates?: Record<string, boolean>;
+  used_evidence_ids?: string[];
+}
 interface Review {
   scores: Record<string, number>; rationale: string; uncertainty: string; recommendation: string;
   aggregate_score?: number;
@@ -208,6 +222,7 @@ interface Review {
   tool_fit_rationale?: string | null;
   idea_brief?: IdeaBriefMetadata | null;
   deepening?: ProposalDeepeningMetadata | null;
+  selection_self_check?: ProposalSelectionSelfCheck | null;
   proposal_outline?: ProposalOutline | null;
   tool_fit_plan?: {
     mode?: string;
@@ -2610,6 +2625,7 @@ const ResearchProjectPage: React.FC = () => {
     const review = idea.review_json;
     const brief = proposalBriefForIdea(idea);
     const deepening = review?.deepening;
+    const selfCheck = review?.selection_self_check;
     const nextActions = (brief.next_actions || []).filter(Boolean);
     const focusValue = deepeningFocus[idea.id] ?? '';
     const setFocus = (value: string) => setDeepeningFocus(previous => ({ ...previous, [idea.id]: value }));
@@ -2617,7 +2633,7 @@ const ResearchProjectPage: React.FC = () => {
       <Card
         size="small"
         className="proposal-idea-brief"
-        title={<Space wrap><BulbOutlined /><Text strong>Idea Brief</Text>{deepening?.version && <Tag color="purple">已打磨 v{deepening.version}</Tag>}</Space>}
+        title={<Space wrap><BulbOutlined /><Text strong>Idea Brief</Text>{selfCheck && <Tag color={selfCheck.status === 'fallback' ? 'orange' : 'green'}>自动自检</Tag>}{deepening?.version && <Tag color="purple">已打磨 v{deepening.version}</Tag>}</Space>}
         style={{ borderRadius: 12, marginBottom: 14, background: '#fbfcff' }}
       >
         <Alert
@@ -2645,7 +2661,7 @@ const ResearchProjectPage: React.FC = () => {
           </Col>
         </Row>
         {nextActions.length > 0 && <Space wrap style={{ marginTop: 8 }}>{nextActions.map(item => <Tag color="geekblue" key={item}>{item}</Tag>)}</Space>}
-        {deepening?.critique && (
+        {(deepening?.critique || selfCheck?.critique) && (
           <Collapse
             ghost
             size="small"
@@ -2655,12 +2671,25 @@ const ResearchProjectPage: React.FC = () => {
               label: '打磨审查',
               children: (
                 <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                  {deepening.critique.novelty_attack && <Text type="secondary">查新攻击：{deepening.critique.novelty_attack}</Text>}
-                  {deepening.critique.scope_boundary && <Text type="secondary">边界收窄：{deepening.critique.scope_boundary}</Text>}
-                  {deepening.critique.mechanism_gap && <Text type="secondary">机制缺口：{deepening.critique.mechanism_gap}</Text>}
-                  {deepening.critique.experiment_gap && <Text type="secondary">实验缺口：{deepening.critique.experiment_gap}</Text>}
-                  {(deepening.experiment_tightening || []).length > 0 && (
-                    <Space wrap>{deepening.experiment_tightening?.map(item => <Tag color="purple" key={item}>{item}</Tag>)}</Space>
+                  {selfCheck?.rewrite_summary && <Text type="secondary">入库前自检：{selfCheck.rewrite_summary}</Text>}
+                  {selfCheck?.critique?.novelty && <Text type="secondary">自检查新：{selfCheck.critique.novelty}</Text>}
+                  {selfCheck?.critique?.scope && <Text type="secondary">自检边界：{selfCheck.critique.scope}</Text>}
+                  {selfCheck?.critique?.mechanism && <Text type="secondary">自检机制：{selfCheck.critique.mechanism}</Text>}
+                  {selfCheck?.critique?.experiment && <Text type="secondary">自检实验：{selfCheck.critique.experiment}</Text>}
+                  {selfCheck?.critique?.failure_condition && <Text type="secondary">自检失败条件：{selfCheck.critique.failure_condition}</Text>}
+                  {selfCheck?.quality_gates && (
+                    <Space wrap>
+                      {Object.entries(selfCheck.quality_gates).map(([key, value]) => (
+                        <Tag key={key} color={value ? 'green' : 'orange'}>{key} {value ? '通过' : '待补'}</Tag>
+                      ))}
+                    </Space>
+                  )}
+                  {deepening?.critique?.novelty_attack && <Text type="secondary">查新攻击：{deepening.critique.novelty_attack}</Text>}
+                  {deepening?.critique?.scope_boundary && <Text type="secondary">边界收窄：{deepening.critique.scope_boundary}</Text>}
+                  {deepening?.critique?.mechanism_gap && <Text type="secondary">机制缺口：{deepening.critique.mechanism_gap}</Text>}
+                  {deepening?.critique?.experiment_gap && <Text type="secondary">实验缺口：{deepening.critique.experiment_gap}</Text>}
+                  {(deepening?.experiment_tightening || []).length > 0 && (
+                    <Space wrap>{deepening?.experiment_tightening?.map(item => <Tag color="purple" key={item}>{item}</Tag>)}</Space>
                   )}
                 </Space>
               ),

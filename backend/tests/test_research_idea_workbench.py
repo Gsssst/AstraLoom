@@ -328,15 +328,109 @@ async def test_persist_top_proposals_stores_proposal_outline_metadata():
             "failure_condition": "Failure",
             "next_actions": ["Next"],
         },
+        "selection_self_check": {
+            "status": "tightened",
+            "critique": {"novelty": "Novelty", "scope": "Scope", "mechanism": "Mechanism", "experiment": "Experiment", "failure_condition": "Failure"},
+            "rewrite_summary": "Tightened",
+            "quality_gates": {"novelty_clear": True},
+            "used_evidence_ids": ["p1"],
+        },
     }]
 
     ideas = await service.persist_top_proposals(run, reviewed, evidence_map, 1)
 
     assert ideas[0].review_json["proposal_outline"] == outline
     assert ideas[0].review_json["idea_brief"]["research_question"] == "RQ"
+    assert ideas[0].review_json["selection_self_check"]["status"] == "tightened"
     assert ideas[0].description == "Gap\n\nHypothesis"
     assert ideas[0].experiment_plan["dataset"] == "D"
     assert session.added[0] is ideas[0]
+
+
+@pytest.mark.asyncio
+async def test_self_check_selected_proposal_tightens_brief(monkeypatch):
+    session = _Session()
+    service = ResearchIdeaWorkbenchService(session)
+    evidence_map = {
+        "seed": [{"paper_id": "p1", "title": "Evidence Paper", "category": "seed", "abstract_excerpt": "A benchmark evaluates video grounding with fixed memory limitations."}],
+        "background": [],
+        "inspiration": [],
+    }
+    candidate = ResearchIdeaWorkbenchService._normalize_candidate(
+        {
+            "title": "Adaptive Memory",
+            "gap": "Fixed memory writes are costly.",
+            "hypothesis": "Event-triggered writes reduce cost without hurting accuracy.",
+            "approach": "Gate writes using semantic change.",
+            "evidence_ids": ["p1"],
+            "minimum_experiment": {"dataset": "LongVideoQA", "baselines": ["fixed interval"], "metrics": ["accuracy"], "steps": ["run baseline"]},
+        },
+        {"name": "Long Video Grounding"},
+        evidence_map,
+        0,
+    )
+
+    async def fake_chat_json(_prompt):
+        return {
+            "critique": {
+                "novelty": "Need to distinguish from fixed memory.",
+                "scope": "Only LongVideoQA event grounding.",
+                "mechanism": "Define trigger inputs and outputs.",
+                "experiment": "Add trigger ablation.",
+                "failure_condition": "Stop if write count is not lower.",
+            },
+            "improved_brief": {
+                "research_question": "Can semantic-change triggers cut memory writes for long-video grounding?",
+                "key_insight": "Event changes are better write units than intervals.",
+                "core_hypothesis": "Semantic-change triggers preserve accuracy with fewer writes.",
+                "mechanism": "The gate reads semantic deltas and writes only high-change states.",
+                "minimum_experiment": "LongVideoQA vs fixed interval with accuracy and write-count metrics.",
+                "failure_condition": "Stop if accuracy drops or writes do not decrease.",
+                "next_actions": ["Define trigger", "Run fixed baseline"],
+            },
+            "rewrite_summary": "Narrowed scope and experiment.",
+            "quality_gates": {
+                "novelty_clear": True,
+                "scope_narrow": True,
+                "mechanism_testable": True,
+                "experiment_minimal": True,
+                "failure_condition_clear": True,
+            },
+            "used_evidence_ids": ["p1"],
+        }
+
+    monkeypatch.setattr(service, "_chat_json", fake_chat_json)
+
+    checked = await service.self_check_selected_proposal(candidate, {"name": "Long Video Grounding"}, evidence_map, {"gaps": []}, {}, 0)
+
+    assert checked["idea_brief"]["research_question"].startswith("Can semantic-change")
+    assert checked["selection_self_check"]["status"] == "tightened"
+    assert checked["selection_self_check"]["critique"]["experiment"] == "Add trigger ablation."
+    assert checked["selection_self_check"]["quality_gates"]["experiment_minimal"] is True
+
+
+@pytest.mark.asyncio
+async def test_self_check_selected_proposal_fallback_metadata(monkeypatch):
+    session = _Session()
+    service = ResearchIdeaWorkbenchService(session)
+    evidence_map = {"seed": [{"paper_id": "p1", "title": "Evidence Paper"}], "background": [], "inspiration": []}
+    candidate = ResearchIdeaWorkbenchService._normalize_candidate(
+        {"title": "Fallback Proposal", "evidence_ids": ["p1"]},
+        {"name": "Fallback Research"},
+        evidence_map,
+        0,
+    )
+
+    async def fake_chat_json(_prompt):
+        return {}
+
+    monkeypatch.setattr(service, "_chat_json", fake_chat_json)
+
+    checked = await service.self_check_selected_proposal(candidate, {"name": "Fallback Research"}, evidence_map, {"gaps": []}, {}, 1)
+
+    assert checked["selection_self_check"]["status"] == "fallback"
+    assert checked["selection_self_check"]["rank"] == 2
+    assert checked["idea_brief"]["research_question"]
 
 
 @pytest.mark.asyncio

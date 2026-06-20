@@ -452,6 +452,13 @@ class ResearchIdeaWorkbenchService:
             }
             for candidate in selected
         ]
+        selected = await self.self_check_selected_proposals(
+            selected,
+            brief,
+            evidence_map,
+            gap_map,
+            generation_context,
+        )
         run.candidate_pool = reviewed
         run.review_summary = {
             "rubric": REVIEW_WEIGHTS,
@@ -2894,6 +2901,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                     "quality_adjustments": candidate.get("quality_adjustments"),
                     "experiment_completeness": candidate.get("experiment_completeness"),
                     "idea_brief": candidate.get("idea_brief"),
+                    "selection_self_check": candidate.get("selection_self_check"),
                     "proposal_outline": candidate.get("proposal_outline"),
                     "gap_alignment": candidate.get("gap_alignment"),
                     "gap_selection": candidate.get("gap_selection"),
@@ -3217,6 +3225,65 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
             if tip:
                 actions.append(str(tip))
         return list(dict.fromkeys(actions))[:5]
+
+    async def self_check_selected_proposals(
+        self,
+        selected: list[dict[str, Any]],
+        brief: dict[str, Any],
+        evidence_map: dict[str, Any],
+        gap_map: dict[str, Any],
+        generation_context: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        checked: list[dict[str, Any]] = []
+        for index, candidate in enumerate(selected):
+            checked.append(
+                await self.self_check_selected_proposal(
+                    candidate,
+                    brief,
+                    evidence_map,
+                    gap_map,
+                    generation_context or {},
+                    index,
+                )
+            )
+        return checked
+
+    async def self_check_selected_proposal(
+        self,
+        candidate: dict[str, Any],
+        brief: dict[str, Any],
+        evidence_map: dict[str, Any],
+        gap_map: dict[str, Any],
+        generation_context: dict[str, Any],
+        index: int = 0,
+    ) -> dict[str, Any]:
+        facets = self._evidence_facets_for_candidate(candidate, evidence_map)
+        prompt = f"""你是 Top Proposal 入库前的科研自检器。请只检查并收束这个已入选候选，不要扩展成新方向。
+输出严格 JSON：
+{{"critique":{{"novelty":"最可能撞车或太增量的地方",
+"scope":"应该收窄的任务、数据集、场景或条件",
+"mechanism":"机制解释还缺什么输入、输出或触发条件",
+"experiment":"最小实验还缺什么强基线、指标或消融",
+"failure_condition":"什么时候应该停止推进"}},
+"improved_brief":{{"research_question":"...",
+"key_insight":"...",
+"core_hypothesis":"...",
+"mechanism":"...",
+"minimum_experiment":"...",
+"failure_condition":"...",
+"next_actions":["..."]}},
+"rewrite_summary":"这次入库前收束具体改了什么",
+"quality_gates":{{"novelty_clear":true,"scope_narrow":true,"mechanism_testable":true,"experiment_minimal":true,"failure_condition_clear":true}},
+"used_evidence_ids":["..."]}}
+
+候选：{json.dumps(candidate, ensure_ascii=False)[:11000]}
+研究简报：{json.dumps(brief, ensure_ascii=False)[:3000]}
+Gap Map：{json.dumps(gap_map, ensure_ascii=False)[:5000]}
+生成约束：{json.dumps(generation_context, ensure_ascii=False)[:4000]}
+证据 facet：{json.dumps(facets, ensure_ascii=False)[:7000]}
+"""
+        raw = await self._chat_json(prompt)
+        return self._normalize_selection_self_check(raw, candidate, brief, evidence_map, facets, index)
 
     def build_experiment_execution_pack(
         self,
@@ -4086,6 +4153,56 @@ Proposal：{json.dumps({
             })
         return facets[:8]
 
+    @classmethod
+    def _evidence_facets_for_candidate(cls, candidate: dict[str, Any], evidence_map: dict[str, Any]) -> list[dict[str, Any]]:
+        lookup = cls._evidence_lookup(evidence_map)
+        evidence_ids = [str(value) for value in candidate.get("evidence_ids", []) if str(value) in lookup]
+        if not evidence_ids:
+            evidence_ids = list(lookup.keys())[:5]
+        candidate_text = " ".join([
+            str(candidate.get("title") or ""),
+            str(candidate.get("gap") or ""),
+            str(candidate.get("hypothesis") or ""),
+            str(candidate.get("approach") or ""),
+        ])
+        candidate_tokens = set(cls._dedup_tokens(candidate_text))
+        facets = []
+        for paper_id in evidence_ids[:8]:
+            item = lookup.get(paper_id)
+            if not item:
+                continue
+            text = " ".join([
+                str(item.get("title") or ""),
+                str(item.get("abstract_excerpt") or ""),
+                str(item.get("abstract") or ""),
+                str(item.get("relevance") or ""),
+                str(item.get("summary") or ""),
+            ])
+            tokens = set(cls._dedup_tokens(text))
+            overlap = sorted(candidate_tokens.intersection(tokens))[:12]
+            title = str(item.get("title") or paper_id)
+            abstract = re.sub(r"\s+", " ", str(item.get("abstract_excerpt") or item.get("abstract") or "")).strip()
+            relevance = re.sub(r"\s+", " ", str(item.get("relevance") or item.get("summary") or "")).strip()
+            facets.append({
+                "id": paper_id,
+                "title": title[:220],
+                "category": item.get("category") or "seed",
+                "problem_task": cls._bounded_string(relevance or abstract, f"{title} 与当前问题存在主题重叠。", 260),
+                "mechanism_signal": cls._bounded_string(
+                    f"重叠关键词：{'、'.join(overlap[:8])}" if overlap else "未从摘要中提取到明确机制重叠，需要人工复核。",
+                    "",
+                    220,
+                ),
+                "evaluation_dataset": cls._bounded_string(cls._extract_dataset_signal(text), "摘要未明确数据集或评测设置。", 180),
+                "limitation": cls._bounded_string(cls._extract_limitation_signal(text), "需要进一步阅读正文确认局限。", 220),
+                "transferable_insight": cls._bounded_string(
+                    abstract[:240] if abstract else f"可作为 {candidate.get('title') or '当前候选'} 的相关证据或相似工作。",
+                    "",
+                    260,
+                ),
+            })
+        return facets[:8]
+
     @staticmethod
     def _extract_dataset_signal(text: str) -> str:
         cleaned = re.sub(r"\s+", " ", text or "")
@@ -4190,6 +4307,81 @@ Proposal：{json.dumps({
                 item_limit=160,
             ),
             "experiment_tightening": experiment_tightening,
+        }
+
+    @classmethod
+    def _normalize_selection_self_check(
+        cls,
+        value: Any,
+        candidate: dict[str, Any],
+        brief: dict[str, Any],
+        evidence_map: dict[str, Any],
+        facets: list[dict[str, Any]],
+        index: int = 0,
+    ) -> dict[str, Any]:
+        data = value if isinstance(value, dict) else {}
+        critique = data.get("critique") if isinstance(data.get("critique"), dict) else {}
+        improved_input = data.get("improved_brief") if isinstance(data.get("improved_brief"), dict) else {}
+        gates_input = data.get("quality_gates") if isinstance(data.get("quality_gates"), dict) else {}
+        status = "tightened" if improved_input or critique else "fallback"
+        normalized_candidate = dict(candidate)
+        current_brief = candidate.get("idea_brief") if isinstance(candidate.get("idea_brief"), dict) else {}
+        improved_brief = cls._normalize_idea_brief(
+            {"idea_brief": {**current_brief, **improved_input}},
+            brief,
+            evidence_map,
+            normalized_candidate,
+        )
+        used_evidence_ids = cls._bounded_string_list(
+            data.get("used_evidence_ids"),
+            [str(item.get("id")) for item in facets if item.get("id")],
+            limit=8,
+            item_limit=160,
+        )
+        fallback_critique = cls._fallback_selection_critique(candidate)
+        quality_gates = {
+            "novelty_clear": bool(gates_input.get("novelty_clear", fallback_critique["novelty"] == "")),
+            "scope_narrow": bool(gates_input.get("scope_narrow", True)),
+            "mechanism_testable": bool(gates_input.get("mechanism_testable", bool(candidate.get("approach")))),
+            "experiment_minimal": bool(gates_input.get("experiment_minimal", bool((candidate.get("minimum_experiment") or {}).get("dataset")))),
+            "failure_condition_clear": bool(gates_input.get("failure_condition_clear", bool(candidate.get("falsification_test")))),
+        }
+        normalized_candidate["idea_brief"] = improved_brief
+        normalized_candidate["selection_self_check"] = {
+            "status": status,
+            "rank": index + 1,
+            "critique": {
+                "novelty": cls._bounded_string(critique.get("novelty"), fallback_critique["novelty"], 420),
+                "scope": cls._bounded_string(critique.get("scope"), fallback_critique["scope"], 420),
+                "mechanism": cls._bounded_string(critique.get("mechanism"), fallback_critique["mechanism"], 420),
+                "experiment": cls._bounded_string(critique.get("experiment"), fallback_critique["experiment"], 420),
+                "failure_condition": cls._bounded_string(critique.get("failure_condition"), fallback_critique["failure_condition"], 420),
+            },
+            "rewrite_summary": cls._bounded_string(
+                data.get("rewrite_summary"),
+                "已在入库前补齐研究问题、机制、最小实验和失败条件；模型输出不可用时采用确定性收束。",
+                520,
+            ),
+            "quality_gates": quality_gates,
+            "used_evidence_ids": used_evidence_ids,
+        }
+        return normalized_candidate
+
+    @staticmethod
+    def _fallback_selection_critique(candidate: dict[str, Any]) -> dict[str, str]:
+        novelty_check = candidate.get("novelty_check") if isinstance(candidate.get("novelty_check"), dict) else {}
+        adversarial = candidate.get("adversarial_review") if isinstance(candidate.get("adversarial_review"), dict) else {}
+        experiment = candidate.get("experiment_completeness") if isinstance(candidate.get("experiment_completeness"), dict) else {}
+        objections = [str(item) for item in adversarial.get("objections", []) if str(item).strip()]
+        fixes = [str(item) for item in adversarial.get("required_fixes", []) if str(item).strip()]
+        blocking = [str(item) for item in experiment.get("blocking_issues", []) if str(item).strip()]
+        novelty_reason = str(novelty_check.get("rationale") or "").strip()
+        return {
+            "novelty": novelty_reason or (objections[0] if objections else "需要用相似工作对比进一步确认新颖性。"),
+            "scope": "先收窄到一个任务、一个数据集和一个主要失败模式，避免 proposal 同时覆盖过多场景。",
+            "mechanism": fixes[0] if fixes else "机制解释需要说明输入、触发条件、输出，以及为什么会改变失败模式。",
+            "experiment": blocking[0] if blocking else "最小实验需要包含强基线、主指标和至少一个关键消融。",
+            "failure_condition": str(candidate.get("falsification_test") or "如果强基线和关键消融不支持核心假设，应停止推进或重写假设。"),
         }
 
     @staticmethod
