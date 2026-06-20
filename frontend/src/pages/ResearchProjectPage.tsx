@@ -94,6 +94,38 @@ interface ProposalOutline {
   evidence_rationale?: string[];
   next_actions?: string[];
 }
+interface IdeaBriefMetadata {
+  research_question?: string;
+  key_insight?: string;
+  core_hypothesis?: string;
+  mechanism?: string;
+  minimum_experiment?: string;
+  failure_condition?: string;
+  next_actions?: string[];
+}
+interface ProposalDeepeningMetadata {
+  version?: number;
+  focus?: string;
+  critique?: {
+    novelty_attack?: string;
+    scope_boundary?: string;
+    mechanism_gap?: string;
+    experiment_gap?: string;
+  };
+  improved_brief?: IdeaBriefMetadata;
+  evidence_facets?: Array<{
+    id?: string;
+    title?: string;
+    category?: string;
+    problem_task?: string;
+    mechanism_signal?: string;
+    evaluation_dataset?: string;
+    limitation?: string;
+    transferable_insight?: string;
+  }>;
+  evidence_facets_used?: string[];
+  experiment_tightening?: string[];
+}
 interface Review {
   scores: Record<string, number>; rationale: string; uncertainty: string; recommendation: string;
   aggregate_score?: number;
@@ -174,6 +206,8 @@ interface Review {
   used_tool_ids?: string[];
   used_tool_names?: string[];
   tool_fit_rationale?: string | null;
+  idea_brief?: IdeaBriefMetadata | null;
+  deepening?: ProposalDeepeningMetadata | null;
   proposal_outline?: ProposalOutline | null;
   tool_fit_plan?: {
     mode?: string;
@@ -684,6 +718,8 @@ const ResearchProjectPage: React.FC = () => {
   const [evolvingIdea, setEvolvingIdea] = useState<Idea | null>(null);
   const [evolutionFocus, setEvolutionFocus] = useState('');
   const [evolving, setEvolving] = useState(false);
+  const [deepeningIdeaIds, setDeepeningIdeaIds] = useState<Set<string>>(new Set());
+  const [deepeningFocus, setDeepeningFocus] = useState<Record<string, string>>({});
   const [reviewingIdeaIds, setReviewingIdeaIds] = useState<Set<string>>(new Set());
   const [reviewRevisionIdea, setReviewRevisionIdea] = useState<Idea | null>(null);
   const [reviewRevisionFocus, setReviewRevisionFocus] = useState('');
@@ -1294,6 +1330,27 @@ const ResearchProjectPage: React.FC = () => {
       setCompareOpen(true);
       setPageActionError(null);
     } catch (error) { showPageError('加载 Proposal 比较失败', error, '加载 Proposal 比较失败'); }
+  };
+  const deepenProposal = async (idea: Idea) => {
+    setDeepeningIdeaIds(previous => new Set(previous).add(idea.id));
+    try {
+      const response = await api.post(`/research/ideas/${idea.id}/deepen`, { focus: deepeningFocus[idea.id] || '' });
+      const updated = response.data as Idea;
+      setIdeas(previous => previous.map(item => item.id === idea.id ? updated : item));
+      if (copilotIdea?.id === idea.id) setCopilotIdea(updated);
+      if (reviewRevisionIdea?.id === idea.id) setReviewRevisionIdea(updated);
+      loadProposalBoard();
+      setPageActionError(null);
+      message.success('Idea Brief 已深入打磨');
+    } catch (error) {
+      showPageError('深入打磨 Idea 失败', error, '深入打磨 Idea 失败');
+    } finally {
+      setDeepeningIdeaIds(previous => {
+        const next = new Set(previous);
+        next.delete(idea.id);
+        return next;
+      });
+    }
   };
   const refreshProposalReviewPackage = async (idea: Idea) => {
     setReviewingIdeaIds(previous => new Set(previous).add(idea.id));
@@ -2513,68 +2570,122 @@ const ResearchProjectPage: React.FC = () => {
     );
   };
 
-  const renderProposalOutline = (outline?: ProposalOutline | null) => {
+  const proposalBriefFromOutline = (outline?: ProposalOutline | null): IdeaBriefMetadata | null => {
     if (!outline) return null;
     const experiment = outline.experiment_design || {};
-    const listItems = (items?: string[]) => (items || []).filter(Boolean).map(item => <li key={item}>{item}</li>);
+    const experimentParts = [
+      experiment.dataset ? `数据集：${experiment.dataset}` : '',
+      (experiment.baselines || []).length > 0 ? `基线：${experiment.baselines?.join('、')}` : '',
+      (experiment.metrics || []).length > 0 ? `指标：${experiment.metrics?.join('、')}` : '',
+      (experiment.ablations || []).length > 0 ? `消融：${experiment.ablations?.join('、')}` : '',
+    ].filter(Boolean);
+    return {
+      research_question: outline.problem_framing,
+      key_insight: (outline.expected_contribution || [])[0] || (outline.evidence_rationale || [])[0],
+      core_hypothesis: outline.core_hypothesis,
+      mechanism: outline.mechanism,
+      minimum_experiment: experimentParts.join('；') || experiment.success_criteria,
+      failure_condition: experiment.success_criteria || (outline.risk_boundaries || [])[0],
+      next_actions: outline.next_actions,
+    };
+  };
+
+  const proposalBriefForIdea = (idea: Idea): IdeaBriefMetadata => {
+    const review = idea.review_json;
+    return review?.deepening?.improved_brief
+      || review?.idea_brief
+      || proposalBriefFromOutline(review?.proposal_outline)
+      || {
+        research_question: idea.description || '暂无研究问题',
+        key_insight: idea.novelty || '暂无关键洞察',
+        core_hypothesis: idea.hypothesis || '暂无核心假设',
+        mechanism: idea.approach || '暂无机制说明',
+        minimum_experiment: idea.experiment_plan?.dataset ? `数据集：${idea.experiment_plan.dataset}` : '暂无最小实验',
+        failure_condition: '如果强基线、关键消融或主指标无法支持假设，就应停止推进或重写假设。',
+        next_actions: idea.experiment_plan?.steps || [],
+      };
+  };
+
+  const renderIdeaBrief = (idea: Idea) => {
+    const review = idea.review_json;
+    const brief = proposalBriefForIdea(idea);
+    const deepening = review?.deepening;
+    const nextActions = (brief.next_actions || []).filter(Boolean);
+    const focusValue = deepeningFocus[idea.id] ?? '';
+    const setFocus = (value: string) => setDeepeningFocus(previous => ({ ...previous, [idea.id]: value }));
     return (
-      <div className="proposal-outline">
+      <Card
+        size="small"
+        className="proposal-idea-brief"
+        title={<Space wrap><BulbOutlined /><Text strong>Idea Brief</Text>{deepening?.version && <Tag color="purple">已打磨 v{deepening.version}</Tag>}</Space>}
+        style={{ borderRadius: 12, marginBottom: 14, background: '#fbfcff' }}
+      >
         <Alert
           type="success"
           showIcon
           message="核心假设"
-          description={outline.core_hypothesis || '暂无核心假设'}
+          description={brief.core_hypothesis || '暂无核心假设'}
           style={{ marginBottom: 14 }}
         />
         <Row gutter={[12, 12]}>
           <Col xs={24} lg={12}>
-            <Card size="small" title="问题定义" style={{ borderRadius: 10, height: '100%' }}>
-              <Paragraph style={{ marginBottom: 0 }}>{outline.problem_framing || '暂无问题定义'}</Paragraph>
-            </Card>
+            <div className="proposal-brief-section"><Text type="secondary">研究问题</Text><Paragraph>{brief.research_question || '暂无研究问题'}</Paragraph></div>
           </Col>
           <Col xs={24} lg={12}>
-            <Card size="small" title="机制假设" style={{ borderRadius: 10, height: '100%' }}>
-              <Paragraph style={{ marginBottom: 0 }}>{outline.mechanism || '暂无机制说明'}</Paragraph>
-            </Card>
+            <div className="proposal-brief-section"><Text type="secondary">关键洞察</Text><Paragraph>{brief.key_insight || '暂无关键洞察'}</Paragraph></div>
           </Col>
           <Col xs={24} lg={12}>
-            <Card size="small" title="技术路线" style={{ borderRadius: 10, height: '100%' }}>
-              <ol style={{ margin: 0, paddingLeft: 18 }}>{listItems(outline.technical_steps)}</ol>
-            </Card>
+            <div className="proposal-brief-section"><Text type="secondary">方法机制</Text><Paragraph>{brief.mechanism || '暂无机制说明'}</Paragraph></div>
           </Col>
           <Col xs={24} lg={12}>
-            <Card size="small" title="预期贡献" style={{ borderRadius: 10, height: '100%' }}>
-              <ul style={{ margin: 0, paddingLeft: 18 }}>{listItems(outline.expected_contribution)}</ul>
-            </Card>
+            <div className="proposal-brief-section"><Text type="secondary">最小实验</Text><Paragraph>{brief.minimum_experiment || '暂无最小实验'}</Paragraph></div>
           </Col>
           <Col xs={24}>
-            <Card size="small" title="实验设计" style={{ borderRadius: 10 }}>
-              <Row gutter={[10, 10]}>
-                <Col xs={24} md={12}><Text type="secondary">数据集</Text><Paragraph style={{ marginBottom: 0 }}>{experiment.dataset || '暂无'}</Paragraph></Col>
-                <Col xs={24} md={12}><Text type="secondary">成功判据</Text><Paragraph style={{ marginBottom: 0 }}>{experiment.success_criteria || '暂无'}</Paragraph></Col>
-                <Col xs={24} md={8}><Text type="secondary">Baselines</Text><Space wrap style={{ marginTop: 6 }}>{(experiment.baselines || []).map(item => <Tag key={item}>{item}</Tag>)}</Space></Col>
-                <Col xs={24} md={8}><Text type="secondary">Metrics</Text><Space wrap style={{ marginTop: 6 }}>{(experiment.metrics || []).map(item => <Tag color="blue" key={item}>{item}</Tag>)}</Space></Col>
-                <Col xs={24} md={8}><Text type="secondary">Ablations</Text><Space wrap style={{ marginTop: 6 }}>{(experiment.ablations || []).map(item => <Tag color="purple" key={item}>{item}</Tag>)}</Space></Col>
-              </Row>
-            </Card>
-          </Col>
-          <Col xs={24} lg={12}>
-            <Card size="small" title="风险边界" style={{ borderRadius: 10, height: '100%' }}>
-              <ul style={{ margin: 0, paddingLeft: 18 }}>{listItems(outline.risk_boundaries)}</ul>
-            </Card>
-          </Col>
-          <Col xs={24} lg={12}>
-            <Card size="small" title="证据依据" style={{ borderRadius: 10, height: '100%' }}>
-              <ul style={{ margin: 0, paddingLeft: 18 }}>{listItems(outline.evidence_rationale)}</ul>
-            </Card>
-          </Col>
-          <Col xs={24}>
-            <Card size="small" title="下一步最小行动" style={{ borderRadius: 10 }}>
-              <Space wrap>{(outline.next_actions || []).map(item => <Tag color="geekblue" key={item}>{item}</Tag>)}</Space>
-            </Card>
+            <div className="proposal-brief-section"><Text type="secondary">失败条件</Text><Paragraph>{brief.failure_condition || '暂无失败条件'}</Paragraph></div>
           </Col>
         </Row>
-      </div>
+        {nextActions.length > 0 && <Space wrap style={{ marginTop: 8 }}>{nextActions.map(item => <Tag color="geekblue" key={item}>{item}</Tag>)}</Space>}
+        {deepening?.critique && (
+          <Collapse
+            ghost
+            size="small"
+            style={{ marginTop: 10 }}
+            items={[{
+              key: 'deepening-critique',
+              label: '打磨审查',
+              children: (
+                <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                  {deepening.critique.novelty_attack && <Text type="secondary">查新攻击：{deepening.critique.novelty_attack}</Text>}
+                  {deepening.critique.scope_boundary && <Text type="secondary">边界收窄：{deepening.critique.scope_boundary}</Text>}
+                  {deepening.critique.mechanism_gap && <Text type="secondary">机制缺口：{deepening.critique.mechanism_gap}</Text>}
+                  {deepening.critique.experiment_gap && <Text type="secondary">实验缺口：{deepening.critique.experiment_gap}</Text>}
+                  {(deepening.experiment_tightening || []).length > 0 && (
+                    <Space wrap>{deepening.experiment_tightening?.map(item => <Tag color="purple" key={item}>{item}</Tag>)}</Space>
+                  )}
+                </Space>
+              ),
+            }]}
+          />
+        )}
+        <Space.Compact style={{ width: '100%', marginTop: 12 }}>
+          <Input
+            allowClear
+            value={focusValue}
+            onChange={event => setFocus(event.target.value)}
+            placeholder="可选：例如更强调创新性、收窄实验、补强机制"
+          />
+          <Button
+            type="primary"
+            ghost
+            icon={<ThunderboltOutlined />}
+            loading={deepeningIdeaIds.has(idea.id)}
+            disabled={idea.status !== 'draft' && idea.status !== 'pinned'}
+            onClick={() => deepenProposal(idea)}
+          >
+            深入打磨
+          </Button>
+        </Space.Compact>
+      </Card>
     );
   };
 
@@ -2607,15 +2718,17 @@ const ResearchProjectPage: React.FC = () => {
           : 'low';
     return (
       <div>
-        {review?.proposal_outline ? renderProposalOutline(review.proposal_outline) : (
-          <>
-            {idea.hypothesis && <Alert type="success" showIcon message="可证伪假设" description={idea.hypothesis} style={{ marginBottom: 14 }} />}
-            <Paragraph style={{ whiteSpace: 'pre-wrap' }}>{idea.description || '暂无描述'}</Paragraph>
-            {idea.approach && <Paragraph><Text strong>技术草图：</Text>{idea.approach}</Paragraph>}
-          </>
-        )}
+        {renderIdeaBrief(idea)}
         {renderProposalNextActions(idea)}
-        {review && <>
+        {review && (
+          <Collapse
+            size="small"
+            className="proposal-secondary-collapse"
+            items={[{
+              key: 'review-details',
+              label: <Space wrap><FileSearchOutlined /><Text strong>评审、证据与质量信号</Text><Tag color="default">默认折叠</Tag></Space>,
+              children: (
+                <>
           <Divider>六维评审</Divider>
           <Row gutter={[8, 8]}>
             {Object.entries(review.scores || {}).map(([key, value]) => (
@@ -2856,7 +2969,19 @@ const ResearchProjectPage: React.FC = () => {
               )}
             </Space>
           </>}
-        </>}
+                </>
+              ),
+            }]}
+          />
+        )}
+        <Collapse
+          size="small"
+          className="proposal-secondary-collapse"
+          items={[{
+            key: 'execution-details',
+            label: <Space wrap><ExperimentOutlined /><Text strong>执行、写作与证据详情</Text><Tag color="default">默认折叠</Tag></Space>,
+            children: (
+              <>
         {renderProposalReviewPanel(idea)}
         {renderWritingBriefPanel(idea)}
         <Divider>实验推进包</Divider>
@@ -3020,6 +3145,10 @@ const ResearchProjectPage: React.FC = () => {
           </>
         )}
         {idea.evolution_json && <Alert style={{ marginTop: 14 }} type="info" showIcon message="演化版本" description={idea.evolution_json.rationale || '该 Proposal 是根据父版本评审反馈生成的新版本。'} />}
+              </>
+            ),
+          }]}
+        />
         <Divider>Proposal 决策</Divider>
         <Space wrap>
           {idea.status !== 'pinned' && <Button icon={<PushpinOutlined />} onClick={() => updateDecision(idea.id, 'pinned')}>收藏</Button>}

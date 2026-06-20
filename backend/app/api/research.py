@@ -356,6 +356,10 @@ class ReviewGuidedRevisionRequest(BaseModel):
     focus: str = Field(default="", max_length=1000)
 
 
+class IdeaDeepenRequest(BaseModel):
+    focus: str = Field(default="", max_length=1000)
+
+
 class ExternalEvidenceImportRequest(BaseModel):
     paper_id: str = Field(..., min_length=1)
     auto_download: bool = True
@@ -1216,6 +1220,29 @@ async def create_idea_review_package(
         return await ResearchIdeaWorkbenchService(db).build_proposal_review_package(idea, project)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Proposal 审稿包生成失败: {str(exc)}")
+
+
+@router.post("/ideas/{idea_id}/deepen", response_model=IdeaResponse)
+async def deepen_idea_brief(
+    idea_id: str,
+    req: IdeaDeepenRequest = IdeaDeepenRequest(),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """在当前 Proposal 上更新更聚焦的 Idea Brief，不创建子版本。"""
+    idea = await _get_owned_idea(db, idea_id, current_user)
+    if idea.status not in {"draft", "pinned"}:
+        raise HTTPException(status_code=409, detail="仅待筛选或已收藏的 Proposal 可以深入打磨")
+    project = await _get_owned_project(db, str(idea.project_id), current_user)
+    try:
+        updated = await ResearchIdeaWorkbenchService(db).deepen_idea_brief(
+            idea,
+            project,
+            focus=req.focus.strip(),
+        )
+        return _idea_response(updated)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Proposal 深入打磨失败: {str(exc)}")
 
 
 @router.post("/ideas/{idea_id}/revise-from-review", response_model=IdeaResponse, status_code=201)

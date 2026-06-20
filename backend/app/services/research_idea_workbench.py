@@ -1169,6 +1169,13 @@ class ResearchIdeaWorkbenchService:
 "used_tool_ids":["tool uuid"], "used_tool_names":["工具名"], "tool_fit_rationale":"为什么使用或规避这些工具",
 "risks":["..."], "falsification_test":"...", "minimum_experiment":{{"dataset":"...",
 "baselines":["..."], "metrics":["..."], "steps":["..."]}},
+"idea_brief":{{"research_question":"一句具体研究问题，必须有对象和边界",
+"key_insight":"一句关键洞察，说明为什么这不是简单堆模块",
+"core_hypothesis":"一句可证伪假设，包含触发条件、干预机制、预期收益",
+"mechanism":"用 2-3 句解释机制输入、输出、为什么可能改变失败模式",
+"minimum_experiment":"最小可验证实验，写清数据集、强基线、主指标、关键消融",
+"failure_condition":"什么时候应判定这个 idea 不成立或不值得继续",
+"next_actions":["下一步行动1","下一步行动2","下一步行动3"]}},
 "proposal_outline":{{"problem_framing":"用 2-3 句说明具体问题、为什么当前证据显示它值得做",
 "core_hypothesis":"一句可证伪假设，必须包含触发条件、干预机制、预期收益",
 "mechanism":"解释方法为什么可能有效，不要只说提升性能",
@@ -1179,6 +1186,7 @@ class ResearchIdeaWorkbenchService:
 "evidence_rationale":["证据论文如何支持这个 gap 或机制"],
 "next_actions":["下一步最小行动"]}}}}]}}
 禁止只输出宽泛方向，每条必须可以设计最小实验验证。
+每个 idea_brief 要优先回答“具体做什么、为什么值得做、怎么最小验证、何时放弃”，不要堆砌评审细节。
 每个 proposal_outline 都要具体到可以交给学生做一轮最小实验；避免空泛词，如“提高鲁棒性”“设计模块”，除非说明模块输入、输出和验证方式。
 如果用户选择了工具箱条目，必须遵守 tool_instruction 和 tool_fit_plan；如果未实际使用工具，则 used_tool_ids 为空数组。
 
@@ -2885,6 +2893,7 @@ Gap Map：{json.dumps(gap_map, ensure_ascii=False)}
                     "evidence_grounding_matrix": candidate.get("evidence_grounding_matrix"),
                     "quality_adjustments": candidate.get("quality_adjustments"),
                     "experiment_completeness": candidate.get("experiment_completeness"),
+                    "idea_brief": candidate.get("idea_brief"),
                     "proposal_outline": candidate.get("proposal_outline"),
                     "gap_alignment": candidate.get("gap_alignment"),
                     "gap_selection": candidate.get("gap_selection"),
@@ -3413,6 +3422,59 @@ Proposal：{json.dumps({
         await self.session.refresh(child)
         return child
 
+    async def deepen_idea_brief(
+        self,
+        idea: ResearchIdea,
+        project: ResearchProject,
+        *,
+        focus: str = "",
+    ) -> ResearchIdea:
+        """Tighten the current proposal brief without creating a child version."""
+        review = dict(idea.review_json or {})
+        evidence_json = idea.evidence_json or {"items": [], "scope": "unknown"}
+        evidence_map = self._evidence_map_from_idea(idea)
+        current_brief = self._brief_from_idea(idea, project)
+        facets = self._evidence_facets_for_idea(idea, evidence_map)
+        focus_text = str(focus or "").strip()[:1000] or "优先把研究问题、机制、最小实验和失败条件讲清楚。"
+        prompt = f"""你是科研 idea 打磨助手。目标不是增加更多面板，而是把一个 Proposal 打磨成清晰、可验证、可放弃的 Idea Brief。
+请基于证据 facet、现有评审和用户关注点，先攻击 novelty 和边界，再重写 brief。
+输出严格 JSON：
+{{"critique":{{"novelty_attack":"最可能撞车或太增量的地方",
+"scope_boundary":"应该收窄到什么任务、数据或场景",
+"mechanism_gap":"机制解释还缺什么",
+"experiment_gap":"最小实验还缺什么"}},
+"improved_brief":{{"research_question":"...",
+"key_insight":"...",
+"core_hypothesis":"...",
+"mechanism":"...",
+"minimum_experiment":"...",
+"failure_condition":"...",
+"next_actions":["..."]}},
+"experiment_tightening":["最多 5 条最小实验收紧建议"],
+"evidence_facets_used":["使用到的 facet id 或标题"]}}
+
+现有 Proposal：{json.dumps({
+            "title": idea.title,
+            "description": idea.description,
+            "hypothesis": idea.hypothesis,
+            "approach": idea.approach,
+            "experiment_plan": idea.experiment_plan,
+            "review": review,
+            "current_brief": current_brief,
+        }, ensure_ascii=False)[:10000]}
+用户关注点：{focus_text}
+证据 facet：{json.dumps(facets, ensure_ascii=False)[:9000]}
+证据原文摘要：{json.dumps(evidence_json, ensure_ascii=False)[:7000]}
+"""
+        raw = await self._chat_json(prompt)
+        deepening = self._normalize_deepening_result(raw, idea, project, evidence_map, focus_text)
+        review["deepening"] = deepening
+        review["idea_brief"] = deepening["improved_brief"]
+        idea.review_json = review
+        await self.session.commit()
+        await self.session.refresh(idea)
+        return idea
+
     def compare_idea_versions(
         self,
         idea: ResearchIdea,
@@ -3689,7 +3751,7 @@ Proposal：{json.dumps({
         experiment = data.get("minimum_experiment") if isinstance(data.get("minimum_experiment"), dict) else {}
         used_tool_ids = [str(value) for value in data.get("used_tool_ids", []) if str(value).strip()]
         used_tool_names = [str(value).strip() for value in data.get("used_tool_names", []) if str(value).strip()]
-        return {
+        normalized = {
             "title": str(data.get("title") or f"{brief['name']} 候选假设 {index + 1}"),
             "path": str(data.get("path") or ("grounded" if index % 2 == 0 else "inspiration")),
             "gap": str(data.get("gap") or "现有方法在关键边界条件下仍缺乏系统验证。"),
@@ -3708,8 +3770,10 @@ Proposal：{json.dumps({
                 "steps": [str(value) for value in experiment.get("steps", [])]
                 or ["复现基线", "实现最小改动", "运行消融与误差分析"],
             },
-            "proposal_outline": ResearchIdeaWorkbenchService._normalize_proposal_outline(data, brief, evidence_map),
         }
+        normalized["proposal_outline"] = ResearchIdeaWorkbenchService._normalize_proposal_outline(data, brief, evidence_map)
+        normalized["idea_brief"] = ResearchIdeaWorkbenchService._normalize_idea_brief(data, brief, evidence_map, normalized)
+        return normalized
 
     @staticmethod
     def _bounded_string(value: Any, fallback: str = "", limit: int = 900) -> str:
@@ -3818,6 +3882,314 @@ Proposal：{json.dumps({
                 ["确定最小数据集和强基线", "实现最小模块", "跑一组主实验和两组消融"],
                 limit=6,
             ),
+        }
+
+    @staticmethod
+    def _normalize_idea_brief(
+        item: dict[str, Any],
+        brief: dict[str, Any],
+        evidence_map: dict[str, Any],
+        normalized_candidate: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        data = item if isinstance(item, dict) else {}
+        candidate = normalized_candidate or data
+        compact = data.get("idea_brief") if isinstance(data.get("idea_brief"), dict) else {}
+        outline = candidate.get("proposal_outline") if isinstance(candidate.get("proposal_outline"), dict) else {}
+        experiment = candidate.get("minimum_experiment") if isinstance(candidate.get("minimum_experiment"), dict) else {}
+        experiment_design = outline.get("experiment_design") if isinstance(outline.get("experiment_design"), dict) else {}
+        evidence_lookup = ResearchIdeaWorkbenchService._evidence_lookup(evidence_map)
+        evidence_ids = [str(value) for value in candidate.get("evidence_ids", []) if str(value) in evidence_lookup]
+        evidence_titles = [str(evidence_lookup[eid].get("title") or "") for eid in evidence_ids if evidence_lookup.get(eid)]
+        dataset = experiment_design.get("dataset") or experiment.get("dataset") or "一个公开基准"
+        baselines = ResearchIdeaWorkbenchService._bounded_string_list(
+            experiment_design.get("baselines") or experiment.get("baselines"),
+            ["当前最强可复现基线"],
+            limit=3,
+            item_limit=120,
+        )
+        metrics = ResearchIdeaWorkbenchService._bounded_string_list(
+            experiment_design.get("metrics") or experiment.get("metrics"),
+            ["主任务指标"],
+            limit=3,
+            item_limit=120,
+        )
+        ablations = ResearchIdeaWorkbenchService._bounded_string_list(
+            experiment_design.get("ablations"),
+            ["移除核心干预"],
+            limit=2,
+            item_limit=140,
+        )
+        default_question = (
+            f"在「{brief.get('name') or '当前研究方向'}」中，如何解决"
+            f"「{candidate.get('gap') or '关键边界条件缺少验证'}」？"
+        )
+        default_experiment = (
+            f"在 {dataset} 上复现 {', '.join(baselines)}，用 {', '.join(metrics)} 评估，"
+            f"并至少做 {', '.join(ablations)}。"
+        )
+        insight_seed = evidence_titles[0] if evidence_titles else (brief.get("name") or "现有证据")
+        return {
+            "research_question": ResearchIdeaWorkbenchService._bounded_string(
+                compact.get("research_question") or outline.get("problem_framing"),
+                default_question,
+                420,
+            ),
+            "key_insight": ResearchIdeaWorkbenchService._bounded_string(
+                compact.get("key_insight"),
+                f"从 {insight_seed} 出发，把问题收窄为一个可被最小实验验证的机制差异，而不是泛泛增加模块。",
+                420,
+            ),
+            "core_hypothesis": ResearchIdeaWorkbenchService._bounded_string(
+                compact.get("core_hypothesis") or outline.get("core_hypothesis") or candidate.get("hypothesis"),
+                f"如果针对该 gap 施加可控干预，则应在统一预算下稳定优于强基线。",
+                420,
+            ),
+            "mechanism": ResearchIdeaWorkbenchService._bounded_string(
+                compact.get("mechanism") or outline.get("mechanism") or candidate.get("approach"),
+                "机制需要明确输入、输出和触发条件，并通过消融证明收益来自核心干预而不是预算差异。",
+                700,
+            ),
+            "minimum_experiment": ResearchIdeaWorkbenchService._bounded_string(
+                compact.get("minimum_experiment"),
+                default_experiment,
+                520,
+            ),
+            "failure_condition": ResearchIdeaWorkbenchService._bounded_string(
+                compact.get("failure_condition") or candidate.get("falsification_test") or experiment_design.get("success_criteria"),
+                "如果主指标没有稳定超过强基线，或关键消融无法证明核心干预有效，就应停止推进或重写假设。",
+                420,
+            ),
+            "next_actions": ResearchIdeaWorkbenchService._bounded_string_list(
+                compact.get("next_actions") or outline.get("next_actions"),
+                ["补一张相似工作对比表", "确定最小数据集和强基线", "实现最小干预并跑主实验与关键消融"],
+                limit=5,
+                item_limit=180,
+            ),
+        }
+
+    @staticmethod
+    def _evidence_map_from_idea(idea: ResearchIdea) -> dict[str, Any]:
+        evidence_json = idea.evidence_json or {}
+        items = evidence_json.get("items") if isinstance(evidence_json.get("items"), list) else []
+        normalized_items = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            paper_id = str(item.get("paper_id") or item.get("id") or item.get("title") or "").strip()
+            if not paper_id:
+                continue
+            category = str(item.get("category") or "seed")
+            normalized_items.append({**item, "paper_id": paper_id, "category": category})
+        return {
+            "scope": evidence_json.get("scope") or "idea_evidence",
+            "seed": normalized_items,
+            "background": [],
+            "inspiration": [],
+        }
+
+    @classmethod
+    def _brief_from_idea(cls, idea: ResearchIdea, project: ResearchProject | None = None) -> dict[str, Any]:
+        review = idea.review_json or {}
+        if isinstance(review.get("deepening"), dict):
+            improved = review.get("deepening", {}).get("improved_brief")
+            if isinstance(improved, dict):
+                return cls._normalize_idea_brief(
+                    {"idea_brief": improved},
+                    {"name": getattr(project, "name", "") or idea.title},
+                    cls._evidence_map_from_idea(idea),
+                    cls._candidate_from_idea(idea),
+                )
+        if isinstance(review.get("idea_brief"), dict):
+            return cls._normalize_idea_brief(
+                {"idea_brief": review.get("idea_brief")},
+                {"name": getattr(project, "name", "") or idea.title},
+                cls._evidence_map_from_idea(idea),
+                cls._candidate_from_idea(idea),
+            )
+        if isinstance(review.get("proposal_outline"), dict):
+            return cls._normalize_idea_brief(
+                {"proposal_outline": review.get("proposal_outline")},
+                {"name": getattr(project, "name", "") or idea.title},
+                cls._evidence_map_from_idea(idea),
+                cls._candidate_from_idea(idea),
+            )
+        return cls._normalize_idea_brief(
+            {},
+            {"name": getattr(project, "name", "") or idea.title},
+            cls._evidence_map_from_idea(idea),
+            cls._candidate_from_idea(idea),
+        )
+
+    @staticmethod
+    def _candidate_from_idea(idea: ResearchIdea) -> dict[str, Any]:
+        evidence_json = idea.evidence_json or {}
+        referenced = idea.referenced_papers if isinstance(idea.referenced_papers, dict) else {}
+        evidence_ids = referenced.get("paper_ids") if isinstance(referenced.get("paper_ids"), list) else []
+        if not evidence_ids:
+            evidence_ids = [
+                str(item.get("paper_id"))
+                for item in evidence_json.get("items", []) or []
+                if isinstance(item, dict) and item.get("paper_id")
+            ]
+        return {
+            "title": idea.title,
+            "gap": idea.description or "",
+            "hypothesis": idea.hypothesis or "",
+            "approach": idea.approach or "",
+            "evidence_ids": evidence_ids,
+            "minimum_experiment": idea.experiment_plan or {},
+            "falsification_test": (idea.review_json or {}).get("falsification_test") or "",
+            "proposal_outline": (idea.review_json or {}).get("proposal_outline") if isinstance((idea.review_json or {}).get("proposal_outline"), dict) else {},
+        }
+
+    @classmethod
+    def _evidence_facets_for_idea(cls, idea: ResearchIdea, evidence_map: dict[str, Any]) -> list[dict[str, Any]]:
+        lookup = cls._evidence_lookup(evidence_map)
+        candidate_text = " ".join([
+            str(idea.title or ""),
+            str(idea.description or ""),
+            str(idea.hypothesis or ""),
+            str(idea.approach or ""),
+        ])
+        candidate_tokens = set(cls._dedup_tokens(candidate_text))
+        facets = []
+        for paper_id, item in lookup.items():
+            text = " ".join([
+                str(item.get("title") or ""),
+                str(item.get("abstract_excerpt") or ""),
+                str(item.get("abstract") or ""),
+                str(item.get("relevance") or ""),
+                str(item.get("summary") or ""),
+            ])
+            tokens = set(cls._dedup_tokens(text))
+            overlap = sorted(candidate_tokens.intersection(tokens))[:12]
+            title = str(item.get("title") or paper_id)
+            abstract = re.sub(r"\s+", " ", str(item.get("abstract_excerpt") or item.get("abstract") or "")).strip()
+            relevance = re.sub(r"\s+", " ", str(item.get("relevance") or item.get("summary") or "")).strip()
+            facets.append({
+                "id": paper_id,
+                "title": title[:220],
+                "category": item.get("category") or "seed",
+                "problem_task": cls._bounded_string(relevance or abstract, f"{title} 与当前问题存在主题重叠。", 260),
+                "mechanism_signal": cls._bounded_string(
+                    f"重叠关键词：{'、'.join(overlap[:8])}" if overlap else "未从摘要中提取到明确机制重叠，需要人工复核。",
+                    "",
+                    220,
+                ),
+                "evaluation_dataset": cls._bounded_string(cls._extract_dataset_signal(text), "摘要未明确数据集或评测设置。", 180),
+                "limitation": cls._bounded_string(cls._extract_limitation_signal(text), "需要进一步阅读正文确认局限。", 220),
+                "transferable_insight": cls._bounded_string(
+                    abstract[:240] if abstract else f"可作为 {idea.title} 的相关证据或相似工作。",
+                    "",
+                    260,
+                ),
+            })
+        return facets[:8]
+
+    @staticmethod
+    def _extract_dataset_signal(text: str) -> str:
+        cleaned = re.sub(r"\s+", " ", text or "")
+        patterns = [
+            r"(?:dataset|benchmark|数据集|基准)[^。.;；]{0,120}",
+            r"(?:evaluat\w*|评估|实验)[^。.;；]{0,120}",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+            if match:
+                return match.group(0).strip()
+        return ""
+
+    @staticmethod
+    def _extract_limitation_signal(text: str) -> str:
+        cleaned = re.sub(r"\s+", " ", text or "")
+        patterns = [
+            r"(?:limitation|limit|challenge|fail|failure|局限|限制|挑战)[^。.;；]{0,140}",
+            r"(?:however|but|仍然|缺少|不足)[^。.;；]{0,140}",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+            if match:
+                return match.group(0).strip()
+        return ""
+
+    @classmethod
+    def _normalize_deepening_result(
+        cls,
+        value: Any,
+        idea: ResearchIdea,
+        project: ResearchProject | None,
+        evidence_map: dict[str, Any],
+        focus: str,
+    ) -> dict[str, Any]:
+        data = value if isinstance(value, dict) else {}
+        candidate = cls._candidate_from_idea(idea)
+        current_brief = cls._brief_from_idea(idea, project)
+        improved_input = data.get("improved_brief") if isinstance(data.get("improved_brief"), dict) else {}
+        fallback_brief = {
+            "research_question": current_brief.get("research_question"),
+            "key_insight": current_brief.get("key_insight"),
+            "core_hypothesis": current_brief.get("core_hypothesis"),
+            "mechanism": current_brief.get("mechanism"),
+            "minimum_experiment": current_brief.get("minimum_experiment"),
+            "failure_condition": current_brief.get("failure_condition"),
+            "next_actions": current_brief.get("next_actions"),
+        }
+        improved_brief = cls._normalize_idea_brief(
+            {"idea_brief": {**fallback_brief, **improved_input}},
+            {"name": getattr(project, "name", "") or idea.title},
+            evidence_map,
+            candidate,
+        )
+        critique = data.get("critique") if isinstance(data.get("critique"), dict) else {}
+        facets = cls._evidence_facets_for_idea(idea, evidence_map)
+        facet_labels = [
+            str(item.get("id") or item.get("title"))
+            for item in facets
+            if item.get("id") or item.get("title")
+        ][:5]
+        experiment_tightening = cls._bounded_string_list(
+            data.get("experiment_tightening"),
+            [
+                "把主实验压缩为一个公开数据集、一个强基线和一个核心消融。",
+                "预先写清失败阈值，避免结果不显著时继续扩展复杂模块。",
+            ],
+            limit=5,
+            item_limit=240,
+        )
+        return {
+            "version": int(((idea.review_json or {}).get("deepening") or {}).get("version") or 0) + 1,
+            "focus": focus,
+            "critique": {
+                "novelty_attack": cls._bounded_string(
+                    critique.get("novelty_attack"),
+                    "最可能的问题是与已有方法只在模块名称上不同，需要用机制差异和强基线证明新颖性。",
+                    420,
+                ),
+                "scope_boundary": cls._bounded_string(
+                    critique.get("scope_boundary"),
+                    "先收窄到一个任务、一个数据集和一个失败模式，不要同时覆盖多个应用场景。",
+                    420,
+                ),
+                "mechanism_gap": cls._bounded_string(
+                    critique.get("mechanism_gap"),
+                    "机制解释需要说明输入、触发条件、输出以及为什么能改变失败模式。",
+                    420,
+                ),
+                "experiment_gap": cls._bounded_string(
+                    critique.get("experiment_gap"),
+                    "实验需要补强强基线、关键消融和失败判据。",
+                    420,
+                ),
+            },
+            "improved_brief": improved_brief,
+            "evidence_facets": facets,
+            "evidence_facets_used": cls._bounded_string_list(
+                data.get("evidence_facets_used"),
+                facet_labels,
+                limit=6,
+                item_limit=160,
+            ),
+            "experiment_tightening": experiment_tightening,
         }
 
     @staticmethod

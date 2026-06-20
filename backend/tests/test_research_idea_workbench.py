@@ -278,6 +278,13 @@ def test_normalize_candidate_adds_structured_proposal_outline():
     assert outline["risk_boundaries"]
     assert outline["evidence_rationale"][0] == "关联证据：Evidence Paper"
     assert outline["next_actions"]
+    brief = candidate["idea_brief"]
+    assert brief["research_question"]
+    assert brief["key_insight"]
+    assert brief["core_hypothesis"] == candidate["hypothesis"]
+    assert "LongVideoQA" in brief["minimum_experiment"]
+    assert brief["failure_condition"]
+    assert brief["next_actions"]
 
 
 @pytest.mark.asyncio
@@ -312,14 +319,81 @@ async def test_persist_top_proposals_stores_proposal_outline_metadata():
         "review": {"scores": {"feasibility": 8, "novelty": 7}, "rationale": "Good"},
         "score": 7.5,
         "proposal_outline": outline,
+        "idea_brief": {
+            "research_question": "RQ",
+            "key_insight": "Insight",
+            "core_hypothesis": "Hypothesis",
+            "mechanism": "Mechanism",
+            "minimum_experiment": "Minimum",
+            "failure_condition": "Failure",
+            "next_actions": ["Next"],
+        },
     }]
 
     ideas = await service.persist_top_proposals(run, reviewed, evidence_map, 1)
 
     assert ideas[0].review_json["proposal_outline"] == outline
+    assert ideas[0].review_json["idea_brief"]["research_question"] == "RQ"
     assert ideas[0].description == "Gap\n\nHypothesis"
     assert ideas[0].experiment_plan["dataset"] == "D"
     assert session.added[0] is ideas[0]
+
+
+@pytest.mark.asyncio
+async def test_deepen_idea_brief_updates_current_proposal_metadata(monkeypatch):
+    session = _Session()
+    service = ResearchIdeaWorkbenchService(session)
+    project = SimpleNamespace(id=uuid4(), name="Long Video Memory")
+    idea = SimpleNamespace(
+        id=uuid4(),
+        project_id=project.id,
+        title="Adaptive Video Memory",
+        description="Gap\n\nHypothesis",
+        hypothesis="Adaptive memory should improve long-video grounding.",
+        approach="Use an event-triggered memory write gate.",
+        experiment_plan={"dataset": "LongVideoQA", "baselines": ["fixed interval"], "metrics": ["accuracy"], "steps": ["run baseline"]},
+        referenced_papers={"paper_ids": ["p1"]},
+        evidence_json={"scope": "local_library", "items": [{
+            "paper_id": "p1",
+            "title": "Event Memory",
+            "category": "seed",
+            "abstract_excerpt": "A benchmark evaluates long video grounding and reports limitations in fixed memory updates.",
+            "relevance": "Supports the event-triggered memory problem.",
+        }]},
+        review_json={"idea_brief": {"research_question": "Old RQ", "next_actions": ["Old action"]}},
+    )
+
+    async def fake_chat_json(_prompt):
+        return {
+            "critique": {
+                "novelty_attack": "Too close to fixed memory unless the trigger is tested.",
+                "scope_boundary": "LongVideoQA event grounding only.",
+                "mechanism_gap": "Need to define the trigger input and output.",
+                "experiment_gap": "Need a trigger ablation.",
+            },
+            "improved_brief": {
+                "research_question": "Can event-triggered writes reduce memory cost for long-video grounding?",
+                "key_insight": "The useful unit is event change rather than frame interval.",
+                "core_hypothesis": "When semantic change triggers writes, accuracy stays stable while writes drop.",
+                "mechanism": "The gate reads local motion and semantic shifts, then writes only high-change states.",
+                "minimum_experiment": "Run LongVideoQA against fixed interval with write-count and accuracy metrics.",
+                "failure_condition": "If accuracy drops or write-count is not lower, stop.",
+                "next_actions": ["Define trigger", "Run fixed baseline"],
+            },
+            "experiment_tightening": ["Add trigger ablation"],
+            "evidence_facets_used": ["p1"],
+        }
+
+    monkeypatch.setattr(service, "_chat_json", fake_chat_json)
+
+    updated = await service.deepen_idea_brief(idea, project, focus="make it clearer")
+
+    assert updated is idea
+    assert session.commits == 1
+    assert idea.review_json["deepening"]["version"] == 1
+    assert idea.review_json["deepening"]["critique"]["novelty_attack"].startswith("Too close")
+    assert idea.review_json["idea_brief"]["research_question"].startswith("Can event-triggered")
+    assert idea.review_json["deepening"]["evidence_facets"][0]["id"] == "p1"
 
 
 def test_duplicate_candidates_are_merged_by_hypothesis_overlap():

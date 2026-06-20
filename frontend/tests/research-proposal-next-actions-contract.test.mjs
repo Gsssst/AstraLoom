@@ -38,22 +38,28 @@ test('proposal next-step actions reuse existing proposal workflows', () => {
   assert.match(researchProjectSource, /openTimeline\(idea\)/);
 });
 
-test('proposal detail renders structured outline sections when available', () => {
+test('proposal detail renders compact idea brief before secondary details', () => {
   assert.match(researchProjectSource, /interface ProposalOutline/);
+  assert.match(researchProjectSource, /interface IdeaBriefMetadata/);
+  assert.match(researchProjectSource, /interface ProposalDeepeningMetadata/);
   assert.match(researchProjectSource, /proposal_outline/);
-  assert.match(researchProjectSource, /renderProposalOutline/);
-  assert.match(researchProjectSource, /问题定义/);
-  assert.match(researchProjectSource, /机制假设/);
-  assert.match(researchProjectSource, /技术路线/);
-  assert.match(researchProjectSource, /预期贡献/);
-  assert.match(researchProjectSource, /实验设计/);
-  assert.match(researchProjectSource, /风险边界/);
-  assert.match(researchProjectSource, /证据依据/);
-  assert.match(researchProjectSource, /下一步最小行动/);
-  assert.match(researchProjectSource, /review\?\.proposal_outline \? renderProposalOutline/);
+  assert.match(researchProjectSource, /proposalBriefFromOutline/);
+  assert.match(researchProjectSource, /proposalBriefForIdea/);
+  assert.match(researchProjectSource, /renderIdeaBrief/);
+  assert.match(researchProjectSource, /research_question/);
+  assert.match(researchProjectSource, /key_insight/);
+  assert.match(researchProjectSource, /failure_condition/);
+  assert.match(researchProjectSource, /深入打磨/);
+  assert.match(researchProjectSource, /\/research\/ideas\/\$\{idea\.id\}\/deepen/);
+  assert.match(researchProjectSource, /proposal-secondary-collapse/);
+  assert.match(researchProjectSource, /评审、证据与质量信号/);
+  assert.match(researchProjectSource, /执行、写作与证据详情/);
 });
 
 test('proposal next-step actions are compact and responsive', () => {
+  assert.match(globalCssSource, /\.proposal-idea-brief/);
+  assert.match(globalCssSource, /\.proposal-brief-section/);
+  assert.match(globalCssSource, /\.proposal-secondary-collapse/);
   assert.match(globalCssSource, /\.proposal-next-actions/);
   assert.match(globalCssSource, /\.proposal-next-action-grid/);
   assert.match(globalCssSource, /grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);

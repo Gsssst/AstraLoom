@@ -500,6 +500,46 @@ body {
   margin-top: 6px;
 }
 
+.proposal-idea-brief .ant-card-head {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.proposal-idea-brief .ant-card-head-title,
+.proposal-idea-brief .ant-alert-description,
+.proposal-idea-brief .ant-input,
+.proposal-idea-brief .ant-tag,
+.proposal-idea-brief .ant-typography,
+.proposal-brief-section,
+.proposal-secondary-collapse .ant-collapse-header,
+.proposal-secondary-collapse .ant-collapse-content-box {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.proposal-brief-section {
+  height: 100%;
+  padding: 10px;
+  border: 1px solid #eef2f7;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.proposal-brief-section .ant-typography {
+  margin-bottom: 0;
+}
+
+.proposal-secondary-collapse {
+  margin: 12px 0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.proposal-secondary-collapse .ant-collapse-item {
+  border-radius: 8px;
+}
+
 .proposal-next-actions .ant-card-head {
   gap: 8px;
   flex-wrap: wrap;
