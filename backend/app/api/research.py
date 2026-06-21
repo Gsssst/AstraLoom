@@ -193,11 +193,18 @@ class IdeaResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class EvidenceControlsRequest(BaseModel):
+    max_items: int = 12
+    pinned_paper_ids: list[str] = Field(default_factory=list, max_length=30)
+    excluded_paper_ids: list[str] = Field(default_factory=list, max_length=60)
+
+
 class GenerateIdeasRequest(BaseModel):
     num_ideas: int = Field(default=3, ge=1, le=5)
     external_search: bool = True
     tool_ids: list[str] = Field(default_factory=list, max_length=12)
     tool_mode: Literal["inspiration", "required", "baseline", "avoid"] = "inspiration"
+    evidence_controls: Optional[EvidenceControlsRequest] = None
 
 
 class GapSelectionRequest(BaseModel):
@@ -218,6 +225,7 @@ class ContinueGapReviewRequest(BaseModel):
     generation_constraints: GenerationConstraintsRequest = Field(default_factory=GenerationConstraintsRequest)
     tool_ids: list[str] = Field(default_factory=list, max_length=12)
     tool_mode: Literal["inspiration", "required", "baseline", "avoid"] = "inspiration"
+    evidence_controls: Optional[EvidenceControlsRequest] = None
 
 
 class GapFeedbackRequest(BaseModel):
@@ -843,7 +851,13 @@ async def generate_ideas(
     service = ResearchIdeaWorkbenchService(db)
     try:
         tool_context = await service.load_tool_context(req.tool_ids, req.tool_mode)
-        run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search, tool_context=tool_context)
+        run = await service.create_run(
+            project,
+            num_ideas=req.num_ideas,
+            external_search=req.external_search,
+            tool_context=tool_context,
+            evidence_controls=req.evidence_controls.model_dump() if req.evidence_controls else None,
+        )
         ideas = await service.execute(project, run, num_ideas=req.num_ideas)
         return [_idea_response(idea) for idea in ideas]
     except Exception as e:
@@ -861,7 +875,13 @@ async def create_idea_run(
     project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
     service = ResearchIdeaWorkbenchService(db)
     tool_context = await service.load_tool_context(req.tool_ids, req.tool_mode)
-    run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search, tool_context=tool_context)
+    run = await service.create_run(
+        project,
+        num_ideas=req.num_ideas,
+        external_search=req.external_search,
+        tool_context=tool_context,
+        evidence_controls=req.evidence_controls.model_dump() if req.evidence_controls else None,
+    )
     ideas = await service.execute(project, run, num_ideas=req.num_ideas)
     return _run_response(run, ideas)
 
@@ -877,7 +897,13 @@ async def create_gap_preview_run(
     project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
     service = ResearchIdeaWorkbenchService(db)
     tool_context = await service.load_tool_context(req.tool_ids, req.tool_mode)
-    run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search, tool_context=tool_context)
+    run = await service.create_run(
+        project,
+        num_ideas=req.num_ideas,
+        external_search=req.external_search,
+        tool_context=tool_context,
+        evidence_controls=req.evidence_controls.model_dump() if req.evidence_controls else None,
+    )
     run = await service.execute_gap_preview(project, run)
     return _run_response(run)
 
@@ -906,6 +932,7 @@ async def continue_idea_run_from_gaps(
         gap_selection=req.gap_selection.model_dump(),
         generation_constraints=req.generation_constraints.model_dump(),
         num_ideas=req.num_ideas,
+        evidence_controls=req.evidence_controls.model_dump() if req.evidence_controls else None,
     )
     return _run_response(run, ideas)
 
@@ -937,6 +964,7 @@ async def continue_idea_run_from_gaps_stream(
             gap_selection=req.gap_selection.model_dump(),
             generation_constraints=req.generation_constraints.model_dump(),
             num_ideas=req.num_ideas,
+            evidence_controls=req.evidence_controls.model_dump() if req.evidence_controls else None,
             on_progress=push,
         )
 
@@ -1008,7 +1036,13 @@ async def create_idea_run_stream(
     project = await _get_workspace_accessible_project(db, project_id, current_user, require_editor=True)
     service = ResearchIdeaWorkbenchService(db)
     tool_context = await service.load_tool_context(req.tool_ids, req.tool_mode)
-    run = await service.create_run(project, num_ideas=req.num_ideas, external_search=req.external_search, tool_context=tool_context)
+    run = await service.create_run(
+        project,
+        num_ideas=req.num_ideas,
+        external_search=req.external_search,
+        tool_context=tool_context,
+        evidence_controls=req.evidence_controls.model_dump() if req.evidence_controls else None,
+    )
 
     async def execute_with_progress(push):
         return await service.execute(project, run, num_ideas=req.num_ideas, on_progress=push)

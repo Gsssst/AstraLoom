@@ -40,6 +40,23 @@ interface Evidence {
   collection_names?: string[];
   imported_paper_id?: string;
 }
+interface EvidenceControls {
+  max_items: number;
+  pinned_paper_ids: string[];
+  excluded_paper_ids: string[];
+}
+interface EvidenceControlSummary {
+  max_items?: number;
+  source_count?: number;
+  available_after_exclusion?: number;
+  retained_count?: number;
+  pinned_requested_count?: number;
+  pinned_retained_count?: number;
+  excluded_requested_count?: number;
+  excluded_available_count?: number;
+  unavailable_pinned_ids?: string[];
+  category_counts?: Record<string, number>;
+}
 interface Gap {
   title: string; limitation: string; opportunity: string;
   research_question: string; evidence_ids: string[]; uncertainty: string;
@@ -485,9 +502,9 @@ interface ProposalWritingBrief {
 }
 interface IdeaRun {
   id: string; project_id: string; status: string; stage: string; progress: number;
-  message?: string; error?: string; evidence_map?: Record<string, Evidence[] | string | object>;
+  message?: string; error?: string; evidence_map?: Record<string, Evidence[] | string | object | EvidenceControls | EvidenceControlSummary>;
   gap_map?: { summary?: string; gaps?: Gap[] }; candidate_pool?: Candidate[];
-  config_json?: { gap_selection?: GapSelection; generation_constraints?: GenerationConstraints; [key: string]: unknown };
+  config_json?: { gap_selection?: GapSelection; generation_constraints?: GenerationConstraints; evidence_controls?: EvidenceControls; [key: string]: unknown };
   review_summary?: Record<string, unknown>; ideas?: Idea[];
 }
 interface GapSelection {
@@ -645,6 +662,7 @@ const copilotQuickPrompts: Record<CopilotMode, string[]> = {
   experiment_designer: ['设计第一轮最小实验、强基线和消融', '如何定义成功指标和失败判定？', '把实验步骤拆成可执行清单'],
   writer: ['把这个 idea 整理成论文贡献点', 'related work 应该如何组织？', '哪些 claim 现在还不能写？'],
 };
+const evidenceCountOptions = [6, 8, 12, 16, 20, 24, 30].map(value => ({ value, label: `${value} 篇` }));
 
 const proposalEvidenceCount = (idea: Idea) => idea.evidence_json?.items?.length || 0;
 const proposalReviewScore = (idea: Idea) =>
@@ -776,6 +794,9 @@ const ResearchProjectPage: React.FC = () => {
   const [researchMode, setResearchMode] = useState<GenerationConstraints['research_mode']>('balanced');
   const [riskAppetite, setRiskAppetite] = useState<GenerationConstraints['risk_appetite']>('balanced');
   const [resourceBudget, setResourceBudget] = useState<GenerationConstraints['resource_budget']>('reproducible');
+  const [evidenceMaxItems, setEvidenceMaxItems] = useState(12);
+  const [pinnedEvidenceIds, setPinnedEvidenceIds] = useState<string[]>([]);
+  const [excludedEvidenceIds, setExcludedEvidenceIds] = useState<string[]>([]);
   const [toolboxTools, setToolboxTools] = useState<ToolboxTool[]>([]);
   const [selectedToolIds, setSelectedToolIds] = useState<string[]>([]);
   const [toolMode, setToolMode] = useState<ToolMode>('inspiration');
@@ -911,6 +932,27 @@ const ResearchProjectPage: React.FC = () => {
     tool_ids: selectedToolIds,
     tool_mode: toolMode,
   });
+  const evidenceControlsPayload = (): EvidenceControls => {
+    const excluded = Array.from(new Set(excludedEvidenceIds.filter(Boolean)));
+    const excludedSet = new Set(excluded);
+    return {
+      max_items: Math.max(3, Math.min(30, evidenceMaxItems)),
+      pinned_paper_ids: Array.from(new Set(pinnedEvidenceIds.filter(id => id && !excludedSet.has(id)))),
+      excluded_paper_ids: excluded,
+    };
+  };
+  const togglePinnedEvidence = (paperId: string) => {
+    setPinnedEvidenceIds(previous => previous.includes(paperId)
+      ? previous.filter(id => id !== paperId)
+      : [...previous, paperId]);
+    setExcludedEvidenceIds(previous => previous.filter(id => id !== paperId));
+  };
+  const toggleExcludedEvidence = (paperId: string) => {
+    setExcludedEvidenceIds(previous => previous.includes(paperId)
+      ? previous.filter(id => id !== paperId)
+      : [...previous, paperId]);
+    setPinnedEvidenceIds(previous => previous.filter(id => id !== paperId));
+  };
 
   useEffect(() => {
     if (!projectId) return;
@@ -946,6 +988,16 @@ const ResearchProjectPage: React.FC = () => {
     setResourceBudget(savedConstraints.resource_budget || 'reproducible');
     setGapDrafts(Object.fromEntries((run?.gap_map?.gaps || []).map((gap, index) => [index, gapToDraft(gap)])));
   }, [run?.id, run?.gap_map]);
+
+  useEffect(() => {
+    const savedControls = run?.config_json?.evidence_controls;
+    const mapControls = run?.evidence_map?.controls as EvidenceControls | undefined;
+    const controls = savedControls || mapControls;
+    if (!controls) return;
+    setEvidenceMaxItems(Math.max(3, Math.min(30, Number(controls.max_items) || 12)));
+    setPinnedEvidenceIds(Array.isArray(controls.pinned_paper_ids) ? controls.pinned_paper_ids : []);
+    setExcludedEvidenceIds(Array.isArray(controls.excluded_paper_ids) ? controls.excluded_paper_ids : []);
+  }, [run?.id, run?.config_json?.evidence_controls, run?.evidence_map]);
 
   const applyStreamEvent = (event: any) => {
     if (event.type === 'run' && event.run) setRun(event.run);
@@ -1018,7 +1070,7 @@ const ResearchProjectPage: React.FC = () => {
     try {
       const { finalRunStatus, finalRunError } = await readIdeaRunStream(
         `/api/research/projects/${projectId}/idea-runs/stream`,
-        { num_ideas: 3, external_search: externalSearch, ...ideaToolPayload() },
+        { num_ideas: 3, external_search: externalSearch, evidence_controls: evidenceControlsPayload(), ...ideaToolPayload() },
         controller,
       );
       await loadProject();
@@ -1048,6 +1100,7 @@ const ResearchProjectPage: React.FC = () => {
       const response = await api.post(`/research/projects/${projectId}/idea-runs/gap-preview`, {
         num_ideas: 3,
         external_search: externalSearch,
+        evidence_controls: evidenceControlsPayload(),
         ...ideaToolPayload(),
       });
       setRun(response.data);
@@ -1083,6 +1136,7 @@ const ResearchProjectPage: React.FC = () => {
             risk_appetite: riskAppetite,
             resource_budget: resourceBudget,
           },
+          evidence_controls: evidenceControlsPayload(),
           ...ideaToolPayload(),
         },
         controller,
@@ -1646,6 +1700,8 @@ const ResearchProjectPage: React.FC = () => {
   const evidenceMap = run?.evidence_map || {};
   const evidenceItems = (['seed', 'background', 'inspiration'] as const).flatMap(category => (evidenceMap[category] as Evidence[] || []));
   const evidenceById = new Map(evidenceItems.map(item => [item.paper_id, item]));
+  const evidenceControlSummary = evidenceMap.control_summary as EvidenceControlSummary | undefined;
+  const activeEvidenceControls = evidenceControlsPayload();
   const evidenceOptions = evidenceItems.map(item => ({
     value: item.paper_id,
     label: `${item.title}${item.year ? ` (${item.year})` : ''}`,
@@ -1723,6 +1779,28 @@ const ResearchProjectPage: React.FC = () => {
     <div>
       <Alert showIcon type="info" message="证据地图" description="核心论文来自你主动关联的文献；背景论文用于界定现有方法；灵感论文可以来自本地论文库、arXiv 或 Semantic Scholar，用于新颖性检查和跨领域启发。" style={{ marginBottom: 16 }} />
       {Object.keys(sourceErrors).length > 0 && <Alert showIcon type="warning" message="部分联网来源暂不可用" description={`已自动使用其余证据继续生成：${Object.keys(sourceErrors).join('、')}`} style={{ marginBottom: 16 }} />}
+      <Card size="small" className="evidence-control-panel" style={{ marginBottom: 12, borderRadius: 12 }}>
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <Space wrap align="center">
+            <Text strong>生成证据控制</Text>
+            <Select
+              size="small"
+              value={evidenceMaxItems}
+              options={evidenceCountOptions}
+              onChange={setEvidenceMaxItems}
+              style={{ width: 108 }}
+            />
+            <Tag color={activeEvidenceControls.pinned_paper_ids.length ? 'purple' : 'default'}>固定 {activeEvidenceControls.pinned_paper_ids.length}</Tag>
+            <Tag color={activeEvidenceControls.excluded_paper_ids.length ? 'red' : 'default'}>排除 {activeEvidenceControls.excluded_paper_ids.length}</Tag>
+            {evidenceControlSummary && <Tag color="blue">本次保留 {evidenceControlSummary.retained_count ?? evidenceItems.length}/{evidenceControlSummary.source_count ?? evidenceItems.length}</Tag>}
+            <Button size="small" disabled={pinnedEvidenceIds.length === 0} onClick={() => setPinnedEvidenceIds([])}>清空固定</Button>
+            <Button size="small" disabled={excludedEvidenceIds.length === 0} onClick={() => setExcludedEvidenceIds([])}>清空排除</Button>
+          </Space>
+          <Text type="secondary">
+            预览 Gap Map 和继续生成 Proposal 时会使用这组控制；固定论文会优先进入模型上下文，排除论文不会参与生成。
+          </Text>
+        </Space>
+      </Card>
       {evidenceItems.length === 0 ? (
         <WorkflowEmptyState
           title="证据地图还没有生成"
@@ -1732,9 +1810,33 @@ const ResearchProjectPage: React.FC = () => {
         />
       ) : (
         <List dataSource={evidenceItems} renderItem={item => (
-          <List.Item style={{ alignItems: 'flex-start' }}>
+          <List.Item
+            style={{ alignItems: 'flex-start' }}
+            actions={[
+              <Button
+                key="pin"
+                size="small"
+                type={pinnedEvidenceIds.includes(item.paper_id) ? 'primary' : 'default'}
+                icon={<PushpinOutlined />}
+                disabled={excludedEvidenceIds.includes(item.paper_id)}
+                onClick={() => togglePinnedEvidence(item.paper_id)}
+              >
+                固定
+              </Button>,
+              <Button
+                key="exclude"
+                size="small"
+                danger={excludedEvidenceIds.includes(item.paper_id)}
+                type={excludedEvidenceIds.includes(item.paper_id) ? 'primary' : 'default'}
+                icon={<DeleteOutlined />}
+                onClick={() => toggleExcludedEvidence(item.paper_id)}
+              >
+                排除
+              </Button>,
+            ]}
+          >
             <List.Item.Meta
-              title={<Space wrap><Tag color={categoryColors[item.category]}>{categoryLabels[item.category]}</Tag><Tag>{sourceLabels[item.source || 'local_library'] || item.source}</Tag>{item.collection_names?.map(name => <Tag color="magenta" key={name}>分类：{name}</Tag>)}<Text strong>{item.title}</Text>{item.year && <Text type="secondary">{item.year}</Text>}</Space>}
+              title={<Space wrap><Tag color={categoryColors[item.category]}>{categoryLabels[item.category]}</Tag><Tag>{sourceLabels[item.source || 'local_library'] || item.source}</Tag>{pinnedEvidenceIds.includes(item.paper_id) && <Tag color="purple">已固定</Tag>}{excludedEvidenceIds.includes(item.paper_id) && <Tag color="red">将排除</Tag>}{item.collection_names?.map(name => <Tag color="magenta" key={name}>分类：{name}</Tag>)}<Text strong>{item.title}</Text>{item.year && <Text type="secondary">{item.year}</Text>}</Space>}
               description={<><Paragraph ellipsis={{ rows: 2 }} style={{ margin: '6px 0 4px' }}>{item.abstract_excerpt || '暂无摘要'}</Paragraph><Space wrap><Text type="secondary">{item.relevance}</Text>{item.source_url && <Button type="link" size="small" href={item.source_url} target="_blank">查看来源</Button>}{item.source !== 'local_library' && (item.imported_paper_id ? <Tag color="green">已入库</Tag> : <Button type="link" size="small" icon={<ImportOutlined />} loading={importingEvidence.has(item.paper_id)} onClick={() => importEvidence(item)}>一键入库</Button>)}</Space></>}
             />
           </List.Item>

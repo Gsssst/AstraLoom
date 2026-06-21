@@ -8,6 +8,7 @@ how a research proposal was formed.
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import json
 import logging
@@ -61,6 +62,7 @@ REVIEW_WEIGHTS = {
     "clarity": 0.05,
 }
 TOOL_MODES = {"inspiration", "required", "baseline", "avoid"}
+EVIDENCE_CATEGORIES = ("seed", "background", "inspiration")
 
 
 class ResearchIdeaWorkbenchService:
@@ -76,6 +78,7 @@ class ResearchIdeaWorkbenchService:
         num_ideas: int = 3,
         external_search: bool = True,
         tool_context: dict[str, Any] | None = None,
+        evidence_controls: dict[str, Any] | None = None,
     ) -> ResearchIdeaRun:
         config = {
             "num_ideas": num_ideas,
@@ -84,6 +87,9 @@ class ResearchIdeaWorkbenchService:
         }
         if tool_context:
             config["tool_context"] = tool_context
+        normalized_controls = self.normalize_evidence_controls(evidence_controls)
+        if normalized_controls:
+            config["evidence_controls"] = normalized_controls
         run = ResearchIdeaRun(
             project_id=project.id,
             status="pending",
@@ -145,6 +151,195 @@ class ResearchIdeaWorkbenchService:
         await self.session.refresh(run)
         return run
 
+    @classmethod
+    def normalize_evidence_controls(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        try:
+            max_items = int(value.get("max_items", 12))
+        except (TypeError, ValueError):
+            max_items = 12
+        max_items = max(3, min(30, max_items))
+        excluded = cls._unique_string_list(value.get("excluded_paper_ids"), limit=60)
+        excluded_set = set(excluded)
+        pinned = [
+            paper_id
+            for paper_id in cls._unique_string_list(value.get("pinned_paper_ids"), limit=30)
+            if paper_id not in excluded_set
+        ]
+        return {
+            "max_items": max_items,
+            "pinned_paper_ids": pinned,
+            "excluded_paper_ids": excluded,
+        }
+
+    @classmethod
+    def control_evidence_for_run(
+        cls,
+        run: ResearchIdeaRun,
+        evidence_map: dict[str, Any],
+        *,
+        evidence_controls: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        config = dict(run.config_json or {})
+        controls = cls.normalize_evidence_controls(evidence_controls)
+        if controls is None:
+            controls = cls.normalize_evidence_controls(config.get("evidence_controls"))
+        if controls is None:
+            return evidence_map
+        config["evidence_controls"] = controls
+        run.config_json = config
+        return cls.apply_evidence_controls(evidence_map, controls)
+
+    @classmethod
+    def apply_evidence_controls(
+        cls,
+        evidence_map: dict[str, Any],
+        controls: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        normalized = cls.normalize_evidence_controls(controls)
+        if normalized is None:
+            return evidence_map
+
+        source_map = cls._control_source_map(evidence_map)
+        source_items = cls._ordered_evidence_items(source_map)
+        excluded_ids = set(normalized["excluded_paper_ids"])
+        available_items = [
+            item
+            for item in source_items
+            if item.get("paper_id") and str(item.get("paper_id")) not in excluded_ids
+        ]
+        available_by_id = {str(item["paper_id"]): item for item in available_items}
+
+        pinned_items = [
+            available_by_id[paper_id]
+            for paper_id in normalized["pinned_paper_ids"]
+            if paper_id in available_by_id
+        ]
+        pinned_ids = {str(item["paper_id"]) for item in pinned_items}
+        selected_items = [
+            *pinned_items,
+            *[item for item in available_items if str(item.get("paper_id")) not in pinned_ids],
+        ][: normalized["max_items"]]
+        selected_ids = {str(item["paper_id"]) for item in selected_items}
+
+        controlled: dict[str, Any] = {
+            key: value
+            for key, value in source_map.items()
+            if key not in {*EVIDENCE_CATEGORIES, "counts"}
+        }
+        for category in EVIDENCE_CATEGORIES:
+            controlled[category] = [
+                {**item, "category": item.get("category") or category}
+                for item in (source_map.get(category) or [])
+                if isinstance(item, dict)
+                and item.get("paper_id")
+                and str(item.get("paper_id")) in selected_ids
+                and str(item.get("paper_id")) not in excluded_ids
+            ]
+        controlled["counts"] = {
+            category: len(controlled.get(category) or [])
+            for category in EVIDENCE_CATEGORIES
+        }
+        controlled["counts"]["controlled_total"] = len(selected_items)
+        controlled["controls"] = normalized
+        controlled["control_summary"] = {
+            "max_items": normalized["max_items"],
+            "source_count": len(source_items),
+            "available_after_exclusion": len(available_items),
+            "retained_count": len(selected_items),
+            "pinned_requested_count": len(normalized["pinned_paper_ids"]),
+            "pinned_retained_count": len([item for item in selected_items if str(item.get("paper_id")) in pinned_ids]),
+            "excluded_requested_count": len(normalized["excluded_paper_ids"]),
+            "excluded_available_count": len([
+                item for item in source_items if str(item.get("paper_id") or "") in excluded_ids
+            ]),
+            "unavailable_pinned_ids": [
+                paper_id for paper_id in normalized["pinned_paper_ids"] if paper_id not in available_by_id
+            ][:12],
+            "category_counts": {
+                category: len(controlled.get(category) or [])
+                for category in EVIDENCE_CATEGORIES
+            },
+        }
+        controlled["controlled_items"] = [{**item} for item in selected_items]
+        controlled["control_source_map"] = source_map
+        return controlled
+
+    @classmethod
+    def _control_source_map(cls, evidence_map: dict[str, Any]) -> dict[str, Any]:
+        source = evidence_map.get("control_source_map") if isinstance(evidence_map, dict) else None
+        if isinstance(source, dict):
+            return copy.deepcopy(source)
+        source_map = copy.deepcopy(evidence_map if isinstance(evidence_map, dict) else {})
+        for key in ("controls", "control_summary", "controlled_items", "control_source_map"):
+            source_map.pop(key, None)
+        return source_map
+
+    @staticmethod
+    def _ordered_evidence_items(evidence_map: dict[str, Any]) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for category in EVIDENCE_CATEGORIES:
+            for item in evidence_map.get(category, []) or []:
+                if not isinstance(item, dict) or not item.get("paper_id"):
+                    continue
+                paper_id = str(item.get("paper_id"))
+                if paper_id in seen:
+                    continue
+                seen.add(paper_id)
+                items.append({**item, "paper_id": paper_id, "category": item.get("category") or category})
+        return items
+
+    @staticmethod
+    def _unique_string_list(value: Any, *, limit: int) -> list[str]:
+        raw_items = value if isinstance(value, list) else [value] if value else []
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            cleaned = str(item or "").strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            result.append(cleaned)
+            if len(result) >= limit:
+                break
+        return result
+
+    @classmethod
+    def _filter_gap_map_evidence(cls, gap_map: dict[str, Any], evidence_map: dict[str, Any]) -> dict[str, Any]:
+        available = cls._available_evidence_ids(evidence_map)
+        if not available:
+            return gap_map
+        filtered_gaps = []
+        for gap in gap_map.get("gaps") or []:
+            if not isinstance(gap, dict):
+                continue
+            filtered_gaps.append({
+                **gap,
+                "evidence_ids": [
+                    str(evidence_id)
+                    for evidence_id in gap.get("evidence_ids") or []
+                    if str(evidence_id) in available
+                ],
+            })
+        blocked_gaps = []
+        for gap in gap_map.get("blocked_gaps") or []:
+            if not isinstance(gap, dict):
+                continue
+            blocked_gaps.append({
+                **gap,
+                "evidence_ids": [
+                    str(evidence_id)
+                    for evidence_id in gap.get("evidence_ids") or []
+                    if str(evidence_id) in available
+                ],
+            })
+        result = {**gap_map, "gaps": filtered_gaps}
+        if blocked_gaps:
+            result["blocked_gaps"] = blocked_gaps
+        return result
+
     async def execute(
         self,
         project: ResearchProject,
@@ -163,6 +358,7 @@ class ResearchIdeaWorkbenchService:
                 brief,
                 external_search=bool((run.config_json or {}).get("external_search", True)),
             )
+            evidence_map = self.control_evidence_for_run(run, evidence_map)
             await self._save_artifact(run, "evidence_map", evidence_map, on_progress)
 
             await self._transition(run, "mapping_gaps", callback=on_progress)
@@ -209,6 +405,7 @@ class ResearchIdeaWorkbenchService:
                 brief,
                 external_search=bool((run.config_json or {}).get("external_search", True)),
             )
+            evidence_map = self.control_evidence_for_run(run, evidence_map)
             await self._save_artifact(run, "evidence_map", evidence_map, on_progress)
 
             await self._transition(run, "mapping_gaps", callback=on_progress)
@@ -237,6 +434,7 @@ class ResearchIdeaWorkbenchService:
         gap_selection: dict[str, Any] | None = None,
         generation_constraints: dict[str, Any] | None = None,
         num_ideas: int = 3,
+        evidence_controls: dict[str, Any] | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> list[ResearchIdea]:
         """Continue a persisted Gap Map run after user selection."""
@@ -247,11 +445,17 @@ class ResearchIdeaWorkbenchService:
                 brief,
                 external_search=bool((run.config_json or {}).get("external_search", True)),
             )
+            evidence_map = self.control_evidence_for_run(run, evidence_map, evidence_controls=evidence_controls)
             if not run.evidence_map:
                 await self._save_artifact(run, "evidence_map", evidence_map, on_progress)
+            else:
+                run.evidence_map = evidence_map
+                await self._emit(on_progress, {"type": "artifact", "artifact": "evidence_map", "data": evidence_map})
             gap_map = run.gap_map or await self.extract_gap_map(brief, evidence_map)
             if not run.gap_map:
                 await self._save_artifact(run, "gap_map", gap_map, on_progress)
+            else:
+                gap_map = self._filter_gap_map_evidence(gap_map, evidence_map)
             selection = self.normalize_gap_selection(gap_map, gap_selection, generation_constraints)
             config = dict(run.config_json or {})
             config["num_ideas"] = num_ideas
@@ -3781,11 +3985,16 @@ Proposal：{json.dumps({
 
     @staticmethod
     def _format_evidence(evidence_map: dict[str, Any], limit: int) -> str:
-        items = [
-            item
-            for category in ("seed", "background", "inspiration")
-            for item in evidence_map.get(category, [])
-        ][:limit]
+        controlled_items = evidence_map.get("controlled_items") if isinstance(evidence_map, dict) else None
+        if isinstance(controlled_items, list) and controlled_items:
+            items = [item for item in controlled_items if isinstance(item, dict)][:limit]
+        else:
+            items = [
+                item
+                for category in EVIDENCE_CATEGORIES
+                for item in evidence_map.get(category, [])
+                if isinstance(item, dict)
+            ][:limit]
         return "\n".join(
             f"- [{item['paper_id']}] ({item.get('category', item.get('source', 'evidence'))}) {item['title']}: {item.get('abstract_excerpt', '')}"
             for item in items

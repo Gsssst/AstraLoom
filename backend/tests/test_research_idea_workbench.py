@@ -244,6 +244,159 @@ def test_generation_context_summarizes_feedback_and_fallback_avoids_rejected_gap
     assert "rating=strong" in candidates[0]["approach"]
 
 
+def _evidence_fixture():
+    return {
+        "scope": "local_library",
+        "seed": [
+            {"paper_id": "p1", "title": "Seed 1", "category": "seed"},
+            {"paper_id": "p2", "title": "Seed 2", "category": "seed"},
+        ],
+        "background": [
+            {"paper_id": "p3", "title": "Background 1", "category": "background"},
+            {"paper_id": "p4", "title": "Background 2", "category": "background"},
+        ],
+        "inspiration": [
+            {"paper_id": "p5", "title": "Inspiration 1", "category": "inspiration"},
+            {"paper_id": "p6", "title": "Inspiration 2", "category": "inspiration"},
+        ],
+    }
+
+
+def test_normalize_evidence_controls_clamps_and_excluded_wins():
+    controls = ResearchIdeaWorkbenchService.normalize_evidence_controls({
+        "max_items": 80,
+        "pinned_paper_ids": ["p1", "p1", "p2", ""],
+        "excluded_paper_ids": ["p2", "p3", "p3"],
+    })
+
+    assert controls == {
+        "max_items": 30,
+        "pinned_paper_ids": ["p1"],
+        "excluded_paper_ids": ["p2", "p3"],
+    }
+
+
+def test_apply_evidence_controls_prioritizes_pins_and_excludes_all_categories():
+    controlled = ResearchIdeaWorkbenchService.apply_evidence_controls(
+        _evidence_fixture(),
+        {"max_items": 3, "pinned_paper_ids": ["p5", "p2"], "excluded_paper_ids": ["p2", "p3"]},
+    )
+
+    assert [item["paper_id"] for item in controlled["controlled_items"]] == ["p5", "p1", "p4"]
+    assert [item["paper_id"] for item in controlled["seed"]] == ["p1"]
+    assert [item["paper_id"] for item in controlled["background"]] == ["p4"]
+    assert [item["paper_id"] for item in controlled["inspiration"]] == ["p5"]
+    assert controlled["controls"]["pinned_paper_ids"] == ["p5"]
+    assert controlled["control_summary"]["retained_count"] == 3
+    assert controlled["control_summary"]["excluded_available_count"] == 2
+    assert "control_source_map" in controlled
+
+
+def test_apply_evidence_controls_can_recover_from_original_source_map():
+    first = ResearchIdeaWorkbenchService.apply_evidence_controls(
+        _evidence_fixture(),
+        {"max_items": 3, "pinned_paper_ids": [], "excluded_paper_ids": []},
+    )
+    second = ResearchIdeaWorkbenchService.apply_evidence_controls(
+        first,
+        {"max_items": 5, "pinned_paper_ids": ["p6"], "excluded_paper_ids": []},
+    )
+
+    assert [item["paper_id"] for item in second["controlled_items"]] == ["p6", "p1", "p2", "p3", "p4"]
+
+
+@pytest.mark.asyncio
+async def test_gap_preview_persists_controlled_evidence_map(monkeypatch):
+    session = _Session()
+    service = ResearchIdeaWorkbenchService(session)
+    project = SimpleNamespace(id=uuid4(), name="Grounded QA", description="", keywords=[], metadata_json={}, paper_ids=[])
+    run = SimpleNamespace(
+        status="pending",
+        stage="briefing",
+        progress=0,
+        message="",
+        config_json={
+            "external_search": False,
+            "evidence_controls": {"max_items": 3, "pinned_paper_ids": ["p5"], "excluded_paper_ids": ["p2"]},
+        },
+        evidence_map=None,
+        gap_map=None,
+        error=None,
+    )
+
+    async def fake_collect(*_args, **_kwargs):
+        return _evidence_fixture()
+
+    async def fake_gap(_brief, evidence_map):
+        return {
+            "summary": "Gaps",
+            "gaps": [{
+                "title": "Gap A",
+                "limitation": "L",
+                "opportunity": "O",
+                "research_question": "Q",
+                "evidence_ids": [item["paper_id"] for item in evidence_map["controlled_items"]],
+                "uncertainty": "U",
+            }],
+        }
+
+    monkeypatch.setattr(service, "collect_evidence", fake_collect)
+    monkeypatch.setattr(service, "extract_gap_map", fake_gap)
+
+    result = await service.execute_gap_preview(project, run)
+
+    assert result.config_json["evidence_controls"]["max_items"] == 3
+    assert [item["paper_id"] for item in result.evidence_map["controlled_items"]] == ["p5", "p1", "p3"]
+    assert result.evidence_map["control_summary"]["pinned_retained_count"] == 1
+    assert result.gap_map["gaps"][0]["evidence_ids"] == ["p5", "p1", "p3"]
+
+
+@pytest.mark.asyncio
+async def test_continue_from_gap_review_reapplies_revised_evidence_controls(monkeypatch):
+    session = _Session()
+    service = ResearchIdeaWorkbenchService(session)
+    project = SimpleNamespace(id=uuid4(), name="Grounded QA", description="", keywords=[], metadata_json={}, paper_ids=[])
+    initial = ResearchIdeaWorkbenchService.apply_evidence_controls(
+        _evidence_fixture(),
+        {"max_items": 3, "pinned_paper_ids": [], "excluded_paper_ids": []},
+    )
+    run = SimpleNamespace(
+        status="pending",
+        stage="gap_review",
+        progress=48,
+        message="",
+        config_json={"external_search": False, "evidence_controls": initial["controls"]},
+        evidence_map=initial,
+        gap_map={"summary": "Gaps", "gaps": [
+            {"title": "Gap A", "limitation": "L1", "opportunity": "O1", "research_question": "Q1", "evidence_ids": ["p1", "p2", "p4"], "uncertainty": "U1"},
+        ]},
+        error=None,
+    )
+    captured = {}
+
+    async def fake_execute(_project, _run, _brief, evidence_map, constrained_gap_map, _num_ideas, **_kwargs):
+        captured["evidence_ids"] = [item["paper_id"] for item in evidence_map["controlled_items"]]
+        captured["gap_evidence_ids"] = constrained_gap_map["gaps"][0]["evidence_ids"]
+        captured["config"] = _run.config_json
+        return []
+
+    monkeypatch.setattr(service, "_execute_from_gap_map", fake_execute)
+
+    await service.continue_from_gap_review(
+        project,
+        run,
+        gap_selection={"selected_gap_titles": ["Gap A"]},
+        generation_constraints={},
+        num_ideas=1,
+        evidence_controls={"max_items": 4, "pinned_paper_ids": ["p6"], "excluded_paper_ids": ["p2"]},
+    )
+
+    assert captured["evidence_ids"] == ["p6", "p1", "p3", "p4"]
+    assert captured["gap_evidence_ids"] == ["p1", "p4"]
+    assert captured["config"]["evidence_controls"]["pinned_paper_ids"] == ["p6"]
+    assert run.evidence_map["control_summary"]["retained_count"] == 4
+
+
 def test_normalize_candidate_adds_structured_proposal_outline():
     evidence = {
         "seed": [{"paper_id": "p1", "title": "Evidence Paper", "category": "seed"}],
