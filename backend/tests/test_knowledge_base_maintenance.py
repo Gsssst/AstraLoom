@@ -1589,11 +1589,17 @@ def test_processing_snapshot_ignores_stale_visual_failure_after_ready():
         bm25_status={"ready": True, "indexed_papers": 1},
     )
     visual = next(label for label in snapshot.labels if label.key == "visual_evidence")
+    visual_timeline = next(item for item in snapshot.timeline if item.key == "visual_evidence")
 
     assert snapshot.status == "ready"
     assert snapshot.failed == []
     assert visual.state == "ready"
     assert visual.detail == "项目 1"
+    assert visual_timeline.state == "ready"
+    assert visual_timeline.error is None
+    assert visual_timeline.failed_at is None
+    assert visual_timeline.next_retry_hint is None
+    assert visual_timeline.detail == "项目 1"
 
 
 @pytest.mark.asyncio

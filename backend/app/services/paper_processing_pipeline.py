@@ -275,7 +275,7 @@ def _processing_timeline_from_labels(
     last_completed_at = pipeline.get("last_completed_at") if isinstance(pipeline.get("last_completed_at"), str) else None
     items: list[ProcessingTimelineItem] = []
     for label in labels:
-        failure = _failure_metadata(failed_steps, label.key)
+        failure = {} if label.ready else _failure_metadata(failed_steps, label.key)
         error = failure.get("message") if isinstance(failure.get("message"), str) else None
         failed_at = failure.get("failed_at") if isinstance(failure.get("failed_at"), str) else None
         timestamp, timestamp_label = _timeline_timestamp(

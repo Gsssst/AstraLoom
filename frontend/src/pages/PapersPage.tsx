@@ -52,6 +52,12 @@ interface PaperItem {
   has_full_text?: boolean;
   has_embedding?: boolean;
   has_tags?: boolean;
+  visual_evidence_status?: {
+    ready?: boolean;
+    missing_ocr_count?: number;
+    missing_summary_count?: number;
+    low_confidence_table_count?: number;
+  } | null;
   processing_status?: string | null;
   processing_labels?: ProcessingLabel[];
   processing_automation?: { last_checked_at?: string; last_completed_at?: string; last_error?: { message?: string } } | null;
@@ -261,6 +267,17 @@ const paperResultStateCounts = (items: PaperItem[], ingestedRemoteIds: Set<strin
   items.forEach(item => {
     counts[paperResultState(item, ingestedRemoteIds).key] += 1;
     if (item.pdf_url) counts.open_pdf += 1;
+  });
+  return counts;
+};
+
+const paperLocalReadinessCounts = (items: PaperItem[]) => {
+  const counts = { all: items.length, full_text: 0, embedding: 0, visual: 0, open_pdf: 0 };
+  items.forEach(item => {
+    if (item.has_full_text) counts.full_text += 1;
+    if (item.has_embedding) counts.embedding += 1;
+    if (item.visual_evidence_status?.ready) counts.visual += 1;
+    if (item.pdf_url || item.has_pdf) counts.open_pdf += 1;
   });
   return counts;
 };
@@ -1162,7 +1179,9 @@ const PapersPage: React.FC = () => {
   );
 
   const resultStateCounts = paperResultStateCounts(papers, ingestedRemoteIds);
+  const localReadinessCounts = paperLocalReadinessCounts(papers);
   const filteredPapers = papers.filter(paper => {
+    if (!isSearchBackedSource) return true;
     if (resultStateFilter === 'all') return true;
     if (resultStateFilter === 'open_pdf') return !!paper.pdf_url;
     return paperResultState(paper, ingestedRemoteIds).key === resultStateFilter;
@@ -1171,7 +1190,7 @@ const PapersPage: React.FC = () => {
   const selectedCount = selectedIds.size;
   const statsTotal = isSearchBackedSource ? searchTotal : papers.length;
   const stats = statsTotal > 0 ? `共 ${statsTotal} 篇论文` : '';
-  const resultStateScopeLabel = isSearchBackedSource ? '结果状态（本页）' : '结果状态';
+  const resultStateScopeLabel = isSearchBackedSource ? '结果状态（本页）' : '本地就绪';
   const resultStateTagPrefix = isSearchBackedSource ? '本页' : '';
   const searchPaginationTotal = isRemoteSource
     ? Math.max(searchTotal, searchPage * searchPageSize + (papers.length > 0 ? searchPageSize : 0))
@@ -1912,16 +1931,28 @@ const PapersPage: React.FC = () => {
             <Col flex="auto">
               <Space size={6} wrap>
                 <Text type="secondary" style={{ fontSize: 13 }}>{resultStateScopeLabel}</Text>
-                {isSearchBackedSource && searchTotal > resultStateCounts.all && <Tag>总匹配 {searchTotal}</Tag>}
-                <Tag color="blue">{resultStateTagPrefix}全部 {resultStateCounts.all}</Tag>
-                <Tag color="green">{resultStateTagPrefix}已在库 {resultStateCounts.local}</Tag>
-                <Tag color="geekblue">{resultStateTagPrefix}可入库 {resultStateCounts.importable}</Tag>
-                <Tag color="success">{resultStateTagPrefix}本次已加入 {resultStateCounts.imported}</Tag>
-                <Tag color="cyan">{resultStateTagPrefix}开放 PDF {resultStateCounts.open_pdf}</Tag>
-                <Tag>{resultStateTagPrefix}缺远程 ID {resultStateCounts.missing_remote_id}</Tag>
+                {isSearchBackedSource ? (
+                  <>
+                    {searchTotal > resultStateCounts.all && <Tag>总匹配 {searchTotal}</Tag>}
+                    <Tag color="blue">{resultStateTagPrefix}全部 {resultStateCounts.all}</Tag>
+                    <Tag color="green">{resultStateTagPrefix}已在库 {resultStateCounts.local}</Tag>
+                    <Tag color="geekblue">{resultStateTagPrefix}可入库 {resultStateCounts.importable}</Tag>
+                    <Tag color="success">{resultStateTagPrefix}本次已加入 {resultStateCounts.imported}</Tag>
+                    <Tag color="cyan">{resultStateTagPrefix}开放 PDF {resultStateCounts.open_pdf}</Tag>
+                    <Tag>{resultStateTagPrefix}缺远程 ID {resultStateCounts.missing_remote_id}</Tag>
+                  </>
+                ) : (
+                  <>
+                    <Tag color="blue">全部 {localReadinessCounts.all}</Tag>
+                    <Tag color="green">全文就绪 {localReadinessCounts.full_text}</Tag>
+                    <Tag color="purple">视觉证据就绪 {localReadinessCounts.visual}</Tag>
+                    <Tag color="cyan">向量就绪 {localReadinessCounts.embedding}</Tag>
+                    <Tag color="geekblue">开放 PDF {localReadinessCounts.open_pdf}</Tag>
+                  </>
+                )}
               </Space>
             </Col>
-            <Col>
+            {isSearchBackedSource && <Col>
               <Select
                 size="small"
                 value={resultStateFilter}
@@ -1929,7 +1960,7 @@ const PapersPage: React.FC = () => {
                 options={paperResultStateOptions}
                 style={{ width: 132 }}
               />
-            </Col>
+            </Col>}
           </Row>
         )}
         {source === 'reading' && (
