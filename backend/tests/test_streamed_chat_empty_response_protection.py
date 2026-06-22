@@ -9,6 +9,18 @@ from app.services import llm as llm_module
 from app.services.usage_tracker import UsageTracker, set_usage_user
 
 
+class _FakeDb:
+    def __init__(self):
+        self.committed = False
+        self.refreshed = None
+
+    async def commit(self):
+        self.committed = True
+
+    async def refresh(self, value):
+        self.refreshed = value
+
+
 def _chunk(*, content=None, reasoning_content=None):
     delta = SimpleNamespace(content=content, reasoning_content=reasoning_content)
     return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
@@ -131,6 +143,37 @@ def test_llm_service_rejects_unconfigured_provider_without_changing_selection(mo
     assert service.get_active_option()["provider"] == "deepseek"
 
 
+def test_llm_service_resolves_request_user_preference_before_server_default(monkeypatch, tmp_path):
+    monkeypatch.setattr(llm_module.settings, "LLM_PROVIDER", "deepseek")
+    monkeypatch.setattr(llm_module.settings, "DEEPSEEK_API_KEY", "sk-deepseek")
+    monkeypatch.setattr(llm_module.settings, "DEEPSEEK_API_BASE", "https://api.deepseek.com")
+    monkeypatch.setattr(llm_module.settings, "DEEPSEEK_MODEL", "deepseek-v4-pro")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_KEY", "sk-compatible")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_BASE", "https://llm.example.com/v1")
+    monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_MODEL", "gpt-5.5")
+    monkeypatch.setattr(llm_module.settings, "LLM_RUNTIME_CONFIG_PATH", str(tmp_path / "llm.json"))
+
+    service = llm_module.LLMService()
+    llm_module.clear_request_llm_preference()
+    assert service.get_active_option()["provider"] == "deepseek"
+
+    llm_module.set_request_llm_preference(
+        SimpleNamespace(llm_provider="openai-compatible", llm_model="gpt-5.5")
+    )
+    assert service.get_active_option()["provider"] == "openai-compatible"
+    assert service.get_active_option()["model"] == "gpt-5.5"
+    assert service.get_active_option()["selection_source"] == "user"
+
+    llm_module.set_request_llm_preference(
+        SimpleNamespace(llm_provider="deepseek", llm_model="deepseek-v4-pro")
+    )
+    assert service.get_active_option()["provider"] == "deepseek"
+    assert service.get_active_option()["model"] == "deepseek-v4-pro"
+
+    llm_module.clear_request_llm_preference()
+    assert service.get_active_option()["selection_source"] == "server_default"
+
+
 @pytest.mark.asyncio
 async def test_llm_usage_records_active_model(monkeypatch, tmp_path):
     captured = []
@@ -162,27 +205,43 @@ async def test_settings_api_config_lists_models_without_keys(monkeypatch, tmp_pa
     monkeypatch.setattr(llm_module.settings, "LLM_RUNTIME_CONFIG_PATH", str(tmp_path / "llm.json"))
     monkeypatch.setattr(settings_api.llm_service, "runtime_config_path", str(tmp_path / "llm.json"))
 
-    response = await settings_api.get_api_config(SimpleNamespace(id="user"))
+    response = await settings_api.get_api_config(SimpleNamespace(id="user", llm_provider=None, llm_model=None))
     payload = response.model_dump()
 
     assert any(item["provider"] == "openai-compatible" for item in payload["options"])
     assert "sk-compatible" not in json.dumps(payload)
     assert payload["provider"] == "deepseek"
+    assert payload["selection_source"] == "server_default"
 
 
 @pytest.mark.asyncio
-async def test_settings_api_update_switches_openai_compatible_model(monkeypatch, tmp_path):
+async def test_settings_api_update_saves_user_model_preference_without_global_switch(monkeypatch, tmp_path):
     monkeypatch.setattr(llm_module.settings, "LLM_PROVIDER", "deepseek")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_KEY", "sk-compatible")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_API_BASE", "https://llm.example.com/v1")
     monkeypatch.setattr(llm_module.settings, "OPENAI_COMPATIBLE_MODEL", "gpt-5.5")
     monkeypatch.setattr(settings_api.llm_service, "runtime_config_path", str(tmp_path / "llm.json"))
+    monkeypatch.setattr(
+        settings_api.llm_service,
+        "select_model",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("global selection should not change")),
+    )
+
+    user = SimpleNamespace(username="user-a", llm_provider=None, llm_model=None)
+    db = _FakeDb()
 
     response = await settings_api.update_api_config(
         settings_api.UpdateApiConfigRequest(provider="openai-compatible", model="gpt-5.5"),
-        SimpleNamespace(username="admin"),
+        db,
+        user,
     )
 
+    assert db.committed is True
+    assert db.refreshed is user
+    assert user.llm_provider == "openai-compatible"
+    assert user.llm_model == "gpt-5.5"
     assert response.provider == "openai-compatible"
     assert response.model == "gpt-5.5"
     assert response.configured is True
+    assert response.selection_source == "user"
+    llm_module.clear_request_llm_preference()

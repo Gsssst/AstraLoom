@@ -7,13 +7,13 @@ const settingsSource = readFileSync(
   'utf8',
 );
 
-test('settings API tab exposes current model connection test action', () => {
+test('settings API tab exposes personal model connection test action', () => {
   assert.match(settingsSource, /testingApiConfig/);
   assert.match(settingsSource, /apiConfigTestResult/);
   assert.match(settingsSource, /apiConfigTestError/);
   assert.match(settingsSource, /handleTestApiConfig/);
   assert.match(settingsSource, /settings\/api-config\/test/);
-  assert.match(settingsSource, /测试当前模型/);
+  assert.match(settingsSource, /测试我的模型/);
 });
 
 test('settings API tab renders connection test latency and preview', () => {

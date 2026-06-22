@@ -19,5 +19,5 @@ test('settings API tab exposes selectable server-side LLM models', () => {
   assert.match(settingsSource, /handleSaveApiConfig/);
   assert.match(settingsSource, /settings\/api-config/);
   assert.match(settingsSource, /OPENAI_COMPATIBLE_API_BASE/);
-  assert.match(settingsSource, /保存模型/);
+  assert.match(settingsSource, /保存我的模型/);
 });

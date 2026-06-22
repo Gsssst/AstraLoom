@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from app.db.session import get_db
 from app.db.models.user import User
-from app.core.security import get_current_user, hash_password, verify_password, require_admin
+from app.core.security import get_current_user, hash_password, verify_password
 from app.core.config import settings as app_settings
 from app.services.llm import llm_service
 
@@ -44,6 +44,11 @@ class ApiConfigResponse(BaseModel):
     has_api_key: bool
     configured: bool = False
     supports_thinking: bool = False
+    selection_source: str = "server_default"
+    user_provider: Optional[str] = None
+    user_model: Optional[str] = None
+    server_default_provider: str
+    server_default_model: str
     options: list[dict] = Field(default_factory=list)
     web_search_providers: list[str] = Field(default_factory=list)
 
@@ -62,10 +67,11 @@ class ApiConfigTestResponse(BaseModel):
     preview: str
 
 
-def _api_config_response() -> ApiConfigResponse:
+def _api_config_response(user: User) -> ApiConfigResponse:
     from app.services.web_search import available_web_provider_names
 
-    active = llm_service.get_active_option()
+    active = llm_service.get_user_option(user)
+    server_default = llm_service.get_server_default_option()
     options = llm_service.available_options()
     return ApiConfigResponse(
         provider=active["provider"],
@@ -74,6 +80,11 @@ def _api_config_response() -> ApiConfigResponse:
         has_api_key=active["has_api_key"],
         configured=active["configured"],
         supports_thinking=active["supports_thinking"],
+        selection_source=active.get("selection_source") or "server_default",
+        user_provider=getattr(user, "llm_provider", None),
+        user_model=getattr(user, "llm_model", None),
+        server_default_provider=server_default["provider"],
+        server_default_model=server_default["model"],
         options=options,
         web_search_providers=available_web_provider_names(),
     )
@@ -137,23 +148,31 @@ async def change_password(req: ChangePasswordRequest, db: AsyncSession = Depends
 @router.get("/api-config", response_model=ApiConfigResponse)
 async def get_api_config(user: User = Depends(get_current_user)):
     """获取 API 配置信息（隐藏 API Key）。"""
-    return _api_config_response()
+    return _api_config_response(user)
 
 
 @router.put("/api-config", response_model=ApiConfigResponse)
-async def update_api_config(req: UpdateApiConfigRequest, user: User = Depends(require_admin)):
-    """切换当前进程内生效的 LLM provider/model。API Key 仍由服务器环境变量配置。"""
+async def update_api_config(req: UpdateApiConfigRequest, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    """保存当前用户的 LLM provider/model 偏好。API Key 仍由服务器环境变量配置。"""
     try:
-        active = llm_service.select_model(req.provider, req.model)
+        active = llm_service.validate_model_preference(req.provider, req.model)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    logger.info("LLM provider switched to %s/%s by %s", active["provider"], active["model"], user.username)
-    return _api_config_response()
+    user.llm_provider = active["provider"]
+    user.llm_model = active["model"]
+    await db.commit()
+    await db.refresh(user)
+    from app.services.llm import set_request_llm_preference
+    set_request_llm_preference(user)
+    logger.info("LLM preference set to %s/%s by %s", active["provider"], active["model"], user.username)
+    return _api_config_response(user)
 
 
 @router.post("/api-config/test", response_model=ApiConfigTestResponse)
-async def test_api_config(user: User = Depends(require_admin)):
-    """测试当前 LLM provider/model 是否可用。"""
+async def test_api_config(user: User = Depends(get_current_user)):
+    """测试当前用户的 LLM provider/model 是否可用。"""
+    from app.services.llm import set_request_llm_preference
+    set_request_llm_preference(user)
     active = llm_service.get_active_option()
     if not active.get("configured"):
         raise HTTPException(status_code=400, detail="当前模型的 API Base 或 API Key 尚未在服务器环境变量中配置")

@@ -91,7 +91,9 @@ async def get_current_user(
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在或已禁用")
 
+    from app.services.llm import set_request_llm_preference
     from app.services.usage_tracker import set_usage_user
+    set_request_llm_preference(user)
     set_usage_user(user)
     return user
 
@@ -101,15 +103,19 @@ async def get_optional_user(
     db: AsyncSession = Depends(get_db),
 ):
     """FastAPI 依赖注入：可选认证。未登录时返回 None，不报错。"""
+    from app.services.llm import clear_request_llm_preference
     if credentials is None:
+        clear_request_llm_preference()
         return None
 
     payload = decode_token(credentials.credentials)
     if payload is None:
+        clear_request_llm_preference()
         return None
 
     user_id = payload.get("sub")
     if user_id is None:
+        clear_request_llm_preference()
         return None
 
     from app.db.models.user import User
@@ -118,8 +124,12 @@ async def get_optional_user(
     result = await db.execute(select(User).where(User.id == UUID(user_id)))
     user = result.scalar_one_or_none()
     if user:
+        from app.services.llm import set_request_llm_preference
         from app.services.usage_tracker import set_usage_user
+        set_request_llm_preference(user)
         set_usage_user(user)
+    else:
+        clear_request_llm_preference()
     return user
 
 

@@ -168,7 +168,7 @@ const SettingsPage: React.FC = () => {
       setSelectedApiModel(r.data.model);
       setApiConfigTestResult(null);
       setApiConfigTestError(null);
-      message.success('模型配置已切换');
+      message.success('我的模型偏好已保存');
     } catch (e: any) {
       message.error(getApiErrorMessage(e, { fallback: '模型配置保存失败' }));
     } finally {
@@ -306,8 +306,16 @@ const SettingsPage: React.FC = () => {
     <Card style={{ ...cardStyle, maxWidth: 680 }} styles={{ body: { padding: 24 } }}>
       <Space direction="vertical" style={{ width: '100%' }} size={16}>
         <Descriptions column={1} bordered size="small" labelStyle={{ fontWeight: 600 }}>
-          <Descriptions.Item label="当前提供商"><Tag color="purple" style={{ borderRadius: 6 }}>{apiConfig.provider}</Tag></Descriptions.Item>
-          <Descriptions.Item label="当前模型"><Text code>{apiConfig.model}</Text></Descriptions.Item>
+          <Descriptions.Item label="我的提供商">
+            <Space size={8} wrap>
+              <Tag color="purple" style={{ borderRadius: 6 }}>{apiConfig.provider}</Tag>
+              <Tag color={apiConfig.selection_source === 'user' ? 'green' : 'default'} style={{ borderRadius: 6 }}>
+                {apiConfig.selection_source === 'user' ? '个人偏好' : '服务端默认'}
+              </Tag>
+            </Space>
+          </Descriptions.Item>
+          <Descriptions.Item label="我的模型"><Text code>{apiConfig.model}</Text></Descriptions.Item>
+          <Descriptions.Item label="服务端默认"><Text code>{apiConfig.server_default_provider} / {apiConfig.server_default_model}</Text></Descriptions.Item>
           <Descriptions.Item label="API 地址"><Text code style={{ fontSize: 12 }}>{apiConfig.api_base || '未配置'}</Text></Descriptions.Item>
           <Descriptions.Item label="API Key">
             <Tag color={apiConfig.has_api_key ? 'green' : 'red'} style={{ borderRadius: 6 }}>{apiConfig.has_api_key ? '已配置' : '未配置'}</Tag>
@@ -317,7 +325,7 @@ const SettingsPage: React.FC = () => {
         <Divider style={{ margin: 0 }} />
 
         <div>
-          <Text strong>模型选择</Text>
+          <Text strong>我的模型选择</Text>
           <Select
             value={selectedApiProvider}
             onChange={(provider) => {
@@ -360,20 +368,20 @@ const SettingsPage: React.FC = () => {
             type="primary"
             icon={<SaveOutlined />}
             loading={savingApiConfig}
-            disabled={profile?.role !== 'admin' || !selectedApiOption?.configured}
+            disabled={!selectedApiOption?.configured}
             onClick={handleSaveApiConfig}
             style={{ borderRadius: 10, width: 160 }}
           >
-            保存模型
+            保存我的模型
           </Button>
           <Button
             icon={<ApiOutlined />}
             loading={testingApiConfig}
-            disabled={profile?.role !== 'admin' || !apiConfig.configured}
+            disabled={!apiConfig.configured}
             onClick={handleTestApiConfig}
             style={{ borderRadius: 10 }}
           >
-            测试当前模型
+            测试我的模型
           </Button>
         </Space>
 
@@ -412,8 +420,8 @@ const SettingsPage: React.FC = () => {
           type="info"
           showIcon
           style={{ borderRadius: 10 }}
-          message="API Key 和 Base URL 只从服务器环境变量读取"
-          description="GPT-5.5 兼容接口请在 .env 中配置 OPENAI_COMPATIBLE_API_BASE、OPENAI_COMPATIBLE_API_KEY 和 OPENAI_COMPATIBLE_MODEL。要让重启后仍默认使用它，再设置 LLM_PROVIDER=openai-compatible。"
+          message="模型选择是个人偏好，API Key 和 Base URL 仍由服务器统一配置"
+          description="每个用户可以选择自己的默认模型，保存后只影响自己的聊天、论文问答、写作和研究生成。可选模型来自服务器 .env，例如 OPENAI_COMPATIBLE_API_BASE、OPENAI_COMPATIBLE_API_KEY、OPENAI_COMPATIBLE_MODEL；未保存个人偏好时使用服务端默认模型。"
         />
       </Space>
     </Card>

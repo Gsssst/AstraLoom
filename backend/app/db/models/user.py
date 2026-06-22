@@ -21,6 +21,8 @@ class User(BaseModel):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     avatar: Mapped[str] = mapped_column(Text, nullable=True)  # base64 或 URL
     display_name: Mapped[str] = mapped_column(String(100), nullable=True)
+    llm_provider: Mapped[str] = mapped_column(String(50), nullable=True)
+    llm_model: Mapped[str] = mapped_column(String(120), nullable=True)
 
     def __repr__(self) -> str:
         return f"<User {self.username} ({self.email}) role={self.role}>"

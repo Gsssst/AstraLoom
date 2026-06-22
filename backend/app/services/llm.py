@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Dict, Any, Optional, Union
 
@@ -26,6 +27,26 @@ OPENAI_COMPATIBLE_MAX_OUTPUT_TOKENS = 128000
 
 DEFAULT_PROVIDER = "deepseek"
 OPENAI_COMPATIBLE_PROVIDER = "openai-compatible"
+_request_llm_preference: ContextVar[dict[str, str] | None] = ContextVar("request_llm_preference", default=None)
+
+
+def set_request_llm_preference(user) -> None:
+    """Store the authenticated user's LLM preference for this request context."""
+    provider = (getattr(user, "llm_provider", None) or "").strip()
+    model = (getattr(user, "llm_model", None) or "").strip()
+    if provider and model:
+        _request_llm_preference.set({"provider": provider, "model": model})
+        return
+    _request_llm_preference.set(None)
+
+
+def clear_request_llm_preference() -> None:
+    """Clear request-scoped LLM preference."""
+    _request_llm_preference.set(None)
+
+
+def get_request_llm_preference() -> dict[str, str] | None:
+    return _request_llm_preference.get()
 
 
 def _normalize_provider(value: Optional[str]) -> str:
@@ -127,19 +148,55 @@ class LLMService:
             },
         ]
 
-    def get_active_option(self) -> dict[str, Any]:
-        provider, model_override = self._read_runtime_selection()
+    def _option_for_selection(self, provider: str, model: Optional[str] = None) -> dict[str, Any] | None:
+        provider = _normalize_provider(provider)
         option = next((item for item in self.available_options() if item["provider"] == provider), None)
         if not option:
-            provider = DEFAULT_PROVIDER
+            return None
+        selected_model = (model or option["model"] or "").strip()
+        if not selected_model:
+            return None
+        return {**option, "provider": provider, "model": selected_model}
+
+    def get_server_default_option(self) -> dict[str, Any]:
+        """Return the process/server default option without request user preference."""
+        provider, model_override = self._read_runtime_selection()
+        option = self._option_for_selection(provider, model_override)
+        if not option:
             option = self.available_options()[0]
-        if model_override:
-            option = {**option, "model": model_override}
+        return {**option, "selection_source": "server_default"}
+
+    def get_user_option(self, user) -> dict[str, Any]:
+        """Return a user's effective option, falling back to the server default."""
+        provider = (getattr(user, "llm_provider", None) or "").strip()
+        model = (getattr(user, "llm_model", None) or "").strip()
+        if provider and model:
+            option = self._option_for_selection(provider, model)
+            if option and option.get("configured"):
+                return {**option, "selection_source": "user"}
+        return self.get_server_default_option()
+
+    def get_active_option(self) -> dict[str, Any]:
+        preference = get_request_llm_preference()
+        if preference:
+            option = self._option_for_selection(preference.get("provider") or "", preference.get("model"))
+            if option and option.get("configured"):
+                return {**option, "selection_source": "user"}
+        return self.get_server_default_option()
+
+    def validate_model_preference(self, provider: str, model: Optional[str] = None) -> dict[str, Any]:
+        option = self._option_for_selection(provider, model)
+        if not option:
+            raise ValueError("不支持的 LLM 提供商")
+        if not option["model"]:
+            raise ValueError("模型名称不能为空")
+        if not option["api_base"] or not option["has_api_key"]:
+            raise ValueError("该模型的 API Base 或 API Key 尚未在服务器环境变量中配置")
         return option
 
     @property
     def active_provider(self) -> str:
-        return self._read_runtime_selection()[0]
+        return self.get_active_option()["provider"]
 
     @property
     def model(self) -> str:
@@ -187,17 +244,9 @@ class LLMService:
         os.replace(tmp_path, self.runtime_config_path)
 
     def select_model(self, provider: str, model: Optional[str] = None) -> dict[str, Any]:
-        provider = _normalize_provider(provider)
-        option = next((item for item in self.available_options() if item["provider"] == provider), None)
-        if not option:
-            raise ValueError("不支持的 LLM 提供商")
-        selected_model = (model or option["model"]).strip()
-        if not selected_model:
-            raise ValueError("模型名称不能为空")
-        if not option["api_base"] or not option["has_api_key"]:
-            raise ValueError("该模型的 API Base 或 API Key 尚未在服务器环境变量中配置")
-        self._write_runtime_selection(provider, selected_model)
-        return self.get_active_option()
+        option = self.validate_model_preference(provider, model)
+        self._write_runtime_selection(option["provider"], option["model"])
+        return self.get_server_default_option()
 
     def _get_kwargs(self) -> Dict[str, Any]:
         """获取通用调用参数。
