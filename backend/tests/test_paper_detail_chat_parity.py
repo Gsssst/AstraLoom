@@ -5,7 +5,126 @@ import pytest
 from pydantic import ValidationError
 
 from app.api import chat_sessions, papers
+from app.core.security import get_current_user
+from app.main import app
+from app.services.llm import clear_request_llm_preference, get_request_llm_preference
 from app.services import memory_service
+
+
+def _route(path: str, method: str):
+    return next(
+        route
+        for route in app.routes
+        if route.path == path and method in (route.methods or set())
+    )
+
+
+def _dependency_calls(path: str, method: str):
+    return {dependency.call for dependency in _route(path, method).dependant.dependencies}
+
+
+def test_paper_chat_routes_bind_authenticated_user_preference_context():
+    private_routes = [
+        ("/api/papers/{paper_id}/ask", "POST"),
+        ("/api/papers/{paper_id}/ask-stream", "POST"),
+    ]
+
+    for path, method in private_routes:
+        assert get_current_user in _dependency_calls(path, method)
+
+
+@pytest.mark.asyncio
+async def test_paper_ask_sets_user_llm_preference_before_generation(monkeypatch):
+    from uuid import uuid4
+
+    paper_id = uuid4()
+    paper = SimpleNamespace(id=paper_id, title="Preference paper")
+    user = SimpleNamespace(llm_provider="openai-compatible", llm_model="gpt-5.5")
+    observed_preferences = []
+
+    class _Result:
+        def scalar_one_or_none(self):
+            return paper
+
+    class _Db:
+        async def execute(self, _query):
+            return _Result()
+
+    async def _fake_context(_paper, _request):
+        return [{"role": "user", "content": "question"}], []
+
+    async def _fake_chat(**_kwargs):
+        observed_preferences.append(get_request_llm_preference())
+        return "answer"
+
+    monkeypatch.setattr(papers, "_build_paper_chat_context", _fake_context)
+    monkeypatch.setattr(papers, "_visual_evidence_attachments_from_references", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(papers, "_append_visual_evidence_guidance", lambda context, *_args: context)
+    monkeypatch.setattr(papers.llm_service, "chat", _fake_chat)
+
+    clear_request_llm_preference()
+    try:
+        response = await papers.ask_about_paper(
+            str(paper_id),
+            papers.AskPaperRequest(question="question"),
+            db=_Db(),
+            user=user,
+        )
+    finally:
+        clear_request_llm_preference()
+
+    assert response["answer"] == "answer"
+    assert observed_preferences == [{"provider": "openai-compatible", "model": "gpt-5.5"}]
+
+
+@pytest.mark.asyncio
+async def test_paper_ask_stream_sets_user_llm_preference_inside_generator(monkeypatch):
+    from uuid import uuid4
+
+    paper_id = uuid4()
+    paper = SimpleNamespace(id=paper_id, title="Streaming preference paper")
+    user = SimpleNamespace(llm_provider="openai-compatible", llm_model="gpt-5.5")
+    observed_preferences = []
+
+    class _Result:
+        def scalar_one_or_none(self):
+            return paper
+
+    class _Db:
+        async def execute(self, _query):
+            return _Result()
+
+    async def _fake_context(_paper, _request):
+        return [{"role": "user", "content": "question"}], []
+
+    async def _fake_retrieval_quality_snapshot(**_kwargs):
+        return None
+
+    async def _fake_stream_events(*_args, **_kwargs):
+        observed_preferences.append(get_request_llm_preference())
+        yield {"type": "content", "content": "stream answer"}
+
+    monkeypatch.setattr(papers, "_build_paper_chat_context", _fake_context)
+    monkeypatch.setattr(papers, "_visual_evidence_attachments_from_references", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(papers, "_append_visual_evidence_guidance", lambda context, *_args: context)
+    monkeypatch.setattr(chat_sessions, "_retrieval_quality_snapshot", _fake_retrieval_quality_snapshot)
+    monkeypatch.setattr(papers, "_stream_paper_answer_events", _fake_stream_events)
+
+    clear_request_llm_preference()
+    try:
+        response = await papers.ask_about_paper_stream(
+            str(paper_id),
+            papers.AskPaperRequest(question="question"),
+            db=_Db(),
+            user=user,
+        )
+        clear_request_llm_preference()
+        chunks = [chunk async for chunk in response.body_iterator]
+    finally:
+        clear_request_llm_preference()
+
+    assert any("stream answer" in str(chunk) for chunk in chunks)
+    assert observed_preferences == [{"provider": "openai-compatible", "model": "gpt-5.5"}]
 
 
 def test_ask_paper_request_validates_retrieval_depth():
@@ -136,6 +255,7 @@ def test_paper_evidence_meta_reports_coverage_and_insufficient_state():
     assert papers._paper_evidence_meta([]) == {
         "evidence_count": 0,
         "visual_evidence_count": 0,
+        "visual_catalog_count": 0,
         "evidence_coverage": 0.0,
         "evidence_insufficient": True,
         "visual_evidence_available": False,

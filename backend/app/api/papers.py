@@ -33,7 +33,7 @@ from app.services.paper_search import (
 from app.services.paper_ingestion import PaperIngestionService
 from app.services.rag_service import RAGService
 from app.services.paper_enhance import PaperEnhanceService
-from app.services.llm import llm_service
+from app.services.llm import llm_service, set_request_llm_preference
 from app.core.config import settings
 from app.core.security import get_current_user, get_optional_user, require_admin
 from app.core.exceptions import NotFoundException
@@ -2495,8 +2495,14 @@ async def _stream_paper_answer_events(
 
 
 @router.post("/{paper_id}/ask", response_model=dict)
-async def ask_about_paper(paper_id: str, req: AskPaperRequest, db: AsyncSession = Depends(get_db)):
+async def ask_about_paper(
+    paper_id: str,
+    req: AskPaperRequest,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
     """针对某篇论文进行 AI 问答。"""
+    set_request_llm_preference(user)
     from uuid import UUID
     try:
         pid = UUID(paper_id)
@@ -2527,8 +2533,14 @@ async def ask_about_paper(paper_id: str, req: AskPaperRequest, db: AsyncSession 
 
 
 @router.post("/{paper_id}/ask-stream")
-async def ask_about_paper_stream(paper_id: str, req: AskPaperRequest, db: AsyncSession = Depends(get_db)):
+async def ask_about_paper_stream(
+    paper_id: str,
+    req: AskPaperRequest,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
     """流式论文问答。"""
+    set_request_llm_preference(user)
     from uuid import UUID
     try: pid = UUID(paper_id)
     except ValueError: raise HTTPException(status_code=400, detail="Invalid paper_id")
@@ -2552,6 +2564,7 @@ async def ask_about_paper_stream(paper_id: str, req: AskPaperRequest, db: AsyncS
     retrieval_quality = await _retrieval_quality_snapshot(rag_enabled=req.rag_enabled)
 
     async def generate():
+        set_request_llm_preference(user)
         from app.api.chat_sessions import (
             EMPTY_STREAM_FALLBACK,
             _retrieval_status,
