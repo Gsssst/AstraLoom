@@ -891,10 +891,20 @@ def _best_vision_element_for_item(item: VisualEvidenceItem, elements: list[dict[
     normalized = [element for element in elements if isinstance(element, dict)]
     if not normalized:
         return None
-    if item.kind in VISUAL_TABLE_TYPES:
+    item_kind = _normalize_kind(item.kind)
+    if item_kind in VISUAL_TABLE_TYPES:
         table = next((element for element in normalized if _normalize_kind(str(element.get("type") or "")) in VISUAL_TABLE_TYPES), None)
-        return table or normalized[0]
-    if item.kind in {"figure", "chart", "architecture", "image", "visual"}:
+        if table:
+            return table
+        non_table = next(
+            (
+                element for element in normalized
+                if _normalize_kind(str(element.get("type") or "")) not in VISUAL_TABLE_TYPES
+            ),
+            None,
+        )
+        return non_table or normalized[0]
+    if item_kind in {"figure", "chart", "architecture", "image", "visual"}:
         visual = next(
             (
                 element for element in normalized

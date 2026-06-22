@@ -265,6 +265,59 @@ def test_visual_evidence_status_uses_vision_corrected_non_table_kind():
     assert "PDF visual evidence" in blocks[0]["text"]
 
 
+def test_visual_evidence_status_uses_text_vision_result_for_table_reference_false_positive():
+    paper = SimpleNamespace(
+        pdf_path="/data/paper.pdf",
+        metadata_json={
+            document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_KEY: {
+                "version": document_visual_evidence.DOCUMENT_VISUAL_EVIDENCE_VERSION,
+                "source_path": "/data/paper.pdf",
+                "parser": "pdfplumber",
+                "status": "ready",
+                "items": [
+                    {
+                        "id": "table-reference-page",
+                        "kind": "table",
+                        "page": 9,
+                        "status": "ready",
+                        "caption": "Table 4 reports latency, but the table is on another page.",
+                        "text": "The page references Table 4 but the table itself is not visible on this page.",
+                        "summary": "Text-only page discussing Table 4.",
+                        "metadata": {
+                            "vision_status": "ready",
+                            "vision_provider": "openai-compatible",
+                            "vision_model": "gpt-5.5",
+                            "vision_elements": [
+                                {
+                                    "type": "text",
+                                    "ocr_text": "The page references Table 4 but the table itself is not visible on this page.",
+                                    "summary": "Text-only page discussing Table 4.",
+                                    "key_facts": ["No visible table appears on the page."],
+                                    "confidence": 0.97,
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+    )
+
+    status = document_visual_evidence.visual_evidence_status_from_paper(paper)
+    blocks = document_visual_evidence.visual_evidence_blocks_from_paper(paper)
+
+    assert document_visual_evidence.visual_evidence_effective_kind(
+        document_visual_evidence.ready_visual_evidence_items_from_paper(paper)[0]
+    ) == "text"
+    assert status["ready"] is True
+    assert status["failed"] is False
+    assert status["visual_count"] == 1
+    assert status["table_count"] == 0
+    assert status["missing_ocr_count"] == 0
+    assert blocks[0]["type"] == "visual_evidence"
+    assert blocks[0]["metadata"]["kind"] == "text"
+
+
 def test_visual_evidence_refresh_needed_includes_ready_but_incomplete_status():
     assert papers_api._visual_evidence_needs_extraction({"ready": False}) is True
     assert papers_api._visual_evidence_needs_extraction({"ready": True, "failed": True}) is True
