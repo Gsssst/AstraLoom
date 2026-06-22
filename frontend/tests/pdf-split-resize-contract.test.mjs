@@ -12,6 +12,8 @@ const pdfViewerSource = readFileSync(
 );
 
 test('paper detail passes active PDF split resize state into the PDF viewer', () => {
+  assert.match(paperDetailSource, /const PDF_PANEL_MIN_PERCENT = 30;/);
+  assert.match(paperDetailSource, /Math\.max\(rawPercent, PDF_PANEL_MIN_PERCENT\)/);
   assert.match(paperDetailSource, /const \[pdfSplitResizing, setPdfSplitResizing\] = useState\(false\);/);
   assert.match(paperDetailSource, /setPdfSplitResizing\(true\);[\s\S]*?const handlePointerMove/);
   assert.match(paperDetailSource, /const handlePointerUp = \(\) => \{[\s\S]*?setPdfSplitResizing\(false\);/);

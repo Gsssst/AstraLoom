@@ -19,8 +19,9 @@ const PDF_EVIDENCE_LOCATOR_MAX_ATTEMPTS = 14;
 const PDF_EVIDENCE_HIGHLIGHT_MS = 6500;
 const PDF_ZOOM_MIN = 0.75;
 const PDF_ZOOM_MAX = 4;
-const PDF_ZOOM_STEP = 0.1;
-const PDF_WHEEL_ZOOM_SENSITIVITY = 0.0025;
+const PDF_ZOOM_STEP = 0.15;
+const PDF_WHEEL_ZOOM_SENSITIVITY = 0.006;
+const PDF_WHEEL_ZOOM_MAX_DELTA = 0.24;
 const PDF_DEFAULT_PAGE_ASPECT_RATIO = 1.4142;
 const PDF_SELECTION_MAX_CHARS = 5000;
 const PDF_RESIZE_SETTLE_MS = 180;
@@ -127,7 +128,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
   const measurePageWidth = useCallback(() => {
     const container = contentRef.current;
     if (!container) return;
-    const nextWidth = Math.max(280, Math.min(container.clientWidth - 24, 900));
+    const nextWidth = Math.max(280, Math.min(container.clientWidth - 24, 1200));
     setPageWidth(current => (current === nextWidth ? current : nextWidth));
   }, []);
 
@@ -514,7 +515,8 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     if (!event.ctrlKey && !event.metaKey) return;
 
     event.preventDefault();
-    const delta = -event.deltaY * PDF_WHEEL_ZOOM_SENSITIVITY;
+    const rawDelta = -event.deltaY * PDF_WHEEL_ZOOM_SENSITIVITY;
+    const delta = Math.max(-PDF_WHEEL_ZOOM_MAX_DELTA, Math.min(PDF_WHEEL_ZOOM_MAX_DELTA, rawDelta));
     const nextScale = zoomScaleRef.current + delta;
     zoomAroundViewportPoint(nextScale, {
       clientX: event.clientX,
@@ -665,37 +667,38 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
               error={null}
             >
               <div className="paper-pdf-pages">
-                {pageNumbers.map(page => (
-                  <div
-                    key={page}
-                    className="paper-pdf-page"
-                    data-page-number={page}
-                    style={{
-                      width: getScaledPageSize(page).width,
-                      height: getScaledPageSize(page).height,
-                    }}
-                    ref={(node) => {
-                      if (node) pageRefs.current.set(page, node);
-                      else pageRefs.current.delete(page);
-                    }}
-                  >
+                {pageNumbers.map(page => {
+                  const pageSize = getScaledPageSize(page);
+                  const renderedPageWidth = pageSize.width;
+                  return (
                     <div
-                      className="paper-pdf-page-shell"
+                      key={page}
+                      className="paper-pdf-page"
+                      data-page-number={page}
                       style={{
-                        width: pageWidth,
-                        transform: `scale(${zoomScale})`,
+                        width: pageSize.width,
+                        height: pageSize.height,
+                      }}
+                      ref={(node) => {
+                        if (node) pageRefs.current.set(page, node);
+                        else pageRefs.current.delete(page);
                       }}
                     >
-                      <Page
-                        pageNumber={page}
-                        renderTextLayer={true}
-                        renderAnnotationLayer={true}
-                        width={pageWidth}
-                        onLoadSuccess={(pdfPage) => handlePageLoadSuccess(pdfPage, page)}
-                      />
+                      <div
+                        className="paper-pdf-page-shell"
+                        style={{ width: renderedPageWidth }}
+                      >
+                        <Page
+                          pageNumber={page}
+                          renderTextLayer={true}
+                          renderAnnotationLayer={true}
+                          width={renderedPageWidth}
+                          onLoadSuccess={(pdfPage) => handlePageLoadSuccess(pdfPage, page)}
+                        />
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </Document>
           </>

@@ -815,8 +815,6 @@
 
 .paper-pdf-page-shell {
   flex: 0 0 auto;
-  transform-origin: top left;
-  will-change: transform;
 }
 
 .paper-pdf-page .react-pdf__Page {

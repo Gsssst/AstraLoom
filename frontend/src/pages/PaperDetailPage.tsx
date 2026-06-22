@@ -433,7 +433,7 @@ const formatParseTime = (value?: string | null) => {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 };
 
-const PDF_PANEL_MIN_PERCENT = 42;
+const PDF_PANEL_MIN_PERCENT = 30;
 const PDF_PANEL_MAX_PERCENT = 82;
 const CHAT_COLLAPSE_THRESHOLD_PERCENT = 84;
 const CHAT_REOPEN_WIDTH_PERCENT = 65;
