@@ -34,6 +34,15 @@ test('paper library renders pagination controls for search-backed results', () =
   assert.match(papersPageSource, /第 \$\{range\[0\]\}-\$\{range\[1\]\} 篇，共 \$\{total\} 篇/);
 });
 
+test('paper library makes result-state counts explicit as current-page counts', () => {
+  assert.match(papersPageSource, /const resultStateScopeLabel = isSearchBackedSource \? '结果状态（本页）' : '结果状态'/);
+  assert.match(papersPageSource, /const resultStateTagPrefix = isSearchBackedSource \? '本页' : ''/);
+  assert.match(papersPageSource, /总匹配 \{searchTotal\}/);
+  assert.match(papersPageSource, /\{resultStateTagPrefix\}全部 \{resultStateCounts\.all\}/);
+  assert.match(papersPageSource, /\{resultStateTagPrefix\}已在库 \{resultStateCounts\.local\}/);
+  assert.match(papersPageSource, /\{resultStateTagPrefix\}开放 PDF \{resultStateCounts\.open_pdf\}/);
+});
+
 test('paper library resets search-backed pagination when search context changes', () => {
   assert.match(papersPageSource, /setSearchPage\(1\)/);
   assert.match(papersPageSource, /setSearchTotal\(0\)/);

@@ -25,3 +25,11 @@ The paper-library interface SHALL allow users to navigate pages for views backed
 #### Scenario: Search context changes
 - **WHEN** the user changes source, sort, query, year, ownership, processing, reading, or importance filters
 - **THEN** the paper-library interface resets search-backed pagination to page 1
+
+### Requirement: Search result state counts declare page scope
+The paper-library interface SHALL make result-state counts page-scoped when a view is backed by paginated `/api/papers/search` results.
+
+#### Scenario: First page has fewer loaded items than total matches
+- **WHEN** `/api/papers/search` returns `total=42`, `page_size=30`, and 30 loaded items
+- **THEN** the paper-library state summary labels its status counts as current-page counts
+- **AND** it separately exposes the total matching count

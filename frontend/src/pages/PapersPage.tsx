@@ -1171,6 +1171,8 @@ const PapersPage: React.FC = () => {
   const selectedCount = selectedIds.size;
   const statsTotal = isSearchBackedSource ? searchTotal : papers.length;
   const stats = statsTotal > 0 ? `共 ${statsTotal} 篇论文` : '';
+  const resultStateScopeLabel = isSearchBackedSource ? '结果状态（本页）' : '结果状态';
+  const resultStateTagPrefix = isSearchBackedSource ? '本页' : '';
   const searchPaginationTotal = isRemoteSource
     ? Math.max(searchTotal, searchPage * searchPageSize + (papers.length > 0 ? searchPageSize : 0))
     : searchTotal;
@@ -1909,13 +1911,14 @@ const PapersPage: React.FC = () => {
           <Row gutter={[8, 8]} align="middle" style={{ marginTop: 8 }}>
             <Col flex="auto">
               <Space size={6} wrap>
-                <Text type="secondary" style={{ fontSize: 13 }}>结果状态</Text>
-                <Tag color="blue">全部 {resultStateCounts.all}</Tag>
-                <Tag color="green">已在库 {resultStateCounts.local}</Tag>
-                <Tag color="geekblue">可入库 {resultStateCounts.importable}</Tag>
-                <Tag color="success">本次已加入 {resultStateCounts.imported}</Tag>
-                <Tag color="cyan">开放 PDF {resultStateCounts.open_pdf}</Tag>
-                <Tag>缺远程 ID {resultStateCounts.missing_remote_id}</Tag>
+                <Text type="secondary" style={{ fontSize: 13 }}>{resultStateScopeLabel}</Text>
+                {isSearchBackedSource && searchTotal > resultStateCounts.all && <Tag>总匹配 {searchTotal}</Tag>}
+                <Tag color="blue">{resultStateTagPrefix}全部 {resultStateCounts.all}</Tag>
+                <Tag color="green">{resultStateTagPrefix}已在库 {resultStateCounts.local}</Tag>
+                <Tag color="geekblue">{resultStateTagPrefix}可入库 {resultStateCounts.importable}</Tag>
+                <Tag color="success">{resultStateTagPrefix}本次已加入 {resultStateCounts.imported}</Tag>
+                <Tag color="cyan">{resultStateTagPrefix}开放 PDF {resultStateCounts.open_pdf}</Tag>
+                <Tag>{resultStateTagPrefix}缺远程 ID {resultStateCounts.missing_remote_id}</Tag>
               </Space>
             </Col>
             <Col>
