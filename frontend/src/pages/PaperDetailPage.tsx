@@ -464,6 +464,7 @@ const PaperDetailPage: React.FC = () => {
   const [mobilePanel, setMobilePanel] = useState<'content' | 'pdf' | 'chat'>('content');
   const [pdfPanelWidth, setPdfPanelWidth] = useState(CHAT_REOPEN_WIDTH_PERCENT);
   const [contentPanelWidth, setContentPanelWidth] = useState(CONTENT_PANEL_DEFAULT_PERCENT);
+  const [pdfSplitResizing, setPdfSplitResizing] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const paperBodyRef = useRef<HTMLDivElement>(null);
   const pdfLocatorRequestIdRef = useRef(0);
@@ -589,6 +590,7 @@ const PaperDetailPage: React.FC = () => {
     if (!container) return;
     const rect = container.getBoundingClientRect();
     event.currentTarget.setPointerCapture(event.pointerId);
+    setPdfSplitResizing(true);
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
       const rawPercent = ((moveEvent.clientX - rect.left) / rect.width) * 100;
@@ -602,6 +604,7 @@ const PaperDetailPage: React.FC = () => {
     };
 
     const handlePointerUp = () => {
+      setPdfSplitResizing(false);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerUp);
@@ -654,6 +657,7 @@ const PaperDetailPage: React.FC = () => {
   useEffect(() => {
     if (!showPdf || isMobile) {
       setChatCollapsed(false);
+      setPdfSplitResizing(false);
       setPdfPanelWidth(CHAT_REOPEN_WIDTH_PERCENT);
     }
   }, [isMobile, showPdf]);
@@ -1541,6 +1545,7 @@ const PaperDetailPage: React.FC = () => {
               onPageChange={setCurrentPdfPage}
               targetPage={targetPdfPage}
               targetLocator={targetPdfLocator}
+              resizePaused={pdfSplitResizing}
               onTargetLocatorResult={(result) => {
                 if (!targetPdfLocator || result.requestId !== targetPdfLocator.requestId) return;
                 if (result.matched) {

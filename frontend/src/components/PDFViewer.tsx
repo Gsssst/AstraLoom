@@ -23,6 +23,7 @@ const PDF_ZOOM_STEP = 0.1;
 const PDF_WHEEL_ZOOM_SENSITIVITY = 0.0025;
 const PDF_DEFAULT_PAGE_ASPECT_RATIO = 1.4142;
 const PDF_SELECTION_MAX_CHARS = 5000;
+const PDF_RESIZE_SETTLE_MS = 180;
 
 interface PDFTargetLocator {
   page: number;
@@ -43,6 +44,7 @@ interface PDFViewerProps {
   onPageChange?: (pageNumber: number) => void;
   targetPage?: number | null;
   targetLocator?: PDFTargetLocator | null;
+  resizePaused?: boolean;
   onTargetLocatorResult?: (result: PDFTargetLocatorResult) => void;
 }
 
@@ -68,6 +70,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
   onPageChange,
   targetPage,
   targetLocator,
+  resizePaused = false,
   onTargetLocatorResult,
 }) => {
   const [numPages, setNumPages] = useState(0);
@@ -84,8 +87,12 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
   const evidenceHighlightTimeoutRef = useRef<number | null>(null);
   const handledTargetPageRef = useRef<number | null>(null);
   const handledLocatorRequestIdsRef = useRef<Set<number>>(new Set());
+  const resizePausedRef = useRef(resizePaused);
+  const previousResizePausedRef = useRef(resizePaused);
+  const resizeSettleTimeoutRef = useRef<number | null>(null);
   const pageWidthRef = useRef(pageWidth);
   const zoomScaleRef = useRef(zoomScale);
+  resizePausedRef.current = resizePaused;
   const resolvedUrl = React.useMemo(() => {
     if (!url) return '';
     if (typeof window === 'undefined') return url;
@@ -116,6 +123,27 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
   useEffect(() => {
     pageWidthRef.current = pageWidth;
   }, [pageWidth]);
+
+  const measurePageWidth = useCallback(() => {
+    const container = contentRef.current;
+    if (!container) return;
+    const nextWidth = Math.max(280, Math.min(container.clientWidth - 24, 900));
+    setPageWidth(current => (current === nextWidth ? current : nextWidth));
+  }, []);
+
+  const clearResizeSettleTimer = useCallback(() => {
+    if (!resizeSettleTimeoutRef.current) return;
+    window.clearTimeout(resizeSettleTimeoutRef.current);
+    resizeSettleTimeoutRef.current = null;
+  }, []);
+
+  const scheduleSettledPageWidthMeasure = useCallback(() => {
+    clearResizeSettleTimer();
+    resizeSettleTimeoutRef.current = window.setTimeout(() => {
+      resizeSettleTimeoutRef.current = null;
+      measurePageWidth();
+    }, PDF_RESIZE_SETTLE_MS);
+  }, [clearResizeSettleTimer, measurePageWidth]);
 
   useEffect(() => {
     zoomScaleRef.current = zoomScale;
@@ -253,15 +281,31 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     const container = contentRef.current;
     if (!container) return;
 
-    const updatePageWidth = () => {
-      setPageWidth(Math.max(280, Math.min(container.clientWidth - 24, 900)));
-    };
-    updatePageWidth();
+    measurePageWidth();
 
-    const observer = new ResizeObserver(updatePageWidth);
+    const observer = new ResizeObserver(() => {
+      if (resizePausedRef.current) {
+        clearResizeSettleTimer();
+        return;
+      }
+      scheduleSettledPageWidthMeasure();
+    });
     observer.observe(container);
-    return () => observer.disconnect();
-  }, []);
+    return () => {
+      observer.disconnect();
+      clearResizeSettleTimer();
+    };
+  }, [clearResizeSettleTimer, measurePageWidth, scheduleSettledPageWidthMeasure]);
+
+  useEffect(() => {
+    const wasResizePaused = previousResizePausedRef.current;
+    previousResizePausedRef.current = resizePaused;
+    if (resizePaused || !wasResizePaused) return;
+
+    clearResizeSettleTimer();
+    const frame = window.requestAnimationFrame(measurePageWidth);
+    return () => window.cancelAnimationFrame(frame);
+  }, [clearResizeSettleTimer, measurePageWidth, resizePaused]);
 
   useEffect(() => {
     if (!targetPage || targetPage < 1) return;
