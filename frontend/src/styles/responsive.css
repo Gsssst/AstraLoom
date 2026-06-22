@@ -813,8 +813,29 @@
   scroll-margin-top: 12px;
 }
 
-.paper-pdf-page-shell {
+.paper-pdf-page-stack {
+  position: relative;
   flex: 0 0 auto;
+}
+
+.paper-pdf-page-shell {
+  position: absolute;
+  top: 0;
+  left: 0;
+  flex: 0 0 auto;
+  transform-origin: top left;
+  will-change: transform;
+}
+
+.paper-pdf-page-shell.is-active {
+  z-index: 2;
+}
+
+.paper-pdf-page-shell.is-pending {
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
 }
 
 .paper-pdf-page .react-pdf__Page {

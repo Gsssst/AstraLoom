@@ -25,6 +25,7 @@ const PDF_WHEEL_ZOOM_MAX_DELTA = 0.24;
 const PDF_DEFAULT_PAGE_ASPECT_RATIO = 1.4142;
 const PDF_SELECTION_MAX_CHARS = 5000;
 const PDF_RESIZE_SETTLE_MS = 180;
+const PDF_ZOOM_RENDER_SETTLE_MS = 180;
 
 interface PDFTargetLocator {
   page: number;
@@ -80,7 +81,9 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [nativeFallback, setNativeFallback] = useState(false);
   const [pageWidth, setPageWidth] = useState(700);
-  const [zoomScale, setZoomScale] = useState(1);
+  const [displayZoomScale, setDisplayZoomScale] = useState(1);
+  const [renderZoomScale, setRenderZoomScale] = useState(1);
+  const [visibleRenderWidths, setVisibleRenderWidths] = useState<Record<number, number>>({});
   const [pageAspectRatios, setPageAspectRatios] = useState<Record<number, number>>({});
   const contentRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -91,8 +94,10 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
   const resizePausedRef = useRef(resizePaused);
   const previousResizePausedRef = useRef(resizePaused);
   const resizeSettleTimeoutRef = useRef<number | null>(null);
+  const zoomRenderSettleTimeoutRef = useRef<number | null>(null);
   const pageWidthRef = useRef(pageWidth);
-  const zoomScaleRef = useRef(zoomScale);
+  const displayZoomScaleRef = useRef(displayZoomScale);
+  const renderZoomScaleRef = useRef(renderZoomScale);
   resizePausedRef.current = resizePaused;
   const resolvedUrl = React.useMemo(() => {
     if (!url) return '';
@@ -119,7 +124,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     Math.max(PDF_ZOOM_MIN, Math.min(PDF_ZOOM_MAX, value))
   ), []);
 
-  const zoomPercent = Math.round(zoomScale * 100);
+  const zoomPercent = Math.round(displayZoomScale * 100);
 
   useEffect(() => {
     pageWidthRef.current = pageWidth;
@@ -138,6 +143,25 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     resizeSettleTimeoutRef.current = null;
   }, []);
 
+  const clearZoomRenderSettleTimer = useCallback(() => {
+    if (!zoomRenderSettleTimeoutRef.current) return;
+    window.clearTimeout(zoomRenderSettleTimeoutRef.current);
+    zoomRenderSettleTimeoutRef.current = null;
+  }, []);
+
+  const setRenderZoomScaleValue = useCallback((nextScale: number) => {
+    renderZoomScaleRef.current = nextScale;
+    setRenderZoomScale(nextScale);
+  }, []);
+
+  const scheduleSettledRenderZoom = useCallback((nextScale: number) => {
+    clearZoomRenderSettleTimer();
+    zoomRenderSettleTimeoutRef.current = window.setTimeout(() => {
+      zoomRenderSettleTimeoutRef.current = null;
+      setRenderZoomScaleValue(nextScale);
+    }, PDF_ZOOM_RENDER_SETTLE_MS);
+  }, [clearZoomRenderSettleTimer, setRenderZoomScaleValue]);
+
   const scheduleSettledPageWidthMeasure = useCallback(() => {
     clearResizeSettleTimer();
     resizeSettleTimeoutRef.current = window.setTimeout(() => {
@@ -147,20 +171,32 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
   }, [clearResizeSettleTimer, measurePageWidth]);
 
   useEffect(() => {
-    zoomScaleRef.current = zoomScale;
-  }, [zoomScale]);
+    displayZoomScaleRef.current = displayZoomScale;
+  }, [displayZoomScale]);
+
+  useEffect(() => {
+    renderZoomScaleRef.current = renderZoomScale;
+  }, [renderZoomScale]);
 
   const zoomAroundViewportPoint = useCallback((
     nextScale: number,
     anchor?: { clientX: number; clientY: number },
+    options?: { immediateRender?: boolean },
   ) => {
     const container = contentRef.current;
     const boundedScale = clampZoomScale(nextScale);
-    const currentScale = zoomScaleRef.current;
+    const currentScale = displayZoomScaleRef.current;
     if (Math.abs(boundedScale - currentScale) < 0.001) return;
 
     if (!container) {
-      setZoomScale(boundedScale);
+      displayZoomScaleRef.current = boundedScale;
+      setDisplayZoomScale(boundedScale);
+      if (options?.immediateRender) {
+        clearZoomRenderSettleTimer();
+        setRenderZoomScaleValue(boundedScale);
+      } else {
+        scheduleSettledRenderZoom(boundedScale);
+      }
       return;
     }
 
@@ -173,28 +209,51 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     const nextWidth = Math.max(1, pageWidthRef.current * boundedScale);
     const ratio = nextWidth / previousWidth;
 
-    setZoomScale(boundedScale);
+    displayZoomScaleRef.current = boundedScale;
+    setDisplayZoomScale(boundedScale);
+    if (options?.immediateRender) {
+      clearZoomRenderSettleTimer();
+      setRenderZoomScaleValue(boundedScale);
+    } else {
+      scheduleSettledRenderZoom(boundedScale);
+    }
     window.requestAnimationFrame(() => {
       container.scrollLeft = Math.max(0, anchorX * ratio - viewportAnchorX);
       container.scrollTop = Math.max(0, anchorY * ratio - viewportAnchorY);
     });
-  }, [clampZoomScale]);
+  }, [clampZoomScale, clearZoomRenderSettleTimer, scheduleSettledRenderZoom, setRenderZoomScaleValue]);
 
   const zoomBy = useCallback((delta: number) => {
-    zoomAroundViewportPoint(zoomScaleRef.current + delta);
+    zoomAroundViewportPoint(displayZoomScaleRef.current + delta, undefined, { immediateRender: true });
   }, [zoomAroundViewportPoint]);
 
   const resetZoom = useCallback(() => {
-    zoomAroundViewportPoint(1);
+    zoomAroundViewportPoint(1, undefined, { immediateRender: true });
   }, [zoomAroundViewportPoint]);
 
   const getScaledPageSize = useCallback((page: number) => {
     const aspectRatio = pageAspectRatios[page] || PDF_DEFAULT_PAGE_ASPECT_RATIO;
     return {
-      width: Math.round(pageWidth * zoomScale),
-      height: Math.round(pageWidth * aspectRatio * zoomScale),
+      width: Math.round(pageWidth * displayZoomScale),
+      height: Math.round(pageWidth * aspectRatio * displayZoomScale),
     };
-  }, [pageAspectRatios, pageWidth, zoomScale]);
+  }, [displayZoomScale, pageAspectRatios, pageWidth]);
+
+  const getRenderedPageWidth = useCallback(() => (
+    Math.round(pageWidth * renderZoomScale)
+  ), [pageWidth, renderZoomScale]);
+
+  const handlePageRenderSuccess = useCallback((_pdfPage: any, page: number, renderedWidth: number) => {
+    const currentTargetWidth = Math.round(pageWidthRef.current * renderZoomScaleRef.current);
+    setVisibleRenderWidths(current => {
+      const currentVisibleWidth = current[page];
+      const isCurrentTarget = Math.abs(renderedWidth - currentTargetWidth) <= 1;
+      const isAlreadyVisible = currentVisibleWidth && Math.abs(renderedWidth - currentVisibleWidth) <= 1;
+      if (!isCurrentTarget && !isAlreadyVisible) return current;
+      if (isAlreadyVisible) return current;
+      return { ...current, [page]: renderedWidth };
+    });
+  }, []);
 
   const scrollPdfNodeIntoView = useCallback((node: HTMLElement, behavior: ScrollBehavior = 'smooth') => {
     const container = contentRef.current;
@@ -252,8 +311,11 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     setLoadError(null);
     setNumPages(0);
     setPageNumber(1);
-    setZoomScale(1);
-  }, []);
+    setDisplayZoomScale(1);
+    clearZoomRenderSettleTimer();
+    setRenderZoomScaleValue(1);
+    setVisibleRenderWidths({});
+  }, [clearZoomRenderSettleTimer, setRenderZoomScaleValue]);
 
   useEffect(() => {
     clearEvidenceHighlight();
@@ -264,9 +326,14 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     setNativeFallback(false);
     setNumPages(0);
     setPageNumber(1);
-    setZoomScale(1);
+    setDisplayZoomScale(1);
+    clearZoomRenderSettleTimer();
+    setRenderZoomScaleValue(1);
+    setVisibleRenderWidths({});
     setPageAspectRatios({});
-  }, [clearEvidenceHighlight, resolvedUrl]);
+  }, [clearEvidenceHighlight, clearZoomRenderSettleTimer, resolvedUrl, setRenderZoomScaleValue]);
+
+  useEffect(() => () => clearZoomRenderSettleTimer(), [clearZoomRenderSettleTimer]);
 
   useEffect(() => {
     if (!resolvedUrl || !loading || loadError || nativeFallback) return;
@@ -367,7 +434,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     if (!pageNode) return false;
 
     const spans = Array.from(
-      pageNode.querySelectorAll<HTMLElement>('.react-pdf__Page__textContent span'),
+      pageNode.querySelectorAll<HTMLElement>('.paper-pdf-page-shell.is-active .react-pdf__Page__textContent span'),
     ).filter(span => Boolean(span.textContent?.trim()));
     if (spans.length === 0) return false;
 
@@ -517,7 +584,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
     event.preventDefault();
     const rawDelta = -event.deltaY * PDF_WHEEL_ZOOM_SENSITIVITY;
     const delta = Math.max(-PDF_WHEEL_ZOOM_MAX_DELTA, Math.min(PDF_WHEEL_ZOOM_MAX_DELTA, rawDelta));
-    const nextScale = zoomScaleRef.current + delta;
+    const nextScale = displayZoomScaleRef.current + delta;
     zoomAroundViewportPoint(nextScale, {
       clientX: event.clientX,
       clientY: event.clientY,
@@ -583,7 +650,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
             <Button
               size="small"
               icon={<ZoomOutOutlined />}
-              disabled={nativeFallback || loading || !!loadError || zoomScale <= PDF_ZOOM_MIN}
+              disabled={nativeFallback || loading || !!loadError || displayZoomScale <= PDF_ZOOM_MIN}
               onClick={() => zoomBy(-PDF_ZOOM_STEP)}
             />
           </Tooltip>
@@ -592,7 +659,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
             <Button
               size="small"
               icon={<ZoomInOutlined />}
-              disabled={nativeFallback || loading || !!loadError || zoomScale >= PDF_ZOOM_MAX}
+              disabled={nativeFallback || loading || !!loadError || displayZoomScale >= PDF_ZOOM_MAX}
               onClick={() => zoomBy(PDF_ZOOM_STEP)}
             />
           </Tooltip>
@@ -600,7 +667,7 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
             <Button
               size="small"
               icon={<ColumnWidthOutlined />}
-              disabled={nativeFallback || loading || !!loadError || Math.abs(zoomScale - 1) < 0.001}
+              disabled={nativeFallback || loading || !!loadError || Math.abs(displayZoomScale - 1) < 0.001}
               onClick={resetZoom}
             />
           </Tooltip>
@@ -669,7 +736,12 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
               <div className="paper-pdf-pages">
                 {pageNumbers.map(page => {
                   const pageSize = getScaledPageSize(page);
-                  const renderedPageWidth = pageSize.width;
+                  const displayPageWidth = pageSize.width;
+                  const renderedPageWidth = getRenderedPageWidth();
+                  const visiblePageWidth = visibleRenderWidths[page] || renderedPageWidth;
+                  const layerWidths = Math.abs(visiblePageWidth - renderedPageWidth) <= 1
+                    ? [visiblePageWidth]
+                    : [visiblePageWidth, renderedPageWidth];
                   return (
                     <div
                       key={page}
@@ -684,17 +756,31 @@ const PDFViewer: React.FC<PDFViewerProps> = ({
                         else pageRefs.current.delete(page);
                       }}
                     >
-                      <div
-                        className="paper-pdf-page-shell"
-                        style={{ width: renderedPageWidth }}
-                      >
-                        <Page
-                          pageNumber={page}
-                          renderTextLayer={true}
-                          renderAnnotationLayer={true}
-                          width={renderedPageWidth}
-                          onLoadSuccess={(pdfPage) => handlePageLoadSuccess(pdfPage, page)}
-                        />
+                      <div className="paper-pdf-page-stack" style={pageSize}>
+                        {layerWidths.map(layerWidth => {
+                          const isActive = Math.abs(layerWidth - visiblePageWidth) <= 1;
+                          const layerScale = layerWidth > 0 ? displayPageWidth / layerWidth : 1;
+                          return (
+                            <div
+                              key={`${page}-${layerWidth}`}
+                              className={`paper-pdf-page-shell ${isActive ? 'is-active' : 'is-pending'}`}
+                              aria-hidden={!isActive}
+                              style={{
+                                width: layerWidth,
+                                transform: `scale(${layerScale})`,
+                              }}
+                            >
+                              <Page
+                                pageNumber={page}
+                                renderTextLayer={true}
+                                renderAnnotationLayer={true}
+                                width={layerWidth}
+                                onLoadSuccess={(pdfPage) => handlePageLoadSuccess(pdfPage, page)}
+                                onRenderSuccess={(pdfPage) => handlePageRenderSuccess(pdfPage, page, layerWidth)}
+                              />
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   );
