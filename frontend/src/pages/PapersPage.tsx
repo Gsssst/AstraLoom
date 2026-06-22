@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Input, Button, List, Tag, Select, Space, Typography, Spin, Badge,
   Card, message, Modal, Checkbox, Row, Col, Alert, Progress, Tooltip,
-  Statistic, Empty, Segmented,
+  Statistic, Empty, Segmented, Pagination,
 } from 'antd';
 import {
   SearchOutlined, CalendarOutlined, UserOutlined,
@@ -197,6 +197,7 @@ interface ProcessingAutomationHealth {
 
 const remoteSearchSources = ['scholarly', 'arxiv', 'semantic_scholar', 'openalex', 'google_scholar'];
 const paperSearchSources = ['local', 'mine', 'saved', 'collection', 'reading', 'maintenance', ...remoteSearchSources];
+const PAPER_SEARCH_PAGE_SIZE = 30;
 const readingStatusMeta: Record<ReadingStatus, { label: string; color: 'default' | 'processing' | 'success' }> = {
   unread: { label: '待读', color: 'default' },
   reading: { label: '阅读中', color: 'processing' },
@@ -378,7 +379,9 @@ const PapersPage: React.FC = () => {
   const [ingestedRemoteIds, setIngestedRemoteIds] = useState<Set<string>>(new Set());
   const [yearFrom, setYearFrom] = useState<number | undefined>();
   const [yearTo, setYearTo] = useState<number | undefined>();
-  const [remotePage, setRemotePage] = useState(1);
+  const [searchPage, setSearchPage] = useState(1);
+  const [searchPageSize, setSearchPageSize] = useState(PAPER_SEARCH_PAGE_SIZE);
+  const [searchTotal, setSearchTotal] = useState(0);
   const [detailPaper, setDetailPaper] = useState<PaperItem | null>(null);
   const [digestUnreadCount, setDigestUnreadCount] = useState(0);
   const [readingStatus, setReadingStatus] = useState<'unread' | 'reading' | 'completed'>('unread');
@@ -422,6 +425,7 @@ const PapersPage: React.FC = () => {
   const isAuthenticated = !!localStorage.getItem('access_token');
   const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
   const isRemoteSource = remoteSearchSources.includes(source);
+  const isSearchBackedSource = !['collection', 'saved', 'reading', 'maintenance'].includes(source);
   const remoteGuidance = isRemoteSource ? providerGuidance[source] : null;
   const showKnowledgeFilters = !isRemoteSource && !['collection', 'saved', 'reading', 'maintenance'].includes(source);
   const yearOptions = Array.from({ length: new Date().getFullYear() - 1899 }, (_, index) => {
@@ -432,6 +436,8 @@ const PapersPage: React.FC = () => {
   const updateSource = useCallback((nextSource: string) => {
     setSource(nextSource);
     setResultStateFilter('all');
+    setSearchPage(1);
+    setSearchTotal(0);
   }, []);
 
   const showPageError = useCallback((title: string, error: unknown, fallback = title) => {
@@ -475,7 +481,8 @@ const PapersPage: React.FC = () => {
       setSearchQuery('');
       setSource('local');
       setResultStateFilter('all');
-      setRemotePage(1);
+      setSearchPage(1);
+      setSearchTotal(0);
       setUrlSearchRevision(value => value + 1);
       return;
     }
@@ -487,33 +494,41 @@ const PapersPage: React.FC = () => {
     setSearchQuery(queryFromUrl);
     setSource(nextSource);
     setResultStateFilter('all');
-    setRemotePage(1);
+    setSearchPage(1);
+    setSearchTotal(0);
     setUrlSearchRevision(value => value + 1);
   }, [location.search]);
 
-  const handleSearch = useCallback(async (requestedRemotePage = 1) => {
+  const handleSearch = useCallback(async (requestedPage = 1) => {
     if (yearFrom && yearTo && yearFrom > yearTo) {
       message.warning('起始年份不能晚于截止年份');
       return;
     }
     if (source === 'maintenance') {
       setPapers([]);
+      setSearchTotal(0);
+      setSearchPage(1);
       return;
     }
-    const requestedPage = isRemoteSource ? requestedRemotePage : 1;
     setLoading(true);
     try {
       if (source === 'collection') {
         if (!selectedCollectionId) {
           setPapers([]);
+          setSearchTotal(0);
+          setSearchPage(1);
           return;
         }
         const r = await api.get(`/folders/${selectedCollectionId}/papers`);
         setPapers(r.data.map((p: any) => ({ ...p, id: p.id })));
+        setSearchTotal(0);
+        setSearchPage(1);
       } else if (source === 'saved' || source === 'reading') {
         const ep = source === 'saved' ? '/papers/collection/saved' : '/papers/collection/reading-list';
         const r = await api.get(ep, { params: source === 'reading' ? { status: readingStatus } : undefined });
         setPapers(r.data.map((p: any) => ({ ...p, id: p.id })));
+        setSearchTotal(0);
+        setSearchPage(1);
       } else {
         const searchSource = source === 'mine' ? 'local' : source;
         const owner = source === 'mine' ? 'mine' : undefined;
@@ -524,7 +539,7 @@ const PapersPage: React.FC = () => {
             owner,
             sort,
             page: requestedPage,
-            page_size: 30,
+            page_size: searchPageSize,
             year_from: yearFrom,
             year_to: yearTo,
             importer: filterImporter,
@@ -536,11 +551,17 @@ const PapersPage: React.FC = () => {
           },
         });
         setPapers(r.data.items);
-        setRemotePage(requestedPage);
+        setSearchTotal(Number(r.data.total || 0));
+        setSearchPage(Number(r.data.page || requestedPage));
+        setSearchPageSize(Number(r.data.page_size || searchPageSize));
       }
       setPageActionError(null);
-    } catch (e: any) { setPapers([]); showPageError('搜索失败', e, '搜索失败'); } finally { setLoading(false); }
-  }, [filterEmbedding, filterFullText, filterImportance, filterImporter, filterLocalSource, filterReadStatus, isRemoteSource, readingStatus, searchQuery, selectedCollectionId, showPageError, source, sort, yearFrom, yearTo]);
+    } catch (e: any) {
+      setPapers([]);
+      setSearchTotal(0);
+      showPageError('搜索失败', e, '搜索失败');
+    } finally { setLoading(false); }
+  }, [filterEmbedding, filterFullText, filterImportance, filterImporter, filterLocalSource, filterReadStatus, readingStatus, searchPageSize, searchQuery, selectedCollectionId, showPageError, source, sort, yearFrom, yearTo]);
 
   useEffect(() => { handleSearch(1); }, [source, sort, readingStatus, selectedCollectionId, urlSearchRevision, filterImporter, filterLocalSource, filterFullText, filterEmbedding, filterReadStatus, filterImportance]);
 
@@ -1148,7 +1169,27 @@ const PapersPage: React.FC = () => {
   });
   const selectedPapers = papers.filter(paper => paper.id && selectedIds.has(paper.id));
   const selectedCount = selectedIds.size;
-  const stats = papers.length > 0 ? `共 ${papers.length} 篇论文` : '';
+  const statsTotal = isSearchBackedSource ? searchTotal : papers.length;
+  const stats = statsTotal > 0 ? `共 ${statsTotal} 篇论文` : '';
+  const searchPaginationTotal = isRemoteSource
+    ? Math.max(searchTotal, searchPage * searchPageSize + (papers.length > 0 ? searchPageSize : 0))
+    : searchTotal;
+  const showSearchPagination = isSearchBackedSource && (searchPaginationTotal > searchPageSize || searchPage > 1);
+  const searchPagination = showSearchPagination ? (
+    <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 4px 18px' }}>
+      <Pagination
+        current={searchPage}
+        pageSize={searchPageSize}
+        total={searchPaginationTotal}
+        showSizeChanger={false}
+        disabled={loading}
+        onChange={page => handleSearch(page)}
+        showTotal={(total, range) => isRemoteSource
+          ? `第 ${searchPage} 页，当前 ${papers.length} 篇`
+          : `第 ${range[0]}-${range[1]} 篇，共 ${total} 篇`}
+      />
+    </div>
+  ) : null;
   const collectionOptions = collections.map(item => {
     const diagnostics = item.diagnostics;
     const suffix = diagnostics
@@ -1826,8 +1867,8 @@ const PapersPage: React.FC = () => {
           {isRemoteSource && searchQuery.trim() && (
             <Col>
               <Space size={8}>
-                <Text type="secondary" style={{ fontSize: 12 }}>第 {remotePage} 批</Text>
-                <Button icon={<RedoOutlined />} loading={loading} onClick={() => handleSearch(remotePage + 1)} style={{ borderRadius: 8 }}>换一批</Button>
+                <Text type="secondary" style={{ fontSize: 12 }}>第 {searchPage} 页</Text>
+                <Button icon={<RedoOutlined />} loading={loading} onClick={() => handleSearch(searchPage + 1)} style={{ borderRadius: 8 }}>换一批</Button>
               </Space>
             </Col>
           )}
@@ -1921,6 +1962,7 @@ const PapersPage: React.FC = () => {
             style={{ marginBottom: 12 }}
           />
         ) : filteredPapers.length > 0 ? (
+          <>
           <List dataSource={filteredPapers} renderItem={(paper, idx) => {
             const remoteKey = paperRemoteKey(paper);
             const resultState = paperResultState(paper, ingestedRemoteIds);
@@ -1928,6 +1970,7 @@ const PapersPage: React.FC = () => {
             const citationKey = buildResearchCitationKey(paper, idx);
             const metadataQuality = computeMetadataQuality(paper);
             const duplicateRisk = duplicateRiskForPaper(paper, duplicateRiskMap);
+            const displayIndex = isSearchBackedSource ? (searchPage - 1) * searchPageSize + idx + 1 : idx + 1;
             return (
             <Card hoverable size="small" style={{ marginBottom: 10, borderRadius: 12, border: '1px solid #f0f0f0', overflow: 'hidden' }}
               onClick={() => handleViewDetail(paper)}
@@ -1937,7 +1980,7 @@ const PapersPage: React.FC = () => {
               <Row gutter={16} align="top">
                 {/* 编号 + 来源 */}
                 <Col style={{ flexShrink: 0 }}>
-                  <div style={{ width: 32, height: 32, borderRadius: 10, background: '#667eea10', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#667eea', fontWeight: 700, fontSize: 13 }}>{idx + 1}</div>
+                  <div style={{ width: 32, height: 32, borderRadius: 10, background: '#667eea10', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#667eea', fontWeight: 700, fontSize: 13 }}>{displayIndex}</div>
                 </Col>
                 <Col flex={1}>
                   <Text strong style={{ fontSize: 15, lineHeight: 1.5 }}>{paper.title}</Text>
@@ -2009,6 +2052,8 @@ const PapersPage: React.FC = () => {
             </Card>
           );
           }} />
+          {searchPagination}
+          </>
         ) : (
           <WorkflowEmptyState
             title={papers.length > 0 ? '当前状态筛选下没有结果' : isRemoteSource ? '这次外部检索没有返回论文' : '暂无论文'}
@@ -2028,7 +2073,7 @@ const PapersPage: React.FC = () => {
               <Space direction="vertical" size={10} style={{ width: '100%', alignItems: 'center' }}>
                 <Space wrap style={{ justifyContent: 'center' }}>
                   <Button onClick={() => { setYearFrom(undefined); setYearTo(undefined); }} style={{ borderRadius: 10 }}>放宽年份</Button>
-                  <Button icon={<RedoOutlined />} loading={loading} onClick={() => handleSearch(remotePage + 1)} style={{ borderRadius: 10 }}>换一批</Button>
+                  <Button icon={<RedoOutlined />} loading={loading} onClick={() => handleSearch(searchPage + 1)} style={{ borderRadius: 10 }}>换一批</Button>
                   <Button onClick={() => updateSource(source === 'scholarly' ? 'openalex' : 'scholarly')} style={{ borderRadius: 10 }}>
                     {source === 'scholarly' ? '切到 OpenAlex' : '切到综合学术'}
                   </Button>
