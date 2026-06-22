@@ -2461,13 +2461,37 @@ async def _stream_paper_answer_events(
         *context,
         {"role": "system", "content": PAPER_CHAT_RECOVERY_PROMPT},
     ]
-    async for token in llm_service.chat_stream(
-        messages=recovery_context,
-        temperature=0.3,
-        max_tokens=max_tokens,
-    ):
-        if token:
-            yield {"type": "content", "content": token}
+    recovery_emitted_content = False
+    try:
+        async for token in llm_service.chat_stream(
+            messages=recovery_context,
+            temperature=0.3,
+            max_tokens=max_tokens,
+        ):
+            if token:
+                recovery_emitted_content = True
+                yield {"type": "content", "content": token}
+    except Exception as exc:
+        if recovery_emitted_content:
+            logger.warning("论文问答稳定流已输出正文后中断: %s", exc)
+            yield {"type": "warning", "content": PAPER_CHAT_INTERRUPTED_WARNING}
+            return
+        logger.warning("论文问答稳定流未返回正文，尝试非流式稳定回答: %s", exc)
+
+    if recovery_emitted_content:
+        return
+
+    try:
+        fallback = await llm_service.chat(
+            messages=recovery_context,
+            temperature=0.2,
+            max_tokens=max_tokens,
+        )
+    except Exception as exc:
+        logger.warning("论文问答非流式稳定回答失败: %s", exc)
+        return
+    if fallback and fallback.strip():
+        yield {"type": "content", "content": fallback}
 
 
 @router.post("/{paper_id}/ask", response_model=dict)

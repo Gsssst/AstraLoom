@@ -265,6 +265,77 @@ async def test_paper_chat_recovers_visible_answer_after_reasoning_only_primary_s
 
 
 @pytest.mark.asyncio
+async def test_paper_chat_uses_non_streaming_fallback_after_empty_recovery_stream(monkeypatch):
+    calls = []
+
+    async def _empty_primary_stream(**kwargs):
+        calls.append(("primary", kwargs["max_tokens"]))
+        if False:
+            yield {"type": "content", "content": "never"}
+
+    async def _empty_recovery_stream(**kwargs):
+        calls.append(("recovery", kwargs["temperature"], kwargs["max_tokens"]))
+        if False:
+            yield "never"
+
+    async def _stable_chat(**kwargs):
+        calls.append(("non_streaming", kwargs["temperature"], kwargs["max_tokens"], kwargs["messages"][-1]))
+        return "非流式稳定回答"
+
+    monkeypatch.setattr(papers.llm_service, "chat_stream_with_thinking", _empty_primary_stream)
+    monkeypatch.setattr(papers.llm_service, "chat_stream", _empty_recovery_stream)
+    monkeypatch.setattr(papers.llm_service, "chat", _stable_chat)
+
+    events = [
+        event async for event in papers._stream_paper_answer_events(
+            [{"role": "user", "content": "question"}],
+            show_thinking=True,
+            max_tokens=128000,
+        )
+    ]
+
+    assert events == [
+        {"type": "status", "content": papers.PAPER_CHAT_RECOVERY_STATUS},
+        {"type": "content", "content": "非流式稳定回答"},
+    ]
+    assert calls == [
+        ("primary", 128000),
+        ("recovery", 0.3, 128000),
+        ("non_streaming", 0.2, 128000, {"role": "system", "content": papers.PAPER_CHAT_RECOVERY_PROMPT}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_paper_chat_empty_all_attempts_leaves_outer_fallback_responsible(monkeypatch):
+    async def _empty_primary_stream(**_kwargs):
+        if False:
+            yield {"type": "content", "content": "never"}
+
+    async def _empty_recovery_stream(**_kwargs):
+        if False:
+            yield "never"
+
+    async def _empty_chat(**_kwargs):
+        return ""
+
+    monkeypatch.setattr(papers.llm_service, "chat_stream_with_thinking", _empty_primary_stream)
+    monkeypatch.setattr(papers.llm_service, "chat_stream", _empty_recovery_stream)
+    monkeypatch.setattr(papers.llm_service, "chat", _empty_chat)
+
+    events = [
+        event async for event in papers._stream_paper_answer_events(
+            [{"role": "user", "content": "question"}],
+            show_thinking=True,
+            max_tokens=128000,
+        )
+    ]
+
+    assert events == [
+        {"type": "status", "content": papers.PAPER_CHAT_RECOVERY_STATUS},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_paper_chat_skips_recovery_when_primary_stream_returns_content(monkeypatch):
     calls = []
 
