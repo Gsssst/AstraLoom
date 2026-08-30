@@ -20,6 +20,15 @@
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white">
 </p>
 
+<!-- Demo GIF: record docs/assets/demo.gif (30s: paper library → PDF Q&A with visual evidence → jump back to PDF page → proposal review), then uncomment the block below.
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="AstraLoom demo" width="860">
+</p>
+-->
+
+> **Battle-tested in production** — AstraLoom runs as the daily research workspace of a real
+> university research group (a dozen active users), not a demo project.
+
 AstraLoom helps a lab run its own private research platform: paper library, AI-assisted reading, idea generation, proposal review, toolbox reuse, LaTeX writing, and experiment planning in one self-hosted workspace.
 
 It is designed for **each lab to deploy its own instance**, not as a centralized public SaaS product. Papers, notes, API keys, project discussions, and research directions stay under the lab's control.
@@ -33,6 +42,13 @@ Research groups often spread their work across Zotero folders, chat logs, paper 
 - rank proposals with novelty, evidence grounding, toolbox fit, and experiment quality signals;
 - move promising ideas into LaTeX writing and experiment planning;
 - keep deployment, data, and model credentials inside the lab.
+
+## Highlights
+
+- **Evidence-first answers** — citations link back to the exact PDF page, table, or figure region, not just a paper title.
+- **Human-gated tool calling** — side-effect tools (importing papers, creating projects) require explicit user confirmation with parameter-bound confirmation tokens.
+- **Self-healing paper pipeline** — a 5-step lifecycle (full text → structured parse → visual evidence → embeddings → BM25) with a 10-minute reconciliation job that repairs stuck papers on its own.
+- **Hybrid retrieval with graceful degradation** — BM25 + pgvector fused via weighted RRF; when vector coverage is low, search automatically falls back to BM25 instead of degrading silently.
 
 ## Features
 
