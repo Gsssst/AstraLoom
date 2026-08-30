@@ -20,10 +20,6 @@
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white">
 </p>
 
-<p align="center">
-  <img src="docs/assets/demo.gif" alt="AstraLoom demo — self-hosted AI research workspace" width="860">
-</p>
-
 > **Battle-tested in production** — AstraLoom runs as the daily research workspace of a real
 > university research group (a dozen active users), not a demo project.
 
