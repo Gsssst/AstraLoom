@@ -21,6 +21,29 @@ test('paper detail passes active PDF split resize state into the PDF viewer', ()
   assert.match(paperDetailSource, /resizePaused=\{pdfSplitResizing\}/);
 });
 
+test('paper detail split snaps closed in both directions and restores either rail', () => {
+  assert.match(paperDetailSource, /const PDF_COLLAPSE_THRESHOLD_PERCENT = 24;/);
+  assert.match(paperDetailSource, /const CHAT_COLLAPSE_THRESHOLD_PERCENT = 84;/);
+  assert.match(paperDetailSource, /const \[chatCollapsed, setChatCollapsed\] = useState\(false\);/);
+  assert.match(paperDetailSource, /const \[pdfCollapsed, setPdfCollapsed\] = useState\(false\);/);
+  assert.match(paperDetailSource, /rawPercent >= CHAT_COLLAPSE_THRESHOLD_PERCENT[\s\S]*?setPdfCollapsed\(false\);[\s\S]*?setChatCollapsed\(true\);/);
+  assert.match(paperDetailSource, /rawPercent <= PDF_COLLAPSE_THRESHOLD_PERCENT[\s\S]*?setChatCollapsed\(false\);[\s\S]*?setPdfCollapsed\(true\);/);
+  assert.match(paperDetailSource, /setChatCollapsed\(false\);[\s\S]*?setPdfCollapsed\(false\);[\s\S]*?setPdfPanelWidth\(Math\.min/);
+  assert.match(paperDetailSource, /const reopenChatPanel = \(\) => \{[\s\S]*?setChatCollapsed\(false\);[\s\S]*?setPdfCollapsed\(false\);/);
+  assert.match(paperDetailSource, /const reopenPdfPanel = \(\) => \{[\s\S]*?setPdfCollapsed\(false\);[\s\S]*?setChatCollapsed\(false\);/);
+});
+
+test('collapsed paper split rails leave the opposite panel to fill remaining width', () => {
+  assert.match(paperDetailSource, /paper-detail-collapsed-rail paper-detail-pdf-rail/);
+  assert.match(paperDetailSource, /paper-detail-collapsed-rail paper-detail-chat-rail/);
+  assert.match(paperDetailSource, /aria-label="展开 PDF"/);
+  assert.match(paperDetailSource, /aria-label="展开 AI 问答"/);
+  assert.match(paperDetailSource, /flexGrow: !isMobile && chatCollapsed \? 1 : 0/);
+  assert.match(paperDetailSource, /flexBasis: !isMobile && chatCollapsed \? 0 : 'auto'/);
+  assert.match(paperDetailSource, /flexGrow: !isMobile && showPdf && pdfCollapsed \? 1 : 0/);
+  assert.match(paperDetailSource, /flexBasis: !isMobile && showPdf && pdfCollapsed \? 0 : 'auto'/);
+});
+
 test('pdf viewer freezes page width measurements while split resizing is active', () => {
   assert.match(pdfViewerSource, /resizePaused\?: boolean;/);
   assert.match(pdfViewerSource, /resizePaused = false,/);

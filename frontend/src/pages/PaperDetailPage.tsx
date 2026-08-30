@@ -435,6 +435,7 @@ const formatParseTime = (value?: string | null) => {
 
 const PDF_PANEL_MIN_PERCENT = 30;
 const PDF_PANEL_MAX_PERCENT = 82;
+const PDF_COLLAPSE_THRESHOLD_PERCENT = 24;
 const CHAT_COLLAPSE_THRESHOLD_PERCENT = 84;
 const CHAT_REOPEN_WIDTH_PERCENT = 65;
 const CONTENT_PANEL_MIN_PERCENT = 45;
@@ -466,6 +467,7 @@ const PaperDetailPage: React.FC = () => {
   const [contentPanelWidth, setContentPanelWidth] = useState(CONTENT_PANEL_DEFAULT_PERCENT);
   const [pdfSplitResizing, setPdfSplitResizing] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [pdfCollapsed, setPdfCollapsed] = useState(false);
   const paperBodyRef = useRef<HTMLDivElement>(null);
   const pdfLocatorRequestIdRef = useRef(0);
   const screens = Grid.useBreakpoint();
@@ -596,10 +598,18 @@ const PaperDetailPage: React.FC = () => {
       const rawPercent = ((moveEvent.clientX - rect.left) / rect.width) * 100;
       if (rawPercent >= CHAT_COLLAPSE_THRESHOLD_PERCENT) {
         setPdfPanelWidth(PDF_PANEL_MAX_PERCENT);
+        setPdfCollapsed(false);
         setChatCollapsed(true);
         return;
       }
+      if (rawPercent <= PDF_COLLAPSE_THRESHOLD_PERCENT) {
+        setPdfPanelWidth(PDF_PANEL_MIN_PERCENT);
+        setChatCollapsed(false);
+        setPdfCollapsed(true);
+        return;
+      }
       setChatCollapsed(false);
+      setPdfCollapsed(false);
       setPdfPanelWidth(Math.min(Math.max(rawPercent, PDF_PANEL_MIN_PERCENT), PDF_PANEL_MAX_PERCENT));
     };
 
@@ -641,6 +651,13 @@ const PaperDetailPage: React.FC = () => {
 
   const reopenChatPanel = () => {
     setChatCollapsed(false);
+    setPdfCollapsed(false);
+    setPdfPanelWidth(CHAT_REOPEN_WIDTH_PERCENT);
+  };
+
+  const reopenPdfPanel = () => {
+    setPdfCollapsed(false);
+    setChatCollapsed(false);
     setPdfPanelWidth(CHAT_REOPEN_WIDTH_PERCENT);
   };
 
@@ -657,6 +674,7 @@ const PaperDetailPage: React.FC = () => {
   useEffect(() => {
     if (!showPdf || isMobile) {
       setChatCollapsed(false);
+      setPdfCollapsed(false);
       setPdfSplitResizing(false);
       setPdfPanelWidth(CHAT_REOPEN_WIDTH_PERCENT);
     }
@@ -1531,31 +1549,44 @@ const PaperDetailPage: React.FC = () => {
       <div className="paper-detail-body" ref={paperBodyRef}>
         {/* PDF 面板 */}
         {pdfUrl && (isMobile ? mobilePanel === 'pdf' : showPdf) && (
-          <div
-            className="paper-detail-pdf-panel"
-            style={{
-              width: !isMobile && showPdf ? `${chatCollapsed ? PDF_PANEL_MAX_PERCENT : pdfPanelWidth}%` : undefined,
-              flexShrink: 0,
-              height: '100%',
-            }}
-          >
-            <PDFViewer
-              url={pdfUrl}
-              onTextSelect={handlePdfTextSelect}
-              onPageChange={setCurrentPdfPage}
-              targetPage={targetPdfPage}
-              targetLocator={targetPdfLocator}
-              resizePaused={pdfSplitResizing}
-              onTargetLocatorResult={(result) => {
-                if (!targetPdfLocator || result.requestId !== targetPdfLocator.requestId) return;
-                if (result.matched) {
-                  message.success(`已定位到 PDF 第 ${result.page} 页引用位置`);
-                } else if (result.reason === 'not_found') {
-                  message.info(`已跳转到 PDF 第 ${result.page} 页，暂未在文本层精确匹配引用片段`);
-                }
+          <>
+            <div
+              className="paper-detail-pdf-panel"
+              style={{
+                width: !isMobile && showPdf && !chatCollapsed ? `${pdfPanelWidth}%` : undefined,
+                display: !isMobile && pdfCollapsed ? 'none' : undefined,
+                flexGrow: !isMobile && chatCollapsed ? 1 : 0,
+                flexBasis: !isMobile && chatCollapsed ? 0 : 'auto',
+                flexShrink: 0,
+                height: '100%',
               }}
-            />
-          </div>
+            >
+              <PDFViewer
+                url={pdfUrl}
+                onTextSelect={handlePdfTextSelect}
+                onPageChange={setCurrentPdfPage}
+                targetPage={targetPdfPage}
+                targetLocator={targetPdfLocator}
+                resizePaused={pdfSplitResizing}
+                onTargetLocatorResult={(result) => {
+                  if (!targetPdfLocator || result.requestId !== targetPdfLocator.requestId) return;
+                  if (result.matched) {
+                    message.success(`已定位到 PDF 第 ${result.page} 页引用位置`);
+                  } else if (result.reason === 'not_found') {
+                    message.info(`已跳转到 PDF 第 ${result.page} 页，暂未在文本层精确匹配引用片段`);
+                  }
+                }}
+              />
+            </div>
+            {!isMobile && pdfCollapsed && (
+              <div className="paper-detail-collapsed-rail paper-detail-pdf-rail" aria-label="PDF 已收起">
+                <Tooltip title="展开 PDF">
+                  <Button type="primary" shape="circle" icon={<FilePdfOutlined />} aria-label="展开 PDF" onClick={reopenPdfPanel} />
+                </Tooltip>
+                <Text className="paper-detail-collapsed-rail-label">PDF</Text>
+              </div>
+            )}
+          </>
         )}
 
         {!isMobile && showPdf && pdfUrl && (
@@ -1932,20 +1963,24 @@ const PaperDetailPage: React.FC = () => {
 
         {/* AI 问答面板 */}
         {(!isMobile || mobilePanel === 'chat') && chatCollapsed && showPdf ? (
-          <div className="paper-detail-chat-rail">
+          <div className="paper-detail-collapsed-rail paper-detail-chat-rail" aria-label="AI 问答已收起">
             <Tooltip title="展开 AI 问答">
-              <Button type="primary" shape="circle" icon={<RobotOutlined />} onClick={reopenChatPanel} />
+              <Button type="primary" shape="circle" icon={<RobotOutlined />} aria-label="展开 AI 问答" onClick={reopenChatPanel} />
             </Tooltip>
-            <Text className="paper-detail-chat-rail-label">AI 问答</Text>
+            <Text className="paper-detail-collapsed-rail-label paper-detail-chat-rail-label">AI 问答</Text>
           </div>
         ) : (!isMobile || mobilePanel === 'chat') && <div
           className="paper-detail-chat-panel"
           style={{
             width: !isMobile
               ? showPdf
-                ? `calc(${100 - pdfPanelWidth}% - 10px)`
+                ? pdfCollapsed
+                  ? undefined
+                  : `calc(${100 - pdfPanelWidth}% - 10px)`
                 : `calc(${100 - contentPanelWidth}% - 10px)`
               : undefined,
+            flexGrow: !isMobile && showPdf && pdfCollapsed ? 1 : 0,
+            flexBasis: !isMobile && showPdf && pdfCollapsed ? 0 : 'auto',
             display: 'flex',
             flexDirection: 'column',
             height: '100%',
